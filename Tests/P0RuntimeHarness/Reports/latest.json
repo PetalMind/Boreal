@@ -1,0 +1,63 @@
+{
+  "generatedAt": "2026-08-24T11:16:30.736703+00:00",
+  "wine": "/Applications/Wine Staging.app/Contents/Resources/wine/bin/wine",
+  "wineserver": "/Applications/Wine Staging.app/Contents/Resources/wine/bin/wineserver",
+  "executable": "/Users/dominik/Github/Boreal/Tests/P0RuntimeHarness/bin/BorealRuntimeTest.exe",
+  "overall": "PASS",
+  "results": [
+    {
+      "case": "start procesu",
+      "status": "PASS",
+      "detail": "launcher PID 46159; process alive=True",
+      "duration_seconds": 8.851
+    },
+    {
+      "case": "PID",
+      "status": "PASS",
+      "detail": "PID=46159; positive and running=True",
+      "duration_seconds": 8.851
+    },
+    {
+      "case": "stdout",
+      "status": "PASS",
+      "detail": "BOREAL_STDOUT_OK present=True; log=/private/tmp/boreal-p0-runtime-validation-3/logs/startup.stdout.log",
+      "duration_seconds": 8.853
+    },
+    {
+      "case": "stderr",
+      "status": "PASS",
+      "detail": "BOREAL_STDERR_OK present=True; log=/private/tmp/boreal-p0-runtime-validation-3/logs/startup.stderr.log",
+      "duration_seconds": 8.853
+    },
+    {
+      "case": "exit code",
+      "status": "PASS",
+      "detail": "expected=37; actual=37",
+      "duration_seconds": 6.872
+    },
+    {
+      "case": "normalne zamknięcie",
+      "status": "PASS",
+      "detail": "exit=0; both markers present=True",
+      "duration_seconds": 7.13
+    },
+    {
+      "case": "Stop",
+      "status": "PASS",
+      "detail": "ready=True; launcher exit=-15; wineserver -w completed=True",
+      "duration_seconds": 10.24
+    },
+    {
+      "case": "Force Quit",
+      "status": "PASS",
+      "detail": "ready=True; wineserver -k exit=0; launcher exit=0; fallback SIGKILL=False",
+      "duration_seconds": 7.425
+    },
+    {
+      "case": "dwa środowiska i izolacja wineserver -k",
+      "status": "PASS",
+      "detail": "both ready=True; prefix A stopped=True; prefix B alive=True; wineserver exit=0",
+      "duration_seconds": 9.729
+    }
+  ]
+}

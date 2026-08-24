@@ -146,7 +146,7 @@ final class BorealStore {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
             guard let session = activeSessions[id], let environment = activeEnvironments[id], let runtime = activeRuntimes[id] else { return }
-            do { try await services.processRunner.stop(session, environment: environment, runtime: runtime) }
+            do { try await services.processRunner.stopApplication(session) }
             catch { errorMessage = error.localizedDescription }
             return
         }

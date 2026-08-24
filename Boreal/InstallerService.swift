@@ -28,7 +28,6 @@ actor InstallerService: Installing {
     private let runtimeManager: any RuntimeManaging
     private let environmentManager: any EnvironmentManaging
     private let processRunner: any WindowsProcessRunning
-    private let fileManager = FileManager.default
 
     init(runtimeManager: any RuntimeManaging, environmentManager: any EnvironmentManaging, processRunner: any WindowsProcessRunning) {
         self.runtimeManager = runtimeManager
@@ -41,9 +40,17 @@ actor InstallerService: Installing {
         let environment = try await environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
         do {
             try await environmentManager.initialize(environment, runtime: runtime)
+            let driveC = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory)
+            let snapshotBeforeInstallation = ExecutableDiscovery.snapshot(at: driveC)
             let installerSession = try await processRunner.run(executable: installer, arguments: [], environment: environment, runtime: runtime)
             let installerResult = try await processRunner.waitForExit(installerSession)
-            guard let executable = discoverExecutable(in: environment) ?? portableExecutable(installer) else {
+            let snapshotAfterInstallation = ExecutableDiscovery.snapshot(at: driveC)
+            let discoveredExecutable = ExecutableDiscovery.rankedCandidates(
+                before: snapshotBeforeInstallation,
+                after: snapshotAfterInstallation,
+                applicationName: name
+            ).first?.url
+            guard let executable = discoveredExecutable ?? portableExecutable(installer) else {
                 throw InstallerServiceError.executableNotDiscovered
             }
             let firstLaunch = try await processRunner.run(executable: executable, arguments: [], environment: environment, runtime: runtime)
@@ -63,27 +70,7 @@ actor InstallerService: Installing {
     }
 
     private func portableExecutable(_ installer: URL) -> URL? {
-        installer.pathExtension.lowercased() == "exe" ? installer : nil
+        ExecutableDiscovery.isEligibleExecutablePath(installer.lastPathComponent) ? installer : nil
     }
 
-    private func discoverExecutable(in environment: ManagedBorealEnvironment) -> URL? {
-        let driveC = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory)
-        guard let enumerator = fileManager.enumerator(at: driveC, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return nil }
-        var candidates: [URL] = []
-        for case let url as URL in enumerator where url.pathExtension.lowercased() == "exe" {
-            let lower = url.path.lowercased()
-            guard !lower.contains("/windows/"), !lower.contains("unins"), !lower.contains("uninstall"), !lower.contains("/update") else { continue }
-            candidates.append(url)
-        }
-        return candidates.sorted { score($0) > score($1) }.first
-    }
-
-    private func score(_ url: URL) -> Int {
-        let lower = url.path.lowercased()
-        var value = 0
-        if lower.contains("program files") { value += 10 }
-        if lower.contains("/bin/") { value += 2 }
-        if lower.contains("helper") || lower.contains("crash") || lower.contains("service") { value -= 8 }
-        return value
-    }
 }
