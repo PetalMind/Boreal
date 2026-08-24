@@ -2,9 +2,11 @@
 
 This directory is an independent, black-box validation suite for Boreal Runtime. It does not import or modify the Boreal application, its UI, or its runtime/environment/store services.
 
+The production session contract and formal P0.6 acceptance criteria are documented in `Documentation/P0.6-Session-Recovery.md`.
+
 ## What it validates
 
-`BorealRuntimeTest.exe` is a small Win32 program that creates a visible window, writes `BOREAL_STDOUT_OK` and `BOREAL_STDERR_OK`, accepts `--sleep N` and `--exit-code N`, and exits deterministically.
+`BorealRuntimeTest.exe` is a small Win32 program that creates a visible window, writes `BOREAL_STDOUT_OK` and `BOREAL_STDERR_OK`, accepts `--sleep N` and `--exit-code N`, and exits deterministically. Its internal `--spawn-child N` mode starts a second copy with `--child --sleep N`, then immediately exits the parent.
 
 The harness reports these cases independently:
 
@@ -15,6 +17,11 @@ The harness reports these cases independently:
 - Stop (`SIGTERM` of the Wine launcher, matching Boreal's current process-executor contract);
 - Force Quit (`wineserver -k` for the prefix, followed by launcher `SIGKILL` if required);
 - two concurrent `WINEPREFIX` environments, proving that `wineserver -k` for prefix A does not stop prefix B.
+- recovery of an active prefix after the process-owning harness exits without cleanup;
+- prefix-scoped Force Quit without the old launcher handle or PID;
+- successful relaunch in the recovered prefix after cleanup;
+- child-process semantics: launcher exit does not imply environment inactivity;
+- a bounded `wineserver -w` probe that terminates only its observer and leaves the active Wine session untouched.
 
 ## Build the Windows executable
 

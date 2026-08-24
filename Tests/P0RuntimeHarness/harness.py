@@ -20,6 +20,7 @@ from typing import IO, Callable, Sequence
 
 STDOUT_MARKER = "BOREAL_STDOUT_OK"
 STDERR_MARKER = "BOREAL_STDERR_OK"
+CHILD_MARKER = "BOREAL_CHILD_OK"
 DEFAULT_TIMEOUT = 30.0
 
 
@@ -103,14 +104,59 @@ class Harness:
             return False
 
     def wait_for_markers(self, running: RunningProcess) -> bool:
+        return self.wait_for_file_markers(running.stdout_path, running.stderr_path, running.process)
+
+    def wait_for_file_markers(
+        self,
+        stdout_path: Path,
+        stderr_path: Path,
+        process: subprocess.Popen[bytes] | None = None,
+        stdout_marker: str = STDOUT_MARKER,
+    ) -> bool:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            if self.contains(running.stdout_path, STDOUT_MARKER) and self.contains(running.stderr_path, STDERR_MARKER):
+            if self.contains(stdout_path, stdout_marker) and self.contains(stderr_path, STDERR_MARKER):
                 return True
-            if running.process.poll() is not None:
+            if process is not None and process.poll() is not None:
                 return False
             time.sleep(0.05)
         return False
+
+    def probe_environment_session(self, prefix: Path, observation_window: float = 0.5) -> str:
+        observer = subprocess.Popen(
+            [str(self.wineserver), "-w"],
+            env=self.environment(prefix),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            result = observer.wait(timeout=observation_window)
+            return "inactive" if result == 0 else "unknown"
+        except subprocess.TimeoutExpired:
+            observer.terminate()
+            try:
+                observer.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                os.killpg(observer.pid, signal.SIGKILL)
+                observer.wait(timeout=5.0)
+            return "active"
+
+    @staticmethod
+    def process_exists(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def wait_for_pid_exit(self, pid: int, timeout: float = 10.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self.process_exists(pid):
+                return True
+            time.sleep(0.05)
+        return not self.process_exists(pid)
 
     def record(self, case: str, started: float, passed: bool, detail: str) -> None:
         self.results.append(Result(case, "PASS" if passed else "FAIL", detail, round(time.monotonic() - started, 3)))
@@ -227,6 +273,132 @@ class Harness:
             self.cleanup(first)
             self.cleanup(second)
 
+    def session_recovery(self) -> None:
+        started = time.monotonic()
+        prefix = self.work_dir / "prefix-session-recovery"
+        log_dir = self.work_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = log_dir / "session-recovery.stdout.log"
+        stderr_path = log_dir / "session-recovery.stderr.log"
+        receipt_path = self.work_dir / "session-recovery-receipt.json"
+        helper = Path(__file__).resolve().parent / "orphan_launcher.py"
+        recovered_state = "unknown"
+        kill_result = -1
+        orphan_stopped = False
+        relaunch_ok = False
+        orphan_pid = -1
+        try:
+            owner = subprocess.run(
+                [
+                    sys.executable,
+                    str(helper),
+                    "--wine", str(self.wine),
+                    "--exe", str(self.executable),
+                    "--prefix", str(prefix),
+                    "--stdout", str(stdout_path),
+                    "--stderr", str(stderr_path),
+                    "--receipt", str(receipt_path),
+                ],
+                env=self.environment(prefix),
+                timeout=10.0,
+                check=False,
+            )
+            if owner.returncode != 0 or not receipt_path.is_file():
+                raise RuntimeError(f"orphan owner exit={owner.returncode}; receipt present={receipt_path.is_file()}")
+            orphan_pid = int(json.loads(receipt_path.read_text(encoding="utf-8"))["launcherPID"])
+            markers = self.wait_for_file_markers(stdout_path, stderr_path)
+            recovered_state = self.probe_environment_session(prefix)
+            self.record(
+                "Boreal restart recovers active environment",
+                started,
+                markers and recovered_state == "active",
+                f"owner exited; forgotten launcher PID={orphan_pid}; prefix state={recovered_state}",
+            )
+
+            server = self.wineserver_command(prefix, "-k")
+            kill_result = server.returncode
+            orphan_stopped = self.wait_for_pid_exit(orphan_pid)
+            inactive_after_kill = self.probe_environment_session(prefix) == "inactive"
+            self.record(
+                "recovered environment force quit without old PID",
+                started,
+                kill_result == 0 and orphan_stopped and inactive_after_kill,
+                f"wineserver -k exit={kill_result}; orphan stopped={orphan_stopped}; inactive={inactive_after_kill}",
+            )
+
+            relaunched = self.launch("session-recovery-relaunch", prefix, ["--sleep", "0"])
+            try:
+                relaunch_exit = relaunched.process.wait(timeout=self.timeout)
+                relaunch_ok = relaunch_exit == 0 and self.contains(relaunched.stdout_path, STDOUT_MARKER)
+            finally:
+                self.cleanup(relaunched)
+            self.record(
+                "same prefix relaunches after recovery cleanup",
+                started,
+                relaunch_ok,
+                f"relaunch successful={relaunch_ok}",
+            )
+        finally:
+            try:
+                self.wineserver_command(prefix, "-k", timeout=5.0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            if orphan_pid > 0 and self.process_exists(orphan_pid):
+                try:
+                    os.killpg(orphan_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def child_process_semantics(self) -> None:
+        started = time.monotonic()
+        prefix = self.work_dir / "prefix-child-process"
+        running = self.launch("child-process", prefix, ["--spawn-child", "30"])
+        try:
+            child_ready = self.wait_for_file_markers(
+                running.stdout_path,
+                running.stderr_path,
+                stdout_marker=CHILD_MARKER,
+            )
+            try:
+                launcher_exit = running.process.wait(timeout=10.0)
+                launcher_gone = True
+            except subprocess.TimeoutExpired:
+                launcher_exit = None
+                launcher_gone = False
+            state_after_launcher = self.probe_environment_session(prefix)
+            self.record(
+                "launcher exit does not imply environment inactivity",
+                started,
+                child_ready and launcher_gone and state_after_launcher == "active",
+                f"child ready={child_ready}; launcher exit={launcher_exit}; prefix state={state_after_launcher}",
+            )
+            self.record(
+                "child process keeps environment active",
+                started,
+                child_ready and state_after_launcher == "active",
+                f"{CHILD_MARKER} present={child_ready}; prefix state={state_after_launcher}",
+            )
+
+            state_after_probe = self.probe_environment_session(prefix)
+            child_still_alive = state_after_probe == "active"
+            self.record(
+                "environmentSessionState probe does not alter active session",
+                started,
+                state_after_launcher == "active" and child_still_alive,
+                f"first probe={state_after_launcher}; second probe={state_after_probe}",
+            )
+
+            server = self.wineserver_command(prefix, "-k")
+            inactive = self.probe_environment_session(prefix) == "inactive"
+            self.record(
+                "environment inactive only after wineserver session ends",
+                started,
+                server.returncode == 0 and inactive,
+                f"wineserver -k exit={server.returncode}; inactive after kill={inactive}",
+            )
+        finally:
+            self.cleanup(running)
+
     def run(self) -> list[Result]:
         tests: Sequence[Callable[[], None]] = (
             self.startup_probe,
@@ -235,6 +407,8 @@ class Harness:
             self.stop,
             self.force_quit,
             self.isolation,
+            self.session_recovery,
+            self.child_process_semantics,
         )
         for test in tests:
             try:

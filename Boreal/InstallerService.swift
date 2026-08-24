@@ -11,17 +11,19 @@ nonisolated struct InstallationCommit: Sendable {
 nonisolated enum InstallerServiceError: LocalizedError, Sendable {
     case noRuntimeAvailable
     case executableNotDiscovered
+    case firstLaunchFailed(Int32)
 
     var errorDescription: String? {
         switch self {
         case .noRuntimeAvailable: "No compatible Boreal Runtime is available. Install a verified runtime first."
         case .executableNotDiscovered: "The installer finished, but Boreal couldn’t find an application executable."
+        case .firstLaunchFailed(let code): "The application exited unexpectedly during its first launch (exit code \(code))."
         }
     }
 }
 
 nonisolated protocol Installing: Sendable {
-    func install(_ installer: URL, name: String) async throws -> InstallationCommit
+    func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit
 }
 
 actor InstallerService: Installing {
@@ -35,15 +37,19 @@ actor InstallerService: Installing {
         self.processRunner = processRunner
     }
 
-    func install(_ installer: URL, name: String) async throws -> InstallationCommit {
+    func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit {
+        await progress(.preparingRuntime)
         let runtime = try await readyRuntime()
+        await progress(.creatingEnvironment)
         let environment = try await environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
         do {
             try await environmentManager.initialize(environment, runtime: runtime)
             let driveC = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory)
             let snapshotBeforeInstallation = ExecutableDiscovery.snapshot(at: driveC)
+            await progress(.startingInstaller)
             let installerSession = try await processRunner.run(executable: installer, arguments: [], environment: environment, runtime: runtime)
             let installerResult = try await processRunner.waitForExit(installerSession)
+            await progress(.detectingApplication)
             let snapshotAfterInstallation = ExecutableDiscovery.snapshot(at: driveC)
             let discoveredExecutable = ExecutableDiscovery.rankedCandidates(
                 before: snapshotBeforeInstallation,
@@ -53,7 +59,13 @@ actor InstallerService: Installing {
             guard let executable = discoveredExecutable ?? portableExecutable(installer) else {
                 throw InstallerServiceError.executableNotDiscovered
             }
+            await progress(.verifyingFirstLaunch)
             let firstLaunch = try await processRunner.run(executable: executable, arguments: [], environment: environment, runtime: runtime)
+            try await Task.sleep(for: .milliseconds(750))
+            if case .terminated(let result) = try await processRunner.state(of: firstLaunch), result.exitCode != 0 {
+                throw InstallerServiceError.firstLaunchFailed(result.exitCode)
+            }
+            await progress(.committing)
             return InstallationCommit(environment: environment, runtime: runtime, executable: executable, firstLaunch: firstLaunch, installerResult: installerResult)
         } catch {
             try? await environmentManager.remove(environment)

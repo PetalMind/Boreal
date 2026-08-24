@@ -10,6 +10,29 @@
 static const char *kWindowClass = "BorealRuntimeTestWindow";
 static const char *kWindowTitle = "Boreal Runtime Test";
 
+static BOOL spawn_child_process(int sleep_seconds) {
+    char executable[MAX_PATH];
+    char command_line[MAX_PATH + 64];
+    STARTUPINFOA startup = {0};
+    PROCESS_INFORMATION process = {0};
+    DWORD length;
+
+    length = GetModuleFileNameA(NULL, executable, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return FALSE;
+    }
+    if (snprintf(command_line, sizeof(command_line), "\"%s\" --child --sleep %d", executable, sleep_seconds) < 0) {
+        return FALSE;
+    }
+    startup.cb = sizeof(startup);
+    if (!CreateProcessA(NULL, command_line, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &process)) {
+        return FALSE;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return TRUE;
+}
+
 static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_CLOSE:
@@ -91,7 +114,9 @@ static HWND create_test_window(HINSTANCE instance) {
 
 int main(int argc, char **argv) {
     int sleep_seconds = 1;
+    int spawn_child_seconds = -1;
     int exit_code = 0;
+    BOOL is_child = FALSE;
     int index;
     HWND window;
     ULONGLONG deadline;
@@ -103,6 +128,10 @@ int main(int argc, char **argv) {
             sleep_seconds = parse_int("--sleep", argv[++index], 0, 86400);
         } else if (strcmp(argv[index], "--exit-code") == 0 && index + 1 < argc) {
             exit_code = parse_int("--exit-code", argv[++index], 0, 255);
+        } else if (strcmp(argv[index], "--spawn-child") == 0 && index + 1 < argc) {
+            spawn_child_seconds = parse_int("--spawn-child", argv[++index], 1, 86400);
+        } else if (strcmp(argv[index], "--child") == 0) {
+            is_child = TRUE;
         } else {
             fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[index]);
             fflush(stderr);
@@ -121,6 +150,22 @@ int main(int argc, char **argv) {
     fflush(stdout);
     fputs("BOREAL_STDERR_OK\n", stderr);
     fflush(stderr);
+
+    if (is_child) {
+        fputs("BOREAL_CHILD_OK\n", stdout);
+        fflush(stdout);
+    } else if (spawn_child_seconds >= 0) {
+        if (!spawn_child_process(spawn_child_seconds)) {
+            fprintf(stderr, "BOREAL_CHILD_ERROR=%lu\n", (unsigned long)GetLastError());
+            fflush(stderr);
+            DestroyWindow(window);
+            return 71;
+        }
+        fputs("BOREAL_CHILD_SPAWNED\n", stdout);
+        fflush(stdout);
+        DestroyWindow(window);
+        return exit_code;
+    }
 
     deadline = GetTickCount64() + ((ULONGLONG)sleep_seconds * 1000ULL);
     while (!closed && GetTickCount64() < deadline) {

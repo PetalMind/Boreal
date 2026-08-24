@@ -36,11 +36,35 @@ struct BorealTests {
 
     @Test func runtimeInstallationAndEnvironmentInitializationAreRealAndAtomic() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-runtime-test-\(UUID().uuidString)")
-        let payload = root.appending(path: "payload/Wine Stable.app/Contents/Resources/wine/bin")
+        let payloadRoot = root.appending(path: "payload")
+        let payload = payloadRoot.appending(path: "Runtime/Wine.app/Contents/Resources/wine/bin")
         try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: payloadRoot.appending(path: "Dependencies"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: payloadRoot.appending(path: "Support"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: payloadRoot.appending(path: "Licenses"), withIntermediateDirectories: true)
+        try Data("Test-only third-party notices".utf8).write(to: payloadRoot.appending(path: "Licenses/THIRD_PARTY_NOTICES.txt"))
+        try Data("{\"spdxVersion\":\"SPDX-2.3\"}".utf8).write(to: payloadRoot.appending(path: "SBOM.spdx.json"))
         try executable("#!/bin/sh\necho wine-11.14\n", at: payload.appending(path: "wine"))
         try executable("#!/bin/sh\nexit 0\n", at: payload.appending(path: "wineserver"))
         try executable("#!/bin/sh\nmkdir -p \"$WINEPREFIX/drive_c\" \"$WINEPREFIX/dosdevices\"\ntouch \"$WINEPREFIX/system.reg\" \"$WINEPREFIX/user.reg\"\nexit 0\n", at: payload.appending(path: "wineboot"))
+
+        let packageManifest = RuntimePackageManifest(
+            schemaVersion: 1,
+            id: "wine-11.14-boreal.test",
+            displayName: "Boreal Runtime Test",
+            wineVersion: "11.14",
+            borealRevision: 1,
+            architecture: .x86_64,
+            minimumMacOS: "15.0",
+            requiresRosetta: false,
+            channel: .stable,
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false),
+            components: RuntimeComponents(),
+            layout: .canonical
+        )
+        let packageEncoder = JSONEncoder()
+        packageEncoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try packageEncoder.encode(packageManifest).write(to: payloadRoot.appending(path: "runtime.json"))
 
         let archive = root.appending(path: "fake-runtime.tar.xz")
         let executor = SystemProcessExecutor()
@@ -74,6 +98,9 @@ struct BorealTests {
         #expect(validation.isReady)
         #expect(validation.detectedWineVersion == "wine-11.14")
         #expect(FileManager.default.fileExists(atPath: support.appending(path: "Runtimes/\(manifest.id)/installed-runtime.json").path))
+        #expect(FileManager.default.fileExists(atPath: support.appending(path: "Runtimes/\(manifest.id)/runtime.json").path))
+        let permissions = try FileManager.default.attributesOfItem(atPath: installed.rootURL.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o555)
 
         let environments = EnvironmentManager(applicationSupportURL: support, processExecutor: executor)
         let environment = try await environments.create(configuration: EnvironmentConfiguration(name: "Test App"), runtime: installed)
@@ -82,6 +109,147 @@ struct BorealTests {
         #expect(environmentValidation.isReady)
         #expect(FileManager.default.fileExists(atPath: environment.prefixURL.appending(path: "drive_c").path))
         #expect(environment.prefixURL.path.hasPrefix(support.path))
+
+        try await runtimeManager.remove(installed)
+        #expect(!FileManager.default.fileExists(atPath: installed.rootURL.path))
+    }
+
+    @Test func legacyRuntimeChannelsDecodeIntoVersionedChannels() throws {
+        let developer = try JSONDecoder().decode(RuntimeChannel.self, from: Data("\"devel\"".utf8))
+        let preview = try JSONDecoder().decode(RuntimeChannel.self, from: Data("\"staging\"".utf8))
+        #expect(developer == .developer)
+        #expect(preview == .preview)
+    }
+
+    @Test func localWineImportCreatesValidatedImmutableSnapshot() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-local-runtime-\(UUID().uuidString)")
+        let applications = root.appending(path: "Applications", directoryHint: .isDirectory)
+        let sourceApp = applications.appending(path: "Wine Test.app", directoryHint: .isDirectory)
+        let sourceBin = sourceApp.appending(path: "Contents/Resources/wine/bin", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: sourceBin, withIntermediateDirectories: true)
+        try executable("#!/bin/sh\necho wine-11.15\n", at: sourceBin.appending(path: "wine"))
+        try executable("#!/bin/sh\nexit 0\n", at: sourceBin.appending(path: "wineserver"))
+        try executable("#!/bin/sh\nmkdir -p \"$WINEPREFIX/drive_c\"\nexit 0\n", at: sourceBin.appending(path: "wineboot"))
+
+        let candidate = LocalRuntimeCandidate(
+            id: "local-wine-test-11-15-x86_64-r1",
+            displayName: "Wine Test",
+            wineVersion: "11.15",
+            appURL: sourceApp,
+            architecture: .x86_64,
+            requirements: [],
+            minimumMacOS: "15.0",
+            estimatedSize: nil
+        )
+        let support = root.appending(path: "support", directoryHint: .isDirectory)
+        let manager = RuntimeManager(
+            applicationSupportURL: support,
+            catalog: StaticCatalog(runtimes: []),
+            processExecutor: SystemProcessExecutor(),
+            requirementChecker: SatisfiedRequirements(),
+            localApplicationRoots: [applications]
+        )
+
+        let installed = try await manager.importLocalRuntime(candidate)
+        let validation = try await manager.validate(installed)
+        #expect(installed.origin == .localImport)
+        #expect(validation.isReady)
+        #expect(FileManager.default.fileExists(atPath: sourceBin.appending(path: "wine").path))
+        #expect(FileManager.default.fileExists(atPath: installed.rootURL.appending(path: "Licenses/THIRD_PARTY_NOTICES.txt").path))
+        #expect(FileManager.default.fileExists(atPath: installed.rootURL.appending(path: "SBOM.spdx.json").path))
+        let permissions = try FileManager.default.attributesOfItem(atPath: installed.rootURL.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o555)
+
+        try await manager.remove(installed)
+        #expect(!FileManager.default.fileExists(atPath: installed.rootURL.path))
+    }
+
+    @Test func localWineDiscoveryReadsCanonicalAppMetadataAndArchitecture() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-local-discovery-\(UUID().uuidString)")
+        let applications = root.appending(path: "Applications", directoryHint: .isDirectory)
+        let app = applications.appending(path: "Wine Discovery.app", directoryHint: .isDirectory)
+        let contents = app.appending(path: "Contents", directoryHint: .isDirectory)
+        let bin = contents.appending(path: "Resources/wine/bin", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for name in ["wine", "wineserver", "wineboot"] {
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: bin.appending(path: name))
+        }
+        let info: [String: Any] = [
+            "CFBundleName": "Wine Discovery",
+            "CFBundleShortVersionString": "11.16",
+            "LSMinimumSystemVersion": "15.0"
+        ]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: contents.appending(path: "Info.plist"))
+        let manager = RuntimeManager(
+            applicationSupportURL: root.appending(path: "support"),
+            catalog: StaticCatalog(runtimes: []),
+            processExecutor: SystemProcessExecutor(),
+            requirementChecker: SatisfiedRequirements(),
+            localApplicationRoots: [applications]
+        )
+
+        let candidates = await manager.localRuntimeCandidates()
+        let candidate = try #require(candidates.first)
+        #expect(candidates.count == 1)
+        #expect(candidate.displayName == "Wine Discovery")
+        #expect(candidate.wineVersion == "11.16")
+        #expect(candidate.architecture == .arm64)
+        #expect(candidate.appURL.resolvingSymlinksInPath() == app.resolvingSymlinksInPath())
+    }
+
+    @Test func providerLaunchPlanCannotOverrideManagedPrefixOrRuntimePath() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-launch-plan-\(UUID().uuidString)")
+        let runtimeBin = root.appending(path: "runtime/bin", directoryHint: .isDirectory)
+        let workingDirectory = root.appending(path: "game", directoryHint: .isDirectory)
+        let logs = root.appending(path: "environment/logs", directoryHint: .isDirectory)
+        let prefix = root.appending(path: "environment/prefix", directoryHint: .isDirectory)
+        let capture = root.appending(path: "captured.txt")
+        try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
+        let wine = runtimeBin.appending(path: "wine")
+        try executable("#!/bin/sh\nprintf '%s\\n' \"$WINEPREFIX\" \"$PATH\" \"$EPIC_ENV\" \"$PWD\" \"$@\" > \"\(capture.path)\"\n", at: wine)
+        let game = workingDirectory.appending(path: "Game.exe")
+        try Data().write(to: game)
+        let runtime = InstalledRuntime(
+            id: "runtime",
+            displayName: "Runtime",
+            wineVersion: "test",
+            rootURL: root.appending(path: "runtime"),
+            wineExecutable: wine,
+            wineServerExecutable: runtimeBin.appending(path: "wineserver"),
+            wineBootExecutable: runtimeBin.appending(path: "wineboot"),
+            architecture: .arm64,
+            requirements: []
+        )
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "Game"),
+            runtimeID: runtime.id,
+            rootURL: root.appending(path: "environment"),
+            prefixURL: prefix,
+            logsURL: logs,
+            state: .ready
+        )
+        let plan = WindowsLaunchPlan(
+            executable: game,
+            arguments: ["-windowed"],
+            environment: ["WINEPREFIX": "/unsafe", "PATH": "/unsafe", "EPIC_ENV": "preserved"],
+            workingDirectory: workingDirectory
+        )
+        let runner = WindowsProcessRunner(processExecutor: SystemProcessExecutor())
+        let session = try await runner.run(plan: plan, environment: environment, runtime: runtime)
+        let result = try await runner.waitForExit(session)
+        #expect(result.exitCode == 0)
+        let lines = try String(contentsOf: capture, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(lines[0] == prefix.path)
+        #expect(lines[1].hasPrefix(runtimeBin.path + ":"))
+        #expect(lines[2] == "preserved")
+        #expect(URL(fileURLWithPath: lines[3]).resolvingSymlinksInPath() == workingDirectory.resolvingSymlinksInPath())
+        #expect(lines[4] == game.path)
+        #expect(lines[5] == "-windowed")
     }
 
     private func executable(_ contents: String, at url: URL) throws {

@@ -19,6 +19,13 @@ nonisolated struct WindowsProcessSession: Identifiable, Sendable, Hashable {
     let stderrLog: URL
 }
 
+nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
+    let executable: URL
+    var arguments: [String]
+    var environment: [String: String]
+    var workingDirectory: URL
+}
+
 nonisolated struct ProcessLaunchRequest: Sendable {
     let executable: URL
     var arguments: [String] = []
@@ -39,6 +46,12 @@ nonisolated struct ProcessLaunchReceipt: Sendable, Hashable {
 nonisolated enum ProcessExecutionState: Sendable, Equatable {
     case running(pid: Int32)
     case terminated(ProcessExecutionResult)
+}
+
+nonisolated enum EnvironmentSessionState: Sendable, Equatable {
+    case unknown
+    case inactive
+    case active
 }
 
 nonisolated enum ProcessRunnerError: LocalizedError, Sendable {
@@ -65,9 +78,13 @@ nonisolated protocol ProcessExecuting: Sendable {
 
 nonisolated protocol WindowsProcessRunning: Sendable {
     func run(executable: URL, arguments: [String], environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> WindowsProcessSession
+    func run(plan: WindowsLaunchPlan, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> WindowsProcessSession
     func waitForExit(_ session: WindowsProcessSession) async throws -> ProcessExecutionResult
     func state(of session: WindowsProcessSession) async throws -> ProcessExecutionState
     func stopApplication(_ session: WindowsProcessSession) async throws
+    func environmentSessionState(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> EnvironmentSessionState
+    func waitForEnvironmentSessionEnd(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func terminateEnvironmentSession(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func forceQuitEnvironment(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func forceQuit(_ session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
 }

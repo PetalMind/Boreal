@@ -1,52 +1,39 @@
 import SwiftUI
 
 struct GeneralSettingsView: View {
-    @AppStorage("showAppsInDock") private var showAppsInDock = true
-    @AppStorage("detectIcons") private var detectIcons = true
-    @AppStorage("isolatedApps") private var isolatedApps = true
+    @AppStorage("automaticUpdates") private var automaticUpdates = true
+    @AppStorage("keepInstallers") private var keepInstallers = false
 
     var body: some View {
         Form {
-            Section("Applications") {
-                Toggle("Show running apps in the Dock", isOn: $showAppsInDock)
-                Toggle("Automatically detect application icons", isOn: $detectIcons)
-                Toggle("Keep applications isolated", isOn: $isolatedApps)
+            Section("Updates and installers") {
+                Toggle("Check for updates automatically", isOn: $automaticUpdates)
+                Toggle("Keep downloaded installers", isOn: $keepInstallers)
             }
-            Section("Opening Windows files") {
-                LabeledContent("When opening an .exe") { Text("Ask what to do").foregroundStyle(.secondary) }
-            }
-        }.formStyle(.grouped).frame(width: 520, height: 320).navigationTitle("General")
+        }.formStyle(.grouped).frame(width: 520, height: 240).navigationTitle("General")
     }
 }
 
-struct GraphicsSettingsView: View {
-    @AppStorage("preferMetal") private var preferMetal = true
-    @AppStorage("performanceOptimizations") private var performanceOptimizations = true
+struct RuntimeSettingsView: View {
+    @AppStorage("automaticRuntimeUpdates") private var automaticRuntimeUpdates = true
     var body: some View {
         Form {
-            Section("Rendering") {
-                LabeledContent("Graphics") { Text("Automatic").foregroundStyle(.secondary) }
-                Toggle("Prefer Metal", isOn: $preferMetal)
-                Toggle("Performance optimizations", isOn: $performanceOptimizations)
+            Section("Boreal Runtime") {
+                Toggle("Update runtimes automatically", isOn: $automaticRuntimeUpdates)
             }
-            Section { Text("Boreal selects the most reliable renderer separately for each app.").foregroundStyle(.secondary) }
-        }.formStyle(.grouped).frame(width: 520, height: 300).navigationTitle("Graphics")
+            Section { Text("Application-specific Windows and graphics options are available from that application’s details.").foregroundStyle(.secondary) }
+        }.formStyle(.grouped).frame(width: 520, height: 240).navigationTitle("Runtime")
     }
 }
 
 struct AdvancedSettingsView: View {
     @AppStorage("developerMode") private var developerMode = false
-    @AppStorage("experimentalRuntimes") private var experimentalRuntimes = false
-    @AppStorage("runtimeLogs") private var runtimeLogs = false
     var body: some View {
         Form {
             Section("Advanced") {
                 Toggle("Developer Mode", isOn: $developerMode)
-                Toggle("Allow experimental runtimes", isOn: $experimentalRuntimes)
-                Toggle("Enable runtime logs", isOn: $runtimeLogs)
             }
             Section { Text("Developer Mode reveals runtime internals, raw logs and environment variables.").foregroundStyle(.secondary) }
         }.formStyle(.grouped).frame(width: 520, height: 300).navigationTitle("Advanced")
     }
 }
-

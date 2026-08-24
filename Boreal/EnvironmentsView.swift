@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct EnvironmentsView: View {
@@ -48,11 +49,17 @@ struct EnvironmentsView: View {
                 Divider()
                 VStack(spacing: 2) {
                     DetailRow(title: "Runtime", value: environment.runtime, symbol: "gearshape.2")
+                    DetailRow(title: "Status", value: "Ready", symbol: "checkmark.circle")
                     DetailRow(title: "Architecture", value: environment.architecture, symbol: "cpu")
                     DetailRow(title: "Graphics", value: environment.graphics, symbol: "display")
+                    DetailRow(title: "Created", value: environment.createdAt.formatted(date: .abbreviated, time: .omitted), symbol: "calendar")
                     HStack {
-                        Button("Open C: Drive", systemImage: "folder") { }
-                        Button("Repair", systemImage: "wrench.and.screwdriver") { }
+                        Button("Open C: Drive", systemImage: "folder") {
+                            if let prefix = environment.prefixPath { NSWorkspace.shared.open(URL(fileURLWithPath: prefix).appending(path: "drive_c")) }
+                        }
+                        Button("View Logs", systemImage: "doc.text.magnifyingglass") {
+                            if let logs = environment.logsPath { NSWorkspace.shared.open(URL(fileURLWithPath: logs)) }
+                        }
                         Spacer()
                         Button("Delete", systemImage: "trash", role: .destructive) { store.removeEnvironment(environment.id) }
                     }.padding(.top, 10)
@@ -63,4 +70,3 @@ struct EnvironmentsView: View {
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
     }
 }
-

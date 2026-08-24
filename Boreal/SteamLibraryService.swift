@@ -1,0 +1,411 @@
+import Foundation
+
+nonisolated protocol SteamLibraryLoading: Sendable {
+    func loadLibrary() async throws -> [StoreLibraryGame]
+}
+
+enum SteamLibraryError: LocalizedError {
+    case steamNotInstalled
+    case noSignedInAccount
+    case libraryUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .steamNotInstalled:
+            "Steam is not installed in this macOS account."
+        case .noSignedInAccount:
+            "Open Steam and sign in first, then import the Library again."
+        case .libraryUnavailable:
+            "Steam’s local Library data could not be read."
+        }
+    }
+}
+
+actor SteamLibraryService: SteamLibraryLoading {
+    private struct LocalGame: Sendable {
+        let appID: String
+        var name: String?
+        var developer: String?
+        var summary: String?
+        var playtimeMinutes = 0
+        var lastPlayed: Date?
+        var artworkPath: String?
+        var isInstalled = false
+        var installPath: String?
+    }
+
+    private struct StoreMetadata: Sendable {
+        var name: String?
+        var developer: String?
+        var summary: String?
+        var portraitImageURL: String?
+        var headerImageURL: String?
+        var backgroundImageURL: String?
+        var screenshotURLs: [String]?
+        var videos: [StoreVideo]?
+        var rating: StoreRating?
+        var supportsWindows: Bool?
+        var supportsNativeMacOS: Bool?
+    }
+
+    private let fileManager: FileManager
+    private let steamRoot: URL
+    private let session: URLSession
+    private let compatibilityLoader: any ProtonCompatibilityLoading
+
+    init(
+        steamRoot: URL? = nil,
+        fileManager: FileManager = .default,
+        session: URLSession = .shared,
+        compatibilityLoader: (any ProtonCompatibilityLoading)? = nil
+    ) {
+        self.fileManager = fileManager
+        self.steamRoot = steamRoot ?? fileManager.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/Steam", directoryHint: .isDirectory)
+        self.session = session
+        self.compatibilityLoader = compatibilityLoader ?? ProtonCompatibilityService(session: session)
+    }
+
+    func loadLibrary() async throws -> [StoreLibraryGame] {
+        guard fileManager.fileExists(atPath: steamRoot.path) else { throw SteamLibraryError.steamNotInstalled }
+        let users = try signedInUserDirectories()
+        guard !users.isEmpty else { throw SteamLibraryError.noSignedInAccount }
+
+        var localGames: [String: LocalGame] = [:]
+        for userDirectory in users {
+            try mergeUserLibrary(at: userDirectory, into: &localGames)
+        }
+        try mergeInstalledGames(into: &localGames)
+        guard !localGames.isEmpty else { throw SteamLibraryError.libraryUnavailable }
+
+        let sorted = localGames.values.sorted { numericAppID($0.appID) < numericAppID($1.appID) }
+        var results: [StoreLibraryGame] = []
+        results.reserveCapacity(sorted.count)
+
+        for start in stride(from: 0, to: sorted.count, by: 8) {
+            let end = min(start + 8, sorted.count)
+            let chunk = Array(sorted[start..<end])
+            let enriched = await withTaskGroup(of: StoreLibraryGame.self, returning: [StoreLibraryGame].self) { group in
+                for game in chunk {
+                    group.addTask { [session, compatibilityLoader] in
+                        async let metadataRequest = Self.fetchMetadata(appID: game.appID, session: session)
+                        async let compatibilityRequest = compatibilityLoader.profile(appID: game.appID)
+                        let (metadata, compatibility) = await (metadataRequest, compatibilityRequest)
+                        return StoreLibraryGame(
+                            provider: .steam,
+                            externalID: game.appID,
+                            name: metadata?.name ?? game.name ?? "Steam App \(game.appID)",
+                            developer: metadata?.developer ?? game.developer,
+                            summary: metadata?.summary ?? game.summary,
+                            artworkPath: game.artworkPath,
+                            portraitImageURL: metadata?.portraitImageURL,
+                            headerImageURL: metadata?.headerImageURL,
+                            backgroundImageURL: metadata?.backgroundImageURL,
+                            screenshotURLs: metadata?.screenshotURLs,
+                            videos: metadata?.videos,
+                            storeRating: metadata?.rating,
+                            supportsWindows: metadata?.supportsWindows,
+                            supportsNativeMacOS: metadata?.supportsNativeMacOS,
+                            playtimeMinutes: game.playtimeMinutes,
+                            lastPlayed: game.lastPlayed,
+                            isInstalled: game.isInstalled,
+                            installPath: game.installPath,
+                            compatibility: compatibility
+                        )
+                    }
+                }
+                var values: [StoreLibraryGame] = []
+                for await value in group { values.append(value) }
+                return values
+            }
+            results.append(contentsOf: enriched)
+        }
+
+        return results.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func signedInUserDirectories() throws -> [URL] {
+        let loginURL = steamRoot.appending(path: "config/loginusers.vdf")
+        guard fileManager.fileExists(atPath: loginURL.path) else { return [] }
+        let users = (try? ValveKeyValueDecoder.decode(url: loginURL).object("users")) ?? [:]
+        let userdata = steamRoot.appending(path: "userdata", directoryHint: .isDirectory)
+        let directories = (try? fileManager.contentsOfDirectory(
+            at: userdata,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let candidates = directories.filter { directory in
+            fileManager.fileExists(atPath: directory.appending(path: "config/localconfig.vdf").path)
+        }
+        let accountIDs = Set(users.keys.compactMap { steamID -> String? in
+            guard let value = UInt64(steamID), value >= 76_561_197_960_265_728 else { return nil }
+            return String(value - 76_561_197_960_265_728)
+        })
+        guard !accountIDs.isEmpty else { return candidates }
+        let matched = candidates.filter { accountIDs.contains($0.lastPathComponent) }
+        return matched.isEmpty ? candidates : matched
+    }
+
+    private func mergeUserLibrary(at userDirectory: URL, into games: inout [String: LocalGame]) throws {
+        let localConfigURL = userDirectory.appending(path: "config/localconfig.vdf")
+        guard let root = try? ValveKeyValueDecoder.decode(url: localConfigURL),
+              let apps = root.object(path: ["UserLocalConfigStore", "Software", "Valve", "Steam", "apps"]) else {
+            return
+        }
+        for (appID, value) in apps where appID.allSatisfy(\.isNumber) {
+            var game = games[appID] ?? LocalGame(appID: appID)
+            if let object = value.objectValue {
+                game.playtimeMinutes = max(game.playtimeMinutes, Int(object.string("Playtime") ?? "") ?? 0)
+                if let seconds = TimeInterval(object.string("LastPlayed") ?? ""), seconds > 0 {
+                    game.lastPlayed = max(game.lastPlayed ?? .distantPast, Date(timeIntervalSince1970: seconds))
+                }
+            }
+            mergeCachedDetails(appID: appID, userDirectory: userDirectory, into: &game)
+            let cover = steamRoot.appending(path: "appcache/librarycache/\(appID)/library_600x900.jpg")
+            if fileManager.fileExists(atPath: cover.path) { game.artworkPath = cover.path }
+            games[appID] = game
+        }
+    }
+
+    private func mergeCachedDetails(appID: String, userDirectory: URL, into game: inout LocalGame) {
+        let url = userDirectory.appending(path: "config/librarycache/\(appID).json")
+        guard let data = try? Data(contentsOf: url),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]] else { return }
+        for row in rows where row.count == 2 {
+            guard let key = row[0] as? String,
+                  let wrapper = row[1] as? [String: Any],
+                  let payload = wrapper["data"] as? [String: Any] else { continue }
+            if key == "descriptions" {
+                game.summary = (payload["strSnippet"] as? String) ?? (payload["strFullDescription"] as? String)
+            } else if key == "associations" {
+                let developers = payload["rgDevelopers"] as? [[String: Any]]
+                game.developer = developers?.first?["strName"] as? String
+            }
+        }
+    }
+
+    private func mergeInstalledGames(into games: inout [String: LocalGame]) throws {
+        let defaultSteamApps = steamRoot.appending(path: "steamapps", directoryHint: .isDirectory)
+        var steamAppsDirectories = [defaultSteamApps]
+        let foldersURL = defaultSteamApps.appending(path: "libraryfolders.vdf")
+        if let root = try? ValveKeyValueDecoder.decode(url: foldersURL),
+           let folders = root.object("libraryfolders") {
+            for value in folders.values {
+                guard let path = value.objectValue?.string("path"), !path.isEmpty else { continue }
+                let candidate = URL(fileURLWithPath: path).appending(path: "steamapps", directoryHint: .isDirectory)
+                if !steamAppsDirectories.contains(candidate) { steamAppsDirectories.append(candidate) }
+            }
+        }
+
+        for steamApps in steamAppsDirectories where fileManager.fileExists(atPath: steamApps.path) {
+            let manifests = (try? fileManager.contentsOfDirectory(at: steamApps, includingPropertiesForKeys: nil)) ?? []
+            for manifest in manifests where manifest.lastPathComponent.hasPrefix("appmanifest_") && manifest.pathExtension == "acf" {
+                guard let root = try? ValveKeyValueDecoder.decode(url: manifest),
+                      let state = root.object("AppState"),
+                      let appID = state.string("appid") else { continue }
+                var game = games[appID] ?? LocalGame(appID: appID)
+                game.name = state.string("name") ?? game.name
+                game.isInstalled = true
+                if let installDirectory = state.string("installdir") {
+                    game.installPath = steamApps.appending(path: "common/\(installDirectory)").path
+                }
+                let cover = steamRoot.appending(path: "appcache/librarycache/\(appID)/library_600x900.jpg")
+                if fileManager.fileExists(atPath: cover.path) { game.artworkPath = cover.path }
+                games[appID] = game
+            }
+        }
+    }
+
+    private static func fetchMetadata(appID: String, session: URLSession) async -> StoreMetadata? {
+        guard var components = URLComponents(string: "https://store.steampowered.com/api/appdetails") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "appids", value: appID),
+            URLQueryItem(name: "l", value: Locale.current.language.languageCode?.identifier ?? "en")
+        ]
+        guard let url = components.url else { return nil }
+        async let detailsRequest = session.data(from: url)
+        async let reviewsRequest = fetchReviewRating(appID: appID, session: session)
+        guard let (data, response) = try? await detailsRequest,
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let envelope = root[appID] as? [String: Any],
+              envelope["success"] as? Bool == true,
+              let details = envelope["data"] as? [String: Any] else { return nil }
+        let developers = details["developers"] as? [String]
+        let publishers = details["publishers"] as? [String]
+        let platforms = details["platforms"] as? [String: Bool]
+        let screenshots = (details["screenshots"] as? [[String: Any]])?.compactMap {
+            ($0["path_full"] as? String) ?? ($0["path_thumbnail"] as? String)
+        }
+        let movies = (details["movies"] as? [[String: Any]])?.compactMap { movie -> StoreVideo? in
+            guard let id = movie["id"],
+                  let name = movie["name"] as? String,
+                  let formats = movie["mp4"] as? [String: Any],
+                  let videoURL = (formats["max"] as? String) ?? (formats["480"] as? String) else { return nil }
+            return StoreVideo(
+                id: String(describing: id),
+                name: name,
+                thumbnailURL: movie["thumbnail"] as? String,
+                videoURL: videoURL
+            )
+        }
+        let reviewRating = await reviewsRequest
+        let criticScore = (details["metacritic"] as? [String: Any])?["score"] as? Int
+        var rating = reviewRating
+        if rating == nil, criticScore != nil { rating = StoreRating(criticScore: criticScore) }
+        else if criticScore != nil { rating?.criticScore = criticScore }
+        return StoreMetadata(
+            name: details["name"] as? String,
+            developer: developers?.first ?? publishers?.first,
+            summary: cleanDescription(details["short_description"] as? String),
+            portraitImageURL: "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/\(appID)/library_600x900_2x.jpg",
+            headerImageURL: details["header_image"] as? String,
+            backgroundImageURL: (details["background_raw"] as? String) ?? (details["background"] as? String),
+            screenshotURLs: screenshots,
+            videos: movies,
+            rating: rating,
+            supportsWindows: platforms?["windows"],
+            supportsNativeMacOS: platforms?["mac"]
+        )
+    }
+
+    private static func fetchReviewRating(appID: String, session: URLSession) async -> StoreRating? {
+        guard var components = URLComponents(string: "https://store.steampowered.com/appreviews/\(appID)") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "json", value: "1"),
+            URLQueryItem(name: "language", value: "all"),
+            URLQueryItem(name: "purchase_type", value: "all"),
+            URLQueryItem(name: "num_per_page", value: "0")
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let summary = root["query_summary"] as? [String: Any] else { return nil }
+        let positive = summary["total_positive"] as? Int ?? 0
+        let negative = summary["total_negative"] as? Int ?? 0
+        let total = summary["total_reviews"] as? Int ?? positive + negative
+        let percent = total > 0 ? Int((Double(positive) / Double(total) * 100).rounded()) : nil
+        return StoreRating(
+            positivePercent: percent,
+            reviewCount: total > 0 ? total : nil,
+            label: summary["review_score_desc"] as? String
+        )
+    }
+
+    private static func cleanDescription(_ value: String?) -> String? {
+        guard var value, !value.isEmpty else { return nil }
+        value = value.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        return value
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+    }
+
+    private func numericAppID(_ value: String) -> Int64 { Int64(value) ?? .max }
+}
+
+private nonisolated enum ValveKeyValue: Sendable {
+    case string(String)
+    case object([String: ValveKeyValue])
+
+    var objectValue: [String: ValveKeyValue]? {
+        if case .object(let value) = self { value } else { nil }
+    }
+
+    func object(_ key: String) -> [String: ValveKeyValue]? { objectValue?[key]?.objectValue }
+    func string(_ key: String) -> String? {
+        guard case .string(let value) = objectValue?[key] else { return nil }
+        return value
+    }
+    func object(path: [String]) -> [String: ValveKeyValue]? {
+        path.reduce(objectValue) { partial, key in partial?[key]?.objectValue }
+    }
+}
+
+private nonisolated enum ValveKeyValueDecoder {
+    private enum Token { case value(String), open, close }
+
+    static func decode(url: URL) throws -> ValveKeyValue {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var parser = Parser(tokens: tokenize(text))
+        return .object(parser.parseObject(stopsAtClose: false))
+    }
+
+    private static func tokenize(_ text: String) -> [Token] {
+        let characters = Array(text)
+        var tokens: [Token] = []
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character.isWhitespace { index += 1; continue }
+            if character == "/", index + 1 < characters.count, characters[index + 1] == "/" {
+                index += 2
+                while index < characters.count, characters[index] != "\n" { index += 1 }
+                continue
+            }
+            if character == "{" { tokens.append(.open); index += 1; continue }
+            if character == "}" { tokens.append(.close); index += 1; continue }
+            if character == "\"" {
+                index += 1
+                var value = ""
+                while index < characters.count {
+                    let next = characters[index]
+                    if next == "\"" { index += 1; break }
+                    if next == "\\", index + 1 < characters.count {
+                        let escaped = characters[index + 1]
+                        if escaped == "\"" || escaped == "\\" { value.append(escaped); index += 2; continue }
+                    }
+                    value.append(next)
+                    index += 1
+                }
+                tokens.append(.value(value))
+                continue
+            }
+            var value = ""
+            while index < characters.count, !characters[index].isWhitespace, characters[index] != "{", characters[index] != "}" {
+                value.append(characters[index])
+                index += 1
+            }
+            if !value.isEmpty { tokens.append(.value(value)) }
+        }
+        return tokens
+    }
+
+    private struct Parser {
+        let tokens: [Token]
+        var index = 0
+
+        mutating func parseObject(stopsAtClose: Bool) -> [String: ValveKeyValue] {
+            var result: [String: ValveKeyValue] = [:]
+            while index < tokens.count {
+                if case .close = tokens[index] {
+                    index += 1
+                    if stopsAtClose { return result }
+                    continue
+                }
+                guard case .value(let key) = tokens[index] else { index += 1; continue }
+                index += 1
+                guard index < tokens.count else { break }
+                switch tokens[index] {
+                case .value(let value):
+                    result[key] = .string(value)
+                    index += 1
+                case .open:
+                    index += 1
+                    result[key] = .object(parseObject(stopsAtClose: true))
+                case .close:
+                    index += 1
+                }
+            }
+            return result
+        }
+    }
+}
+
+private nonisolated extension Dictionary where Key == String, Value == ValveKeyValue {
+    func string(_ key: String) -> String? {
+        guard case .string(let value) = self[key] else { return nil }
+        return value
+    }
+}

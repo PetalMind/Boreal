@@ -5,6 +5,9 @@ nonisolated struct BorealServices: Sendable {
     let environmentManager: any EnvironmentManaging
     let processRunner: any WindowsProcessRunning
     let installer: any Installing
+    let steamLibrary: any SteamLibraryLoading
+    let epicLibrary: any EpicLibraryProviding
+    let gogLibrary: any GOGLibraryProviding
 
     @MainActor static func live(applicationSupportURL: URL) -> BorealServices {
         let executor = SystemProcessExecutor()
@@ -31,6 +34,14 @@ nonisolated struct BorealServices: Sendable {
         let environmentManager = EnvironmentManager(applicationSupportURL: applicationSupportURL, processExecutor: executor)
         let runner = WindowsProcessRunner(processExecutor: executor)
         let installer = InstallerService(runtimeManager: runtimeManager, environmentManager: environmentManager, processRunner: runner)
-        return BorealServices(runtimeManager: runtimeManager, environmentManager: environmentManager, processRunner: runner, installer: installer)
+        return BorealServices(
+            runtimeManager: runtimeManager,
+            environmentManager: environmentManager,
+            processRunner: runner,
+            installer: installer,
+            steamLibrary: SteamLibraryService(),
+            epicLibrary: LegendaryEpicService(applicationSupportURL: applicationSupportURL),
+            gogLibrary: GOGService(applicationSupportURL: applicationSupportURL)
+        )
     }
 }

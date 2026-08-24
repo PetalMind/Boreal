@@ -6,6 +6,7 @@ actor RuntimeManager: RuntimeManaging {
     private let processExecutor: any ProcessExecuting
     private let requirementChecker: any RuntimeRequirementChecking
     private let session: URLSession
+    private let localApplicationRoots: [URL]
     private let fileManager = FileManager.default
 
     init(
@@ -13,16 +14,64 @@ actor RuntimeManager: RuntimeManaging {
         catalog: any RuntimeCatalogLoading,
         processExecutor: any ProcessExecuting,
         requirementChecker: any RuntimeRequirementChecking,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        localApplicationRoots: [URL]? = nil
     ) {
         self.runtimesURL = applicationSupportURL.appending(path: "Runtimes", directoryHint: .isDirectory)
         self.catalog = catalog
         self.processExecutor = processExecutor
         self.requirementChecker = requirementChecker
         self.session = session
+        self.localApplicationRoots = localApplicationRoots ?? [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            FileManager.default.homeDirectoryForCurrentUser.appending(path: "Applications", directoryHint: .isDirectory)
+        ]
     }
 
     func availableRuntimes() async throws -> [BorealRuntime] { try await catalog.loadCatalog() }
+
+    func localRuntimeCandidates() async -> [LocalRuntimeCandidate] {
+        var candidates: [LocalRuntimeCandidate] = []
+        var seen = Set<String>()
+        for root in localApplicationRoots {
+            guard let apps = try? fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for app in apps where app.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+                let wine = app.appending(path: "Contents/Resources/wine/bin/wine")
+                let server = app.appending(path: "Contents/Resources/wine/bin/wineserver")
+                let boot = app.appending(path: "Contents/Resources/wine/bin/wineboot")
+                guard [wine, server, boot].allSatisfy({ fileManager.isExecutableFile(atPath: $0.path) }),
+                      let architecture = executableArchitecture(at: wine) else { continue }
+                let info = Bundle(url: app)?.infoDictionary
+                let version = (info?["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let version, !version.isEmpty else { continue }
+                let name = (info?["CFBundleDisplayName"] as? String)
+                    ?? (info?["CFBundleName"] as? String)
+                    ?? app.deletingPathExtension().lastPathComponent
+                let minimumMacOS = (info?["LSMinimumSystemVersion"] as? String) ?? "10.15"
+                var requirements = Set<RuntimeRequirement>()
+                #if arch(arm64)
+                if architecture == .x86_64 { requirements.insert(.rosetta2) }
+                #endif
+                let id = localRuntimeID(name: name, version: version, architecture: architecture)
+                guard seen.insert(id).inserted else { continue }
+                candidates.append(LocalRuntimeCandidate(
+                    id: id,
+                    displayName: name,
+                    wineVersion: version,
+                    appURL: app,
+                    architecture: architecture,
+                    requirements: requirements,
+                    minimumMacOS: minimumMacOS,
+                    estimatedSize: nil
+                ))
+            }
+        }
+        return candidates.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+    }
 
     func installedRuntimes() async throws -> [InstalledRuntime] {
         try prepareDirectories()
@@ -37,12 +86,126 @@ actor RuntimeManager: RuntimeManaging {
         }
     }
 
+    func importLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime {
+        try prepareDirectories()
+        guard !candidate.id.isEmpty, !candidate.id.contains("/"), !candidate.id.contains("..") else {
+            throw RuntimeManagerError.localRuntimeInvalid("Its generated identifier is unsafe.")
+        }
+        let source = candidate.appURL.standardizedFileURL
+        let allowedRoots = localApplicationRoots.map(\.standardizedFileURL)
+        guard allowedRoots.contains(where: { source.deletingLastPathComponent() == $0 }),
+              source.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
+            throw RuntimeManagerError.localRuntimeInvalid("Only Wine apps installed directly in an Applications folder are supported.")
+        }
+        let sourceWine = source.appending(path: "Contents/Resources/wine/bin/wine")
+        guard fileManager.isExecutableFile(atPath: sourceWine.path) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The Wine executable is missing.")
+        }
+        for requirement in candidate.requirements where !(await requirementChecker.isSatisfied(requirement)) {
+            throw RuntimeManagerError.requirementMissing(requirement)
+        }
+
+        let destination = runtimesURL.appending(path: candidate.id, directoryHint: .isDirectory)
+        guard !fileManager.fileExists(atPath: destination.path) else { throw RuntimeManagerError.alreadyInstalled(candidate.id) }
+        let staging = runtimesURL.appending(path: ".installing/\(candidate.id)-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let runtimeDirectory = staging.appending(path: "Runtime", directoryHint: .isDirectory)
+        let copiedApp = runtimeDirectory.appending(path: "Wine.app", directoryHint: .isDirectory)
+        do {
+            try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+            try fileManager.copyItem(at: source, to: copiedApp)
+            try fileManager.createDirectory(at: staging.appending(path: "Dependencies", directoryHint: .isDirectory), withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: staging.appending(path: "Support", directoryHint: .isDirectory), withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: staging.appending(path: "Licenses", directoryHint: .isDirectory), withIntermediateDirectories: true)
+
+            let notice = """
+            Boreal local runtime snapshot
+
+            Imported from: \(source.path)
+            Product: \(candidate.displayName) \(candidate.wineVersion)
+            Boreal copied this user-installed app and does not distribute or attest its original package.
+            Wine is free software. License and source information: https://www.winehq.org/source/
+            """
+            try Data(notice.utf8).write(to: staging.appending(path: RuntimeLayout.canonical.noticesFile), options: .atomic)
+            let sbom: [String: Any] = [
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "\(candidate.displayName)-local-snapshot",
+                "documentNamespace": "https://boreal.local/spdx/\(candidate.id)/\(UUID().uuidString)",
+                "creationInfo": ["creators": ["Tool: Boreal"], "created": ISO8601DateFormatter().string(from: Date())],
+                "packages": [[
+                    "name": candidate.displayName,
+                    "SPDXID": "SPDXRef-Package-Wine",
+                    "versionInfo": candidate.wineVersion,
+                    "downloadLocation": "NOASSERTION",
+                    "filesAnalyzed": false,
+                    "licenseConcluded": "NOASSERTION",
+                    "licenseDeclared": "NOASSERTION",
+                    "copyrightText": "NOASSERTION"
+                ]]
+            ]
+            try JSONSerialization.data(withJSONObject: sbom, options: [.prettyPrinted, .sortedKeys])
+                .write(to: staging.appending(path: RuntimeLayout.canonical.sbomFile), options: .atomic)
+
+            let localManifest = BorealRuntime(
+                schemaVersion: 1,
+                id: candidate.id,
+                displayName: "\(candidate.displayName) (Local Snapshot)",
+                wineVersion: candidate.wineVersion,
+                architecture: candidate.architecture,
+                minimumMacOS: candidate.minimumMacOS,
+                channel: .preview,
+                requirements: candidate.requirements,
+                features: RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false),
+                artifact: RuntimeArtifact(url: source, sha256: String(repeating: "0", count: 64), compressedSize: 0)
+            )
+            try makeEncoder().encode(localManifest.packageManifest)
+                .write(to: staging.appending(path: "runtime.json"), options: .atomic)
+            try validateExtractedTree(staging)
+            let provisional = try resolveRuntime(manifest: localManifest, root: staging)
+            let validation = try await validate(provisional)
+            guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
+            try await smokeTest(provisional)
+
+            let installed = InstalledRuntime(
+                id: candidate.id,
+                displayName: localManifest.displayName,
+                wineVersion: candidate.wineVersion,
+                rootURL: destination,
+                wineExecutable: destination.appending(path: RuntimeLayout.canonical.wineExecutable),
+                wineServerExecutable: destination.appending(path: RuntimeLayout.canonical.wineServerExecutable),
+                wineBootExecutable: destination.appending(path: RuntimeLayout.canonical.wineBootExecutable),
+                architecture: candidate.architecture,
+                requirements: candidate.requirements,
+                origin: .localImport
+            )
+            try makeEncoder().encode(installed)
+                .write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
+            try fileManager.moveItem(at: staging, to: destination)
+            try makeImmutable(destination)
+            return installed
+        } catch {
+            if fileManager.fileExists(atPath: staging.path) {
+                try? makeWritable(staging)
+                try? fileManager.removeItem(at: staging)
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try? makeWritable(destination)
+                try? fileManager.removeItem(at: destination)
+            }
+            throw error
+        }
+    }
+
     func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime {
         try prepareDirectories()
         try validateManifest(runtime)
         let destination = runtimesURL.appending(path: runtime.id, directoryHint: .isDirectory)
         guard !fileManager.fileExists(atPath: destination.path) else { throw RuntimeManagerError.alreadyInstalled(runtime.id) }
 
+        if runtime.requirements.contains(.gStreamerFramework) {
+            throw RuntimeManagerError.nonSelfContained(.gStreamerFramework)
+        }
         for requirement in runtime.requirements where !(await requirementChecker.isSatisfied(requirement)) {
             throw RuntimeManagerError.requirementMissing(requirement)
         }
@@ -58,9 +221,17 @@ actor RuntimeManager: RuntimeManaging {
             }
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
             try await extract(downloadURL, to: staging)
-            let provisional = try discoverRuntime(manifest: runtime, root: staging)
+            try validateExtractedTree(staging)
+            let packageManifestURL = staging.appending(path: "runtime.json")
+            guard let packageData = try? Data(contentsOf: packageManifestURL),
+                  let packageManifest = try? JSONDecoder().decode(RuntimePackageManifest.self, from: packageData),
+                  packageManifest == runtime.packageManifest else {
+                throw RuntimeManagerError.packageManifestMismatch
+            }
+            let provisional = try resolveRuntime(manifest: runtime, root: staging)
             let validation = try await validate(provisional)
             guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
+            try await smokeTest(provisional)
 
             let relativeWine = try relativePath(of: provisional.wineExecutable, inside: staging)
             let relativeServer = try relativePath(of: provisional.wineServerExecutable, inside: staging)
@@ -76,28 +247,49 @@ actor RuntimeManager: RuntimeManaging {
                 architecture: runtime.architecture,
                 requirements: runtime.requirements
             )
-            let manifestData = try makeEncoder().encode(runtime)
-            try manifestData.write(to: staging.appending(path: "manifest.json"), options: .atomic)
             let descriptorData = try makeEncoder().encode(installed)
             try descriptorData.write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
             try fileManager.moveItem(at: staging, to: destination)
+            try makeImmutable(destination)
             try? fileManager.removeItem(at: downloadURL)
             return installed
         } catch {
             if fileManager.fileExists(atPath: downloadURL.path) { try? fileManager.removeItem(at: downloadURL) }
-            if fileManager.fileExists(atPath: staging.path) { try? fileManager.removeItem(at: staging) }
+            if fileManager.fileExists(atPath: staging.path) {
+                try? makeWritable(staging)
+                try? fileManager.removeItem(at: staging)
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try? makeWritable(destination)
+                try? fileManager.removeItem(at: destination)
+            }
             throw error
         }
     }
 
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation {
         let executables = [runtime.wineExecutable, runtime.wineServerExecutable, runtime.wineBootExecutable]
-        let missing = executables.filter { !fileManager.isExecutableFile(atPath: $0.path) }.map(\.path)
+        var missing = executables.filter { !fileManager.isExecutableFile(atPath: $0.path) }.map(\.path)
+        let metadata = runtime.rootURL.appending(path: "runtime.json")
+        if let data = try? Data(contentsOf: metadata),
+           let manifest = try? JSONDecoder().decode(RuntimePackageManifest.self, from: data) {
+            for path in [manifest.layout.dependenciesDirectory, manifest.layout.supportDirectory, manifest.layout.licensesDirectory, manifest.layout.noticesFile, manifest.layout.sbomFile] {
+                if let required = try? containedURL(path, root: runtime.rootURL), !fileManager.fileExists(atPath: required.path) { missing.append(required.path) }
+            }
+        } else {
+            missing.append(metadata.path)
+        }
         var unmet: Set<RuntimeRequirement> = []
-        for requirement in runtime.requirements where !(await requirementChecker.isSatisfied(requirement)) { unmet.insert(requirement) }
+        for requirement in runtime.requirements {
+            if requirement == .gStreamerFramework {
+                unmet.insert(requirement)
+            } else if !(await requirementChecker.isSatisfied(requirement)) {
+                unmet.insert(requirement)
+            }
+        }
         var detectedVersion: String?
         if missing.isEmpty && unmet.isEmpty {
-            let logs = runtime.rootURL.appending(path: ".validation")
+            let logs = runtimesURL.appending(path: ".validation/\(runtime.id)", directoryHint: .isDirectory)
             let request = ProcessLaunchRequest(
                 executable: runtime.wineExecutable,
                 arguments: ["--version"],
@@ -118,12 +310,14 @@ actor RuntimeManager: RuntimeManaging {
     func remove(_ runtime: InstalledRuntime) async throws {
         let standardizedRoot = runtime.rootURL.standardizedFileURL
         guard standardizedRoot.deletingLastPathComponent() == runtimesURL.standardizedFileURL else { throw RuntimeManagerError.runtimeLayoutNotFound }
+        try makeWritable(standardizedRoot)
         try fileManager.removeItem(at: standardizedRoot)
     }
 
     private func prepareDirectories() throws {
         try fileManager.createDirectory(at: runtimesURL.appending(path: ".downloads"), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: runtimesURL.appending(path: ".installing"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: runtimesURL.appending(path: ".validation"), withIntermediateDirectories: true)
     }
 
     private func validateManifest(_ runtime: BorealRuntime) throws {
@@ -134,7 +328,16 @@ actor RuntimeManager: RuntimeManaging {
               runtime.artifact.sha256.count == 64,
               runtime.artifact.sha256.allSatisfy({ $0.isHexDigit }),
               runtime.artifact.compressedSize >= 0,
+              runtime.borealRevision > 0,
               runtime.artifact.url.isFileURL || runtime.artifact.url.scheme == "https" else {
+            throw RuntimeManagerError.invalidManifest
+        }
+        guard !runtime.requirements.contains(.gStreamerFramework),
+              secureRelativePaths(runtime.layout).allSatisfy({ $0 }) else {
+            throw RuntimeManagerError.invalidManifest
+        }
+        guard runtime.features.wineMono == (runtime.components.mono != nil),
+              runtime.features.wineGecko == (runtime.components.gecko != nil) else {
             throw RuntimeManagerError.invalidManifest
         }
         let parts = runtime.minimumMacOS.split(separator: ".").compactMap { Int($0) }
@@ -146,6 +349,7 @@ actor RuntimeManager: RuntimeManaging {
     private func download(_ artifact: RuntimeArtifact, to destination: URL) async throws {
         if artifact.url.isFileURL {
             try fileManager.copyItem(at: artifact.url, to: destination)
+            try validateDownloadedSize(artifact, at: destination)
             return
         }
         let (temporary, response) = try await session.download(from: artifact.url)
@@ -156,10 +360,18 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.downloadFailed("The artifact size does not match its manifest.")
         }
         try fileManager.moveItem(at: temporary, to: destination)
+        try validateDownloadedSize(artifact, at: destination)
     }
 
     private func extract(_ archive: URL, to destination: URL) async throws {
         guard archive.lastPathComponent.hasSuffix(".tar.xz") else { throw RuntimeManagerError.unsupportedArchive }
+        let listing = try await archiveListing(archive, logs: destination)
+        for entry in listing.split(whereSeparator: \.isNewline).map(String.init) {
+            let normalized = entry.hasPrefix("./") ? String(entry.dropFirst(2)) : entry
+            if normalized.hasPrefix("/") || normalized.split(separator: "/").contains("..") {
+                throw RuntimeManagerError.unsafeArchive(entry)
+            }
+        }
         let request = ProcessLaunchRequest(
             executable: URL(fileURLWithPath: "/usr/bin/tar"),
             arguments: ["-xJf", archive.path, "-C", destination.path],
@@ -172,23 +384,118 @@ actor RuntimeManager: RuntimeManaging {
         guard result.exitCode == 0 else { throw RuntimeManagerError.unsupportedArchive }
     }
 
-    private func discoverRuntime(manifest: BorealRuntime, root: URL) throws -> InstalledRuntime {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isExecutableKey]
-        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { throw RuntimeManagerError.runtimeLayoutNotFound }
-        var wine: URL?
-        var server: URL?
-        var boot: URL?
+    private func resolveRuntime(manifest: BorealRuntime, root: URL) throws -> InstalledRuntime {
+        let wine = try containedURL(manifest.layout.wineExecutable, root: root)
+        let server = try containedURL(manifest.layout.wineServerExecutable, root: root)
+        let boot = try containedURL(manifest.layout.wineBootExecutable, root: root)
+        guard [wine, server, boot].allSatisfy({ fileManager.isExecutableFile(atPath: $0.path) }) else { throw RuntimeManagerError.runtimeLayoutNotFound }
+        for path in [manifest.layout.dependenciesDirectory, manifest.layout.supportDirectory, manifest.layout.licensesDirectory, manifest.layout.noticesFile, manifest.layout.sbomFile] {
+            guard fileManager.fileExists(atPath: try containedURL(path, root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound }
+        }
+        if manifest.features.wineMono { guard fileManager.fileExists(atPath: try containedURL(manifest.layout.supportDirectory + "/wine-mono", root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound } }
+        if manifest.features.wineGecko { guard fileManager.fileExists(atPath: try containedURL(manifest.layout.supportDirectory + "/wine-gecko", root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound } }
+        return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements)
+    }
+
+    private func smokeTest(_ runtime: InstalledRuntime) async throws {
+        let prefix = runtimesURL.appending(path: ".installing/smoke-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: prefix, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: prefix) }
+        var environment = runtimeEnvironment(runtime)
+        environment["WINEPREFIX"] = prefix.path
+        environment["WINEDEBUG"] = "-all"
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineBootExecutable,
+            arguments: ["--init"],
+            environment: environment,
+            currentDirectory: prefix,
+            stdoutLog: prefix.appending(path: "wineboot.stdout.log"),
+            stderrLog: prefix.appending(path: "wineboot.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 else { throw RuntimeManagerError.validationFailed(RuntimeValidation(detectedWineVersion: runtime.wineVersion, versionMatchesManifest: true, missingPaths: ["wineboot smoke test exited with \(result.exitCode)"], unmetRequirements: [], executablePaths: [])) }
+        let serverRequest = ProcessLaunchRequest(
+            executable: runtime.wineServerExecutable,
+            arguments: ["-k"],
+            environment: environment,
+            currentDirectory: prefix,
+            stdoutLog: prefix.appending(path: "wineserver.stdout.log"),
+            stderrLog: prefix.appending(path: "wineserver.stderr.log")
+        )
+        if let server = try? await processExecutor.launch(serverRequest) { _ = try? await processExecutor.waitForExit(server.id) }
+    }
+
+    private func archiveListing(_ archive: URL, logs: URL) async throws -> String {
+        let request = ProcessLaunchRequest(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"),
+            arguments: ["-tJf", archive.path],
+            environment: ProcessInfo.processInfo.environment,
+            stdoutLog: logs.appending(path: "listing.stdout.log"),
+            stderrLog: logs.appending(path: "listing.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 else { throw RuntimeManagerError.unsupportedArchive }
+        return try String(contentsOf: result.stdoutLog, encoding: .utf8)
+    }
+
+    private func validateDownloadedSize(_ artifact: RuntimeArtifact, at url: URL) throws {
+        guard artifact.compressedSize > 0 else { return }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init) ?? -1
+        guard size == artifact.compressedSize else { throw RuntimeManagerError.downloadFailed("The downloaded artifact size does not match its manifest.") }
+    }
+
+    private func containedURL(_ relativePath: String, root: URL) throws -> URL {
+        guard isSecureRelativePath(relativePath) else { throw RuntimeManagerError.runtimeLayoutNotFound }
+        let candidate = root.appending(path: relativePath).resolvingSymlinksInPath().standardizedFileURL
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        guard candidate.path.hasPrefix(canonicalRoot.path + "/") else { throw RuntimeManagerError.runtimeLayoutNotFound }
+        return candidate
+    }
+
+    private func secureRelativePaths(_ layout: RuntimeLayout) -> [Bool] {
+        [layout.wineExecutable, layout.wineServerExecutable, layout.wineBootExecutable, layout.dependenciesDirectory, layout.supportDirectory, layout.licensesDirectory, layout.noticesFile, layout.sbomFile].map(isSecureRelativePath)
+    }
+
+    private func isSecureRelativePath(_ path: String) -> Bool {
+        !path.isEmpty && !path.hasPrefix("/") && !path.split(separator: "/").contains("..")
+    }
+
+    private func makeImmutable(_ root: URL) throws {
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: []) else { return }
+        var urls = [root]
+        for case let url as URL in enumerator { urls.append(url) }
+        for url in urls.reversed() {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values?.isSymbolicLink == true { continue }
+            let isDirectory = values?.isDirectory == true
+            let executable = !isDirectory && fileManager.isExecutableFile(atPath: url.path)
+            try fileManager.setAttributes([.posixPermissions: isDirectory || executable ? 0o555 : 0o444], ofItemAtPath: url.path)
+        }
+    }
+
+    private func makeWritable(_ root: URL) throws {
+        guard fileManager.fileExists(atPath: root.path) else { return }
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isExecutableKey, .isSymbolicLinkKey], options: []) else { return }
         for case let url as URL in enumerator {
-            guard fileManager.isExecutableFile(atPath: url.path) else { continue }
-            switch url.lastPathComponent {
-            case "wine" where url.path.contains("/wine/bin/"): wine = wine ?? url
-            case "wineserver" where url.path.contains("/wine/bin/"): server = server ?? url
-            case "wineboot" where url.path.contains("/wine/bin/"): boot = boot ?? url
-            default: break
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isExecutableKey, .isSymbolicLinkKey])
+            if values.isSymbolicLink == true { continue }
+            let permissions = values.isDirectory == true || values.isExecutable == true ? 0o755 : 0o644
+            try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+        }
+    }
+
+    private func validateExtractedTree(_ root: URL) throws {
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey], options: []) else { return }
+        for case let url as URL in enumerator {
+            if (try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                let target = url.resolvingSymlinksInPath().standardizedFileURL
+                guard target.path.hasPrefix(canonicalRoot.path + "/") else { throw RuntimeManagerError.unsafeArchive(url.path) }
             }
         }
-        guard let wine, let server, let boot else { throw RuntimeManagerError.runtimeLayoutNotFound }
-        return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements)
     }
 
     private func runtimeEnvironment(_ runtime: InstalledRuntime) -> [String: String] {
@@ -203,7 +510,62 @@ actor RuntimeManager: RuntimeManaging {
             let relative = (try? relativePath(of: url, inside: oldRoot)) ?? url.lastPathComponent
             return newRoot.appending(path: relative)
         }
-        return InstalledRuntime(id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion, rootURL: newRoot, wineExecutable: move(runtime.wineExecutable), wineServerExecutable: move(runtime.wineServerExecutable), wineBootExecutable: move(runtime.wineBootExecutable), architecture: runtime.architecture, requirements: runtime.requirements)
+        return InstalledRuntime(id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion, rootURL: newRoot, wineExecutable: move(runtime.wineExecutable), wineServerExecutable: move(runtime.wineServerExecutable), wineBootExecutable: move(runtime.wineBootExecutable), architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin)
+    }
+
+    private func localRuntimeID(name: String, version: String, architecture: RuntimeArchitecture) -> String {
+        let raw = "local-\(name)-\(version)-\(architecture.rawValue)-r1".lowercased()
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        return raw.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" }
+            .reduce(into: "") { value, character in
+                if character != "-" || value.last != "-" { value.append(character) }
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    private func executableArchitecture(at url: URL) -> RuntimeArchitecture? {
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), data.count >= 8 else { return nil }
+        let bytes = [UInt8](data.prefix(512))
+        let magic = Array(bytes[0..<4])
+        if magic == [0xca, 0xfe, 0xba, 0xbe] || magic == [0xbe, 0xba, 0xfe, 0xca] {
+            let littleEndian = magic[0] == 0xbe
+            func value(at offset: Int) -> UInt32 {
+                if littleEndian {
+                    return UInt32(bytes[offset]) | UInt32(bytes[offset + 1]) << 8 | UInt32(bytes[offset + 2]) << 16 | UInt32(bytes[offset + 3]) << 24
+                }
+                return UInt32(bytes[offset]) << 24 | UInt32(bytes[offset + 1]) << 16 | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
+            }
+            let count = min(Int(value(at: 4)), 20)
+            var architectures = Set<RuntimeArchitecture>()
+            for index in 0..<count {
+                let offset = 8 + index * 20
+                guard offset + 4 <= bytes.count else { break }
+                switch value(at: offset) {
+                case 0x01000007: architectures.insert(.x86_64)
+                case 0x0100000c: architectures.insert(.arm64)
+                default: break
+                }
+            }
+            #if arch(arm64)
+            return architectures.contains(.arm64) ? .arm64 : (architectures.contains(.x86_64) ? .x86_64 : nil)
+            #else
+            return architectures.contains(.x86_64) ? .x86_64 : architectures.first
+            #endif
+        }
+        let littleEndian = magic == [0xcf, 0xfa, 0xed, 0xfe] || magic == [0xce, 0xfa, 0xed, 0xfe]
+        let bigEndian = magic == [0xfe, 0xed, 0xfa, 0xcf] || magic == [0xfe, 0xed, 0xfa, 0xce]
+        guard littleEndian || bigEndian else { return nil }
+        let cpu: UInt32
+        if littleEndian {
+            cpu = UInt32(bytes[4]) | UInt32(bytes[5]) << 8 | UInt32(bytes[6]) << 16 | UInt32(bytes[7]) << 24
+        } else {
+            cpu = UInt32(bytes[4]) << 24 | UInt32(bytes[5]) << 16 | UInt32(bytes[6]) << 8 | UInt32(bytes[7])
+        }
+        switch cpu {
+        case 0x01000007: return .x86_64
+        case 0x0100000c: return .arm64
+        default: return nil
+        }
     }
 
     private func relativePath(of child: URL, inside root: URL) throws -> String {

@@ -5,46 +5,159 @@ struct InstallationSheet: View {
     @Environment(\.dismiss) private var dismiss
     let candidate: InstallCandidate
     let completion: (UUID) -> Void
-    @State private var isInstalling = false
     @State private var showsDetails = false
 
     var body: some View {
         VStack(spacing: 24) {
-            AppIconView(symbol: "shippingbox.fill", size: 88)
+            AppIconView(symbol: iconSymbol, size: 88)
             VStack(spacing: 7) {
-                Text(isInstalling ? "Installing \(candidate.name)" : "Install \(candidate.name)").font(.title2).fontWeight(.semibold)
-                Text(isInstalling ? store.installStage : "Boreal will prepare the best environment for this application.")
-                    .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 360)
+                Text(title).font(.title2).fontWeight(.semibold)
+                Text(message)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+                    .accessibilityLabel(message)
             }
 
-            if isInstalling {
-                ProgressView(value: store.installProgress ?? 0).frame(width: 320)
-            } else {
+            content
+            actions.frame(width: 390)
+        }
+        .padding(34)
+        .frame(minWidth: 500, minHeight: 420)
+        .interactiveDismissDisabled(isInstalling)
+        .onAppear { store.resetInstallation() }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch store.installation.state {
+        case .idle:
                 DisclosureGroup("Installation Details", isExpanded: $showsDetails) {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("\(candidate.fileType) setup file", systemImage: "doc")
-                        Label("64-bit configuration will be selected automatically", systemImage: "cpu")
+                        Label("Configuration selected automatically", systemImage: "cpu")
                         Label("Isolated Windows environment", systemImage: "externaldrive")
                     }
-                    .font(.callout).foregroundStyle(.secondary).padding(.top, 10).frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(width: 360)
-            }
-
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }.disabled(isInstalling)
-                Spacer()
-                Button("Install") {
-                    isInstalling = true
-                    Task {
-                        if let id = await store.install(candidate) { completion(id); dismiss() }
-                        else { isInstalling = false }
-                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(isInstalling)
-            }.frame(width: 360)
+                .frame(width: 390)
+        case .installing:
+            VStack(spacing: 14) {
+                ProgressView().controlSize(.small).frame(width: 340)
+                DisclosureGroup("Show Details", isExpanded: $showsDetails) {
+                    installationSteps.padding(.top, 8)
+                }
+            }
+            .frame(width: 390)
+        case .succeeded:
+            Label("First launch verified", systemImage: "checkmark.seal.fill")
+                .foregroundStyle(.green)
+        case .failed:
+            VStack(alignment: .leading, spacing: 12) {
+                if store.installation.rollbackCompleted {
+                    Label("Incomplete environment removed", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("No partial installation was left behind.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                DisclosureGroup("Show Details", isExpanded: $showsDetails) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let stage = store.installation.stage { Text("Stage: \(stage.title)") }
+                        Text(store.installation.failureMessage ?? "Unknown installation error")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    .padding(.top, 8)
+                }
+            }
+            .frame(width: 390, alignment: .leading)
         }
-        .padding(34)
-        .frame(minWidth: 470, minHeight: 390)
-        .interactiveDismissDisabled(isInstalling)
+    }
+
+    private var installationSteps: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(InstallationStage.allCases, id: \.self) { stage in
+                HStack(spacing: 9) {
+                    if store.installation.completedStages.contains(stage) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else if store.installation.stage == stage {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "circle").foregroundStyle(.tertiary)
+                    }
+                    Text(stage.title)
+                        .foregroundStyle(store.installation.stage == stage ? .primary : .secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder private var actions: some View {
+        switch store.installation.state {
+        case .idle:
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }
+                Spacer()
+                Button("Install") { beginInstallation() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        case .installing:
+            EmptyView()
+        case .succeeded(let id):
+            HStack {
+                Button("Done") { dismiss() }
+                Spacer()
+                Button("Open", systemImage: "play.fill") { completion(id); dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        case .failed:
+            HStack {
+                Button("Done") { dismiss() }
+                Spacer()
+                Button("Try Again", systemImage: "arrow.clockwise") { beginInstallation() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    private var isInstalling: Bool {
+        if case .installing = store.installation.state { true } else { false }
+    }
+
+    private var title: String {
+        switch store.installation.state {
+        case .idle: "Install \(candidate.name)"
+        case .installing: "Installing \(candidate.name)"
+        case .succeeded: "\(candidate.name) is ready"
+        case .failed: "Installation Failed"
+        }
+    }
+
+    private var message: String {
+        switch store.installation.state {
+        case .idle: "Boreal will prepare the best environment for this application."
+        case .installing: store.installation.stage?.userMessage ?? "Preparing installation…"
+        case .succeeded: "Boreal checked that the application opens correctly."
+        case .failed: "\(candidate.name) wasn’t added to your Library."
+        }
+    }
+
+    private var iconSymbol: String {
+        switch store.installation.state {
+        case .succeeded: "checkmark"
+        case .failed: "exclamationmark.triangle.fill"
+        default: "shippingbox.fill"
+        }
+    }
+
+    private func beginInstallation() {
+        Task { _ = await store.install(candidate) }
     }
 }

@@ -24,12 +24,18 @@ struct BorealApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
+            CommandMenu("View") {
+                Button("Grid") { NotificationCenter.default.post(name: .showLibraryGrid, object: nil) }
+                    .keyboardShortcut("1", modifiers: .command)
+                Button("List") { NotificationCenter.default.post(name: .showLibraryList, object: nil) }
+                    .keyboardShortcut("2", modifiers: .command)
+            }
         }
 
         Settings {
             TabView {
                 Tab("General", systemImage: "gearshape") { GeneralSettingsView() }
-                Tab("Graphics", systemImage: "display") { GraphicsSettingsView() }
+                Tab("Runtime", systemImage: "gearshape.2") { RuntimeSettingsView() }
                 Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettingsView() }
             }
         }
@@ -38,4 +44,6 @@ struct BorealApp: App {
 
 extension Notification.Name {
     static let installWindowsApp = Notification.Name("Boreal.installWindowsApp")
+    static let showLibraryGrid = Notification.Name("Boreal.showLibraryGrid")
+    static let showLibraryList = Notification.Name("Boreal.showLibraryList")
 }

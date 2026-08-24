@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-24T11:16:30.736703+00:00",
+  "generatedAt": "2026-08-24T11:32:33.552548+00:00",
   "wine": "/Applications/Wine Staging.app/Contents/Resources/wine/bin/wine",
   "wineserver": "/Applications/Wine Staging.app/Contents/Resources/wine/bin/wineserver",
   "executable": "/Users/dominik/Github/Boreal/Tests/P0RuntimeHarness/bin/BorealRuntimeTest.exe",
@@ -8,56 +8,98 @@
     {
       "case": "start procesu",
       "status": "PASS",
-      "detail": "launcher PID 46159; process alive=True",
-      "duration_seconds": 8.851
+      "detail": "launcher PID 49082; process alive=True",
+      "duration_seconds": 19.455
     },
     {
       "case": "PID",
       "status": "PASS",
-      "detail": "PID=46159; positive and running=True",
-      "duration_seconds": 8.851
+      "detail": "PID=49082; positive and running=True",
+      "duration_seconds": 19.455
     },
     {
       "case": "stdout",
       "status": "PASS",
-      "detail": "BOREAL_STDOUT_OK present=True; log=/private/tmp/boreal-p0-runtime-validation-3/logs/startup.stdout.log",
-      "duration_seconds": 8.853
+      "detail": "BOREAL_STDOUT_OK present=True; log=/private/tmp/boreal-p06-runtime-validation/logs/startup.stdout.log",
+      "duration_seconds": 19.456
     },
     {
       "case": "stderr",
       "status": "PASS",
-      "detail": "BOREAL_STDERR_OK present=True; log=/private/tmp/boreal-p0-runtime-validation-3/logs/startup.stderr.log",
-      "duration_seconds": 8.853
+      "detail": "BOREAL_STDERR_OK present=True; log=/private/tmp/boreal-p06-runtime-validation/logs/startup.stderr.log",
+      "duration_seconds": 19.456
     },
     {
       "case": "exit code",
       "status": "PASS",
       "detail": "expected=37; actual=37",
-      "duration_seconds": 6.872
+      "duration_seconds": 8.314
     },
     {
       "case": "normalne zamknięcie",
       "status": "PASS",
       "detail": "exit=0; both markers present=True",
-      "duration_seconds": 7.13
+      "duration_seconds": 9.226
     },
     {
       "case": "Stop",
       "status": "PASS",
       "detail": "ready=True; launcher exit=-15; wineserver -w completed=True",
-      "duration_seconds": 10.24
+      "duration_seconds": 12.203
     },
     {
       "case": "Force Quit",
       "status": "PASS",
       "detail": "ready=True; wineserver -k exit=0; launcher exit=0; fallback SIGKILL=False",
-      "duration_seconds": 7.425
+      "duration_seconds": 10.215
     },
     {
       "case": "dwa środowiska i izolacja wineserver -k",
       "status": "PASS",
       "detail": "both ready=True; prefix A stopped=True; prefix B alive=True; wineserver exit=0",
-      "duration_seconds": 9.729
+      "duration_seconds": 20.341
+    },
+    {
+      "case": "Boreal restart recovers active environment",
+      "status": "PASS",
+      "detail": "owner exited; forgotten launcher PID=49755; prefix state=active",
+      "duration_seconds": 9.775
+    },
+    {
+      "case": "recovered environment force quit without old PID",
+      "status": "PASS",
+      "detail": "wineserver -k exit=0; orphan stopped=True; inactive=True",
+      "duration_seconds": 9.954
+    },
+    {
+      "case": "same prefix relaunches after recovery cleanup",
+      "status": "PASS",
+      "detail": "relaunch successful=True",
+      "duration_seconds": 13.07
+    },
+    {
+      "case": "launcher exit does not imply environment inactivity",
+      "status": "PASS",
+      "detail": "child ready=True; launcher exit=0; prefix state=active",
+      "duration_seconds": 9.954
+    },
+    {
+      "case": "child process keeps environment active",
+      "status": "PASS",
+      "detail": "BOREAL_CHILD_OK present=True; prefix state=active",
+      "duration_seconds": 9.954
+    },
+    {
+      "case": "environmentSessionState probe does not alter active session",
+      "status": "PASS",
+      "detail": "first probe=active; second probe=active",
+      "duration_seconds": 10.46
+    },
+    {
+      "case": "environment inactive only after wineserver session ends",
+      "status": "PASS",
+      "detail": "wineserver -k exit=0; inactive after kill=True",
+      "duration_seconds": 10.635
     }
   ]
 }

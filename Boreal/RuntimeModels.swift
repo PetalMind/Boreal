@@ -1,8 +1,21 @@
 import Foundation
 
 nonisolated enum RuntimeArchitecture: String, Codable, Sendable { case x86_64, arm64 }
-nonisolated enum RuntimeChannel: String, Codable, Sendable { case stable, devel, staging }
+nonisolated enum RuntimeChannel: String, Codable, Sendable {
+    case developer, preview, stable
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "developer", "devel": self = .developer
+        case "preview", "staging": self = .preview
+        case "stable": self = .stable
+        default: throw DecodingError.dataCorruptedError(in: try decoder.singleValueContainer(), debugDescription: "Unknown runtime channel: \(value)")
+        }
+    }
+}
 nonisolated enum RuntimeRequirement: String, Codable, Sendable, Hashable { case rosetta2, gStreamerFramework }
+nonisolated enum RuntimeOrigin: String, Codable, Sendable, Hashable { case catalog, localImport }
 
 nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wow64: Bool
@@ -18,17 +31,150 @@ nonisolated struct RuntimeArtifact: Codable, Sendable, Hashable {
     let compressedSize: Int64
 }
 
+nonisolated struct RuntimeComponents: Codable, Sendable, Hashable {
+    var mono: String? = nil
+    var gecko: String? = nil
+}
+
+nonisolated struct RuntimeLayout: Codable, Sendable, Hashable {
+    var wineExecutable: String
+    var wineServerExecutable: String
+    var wineBootExecutable: String
+    var dependenciesDirectory: String
+    var supportDirectory: String
+    var licensesDirectory: String
+    var noticesFile: String
+    var sbomFile: String
+
+    static let canonical = RuntimeLayout(
+        wineExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wine",
+        wineServerExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineserver",
+        wineBootExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineboot",
+        dependenciesDirectory: "Dependencies",
+        supportDirectory: "Support",
+        licensesDirectory: "Licenses",
+        noticesFile: "Licenses/THIRD_PARTY_NOTICES.txt",
+        sbomFile: "SBOM.spdx.json"
+    )
+}
+
+nonisolated struct RuntimePackageManifest: Codable, Sendable, Hashable {
+    let schemaVersion: Int
+    let id: String
+    let displayName: String
+    let wineVersion: String
+    let borealRevision: Int
+    let architecture: RuntimeArchitecture
+    let minimumMacOS: String
+    let requiresRosetta: Bool
+    let channel: RuntimeChannel
+    let features: RuntimeFeatures
+    let components: RuntimeComponents
+    let layout: RuntimeLayout
+}
+
 nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
     let schemaVersion: Int
     let id: String
     let displayName: String
     let wineVersion: String
+    let borealRevision: Int
     let architecture: RuntimeArchitecture
     let minimumMacOS: String
     let channel: RuntimeChannel
     let requirements: Set<RuntimeRequirement>
     let features: RuntimeFeatures
+    let components: RuntimeComponents
+    let layout: RuntimeLayout
     let artifact: RuntimeArtifact
+
+    var packageManifest: RuntimePackageManifest {
+        RuntimePackageManifest(
+            schemaVersion: schemaVersion,
+            id: id,
+            displayName: displayName,
+            wineVersion: wineVersion,
+            borealRevision: borealRevision,
+            architecture: architecture,
+            minimumMacOS: minimumMacOS,
+            requiresRosetta: requirements.contains(.rosetta2),
+            channel: channel,
+            features: features,
+            components: components,
+            layout: layout
+        )
+    }
+
+    init(
+        schemaVersion: Int,
+        id: String,
+        displayName: String,
+        wineVersion: String,
+        borealRevision: Int = 1,
+        architecture: RuntimeArchitecture,
+        minimumMacOS: String,
+        channel: RuntimeChannel,
+        requirements: Set<RuntimeRequirement>,
+        features: RuntimeFeatures,
+        components: RuntimeComponents = RuntimeComponents(),
+        layout: RuntimeLayout = .canonical,
+        artifact: RuntimeArtifact
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.displayName = displayName
+        self.wineVersion = wineVersion
+        self.borealRevision = borealRevision
+        self.architecture = architecture
+        self.minimumMacOS = minimumMacOS
+        self.channel = channel
+        self.requirements = requirements
+        self.features = features
+        self.components = components
+        self.layout = layout
+        self.artifact = artifact
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, displayName, wineVersion, borealRevision, architecture, minimumMacOS, requiresRosetta, channel, requirements, features, components, layout, artifact
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        id = try values.decode(String.self, forKey: .id)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        wineVersion = try values.decode(String.self, forKey: .wineVersion)
+        borealRevision = try values.decodeIfPresent(Int.self, forKey: .borealRevision) ?? 1
+        architecture = try values.decode(RuntimeArchitecture.self, forKey: .architecture)
+        minimumMacOS = try values.decode(String.self, forKey: .minimumMacOS)
+        channel = try values.decode(RuntimeChannel.self, forKey: .channel)
+        var decodedRequirements = try values.decodeIfPresent(Set<RuntimeRequirement>.self, forKey: .requirements) ?? []
+        if try values.decodeIfPresent(Bool.self, forKey: .requiresRosetta) == true { decodedRequirements.insert(.rosetta2) }
+        requirements = decodedRequirements
+        features = try values.decode(RuntimeFeatures.self, forKey: .features)
+        components = try values.decodeIfPresent(RuntimeComponents.self, forKey: .components) ?? RuntimeComponents()
+        layout = try values.decodeIfPresent(RuntimeLayout.self, forKey: .layout) ?? .canonical
+        artifact = try values.decode(RuntimeArtifact.self, forKey: .artifact)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(id, forKey: .id)
+        try values.encode(displayName, forKey: .displayName)
+        try values.encode(wineVersion, forKey: .wineVersion)
+        try values.encode(borealRevision, forKey: .borealRevision)
+        try values.encode(architecture, forKey: .architecture)
+        try values.encode(minimumMacOS, forKey: .minimumMacOS)
+        try values.encode(requirements.contains(.rosetta2), forKey: .requiresRosetta)
+        try values.encode(channel, forKey: .channel)
+        try values.encode(requirements, forKey: .requirements)
+        try values.encode(features, forKey: .features)
+        try values.encode(components, forKey: .components)
+        try values.encode(layout, forKey: .layout)
+        try values.encode(artifact, forKey: .artifact)
+    }
 }
 
 nonisolated struct InstalledRuntime: Codable, Identifiable, Sendable, Hashable {
@@ -41,6 +187,18 @@ nonisolated struct InstalledRuntime: Codable, Identifiable, Sendable, Hashable {
     let wineBootExecutable: URL
     let architecture: RuntimeArchitecture
     let requirements: Set<RuntimeRequirement>
+    var origin: RuntimeOrigin? = nil
+}
+
+nonisolated struct LocalRuntimeCandidate: Identifiable, Sendable, Hashable {
+    let id: String
+    let displayName: String
+    let wineVersion: String
+    let appURL: URL
+    let architecture: RuntimeArchitecture
+    let requirements: Set<RuntimeRequirement>
+    let minimumMacOS: String
+    let estimatedSize: Int64?
 }
 
 nonisolated struct RuntimeValidation: Sendable, Equatable {
@@ -59,9 +217,13 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case checksumMismatch(expected: String, actual: String)
     case unsupportedArchive
     case runtimeLayoutNotFound
+    case packageManifestMismatch
+    case unsafeArchive(String)
+    case nonSelfContained(RuntimeRequirement)
     case validationFailed(RuntimeValidation)
     case requirementMissing(RuntimeRequirement)
     case downloadFailed(String)
+    case localRuntimeInvalid(String)
 
     var errorDescription: String? {
         switch self {
@@ -71,10 +233,15 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .checksumMismatch: "Runtime verification failed because its SHA-256 checksum does not match."
         case .unsupportedArchive: "The runtime archive format is not supported."
         case .runtimeLayoutNotFound: "Boreal couldn’t locate Wine inside the runtime package."
+        case .packageManifestMismatch: "The runtime package manifest does not match the signed catalog entry."
+        case .unsafeArchive(let path): "The runtime archive contains an unsafe path: \(path)"
+        case .nonSelfContained(.gStreamerFramework): "This runtime depends on a system GStreamer installation and is not self-contained."
+        case .nonSelfContained(.rosetta2): "Rosetta is a platform requirement, not a bundled runtime dependency."
         case .validationFailed: "The installed runtime did not pass validation."
         case .requirementMissing(.rosetta2): "Rosetta 2 is required by this runtime."
         case .requirementMissing(.gStreamerFramework): "GStreamer.framework is required by this development runtime."
         case .downloadFailed(let reason): "Runtime download failed: \(reason)"
+        case .localRuntimeInvalid(let reason): "The installed Wine app can’t be imported: \(reason)"
         }
     }
 }
@@ -82,6 +249,8 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
 nonisolated protocol RuntimeManaging: Sendable {
     func availableRuntimes() async throws -> [BorealRuntime]
     func installedRuntimes() async throws -> [InstalledRuntime]
+    func localRuntimeCandidates() async -> [LocalRuntimeCandidate]
+    func importLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
     func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation
     func remove(_ runtime: InstalledRuntime) async throws

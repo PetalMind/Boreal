@@ -1,0 +1,32 @@
+{
+  "architecture" : "x86_64",
+  "borealRevision" : 1,
+  "channel" : "developer",
+  "components" : {
+    "gecko" : "2.x",
+    "mono" : "10.x"
+  },
+  "displayName" : "Boreal Runtime 0.1",
+  "features" : {
+    "d3dmetal" : false,
+    "dxmt" : false,
+    "wineGecko" : true,
+    "wineMono" : true,
+    "wow64" : true
+  },
+  "id" : "boreal-runtime-0.1-wine-11.15-r1",
+  "layout" : {
+    "dependenciesDirectory" : "Dependencies",
+    "licensesDirectory" : "Licenses",
+    "noticesFile" : "Licenses/THIRD_PARTY_NOTICES.txt",
+    "sbomFile" : "SBOM.spdx.json",
+    "supportDirectory" : "Support",
+    "wineBootExecutable" : "Runtime/Wine.app/Contents/Resources/wine/bin/wineboot",
+    "wineExecutable" : "Runtime/Wine.app/Contents/Resources/wine/bin/wine",
+    "wineServerExecutable" : "Runtime/Wine.app/Contents/Resources/wine/bin/wineserver"
+  },
+  "minimumMacOS" : "27.0",
+  "requiresRosetta" : true,
+  "schemaVersion" : 1,
+  "wineVersion" : "11.15"
+}
