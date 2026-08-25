@@ -9,9 +9,10 @@ struct DownloadsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Components").font(.title2).fontWeight(.semibold)
-                    Text("Boreal installs shared Windows components only when an app needs them.").foregroundStyle(.secondary)
+                    Text("Downloads & Components").font(.title2).fontWeight(.semibold)
+                    Text("Follow game downloads and the shared Windows components Boreal prepares for them.").foregroundStyle(.secondary)
                 }
+                if !store.activeStoreGameOperations.isEmpty { gameOperations }
                 if let operation = store.runtimeOperationDetail {
                     VStack(spacing: 13) {
                         Image(systemName: "shippingbox")
@@ -42,6 +43,53 @@ struct DownloadsView: View {
 
     private func isInstalledRuntime(_ runtime: RuntimeStatus) -> Bool {
         runtime.source == .installed
+    }
+
+    private var gameOperations: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Game operations").font(.headline)
+            ForEach(store.activeStoreGameOperations, id: \.game.id) { operation in
+                HStack(spacing: 14) {
+                    GameArtworkView(game: operation.game, width: 54, height: 76)
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text(operation.game.name).fontWeight(.semibold)
+                            Text(operation.game.provider.rawValue)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let progress = operation.state.progress {
+                            if let fraction = progress.clampedFraction {
+                                ProgressView(value: fraction)
+                                Text("\(progress.message) · \(Int(fraction * 100))%")
+                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            } else {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text(progress.message).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        } else if case .awaitingProvider(let message) = operation.state {
+                            Label(message, systemImage: "info.circle")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if case .failed(let message) = operation.state {
+                            Label(message, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    Spacer()
+                    if operation.state.isCancellable {
+                        Button("Cancel", role: .cancel) { store.cancelStoreGameOperation(operation.game) }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("Dismiss") { store.clearStoreGameOperation(for: operation.game) }
+                            .buttonStyle(.plain)
+                    }
+                }
+                .padding(14)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14)) }
+            }
+        }
     }
 
     private var runtimeList: some View {

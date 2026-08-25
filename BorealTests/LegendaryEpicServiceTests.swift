@@ -31,11 +31,15 @@ struct LegendaryEpicServiceTests {
         #expect(game.name == "Boreal Epic Game")
         #expect(game.developer == "Example Studio")
         #expect(game.summary == "A real Epic library item")
-        #expect(game.headerImageURL == "https://example.com/portrait.jpg")
+        #expect(game.portraitImageURL == "https://example.com/portrait.jpg")
+        #expect(game.headerImageURL == "https://example.com/header.jpg")
+        #expect(game.screenshotURLs == ["https://example.com/screenshot.jpg"])
+        #expect(game.supportsWindows == true)
+        #expect(game.supportsNativeMacOS == false)
         #expect(game.isInstalled)
         #expect(game.installPath == gameDirectory.path)
 
-        try await service.install(appID: "BorealEpicApp")
+        try await service.install(appID: "BorealEpicApp") { _ in }
         let installArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
         #expect(installArguments.contains("install BorealEpicApp"))
         #expect(installArguments.contains("--platform Windows"))
@@ -92,7 +96,7 @@ struct LegendaryEpicServiceTests {
       exit 0
     fi
     if [ "$1" = "list" ]; then
-      printf '%s\n' '[{"app_name":"BorealEpicApp","app_title":"Boreal Epic Game","metadata":{"developer":"Example Studio","description":"A real Epic library item","keyImages":[{"type":"DieselStoreFrontTall","url":"https://example.com/portrait.jpg"}]}}]'
+      printf '%s\n' '[{"app_name":"BorealEpicApp","app_title":"Boreal Epic Game","metadata":{"developer":"Example Studio","description":"A real Epic library item","releaseInfo":[{"platform":["Windows"]}],"keyImages":[{"type":"DieselStoreFrontTall","url":"https://example.com/portrait.jpg"},{"type":"DieselGameBox","url":"https://example.com/header.jpg"},{"type":"Screenshot","url":"https://example.com/screenshot.jpg"}]}}]'
       exit 0
     fi
     if [ "$1" = "launch" ]; then

@@ -24,7 +24,7 @@ nonisolated protocol GOGLibraryProviding: Sendable {
     func prepareSupport() async throws
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
-    func install(appID: String) async throws
+    func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
@@ -204,17 +204,19 @@ actor GOGService: GOGLibraryProviding {
         return games.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    func install(appID: String) async throws {
+    func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         _ = try await credentials()
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
         let destination = gamesURL.appending(path: appID, directoryHint: .isDirectory)
         try fileManager.createDirectory(at: gamesURL, withIntermediateDirectories: true)
+        await progress(StoreGameOperationProgress(message: "Preparing GOG download…", fractionCompleted: nil))
         _ = try await run([
             "download", appID,
             "--path", destination.path,
             "--platform", "windows",
             "--skip-dlcs"
-        ])
+        ], progress: progress)
+        try Task.checkCancellation()
         guard fileManager.fileExists(atPath: destination.appending(path: "goggame-\(appID).info").path) else {
             throw GOGServiceError.installationIncomplete
         }
@@ -339,14 +341,18 @@ actor GOGService: GOGLibraryProviding {
         )
     }
 
-    private func run(_ arguments: [String]) async throws -> Data {
+    private func run(
+        _ arguments: [String],
+        progress: (@Sendable (StoreGameOperationProgress) async -> Void)? = nil
+    ) async throws -> Data {
         guard fileManager.isExecutableFile(atPath: helperURL.path) else { throw GOGServiceError.helperUnavailable }
         try fileManager.createDirectory(at: accountURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: configURL, withIntermediateDirectories: true)
         return try await Self.runProcess(
             executable: helperURL,
             arguments: ["--auth-config-path", authURL.path] + arguments,
-            environment: ["GOGDL_CONFIG_PATH": configURL.path]
+            environment: ["GOGDL_CONFIG_PATH": configURL.path],
+            progress: progress
         )
     }
 
@@ -434,9 +440,12 @@ actor GOGService: GOGLibraryProviding {
     private nonisolated static func runProcess(
         executable: URL,
         arguments: [String],
-        environment: [String: String]
+        environment: [String: String],
+        progress: (@Sendable (StoreGameOperationProgress) async -> Void)? = nil
     ) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
+        let processBox = CancellableStoreProcess()
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             let stdout = Pipe()
             let stderr = Pipe()
@@ -448,17 +457,34 @@ actor GOGService: GOGLibraryProviding {
             process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
             stdout.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
-                if !data.isEmpty { output.append(data) }
+                if !data.isEmpty {
+                    output.append(data)
+                    if let progress, let update = StoreProgressParser.update(from: data, provider: "GOG") {
+                        Task { await progress(update) }
+                    }
+                }
+            }
+            stderr.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if !data.isEmpty, let progress, let update = StoreProgressParser.update(from: data, provider: "GOG") {
+                    Task { await progress(update) }
+                }
             }
             process.terminationHandler = { process in
                 stdout.fileHandleForReading.readabilityHandler = nil
+                stderr.fileHandleForReading.readabilityHandler = nil
                 output.append(stdout.fileHandleForReading.readDataToEndOfFile())
                 _ = stderr.fileHandleForReading.readDataToEndOfFile()
                 if process.terminationStatus == 0 { continuation.resume(returning: output.snapshot()) }
                 else { continuation.resume(throwing: GOGServiceError.commandFailed(process.terminationStatus)) }
             }
-            do { try process.run() }
+            do { try process.run(); processBox.attach(process) }
             catch { continuation.resume(throwing: error) }
+            }
+        } onCancel: {
+            processBox.cancel()
         }
+        try Task.checkCancellation()
+        return result
     }
 }

@@ -24,7 +24,7 @@ nonisolated protocol EpicLibraryProviding: Sendable {
     func prepareSupport() async throws
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
-    func install(appID: String) async throws
+    func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
@@ -160,8 +160,19 @@ actor LegendaryEpicService: EpicLibraryProviding {
             let developer = (metadata?["developer"] as? String) ?? (metadata?["publisher"] as? String)
             let description = (metadata?["description"] as? String) ?? (metadata?["shortDescription"] as? String)
             let images = metadata?["keyImages"] as? [[String: Any]]
-            let artwork = Self.imageURL(from: images, preferredTypes: ["DieselStoreFrontTall", "OfferImageTall", "Thumbnail"])
-            let header = Self.imageURL(from: images, preferredTypes: ["DieselStoreFrontWide", "OfferImageWide", "DieselGameBoxWide"])
+            let artwork = Self.imageURL(from: images, preferredTypes: [
+                "DieselGameBoxTall", "DieselStoreFrontTall", "OfferImageTall", "Thumbnail"
+            ])
+            let header = Self.imageURL(from: images, preferredTypes: [
+                "DieselGameBox", "DieselStoreFrontWide", "OfferImageWide", "DieselGameBoxWide"
+            ])
+            let screenshots = images?.compactMap { image -> String? in
+                guard let type = image["type"] as? String,
+                      type.localizedCaseInsensitiveContains("screenshot") else { return nil }
+                return image["url"] as? String
+            }
+            let releaseInfo = metadata?["releaseInfo"] as? [[String: Any]]
+            let platforms = releaseInfo?.flatMap { $0["platform"] as? [String] ?? [] } ?? []
             let installPath = installedByID[appName]
             return StoreLibraryGame(
                 provider: .epic,
@@ -170,7 +181,12 @@ actor LegendaryEpicService: EpicLibraryProviding {
                 developer: developer,
                 summary: description,
                 artworkPath: nil,
-                headerImageURL: artwork ?? header,
+                portraitImageURL: artwork ?? header,
+                headerImageURL: header ?? artwork,
+                backgroundImageURL: header,
+                screenshotURLs: screenshots?.isEmpty == false ? screenshots : nil,
+                supportsWindows: platforms.contains { $0.caseInsensitiveCompare("Windows") == .orderedSame },
+                supportsNativeMacOS: platforms.contains { $0.caseInsensitiveCompare("Mac") == .orderedSame },
                 isInstalled: installPath != nil,
                 installPath: installPath
             )
@@ -183,17 +199,19 @@ actor LegendaryEpicService: EpicLibraryProviding {
         _ = try await run(["auth", "--delete"])
     }
 
-    func install(appID: String) async throws {
+    func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
         let gamesURL = configURL.deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Games/Epic", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: gamesURL, withIntermediateDirectories: true)
+        await progress(StoreGameOperationProgress(message: "Preparing Epic Games download…", fractionCompleted: nil))
         _ = try await run([
             "-y", "install", appID,
             "--platform", "Windows",
             "--base-path", gamesURL.path,
             "--skip-dlcs"
-        ])
+        ], progress: progress)
+        try Task.checkCancellation()
     }
 
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {
@@ -238,13 +256,17 @@ actor LegendaryEpicService: EpicLibraryProviding {
         )
     }
 
-    private func run(_ arguments: [String]) async throws -> Data {
+    private func run(
+        _ arguments: [String],
+        progress: (@Sendable (StoreGameOperationProgress) async -> Void)? = nil
+    ) async throws -> Data {
         guard fileManager.isExecutableFile(atPath: helperURL.path) else { throw LegendaryEpicError.helperUnavailable }
         try fileManager.createDirectory(at: configURL, withIntermediateDirectories: true)
         return try await Self.runProcess(
             executable: helperURL,
             arguments: arguments,
-            environment: ["LEGENDARY_CONFIG_PATH": configURL.path]
+            environment: ["LEGENDARY_CONFIG_PATH": configURL.path],
+            progress: progress
         )
     }
 
@@ -291,9 +313,12 @@ actor LegendaryEpicService: EpicLibraryProviding {
     private nonisolated static func runProcess(
         executable: URL,
         arguments: [String],
-        environment: [String: String]
+        environment: [String: String],
+        progress: (@Sendable (StoreGameOperationProgress) async -> Void)? = nil
     ) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
+        let processBox = CancellableStoreProcess()
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             let stdout = Pipe()
             let stderr = Pipe()
@@ -306,11 +331,21 @@ actor LegendaryEpicService: EpicLibraryProviding {
             process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
             stdout.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
-                if !data.isEmpty { outputBuffer.append(data) }
+                if !data.isEmpty {
+                    outputBuffer.append(data)
+                    if let progress, let update = StoreProgressParser.update(from: data, provider: "Epic Games") {
+                        Task { await progress(update) }
+                    }
+                }
             }
             stderr.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
-                if !data.isEmpty { errorBuffer.append(data) }
+                if !data.isEmpty {
+                    errorBuffer.append(data)
+                    if let progress, let update = StoreProgressParser.update(from: data, provider: "Epic Games") {
+                        Task { await progress(update) }
+                    }
+                }
             }
             process.terminationHandler = { process in
                 stdout.fileHandleForReading.readabilityHandler = nil
@@ -327,8 +362,13 @@ actor LegendaryEpicService: EpicLibraryProviding {
                     continuation.resume(throwing: LegendaryEpicError.commandFailed(detail?.isEmpty == false ? detail! : "exit code \(process.terminationStatus)"))
                 }
             }
-            do { try process.run() }
+            do { try process.run(); processBox.attach(process) }
             catch { continuation.resume(throwing: error) }
+            }
+        } onCancel: {
+            processBox.cancel()
         }
+        try Task.checkCancellation()
+        return result
     }
 }

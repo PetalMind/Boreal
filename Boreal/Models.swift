@@ -1,6 +1,6 @@
 import Foundation
 
-enum CompatibilityRating: String, Codable, CaseIterable, Sendable {
+nonisolated enum CompatibilityRating: String, Codable, CaseIterable, Sendable {
     case excellent = "Excellent", good = "Good", limited = "Limited", unknown = "Unknown", unsupported = "Unsupported"
 
     var symbol: String {
@@ -14,7 +14,7 @@ enum CompatibilityRating: String, Codable, CaseIterable, Sendable {
     }
 }
 
-enum ApplicationStatus: String, Codable, Sendable {
+nonisolated enum ApplicationStatus: String, Codable, Sendable {
     case ready = "Ready"
     case preparing = "Preparing"
     case starting = "Starting"
@@ -26,7 +26,7 @@ enum ApplicationStatus: String, Codable, Sendable {
     var isBusy: Bool { self == .preparing || self == .starting || self == .installing }
 }
 
-struct WindowsApplication: Identifiable, Codable, Hashable, Sendable {
+nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var name: String
     var publisher: String
@@ -171,10 +171,35 @@ nonisolated enum GOGConnectionState: Equatable, Sendable {
     }
 }
 
+nonisolated struct StoreGameOperationProgress: Equatable, Sendable {
+    var message: String
+    var fractionCompleted: Double?
+    var startedAt: Date = .now
+
+    var clampedFraction: Double? {
+        fractionCompleted.map { min(max($0, 0), 1) }
+    }
+}
+
 nonisolated enum StoreGameOperationState: Equatable, Sendable {
-    case installing
-    case preparingEnvironment
+    case installing(StoreGameOperationProgress)
+    case preparingEnvironment(StoreGameOperationProgress)
+    case awaitingProvider(String)
     case failed(String)
+
+    var progress: StoreGameOperationProgress? {
+        switch self {
+        case .installing(let value), .preparingEnvironment(let value): value
+        case .awaitingProvider, .failed: nil
+        }
+    }
+
+    var isCancellable: Bool {
+        switch self {
+        case .installing, .preparingEnvironment: true
+        case .awaitingProvider, .failed: false
+        }
+    }
 }
 
 struct WindowsEnvironment: Identifiable, Codable, Hashable, Sendable {
@@ -234,7 +259,7 @@ enum InstallationStage: String, CaseIterable, Hashable, Sendable {
 }
 
 struct InstallationProgress: Sendable {
-    enum State: Sendable { case idle, installing, succeeded(UUID), failed }
+    enum State: Sendable { case idle, installing, succeeded(UUID), failed, cancelled }
     var state: State = .idle
     var stage: InstallationStage?
     var completedStages: Set<InstallationStage> = []

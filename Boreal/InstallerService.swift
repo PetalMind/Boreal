@@ -26,6 +26,26 @@ nonisolated protocol Installing: Sendable {
     func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit
 }
 
+extension RuntimeManaging {
+    func prepareReadyRuntime() async throws -> InstalledRuntime {
+        for runtime in try await installedRuntimes() {
+            try Task.checkCancellation()
+            if try await validate(runtime).isReady { return runtime }
+        }
+
+        if let local = await localRuntimeCandidates().first {
+            try Task.checkCancellation()
+            return try await importLocalRuntime(local)
+        }
+
+        guard let available = try await availableRuntimes().first else {
+            throw InstallerServiceError.noRuntimeAvailable
+        }
+        try Task.checkCancellation()
+        return try await install(available)
+    }
+}
+
 actor InstallerService: Installing {
     private let runtimeManager: any RuntimeManaging
     private let environmentManager: any EnvironmentManaging
@@ -48,7 +68,12 @@ actor InstallerService: Installing {
             let snapshotBeforeInstallation = ExecutableDiscovery.snapshot(at: driveC)
             await progress(.startingInstaller)
             let installerSession = try await processRunner.run(executable: installer, arguments: [], environment: environment, runtime: runtime)
-            let installerResult = try await processRunner.waitForExit(installerSession)
+            let installerResult = try await withTaskCancellationHandler {
+                try await processRunner.waitForExit(installerSession)
+            } onCancel: {
+                Task { try? await self.processRunner.stopApplication(installerSession) }
+            }
+            try Task.checkCancellation()
             await progress(.detectingApplication)
             let snapshotAfterInstallation = ExecutableDiscovery.snapshot(at: driveC)
             let discoveredExecutable = ExecutableDiscovery.rankedCandidates(
@@ -61,7 +86,11 @@ actor InstallerService: Installing {
             }
             await progress(.verifyingFirstLaunch)
             let firstLaunch = try await processRunner.run(executable: executable, arguments: [], environment: environment, runtime: runtime)
-            try await Task.sleep(for: .milliseconds(750))
+            try await withTaskCancellationHandler {
+                try await Task.sleep(for: .milliseconds(750))
+            } onCancel: {
+                Task { try? await self.processRunner.stopApplication(firstLaunch) }
+            }
             if case .terminated(let result) = try await processRunner.state(of: firstLaunch), result.exitCode != 0 {
                 throw InstallerServiceError.firstLaunchFailed(result.exitCode)
             }
@@ -74,11 +103,7 @@ actor InstallerService: Installing {
     }
 
     private func readyRuntime() async throws -> InstalledRuntime {
-        for runtime in try await runtimeManager.installedRuntimes() {
-            if try await runtimeManager.validate(runtime).isReady { return runtime }
-        }
-        guard let candidate = try await runtimeManager.availableRuntimes().first else { throw InstallerServiceError.noRuntimeAvailable }
-        return try await runtimeManager.install(candidate)
+        try await runtimeManager.prepareReadyRuntime()
     }
 
     private func portableExecutable(_ installer: URL) -> URL? {

@@ -6,6 +6,7 @@ nonisolated struct BorealServices: Sendable {
     let processRunner: any WindowsProcessRunning
     let installer: any Installing
     let steamLibrary: any SteamLibraryLoading
+    let steamWindows: any SteamWindowsProviding
     let epicLibrary: any EpicLibraryProviding
     let gogLibrary: any GOGLibraryProviding
 
@@ -40,6 +41,7 @@ nonisolated struct BorealServices: Sendable {
             processRunner: runner,
             installer: installer,
             steamLibrary: SteamLibraryService(),
+            steamWindows: SteamWindowsService(applicationSupportURL: applicationSupportURL, installer: installer),
             epicLibrary: LegendaryEpicService(applicationSupportURL: applicationSupportURL),
             gogLibrary: GOGService(applicationSupportURL: applicationSupportURL)
         )

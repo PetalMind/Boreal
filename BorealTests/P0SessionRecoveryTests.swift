@@ -86,6 +86,7 @@ struct P0SessionRecoveryTests {
             processRunner: runner,
             installer: UnusedInstaller(),
             steamLibrary: SteamLibraryService(),
+            steamWindows: UnusedSteamWindows(),
             epicLibrary: UnusedEpicLibrary(),
             gogLibrary: UnusedGOGLibrary()
         )
@@ -223,9 +224,15 @@ private struct UnusedEpicLibrary: EpicLibraryProviding {
     func prepareSupport() async throws { throw CocoaError(.featureUnsupported) }
     func authenticate(authorizationCode: String) async throws -> String? { throw CocoaError(.featureUnsupported) }
     func loadLibrary() async throws -> [StoreLibraryGame] { throw CocoaError(.featureUnsupported) }
-    func install(appID: String) async throws { throw CocoaError(.featureUnsupported) }
+    func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws { throw CocoaError(.featureUnsupported) }
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan { throw CocoaError(.featureUnsupported) }
     func disconnect() async throws { throw CocoaError(.featureUnsupported) }
+}
+
+private struct UnusedSteamWindows: SteamWindowsProviding {
+    func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
+        throw CocoaError(.featureUnsupported)
+    }
 }
 
 private struct UnusedGOGLibrary: GOGLibraryProviding {
@@ -233,7 +240,7 @@ private struct UnusedGOGLibrary: GOGLibraryProviding {
     func prepareSupport() async throws { throw CocoaError(.featureUnsupported) }
     func authenticate(authorizationCode: String) async throws -> String? { throw CocoaError(.featureUnsupported) }
     func loadLibrary() async throws -> [StoreLibraryGame] { throw CocoaError(.featureUnsupported) }
-    func install(appID: String) async throws { throw CocoaError(.featureUnsupported) }
+    func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws { throw CocoaError(.featureUnsupported) }
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan { throw CocoaError(.featureUnsupported) }
     func disconnect() async throws { throw CocoaError(.featureUnsupported) }
 }

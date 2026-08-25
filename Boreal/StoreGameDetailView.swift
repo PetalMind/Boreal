@@ -1,10 +1,12 @@
 import AppKit
+import AVKit
 import SwiftUI
 
 struct StoreGameDetailView: View {
     @Environment(BorealStore.self) private var store
     let game: StoreLibraryGame
-    @State private var confirmsEpicInstall = false
+    @State private var confirmsStoreInstall = false
+    @State private var selectedVideo: StoreVideo?
 
     var body: some View {
         ScrollView {
@@ -13,7 +15,7 @@ struct StoreGameDetailView: View {
                 HStack(alignment: .top, spacing: 26) {
                     GameArtworkView(game: game, width: 190, height: 266)
                     VStack(alignment: .leading, spacing: 12) {
-                        Label(game.provider.rawValue, systemImage: "gamecontroller.fill")
+                        Label(game.provider.rawValue, systemImage: game.provider.symbol)
                             .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
                         Text(game.name).font(.largeTitle).fontWeight(.bold)
                         if let developer = game.developer {
@@ -21,10 +23,23 @@ struct StoreGameDetailView: View {
                         }
                         HStack(spacing: 10) {
                             if game.provider == .steam {
-                                Button(game.isInstalled ? "Play in Steam" : "Open in Steam", systemImage: game.isInstalled ? "play.fill" : "arrow.up.right.square") {
-                                    openSteam()
+                                if let app = linkedApplication {
+                                    Button(app.status == .running ? "Stop" : "Play Windows Version", systemImage: app.status == .running ? "stop.fill" : "play.fill") {
+                                        store.toggleRunning(app.id)
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.large)
+                                    .disabled(app.status.isBusy || app.status == .unavailable)
+                                } else if game.supportsNativeMacOS == false, game.supportsWindows == true, storeOperation == nil {
+                                    Button("Install Windows Version", systemImage: "arrow.down.circle.fill") {
+                                        confirmsStoreInstall = true
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.large)
+                                } else {
+                                    Button(game.isInstalled ? "Play Native macOS Version" : "Open in Steam", systemImage: game.isInstalled ? "play.fill" : "arrow.up.right.square") {
+                                        openSteam()
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.large)
                                 }
-                                .buttonStyle(.borderedProminent).controlSize(.large)
                                 Button("Store Page", systemImage: "storefront") { openStorePage() }
                                     .controlSize(.large)
                             } else if game.isInstalled {
@@ -34,9 +49,9 @@ struct StoreGameDetailView: View {
                                     }
                                     .buttonStyle(.borderedProminent).controlSize(.large)
                                     .disabled(app.status.isBusy || app.status == .unavailable)
-                                } else if epicOperation == nil {
+                                } else if storeOperation == nil {
                                     Button("Prepare to Play", systemImage: "wand.and.stars") {
-                                        store.prepareEpicGame(game)
+                                        store.prepareStoreGame(game)
                                     }
                                     .buttonStyle(.borderedProminent).controlSize(.large)
                                 }
@@ -46,46 +61,56 @@ struct StoreGameDetailView: View {
                                     }
                                     .controlSize(.large)
                                 }
-                            } else if epicOperation == nil {
+                            } else if storeOperation == nil {
                                 Button("Install Windows Version", systemImage: "arrow.down.circle.fill") {
-                                    confirmsEpicInstall = true
+                                    confirmsStoreInstall = true
                                 }
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             }
                         }
                         .padding(.top, 4)
-                        if case .installing = epicOperation {
-                            HStack(spacing: 9) {
-                                ProgressView().controlSize(.small)
-                                Text("Downloading and installing through Epic…")
+                        if let progress = storeOperation?.progress {
+                            operationProgress(progress)
+                        } else if case .awaitingProvider(let message) = storeOperation {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label(message, systemImage: "info.circle.fill")
+                                    .foregroundStyle(.secondary)
+                                Button("Dismiss Status") { store.clearStoreGameOperation(for: game) }
+                                    .buttonStyle(.plain)
                             }
-                            .foregroundStyle(.secondary)
-                        } else if case .preparingEnvironment = epicOperation {
-                            HStack(spacing: 9) {
-                                ProgressView().controlSize(.small)
-                                Text("Creating and validating an isolated Windows environment…")
-                            }
-                            .foregroundStyle(.secondary)
-                        } else if case .failed(let message) = epicOperation {
+                        } else if case .failed(let message) = storeOperation {
                             Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                            if game.isInstalled {
+                            if game.provider == .steam {
+                                Button("Try Windows Installation Again", systemImage: "arrow.clockwise") {
+                                    store.clearStoreGameOperation(for: game)
+                                    confirmsStoreInstall = true
+                                }
+                            } else if game.isInstalled {
                                 Button("Try Preparation Again", systemImage: "arrow.clockwise") {
-                                    store.clearStoreGameOperation(for: game.externalID)
-                                    store.prepareEpicGame(game)
+                                    store.clearStoreGameOperation(for: game)
+                                    store.prepareStoreGame(game)
                                 }
                             } else {
                                 Button("Try Installation Again", systemImage: "arrow.clockwise") {
-                                    store.clearStoreGameOperation(for: game.externalID)
-                                    confirmsEpicInstall = true
+                                    store.clearStoreGameOperation(for: game)
+                                    confirmsStoreInstall = true
                                 }
                             }
                         }
-                        if game.isInstalled {
+                        if linkedApplication != nil {
+                            Label("Windows version managed by Boreal and \(game.provider.rawValue)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        } else if game.isInstalled {
                             Label("Installed from \(game.provider.rawValue)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                         } else {
                             Label("Available in your \(game.provider.rawValue) Library", systemImage: "cloud.fill").foregroundStyle(.secondary)
                         }
-                        if game.provider == .steam { CommunityCompatibilityBadge(profile: game.compatibility) }
+                        HStack(spacing: 16) {
+                            StorePlatformBadge(game: game)
+                            StoreRatingBadge(rating: game.storeRating)
+                            if let compatibility = game.compatibility {
+                                MacCompatibilityBadge(rating: compatibility.tier.rating)
+                            }
+                        }
                     }
                     Spacer()
                 }
@@ -99,6 +124,8 @@ struct StoreGameDetailView: View {
 
                 if game.provider == .steam { compatibilitySection }
 
+                mediaSection
+
                 Grid(alignment: .leading, horizontalSpacing: 48, verticalSpacing: 18) {
                     GridRow {
                         metric("Playtime", value: playtime, symbol: "clock")
@@ -106,12 +133,12 @@ struct StoreGameDetailView: View {
                     }
                     GridRow {
                         metric("Source", value: game.provider.rawValue, symbol: "person.crop.circle.badge.checkmark")
-                        metric("Steam App ID", value: game.externalID, symbol: "number")
+                        metric("Store game ID", value: game.externalID, symbol: "number")
                     }
                 }
 
                 if let installPath = game.installPath {
-                    Button("Show Steam Files", systemImage: "folder") {
+                    Button("Show Game Files", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
                     }
                 }
@@ -119,16 +146,26 @@ struct StoreGameDetailView: View {
             .padding(36)
             .frame(maxWidth: 960, alignment: .leading)
         }
-        .confirmationDialog("Install \(game.name)?", isPresented: $confirmsEpicInstall) {
-            Button("Download and Install") { store.installEpicGame(game) }
+        .confirmationDialog("Install \(game.name)?", isPresented: $confirmsStoreInstall) {
+            Button("Download and Install") {
+                if game.provider == .steam { store.installSteamWindowsGame(game) }
+                else { store.installStoreGame(game) }
+            }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Boreal will download the Windows build from Epic through Legendary. Game downloads can be large and continue until the operation finishes or the app is closed.")
+            if game.provider == .steam {
+                Text("Boreal will install Valve’s official Steam for Windows client in an isolated environment and open this game’s installation. Sign in inside Steam; Boreal never receives your password or Steam Guard code.")
+            } else {
+                Text("Boreal will download the Windows build from \(game.provider.rawValue) using its verified support component. Game downloads can be large and continue until the operation finishes or the app is closed.")
+            }
+        }
+        .sheet(item: $selectedVideo) { video in
+            StoreVideoPlayerView(video: video)
         }
     }
 
     @ViewBuilder private var hero: some View {
-        if let value = game.headerImageURL, let url = URL(string: value) {
+        if let value = game.backgroundImageURL ?? game.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in
                 if let image = phase.image {
                     image.resizable().scaledToFill()
@@ -150,9 +187,73 @@ struct StoreGameDetailView: View {
         return String(format: "%.1f hours", Double(game.playtimeMinutes) / 60)
     }
 
-    private var epicOperation: StoreGameOperationState? {
-        guard game.provider == .epic else { return nil }
-        return store.storeGameOperations[game.externalID]
+    private var storeOperation: StoreGameOperationState? {
+        store.storeGameOperation(for: game)
+    }
+
+    private func operationProgress(_ progress: StoreGameOperationProgress) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                if let fraction = progress.clampedFraction {
+                    ProgressView(value: fraction).frame(maxWidth: 270)
+                    Text("\(Int(fraction * 100))%").monospacedDigit()
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(progress.message).foregroundStyle(.secondary)
+            }
+            if storeOperation?.isCancellable == true {
+                Button("Cancel Operation", systemImage: "xmark.circle", role: .cancel) {
+                    store.cancelStoreGameOperation(game)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(progress.message)
+    }
+
+    @ViewBuilder private var mediaSection: some View {
+        let screenshots = game.screenshotURLs ?? []
+        let videos = game.videos ?? []
+        if !screenshots.isEmpty || !videos.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Media").font(.title2).fontWeight(.semibold)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 14) {
+                        ForEach(Array(screenshots.enumerated()), id: \.offset) { _, value in
+                            if let url = URL(string: value) {
+                                AsyncImage(url: url) { phase in
+                                    if let image = phase.image { image.resizable().scaledToFill() }
+                                    else { Rectangle().fill(.background.secondary) }
+                                }
+                                .frame(width: 310, height: 174)
+                                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            }
+                        }
+                        ForEach(videos) { video in
+                            Button { selectedVideo = video } label: {
+                                ZStack {
+                                    if let thumbnail = video.thumbnailURL, let url = URL(string: thumbnail) {
+                                        AsyncImage(url: url) { phase in
+                                            if let image = phase.image { image.resizable().scaledToFill() }
+                                            else { Rectangle().fill(.background.secondary) }
+                                        }
+                                    }
+                                    Color.black.opacity(0.25)
+                                    Image(systemName: "play.circle.fill").font(.system(size: 46)).foregroundStyle(.white)
+                                }
+                                .frame(width: 310, height: 174)
+                                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .help(video.name)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
     }
 
     private var linkedApplication: WindowsApplication? { store.linkedApplication(for: game) }
@@ -229,5 +330,39 @@ struct StoreGameDetailView: View {
             URLQueryItem(name: "iItemsPerPage", value: "25")
         ]
         if let url = components?.url { NSWorkspace.shared.open(url) }
+    }
+}
+
+private struct StoreVideoPlayerView: View {
+    @Environment(\.dismiss) private var dismiss
+    let video: StoreVideo
+    @State private var player: AVPlayer
+
+    init(video: StoreVideo) {
+        self.video = video
+        _player = State(initialValue: AVPlayer())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(video.name).font(.title2).fontWeight(.semibold)
+                Spacer()
+                Button("Close", systemImage: "xmark") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            VideoPlayer(player: player)
+                .frame(minWidth: 760, minHeight: 430)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.16)) }
+        }
+        .padding(24)
+        .background(.ultraThinMaterial)
+        .onAppear {
+            guard let url = URL(string: video.videoURL) else { return }
+            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            player.play()
+        }
+        .onDisappear { player.pause() }
     }
 }

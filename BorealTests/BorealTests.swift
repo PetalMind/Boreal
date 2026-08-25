@@ -127,9 +127,19 @@ struct BorealTests {
         let sourceApp = applications.appending(path: "Wine Test.app", directoryHint: .isDirectory)
         let sourceBin = sourceApp.appending(path: "Contents/Resources/wine/bin", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: sourceBin, withIntermediateDirectories: true)
-        try executable("#!/bin/sh\necho wine-11.15\n", at: sourceBin.appending(path: "wine"))
+        try executable("""
+        #!/bin/sh
+        case "${0##*/}" in
+          wine) echo wine-11.15 ;;
+          wineboot)
+            mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+            touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg"
+            ;;
+          *) exit 64 ;;
+        esac
+        """, at: sourceBin.appending(path: "wine"))
         try executable("#!/bin/sh\nexit 0\n", at: sourceBin.appending(path: "wineserver"))
-        try executable("#!/bin/sh\nmkdir -p \"$WINEPREFIX/drive_c\"\nexit 0\n", at: sourceBin.appending(path: "wineboot"))
+        try FileManager.default.createSymbolicLink(atPath: sourceBin.appending(path: "wineboot").path, withDestinationPath: "wine")
 
         let candidate = LocalRuntimeCandidate(
             id: "local-wine-test-11-15-x86_64-r1",
@@ -250,6 +260,79 @@ struct BorealTests {
         #expect(URL(fileURLWithPath: lines[3]).resolvingSymlinksInPath() == workingDirectory.resolvingSymlinksInPath())
         #expect(lines[4] == game.path)
         #expect(lines[5] == "-windowed")
+    }
+
+    @Test func libraryProjectionSearchesMetadataAndCombinesFilterCategories() {
+        let steam = StoreLibraryGame(
+            provider: .steam,
+            externalID: "10",
+            name: "Żółta Przygoda",
+            developer: "North Studio",
+            playtimeMinutes: 180,
+            lastPlayed: .now,
+            isInstalled: true,
+            compatibility: CommunityCompatibility(
+                source: .protonDB,
+                tier: .gold,
+                reportCount: 12,
+                fetchedAt: .now
+            )
+        )
+        let epic = StoreLibraryGame(provider: .epic, externalID: "20", name: "Cloud Quest", isInstalled: false)
+        let items = LibraryProjector.makeItems(applications: [], storeGames: [epic, steam])
+
+        let result = LibraryProjector.project(
+            items,
+            searchText: "zolta north",
+            sources: [.steam],
+            availability: [.installed],
+            compatibility: [.good],
+            sort: .nameAscending
+        )
+
+        #expect(result.map(\.name) == ["Żółta Przygoda"])
+    }
+
+    @Test func libraryProjectionSortsMissingActivityLastAndRecognizesAttention() {
+        let environmentID = UUID()
+        let healthy = WindowsApplication(
+            name: "Later",
+            publisher: "Boreal",
+            executablePath: "/tmp/later.exe",
+            installerPath: "/tmp/later-installer.exe",
+            environmentID: environmentID,
+            status: .ready,
+            lastOpened: .now
+        )
+        let attention = WindowsApplication(
+            name: "Attention",
+            publisher: "Boreal",
+            executablePath: "/tmp/attention.exe",
+            installerPath: "/tmp/attention-installer.exe",
+            environmentID: environmentID,
+            status: .needsAttention
+        )
+        let items = LibraryProjector.makeItems(applications: [attention, healthy], storeGames: [])
+
+        let sorted = LibraryProjector.project(
+            items,
+            searchText: "",
+            sources: [],
+            availability: [],
+            compatibility: [],
+            sort: .lastUsed
+        )
+        let filtered = LibraryProjector.project(
+            items,
+            searchText: "needs attention",
+            sources: [],
+            availability: [.needsAttention],
+            compatibility: [],
+            sort: .nameAscending
+        )
+
+        #expect(sorted.map(\.name) == ["Later", "Attention"])
+        #expect(filtered.map(\.name) == ["Attention"])
     }
 
     private func executable(_ contents: String, at url: URL) throws {

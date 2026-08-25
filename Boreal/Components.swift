@@ -1,6 +1,34 @@
 import SwiftUI
 import AppKit
 
+struct BorealGlassBackdrop: View {
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+
+            RadialGradient(
+                colors: [Color.cyan.opacity(0.17), Color.cyan.opacity(0.035), .clear],
+                center: .topTrailing,
+                startRadius: 24,
+                endRadius: 760
+            )
+
+            RadialGradient(
+                colors: [Color.indigo.opacity(0.15), Color.purple.opacity(0.025), .clear],
+                center: .bottomLeading,
+                startRadius: 16,
+                endRadius: 690
+            )
+
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .opacity(0.22)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
+    }
+}
+
 struct AppIconView: View {
     let symbol: String
     var size: CGFloat = 88
@@ -98,6 +126,33 @@ struct StoreRatingBadge: View {
 struct CompatibilityLabel: View {
     let rating: CompatibilityRating
     var body: some View { Label(rating.rawValue, systemImage: rating.symbol).foregroundStyle(color) }
+    private var color: Color {
+        switch rating {
+        case .excellent: .green
+        case .good: .teal
+        case .limited: .orange
+        case .unknown: .secondary
+        case .unsupported: .red
+        }
+    }
+}
+
+struct MacCompatibilityBadge: View {
+    let rating: CompatibilityRating
+    var compact = false
+
+    var body: some View {
+        Label(compact ? rating.rawValue : "Mac via Wine: \(rating.rawValue)", systemImage: rating.symbol)
+            .font(compact ? .caption2.weight(.semibold) : .callout.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, compact ? 7 : 9)
+            .padding(.vertical, compact ? 4 : 5)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay { Capsule().stroke(color.opacity(0.45), lineWidth: 1) }
+            .shadow(color: .black.opacity(compact ? 0.25 : 0), radius: 5, y: 2)
+            .accessibilityLabel("Mac compatibility through Wine: \(rating.rawValue)")
+    }
+
     private var color: Color {
         switch rating {
         case .excellent: .green

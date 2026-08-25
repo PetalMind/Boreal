@@ -20,7 +20,7 @@ struct InstallationSheet: View {
             }
 
             content
-            actions.frame(width: 390)
+            actions.frame(width: 390)   
         }
         .padding(34)
         .frame(minWidth: 500, minHeight: 420)
@@ -73,6 +73,9 @@ struct InstallationSheet: View {
                 }
             }
             .frame(width: 390, alignment: .leading)
+        case .cancelled:
+            Label("Incomplete environment removed", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
         }
     }
 
@@ -107,7 +110,10 @@ struct InstallationSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         case .installing:
-            EmptyView()
+            HStack {
+                Button("Cancel Installation", role: .cancel) { store.cancelInstallation() }
+                Spacer()
+            }
         case .succeeded(let id):
             HStack {
                 Button("Done") { dismiss() }
@@ -116,7 +122,7 @@ struct InstallationSheet: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
-        case .failed:
+        case .failed, .cancelled:
             HStack {
                 Button("Done") { dismiss() }
                 Spacer()
@@ -137,6 +143,7 @@ struct InstallationSheet: View {
         case .installing: "Installing \(candidate.name)"
         case .succeeded: "\(candidate.name) is ready"
         case .failed: "Installation Failed"
+        case .cancelled: "Installation Cancelled"
         }
     }
 
@@ -146,6 +153,7 @@ struct InstallationSheet: View {
         case .installing: store.installation.stage?.userMessage ?? "Preparing installation…"
         case .succeeded: "Boreal checked that the application opens correctly."
         case .failed: "\(candidate.name) wasn’t added to your Library."
+        case .cancelled: "The installer was stopped and the incomplete environment was removed."
         }
     }
 
@@ -153,11 +161,12 @@ struct InstallationSheet: View {
         switch store.installation.state {
         case .succeeded: "checkmark"
         case .failed: "exclamationmark.triangle.fill"
+        case .cancelled: "xmark.circle.fill"
         default: "shippingbox.fill"
         }
     }
 
     private func beginInstallation() {
-        Task { _ = await store.install(candidate) }
+        store.beginInstallation(candidate)
     }
 }

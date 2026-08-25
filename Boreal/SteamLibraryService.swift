@@ -239,9 +239,12 @@ actor SteamLibraryService: SteamLibraryLoading {
         }
         let movies = (details["movies"] as? [[String: Any]])?.compactMap { movie -> StoreVideo? in
             guard let id = movie["id"],
-                  let name = movie["name"] as? String,
-                  let formats = movie["mp4"] as? [String: Any],
-                  let videoURL = (formats["max"] as? String) ?? (formats["480"] as? String) else { return nil }
+                  let name = movie["name"] as? String else { return nil }
+            let legacyFormats = movie["mp4"] as? [String: Any]
+            guard let videoURL = (movie["hls_h264"] as? String)
+                ?? (legacyFormats?["max"] as? String)
+                ?? (legacyFormats?["480"] as? String)
+                ?? (movie["dash_h264"] as? String) else { return nil }
             return StoreVideo(
                 id: String(describing: id),
                 name: name,

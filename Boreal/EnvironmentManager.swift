@@ -50,6 +50,13 @@ actor EnvironmentManager: EnvironmentManaging {
             try? write(invalid)
             throw EnvironmentManagerError.initializationFailed(exitCode: result.exitCode, stderrLog: result.stderrLog)
         }
+        guard try await waitForPrefixInitialization(environment.prefixURL) else {
+            var invalid = environment
+            invalid.state = .invalid
+            try? write(invalid)
+            let validation = try await validate(invalid)
+            throw EnvironmentManagerError.validationFailed(validation)
+        }
         var ready = environment
         ready.state = .ready
         try write(ready)
@@ -94,5 +101,19 @@ actor EnvironmentManager: EnvironmentManaging {
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")
         return values
     }
-}
 
+    private func waitForPrefixInitialization(_ prefix: URL) async throws -> Bool {
+        let expected = [
+            prefix.appending(path: "drive_c", directoryHint: .isDirectory),
+            prefix.appending(path: "dosdevices", directoryHint: .isDirectory),
+            prefix.appending(path: "system.reg"),
+            prefix.appending(path: "user.reg")
+        ]
+        for _ in 0..<120 {
+            try Task.checkCancellation()
+            if expected.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) { return true }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        return false
+    }
+}

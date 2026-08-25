@@ -31,7 +31,7 @@ struct SteamLibraryServiceTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SteamMetadataURLProtocol.self]
         SteamMetadataURLProtocol.responseData = Data("""
-        {"730":{"success":true,"data":{"name":"Counter-Strike 2","developers":["Valve"],"short_description":"A &amp; B <b>game</b>","header_image":"https://example.com/header.jpg"}}}
+        {"730":{"success":true,"data":{"name":"Counter-Strike 2","developers":["Valve"],"short_description":"A &amp; B <b>game</b>","header_image":"https://example.com/header.jpg","background_raw":"https://example.com/background.jpg","platforms":{"windows":true,"mac":false},"metacritic":{"score":82},"screenshots":[{"path_full":"https://example.com/shot.jpg"}],"movies":[{"id":7,"name":"Trailer","thumbnail":"https://example.com/trailer.jpg","hls_h264":"https://example.com/trailer.m3u8"}]}}}
         """.utf8)
         let service = SteamLibraryService(steamRoot: root, session: URLSession(configuration: configuration))
 
@@ -48,6 +48,14 @@ struct SteamLibraryServiceTests {
         #expect(game.isInstalled)
         #expect(game.installPath?.hasSuffix("Counter-Strike Global Offensive") == true)
         #expect(game.artworkPath?.hasSuffix("library_600x900.jpg") == true)
+        #expect(game.backgroundImageURL == "https://example.com/background.jpg")
+        #expect(game.screenshotURLs == ["https://example.com/shot.jpg"])
+        #expect(game.videos?.first?.videoURL == "https://example.com/trailer.m3u8")
+        #expect(game.storeRating?.positivePercent == 90)
+        #expect(game.storeRating?.reviewCount == 100)
+        #expect(game.storeRating?.criticScore == 82)
+        #expect(game.supportsWindows == true)
+        #expect(game.supportsNativeMacOS == false)
         #expect(game.compatibility?.tier == .gold)
         #expect(game.compatibility?.trendingTier == .platinum)
         #expect(game.compatibility?.reportCount == 2_029)
@@ -72,6 +80,10 @@ private nonisolated final class SteamMetadataURLProtocol: URLProtocol {
         if request.url?.path.contains("/reports/summaries/") == true {
             data = Data("""
             {"bestReportedTier":"platinum","confidence":"strong","score":0.71,"tier":"gold","total":2029,"trendingTier":"platinum"}
+            """.utf8)
+        } else if request.url?.path.contains("/appreviews/") == true {
+            data = Data("""
+            {"query_summary":{"review_score_desc":"Very Positive","total_positive":90,"total_negative":10,"total_reviews":100}}
             """.utf8)
         } else {
             data = Self.responseData

@@ -6,6 +6,9 @@ struct AccountsView: View {
     @State private var showsAuthorizationCode = false
     @State private var authorizationCode = ""
     @State private var confirmsDisconnect = false
+    @State private var showsGOGAuthorizationCode = false
+    @State private var gogAuthorizationCode = ""
+    @State private var confirmsGOGDisconnect = false
 
     var body: some View {
         ScrollView {
@@ -16,13 +19,20 @@ struct AccountsView: View {
                     .foregroundStyle(.secondary)
                 steamCard
                 epicCard
+                gogCard
             }
             .padding(34)
             .frame(maxWidth: 820, alignment: .leading)
         }
-        .task { store.refreshEpicConnection() }
+        .task {
+            store.refreshEpicConnection()
+            store.refreshGOGConnection()
+        }
         .onChange(of: store.epicConnectionState) { oldValue, newValue in
             if oldValue == .preparingSupport, newValue == .disconnected { beginEpicLogin() }
+        }
+        .onChange(of: store.gogConnectionState) { oldValue, newValue in
+            if oldValue == .preparingSupport, newValue == .disconnected { beginGOGLogin() }
         }
         .sheet(isPresented: $showsAuthorizationCode) {
             VStack(alignment: .leading, spacing: 18) {
@@ -55,6 +65,38 @@ struct AccountsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Boreal will delete Legendary’s local Epic credentials and remove Epic titles from this Library. Downloaded game files are kept.")
+        }
+        .sheet(isPresented: $showsGOGAuthorizationCode) {
+            VStack(alignment: .leading, spacing: 18) {
+                Label("Finish GOG sign-in", systemImage: "person.badge.key.fill")
+                    .font(.title2).fontWeight(.semibold)
+                Text("After GOG signs you in, copy the final page URL or its code value and paste it here. Boreal gives the one-time code directly to heroic-gogdl; your password and browser session remain with GOG.")
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $gogAuthorizationCode)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 110)
+                    .padding(8)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+                HStack {
+                    Button("Cancel", role: .cancel) { showsGOGAuthorizationCode = false; gogAuthorizationCode = "" }
+                    Spacer()
+                    Button("Connect", systemImage: "link") {
+                        showsGOGAuthorizationCode = false
+                        store.connectGOG(authorizationCode: gogAuthorizationCode)
+                        gogAuthorizationCode = ""
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(gogAuthorizationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(26)
+            .frame(width: 540)
+        }
+        .confirmationDialog("Disconnect GOG?", isPresented: $confirmsGOGDisconnect) {
+            Button("Disconnect", role: .destructive) { store.disconnectGOG() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Boreal will delete heroic-gogdl’s local GOG tokens and remove GOG titles from this Library. Downloaded game files are kept.")
         }
     }
 
@@ -106,6 +148,45 @@ struct AccountsView: View {
         }
     }
 
+    private var gogCard: some View {
+        accountCard(symbol: "g.square.fill", title: "GOG", tint: .purple) {
+            switch store.gogConnectionState {
+            case .checking:
+                statusRow("Checking GOG support…")
+            case .supportNotInstalled:
+                Text("Install the verified heroic-gogdl 1.3.0 helper to connect, import, install, and run your GOG Windows library.")
+                    .foregroundStyle(.secondary)
+                Button("Install GOG Support and Sign In", systemImage: "arrow.down.circle") { store.prepareGOGSupport() }
+                    .buttonStyle(.borderedProminent)
+            case .disconnected:
+                Text("GOG support is installed. Sign in on GOG’s website and return the one-time authorization code.")
+                    .foregroundStyle(.secondary)
+                Button("Sign In to GOG", systemImage: "person.crop.circle.badge.plus") { beginGOGLogin() }
+                    .buttonStyle(.borderedProminent)
+            case .preparingSupport:
+                statusRow("Downloading and verifying GOG support…")
+            case .authenticating:
+                statusRow("Connecting your GOG account…")
+            case .connected(let displayName):
+                Label(displayName ?? "GOG account connected", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                HStack {
+                    Button("Refresh Library", systemImage: "arrow.clockwise") { store.syncGOGLibrary() }
+                        .disabled(store.librarySyncState == .syncing(.gog))
+                    Button("Disconnect…", role: .destructive) { confirmsGOGDisconnect = true }
+                }
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                HStack {
+                    Button("Check Again", systemImage: "arrow.clockwise") { store.refreshGOGConnection() }
+                    Button("Open Sign-in", systemImage: "safari") { beginGOGLogin() }
+                }
+            }
+            Link("heroic-gogdl source and GPL-3.0 license", destination: URL(string: "https://github.com/Heroic-Games-Launcher/heroic-gogdl")!)
+                .font(.caption)
+        }
+    }
+
     private func accountCard<Content: View>(symbol: String, title: String, tint: Color, @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 18) {
             Image(systemName: symbol)
@@ -132,5 +213,12 @@ struct AccountsView: View {
         guard let url = URL(string: "https://legendary.gl/epiclogin") else { return }
         NSWorkspace.shared.open(url)
         showsAuthorizationCode = true
+    }
+
+    private func beginGOGLogin() {
+        let value = "https://auth.gog.com/auth?client_id=46899977096215655&redirect_uri=https%3A%2F%2Fembed.gog.com%2Fon_login_success%3Forigin%3Dclient&response_type=code&layout=client2"
+        guard let url = URL(string: value) else { return }
+        NSWorkspace.shared.open(url)
+        showsGOGAuthorizationCode = true
     }
 }

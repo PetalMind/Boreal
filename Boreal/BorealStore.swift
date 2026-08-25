@@ -15,6 +15,7 @@ final class BorealStore {
     var storeGames: [StoreLibraryGame] = []
     var librarySyncState: LibrarySyncState = .idle
     var epicConnectionState: EpicConnectionState = .checking
+    var gogConnectionState: GOGConnectionState = .checking
     var storeGameOperations: [String: StoreGameOperationState] = [:]
     var installation = InstallationProgress()
     var presentedIssue: BorealIssue?
@@ -31,6 +32,10 @@ final class BorealStore {
     private var unexpectedLauncherFailures: Set<UUID> = []
     private var environmentSessionStates: [UUID: EnvironmentSessionState] = [:]
     private var environmentMonitorIDs: [UUID: UUID] = [:]
+    private var storeOperationTasks: [String: Task<Void, Never>] = [:]
+    private var storeOperationTokens: [String: UUID] = [:]
+    private var installationTask: Task<UUID?, Never>?
+    private var installationToken: UUID?
 
     init(storageURL: URL? = nil, services: BorealServices? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -106,6 +111,9 @@ final class BorealStore {
             monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
             await refreshRuntimeStatuses()
             return app.id
+        } catch is CancellationError {
+            installation = InstallationProgress(state: .cancelled)
+            return nil
         } catch {
             installation.state = .failed
             installation.failureMessage = error.localizedDescription
@@ -114,7 +122,34 @@ final class BorealStore {
         }
     }
 
-    func resetInstallation() { installation = InstallationProgress() }
+    func beginInstallation(_ candidate: InstallCandidate) {
+        guard installationTask == nil else { return }
+        let token = UUID()
+        installationToken = token
+        installationTask = Task { [weak self] in
+            guard let self else { return nil }
+            let result = await self.install(candidate)
+            if self.installationToken == token {
+                self.installationTask = nil
+                self.installationToken = nil
+            }
+            return result
+        }
+    }
+
+    func cancelInstallation() {
+        installationTask?.cancel()
+        installationTask = nil
+        installationToken = nil
+        installation = InstallationProgress(state: .cancelled)
+    }
+
+    func resetInstallation() {
+        installationTask?.cancel()
+        installationTask = nil
+        installationToken = nil
+        installation = InstallationProgress()
+    }
 
     func syncSteamLibrary() {
         guard case .syncing = librarySyncState else {
@@ -147,6 +182,49 @@ final class BorealStore {
             }
             return
         }
+    }
+
+    func installSteamWindowsGame(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard game.provider == .steam,
+              game.supportsWindows != false,
+              linkedApplication(for: game) == nil,
+              storeGameOperations[key] == nil else { return }
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+            message: "Preparing Steam for Windows…",
+            fractionCompleted: nil
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                if let host = applications.first(where: {
+                    $0.storeProvider == .steam && $0.installerPath == "steam-windows-client"
+                        && FileManager.default.fileExists(atPath: $0.executablePath)
+                }) {
+                    try await linkSteamWindowsGame(game, using: host)
+                } else {
+                    let prepared = try await services.steamWindows.prepareClient { [weak self] stage in
+                        await self?.updateSteamPreparation(stage, key: key, token: token)
+                    }
+                    try await linkSteamWindowsGame(game, using: prepared)
+                }
+                try Task.checkCancellation()
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .awaitingProvider("Steam for Windows is open. Sign in and follow the game download in Steam.")
+                storeOperationTasks[key] = nil
+                save()
+            } catch is CancellationError {
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
+                present(error, title: "\(game.name) couldn’t be prepared", stage: "Installing Valve’s Windows Steam client in Boreal")
+            }
+        }
+        storeOperationTasks[key] = task
     }
 
     func refreshEpicConnection() {
@@ -229,50 +307,199 @@ final class BorealStore {
         }
     }
 
-    func installEpicGame(_ game: StoreLibraryGame) {
-        guard game.provider == .epic, storeGameOperations[game.externalID] == nil else { return }
-        storeGameOperations[game.externalID] = .installing
+    func refreshGOGConnection() {
+        Task { gogConnectionState = await services.gogLibrary.connectionState() }
+    }
+
+    func prepareGOGSupport() {
+        guard !gogConnectionState.isBusy else { return }
+        gogConnectionState = .preparingSupport
         Task {
             do {
-                try await services.epicLibrary.install(appID: game.externalID)
-                storeGameOperations[game.externalID] = nil
-                syncEpicLibrary()
+                try await services.gogLibrary.prepareSupport()
+                gogConnectionState = await services.gogLibrary.connectionState()
             } catch {
-                storeGameOperations[game.externalID] = .failed(error.localizedDescription)
-                present(error, title: "\(game.name) couldn’t be installed", stage: "Downloading the Windows build from Epic")
+                gogConnectionState = .failed(error.localizedDescription)
+                present(error, title: "GOG support couldn’t be installed", stage: "Downloading and verifying heroic-gogdl")
             }
         }
     }
 
-    func clearStoreGameOperation(for externalID: String) {
-        storeGameOperations[externalID] = nil
+    func connectGOG(authorizationCode: String) {
+        guard !gogConnectionState.isBusy else { return }
+        gogConnectionState = .authenticating
+        Task {
+            do {
+                let displayName = try await services.gogLibrary.authenticate(authorizationCode: authorizationCode)
+                gogConnectionState = .connected(displayName: displayName)
+                syncGOGLibrary()
+            } catch {
+                gogConnectionState = .failed(error.localizedDescription)
+                present(error, title: "GOG account couldn’t be connected", stage: "Exchanging the one-time authorization code")
+            }
+        }
+    }
+
+    func disconnectGOG() {
+        guard !gogConnectionState.isBusy else { return }
+        Task {
+            do {
+                try await services.gogLibrary.disconnect()
+                storeGames.removeAll { $0.provider == .gog }
+                gogConnectionState = .disconnected
+                save()
+            } catch {
+                gogConnectionState = .failed(error.localizedDescription)
+                present(error, title: "GOG account couldn’t be disconnected", stage: "Deleting local GOG credentials")
+            }
+        }
+    }
+
+    func syncGOGLibrary() {
+        guard case .syncing = librarySyncState else {
+            librarySyncState = .syncing(.gog)
+            Task {
+                do {
+                    let imported = try await services.gogLibrary.loadLibrary()
+                    let existingGames = Dictionary(
+                        uniqueKeysWithValues: storeGames.filter { $0.provider == .gog }.map { ($0.externalID, $0) }
+                    )
+                    let normalized = imported.map { game in
+                        var value = game
+                        if let existing = existingGames[game.externalID] { value.id = existing.id }
+                        return value
+                    }
+                    storeGames.removeAll { $0.provider == .gog }
+                    storeGames.append(contentsOf: normalized)
+                    storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    librarySyncState = .succeeded(.gog, count: normalized.count)
+                    gogConnectionState = await services.gogLibrary.connectionState()
+                    save()
+                } catch {
+                    librarySyncState = .failed(.gog, message: error.localizedDescription)
+                    gogConnectionState = await services.gogLibrary.connectionState()
+                    present(error, title: "GOG Library couldn’t be imported", stage: "Reading the connected GOG account")
+                }
+            }
+            return
+        }
+    }
+
+    func syncLibrary(_ provider: GameLibraryProvider) {
+        switch provider {
+        case .steam: syncSteamLibrary()
+        case .epic: syncEpicLibrary()
+        case .gog: syncGOGLibrary()
+        }
+    }
+
+    func installEpicGame(_ game: StoreLibraryGame) {
+        installStoreGame(game)
+    }
+
+    func installStoreGame(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard [.epic, .gog].contains(game.provider), storeGameOperations[key] == nil else { return }
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+            message: "Preparing \(game.provider.rawValue) download…",
+            fractionCompleted: nil
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let update: @Sendable (StoreGameOperationProgress) async -> Void = { [weak self] progress in
+                    await self?.updateStoreDownload(progress, key: key, token: token)
+                }
+                switch game.provider {
+                case .epic: try await services.epicLibrary.install(appID: game.externalID, progress: update)
+                case .gog: try await services.gogLibrary.install(appID: game.externalID, progress: update)
+                case .steam: return
+                }
+                try Task.checkCancellation()
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                syncLibrary(game.provider)
+            } catch is CancellationError {
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
+                present(error, title: "\(game.name) couldn’t be installed", stage: "Downloading the Windows build from \(game.provider.rawValue)")
+            }
+        }
+        storeOperationTasks[key] = task
+    }
+
+    func storeGameOperation(for game: StoreLibraryGame) -> StoreGameOperationState? {
+        storeGameOperations[storeOperationKey(for: game)]
+    }
+
+    var activeStoreGameOperations: [(game: StoreLibraryGame, state: StoreGameOperationState)] {
+        storeGames.compactMap { game in
+            storeGameOperation(for: game).map { (game, $0) }
+        }
+    }
+
+    func clearStoreGameOperation(for game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        storeGameOperations[key] = nil
+        storeOperationTokens[key] = nil
+    }
+
+    func cancelStoreGameOperation(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        storeOperationTasks[key]?.cancel()
+        storeOperationTasks[key] = nil
+        storeOperationTokens[key] = nil
+        storeGameOperations[key] = nil
     }
 
     func prepareEpicGame(_ game: StoreLibraryGame) {
-        guard game.provider == .epic,
+        prepareStoreGame(game)
+    }
+
+    func prepareStoreGame(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard [.epic, .gog].contains(game.provider),
               game.isInstalled,
               linkedApplication(for: game) == nil,
-              storeGameOperations[game.externalID] == nil else { return }
-        storeGameOperations[game.externalID] = .preparingEnvironment
-        Task {
+              storeGameOperations[key] == nil else { return }
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
+            message: "Finding a compatible Wine runtime…",
+            fractionCompleted: 0
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
             var createdEnvironment: ManagedBorealEnvironment?
             do {
-                var selectedRuntime: InstalledRuntime?
-                for candidate in try await services.runtimeManager.installedRuntimes() {
-                    if (try? await services.runtimeManager.validate(candidate).isReady) == true {
-                        selectedRuntime = candidate
-                        break
-                    }
-                }
-                guard let runtime = selectedRuntime else { throw InstallerServiceError.noRuntimeAvailable }
+                updateEnvironmentPreparation("Preparing a verified Wine runtime…", fraction: 0.1, key: key, token: token)
+                let runtime = try await services.runtimeManager.prepareReadyRuntime()
+                try Task.checkCancellation()
+                updateEnvironmentPreparation("Creating an isolated Windows environment…", fraction: 0.25, key: key, token: token)
                 var managed = try await services.environmentManager.create(
                     configuration: EnvironmentConfiguration(name: game.name),
                     runtime: runtime
                 )
                 createdEnvironment = managed
+                try Task.checkCancellation()
+                updateEnvironmentPreparation("Initializing the Wine prefix…", fraction: 0.5, key: key, token: token)
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 managed.state = .ready
-                let plan = try await services.epicLibrary.launchPlan(appID: game.externalID, runtime: runtime, environment: managed)
+                try Task.checkCancellation()
+                updateEnvironmentPreparation("Validating the game launch task…", fraction: 0.75, key: key, token: token)
+                let plan: WindowsLaunchPlan
+                switch game.provider {
+                case .epic: plan = try await services.epicLibrary.launchPlan(appID: game.externalID, runtime: runtime, environment: managed)
+                case .gog: plan = try await services.gogLibrary.launchPlan(appID: game.externalID, runtime: runtime, environment: managed)
+                case .steam: return
+                }
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
@@ -293,20 +520,111 @@ final class BorealStore {
                     compatibility: game.compatibility?.tier.rating ?? .unknown,
                     graphics: "WineD3D",
                     iconSymbol: "gamecontroller.fill",
-                    lastResult: "Ready to launch through Epic",
-                    storeProvider: .epic,
+                    lastResult: "Ready to launch through \(game.provider.rawValue)",
+                    storeProvider: game.provider,
                     storeExternalID: game.externalID
                 )
                 environments.append(environment)
                 applications.append(app)
-                storeGameOperations[game.externalID] = nil
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
                 save()
+            } catch is CancellationError {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
+                finishCancelledStoreOperation(key: key, token: token)
             } catch {
                 if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
-                storeGameOperations[game.externalID] = .failed(error.localizedDescription)
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
                 present(error, title: "\(game.name) couldn’t be prepared", stage: "Creating its isolated Windows environment")
             }
         }
+        storeOperationTasks[key] = task
+    }
+
+    private func linkSteamWindowsGame(_ game: StoreLibraryGame, using prepared: SteamWindowsClientCommit) async throws {
+        let commit = prepared.installation
+        let managed = commit.environment
+        let environment = WindowsEnvironment(
+            id: managed.id,
+            name: "Steam for Windows",
+            runtime: "\(commit.runtime.displayName) · Wine \(commit.runtime.wineVersion)",
+            graphics: "WineD3D",
+            runtimeID: commit.runtime.id,
+            rootPath: managed.rootURL.path,
+            prefixPath: managed.prefixURL.path,
+            logsPath: managed.logsURL.path
+        )
+        let app = steamWindowsApplication(game: game, executable: prepared.steamExecutable, environmentID: managed.id, status: .running)
+        environments.append(environment)
+        applications.append(app)
+        activeSessions[app.id] = commit.firstLaunch
+        activeEnvironments[app.id] = managed
+        activeRuntimes[app.id] = commit.runtime
+        save()
+        monitorLauncher(session: commit.firstLaunch, appID: app.id)
+        monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
+        let installPlan = WindowsLaunchPlan(
+            executable: prepared.steamExecutable,
+            arguments: ["steam://install/\(game.externalID)"],
+            environment: [:],
+            workingDirectory: prepared.steamExecutable.deletingLastPathComponent()
+        )
+        let command = try await services.processRunner.run(plan: installPlan, environment: managed, runtime: commit.runtime)
+        Task { _ = try? await services.processRunner.waitForExit(command) }
+    }
+
+    private func linkSteamWindowsGame(_ game: StoreLibraryGame, using host: WindowsApplication) async throws {
+        guard let environmentRecord = environment(id: host.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let runtime = try await runtime(for: environmentRecord) else {
+            throw InstallerServiceError.noRuntimeAvailable
+        }
+        let executable = URL(fileURLWithPath: host.executablePath)
+        let app = steamWindowsApplication(game: game, executable: executable, environmentID: managed.id, status: .starting)
+        applications.append(app)
+        let plan = WindowsLaunchPlan(
+            executable: executable,
+            arguments: ["steam://install/\(game.externalID)"],
+            environment: [:],
+            workingDirectory: executable.deletingLastPathComponent()
+        )
+        let session = try await services.processRunner.run(plan: plan, environment: managed, runtime: runtime)
+        if let index = applications.firstIndex(where: { $0.id == app.id }) {
+            applications[index].status = .running
+            applications[index].lastOpened = .now
+        }
+        activeSessions[app.id] = session
+        activeEnvironments[app.id] = managed
+        activeRuntimes[app.id] = runtime
+        monitorLauncher(session: session, appID: app.id)
+        monitorEnvironmentSession(environment: managed, runtime: runtime, appID: app.id)
+    }
+
+    private func steamWindowsApplication(
+        game: StoreLibraryGame,
+        executable: URL,
+        environmentID: UUID,
+        status: ApplicationStatus
+    ) -> WindowsApplication {
+        WindowsApplication(
+            name: game.name,
+            publisher: game.developer ?? "Steam",
+            executablePath: executable.path,
+            installerPath: "steam-windows-client",
+            environmentID: environmentID,
+            status: status,
+            compatibility: game.compatibility?.tier.rating ?? .unknown,
+            graphics: "WineD3D",
+            lastOpened: status == .running ? .now : nil,
+            iconSymbol: "gamecontroller.fill",
+            lastResult: "Steam for Windows manages download, updates, and launch",
+            storeProvider: .steam,
+            storeExternalID: game.externalID
+        )
     }
 
     func toggleRunning(_ id: UUID) {
@@ -397,7 +715,7 @@ final class BorealStore {
             return
         }
         guard !applications[index].status.isBusy else { return }
-        let refreshesExecutableAtLaunch = applications[index].storeProvider == .epic && applications[index].storeExternalID != nil
+        let refreshesExecutableAtLaunch = [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
         guard refreshesExecutableAtLaunch || FileManager.default.fileExists(atPath: applications[index].executablePath) else {
             applications[index].status = .unavailable
             applications[index].lastResult = "Executable unavailable"
@@ -423,8 +741,22 @@ final class BorealStore {
             }
             applications[index].status = .starting
             let session: WindowsProcessSession
-            if applications[index].storeProvider == .epic, let appID = applications[index].storeExternalID {
-                let plan = try await services.epicLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
+            if let provider = applications[index].storeProvider,
+               [.steam, .epic, .gog].contains(provider),
+               let appID = applications[index].storeExternalID {
+                let plan: WindowsLaunchPlan
+                switch provider {
+                case .steam:
+                    let executable = URL(fileURLWithPath: applications[index].executablePath)
+                    plan = WindowsLaunchPlan(
+                        executable: executable,
+                        arguments: ["-applaunch", appID],
+                        environment: [:],
+                        workingDirectory: executable.deletingLastPathComponent()
+                    )
+                case .epic: plan = try await services.epicLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
+                case .gog: plan = try await services.gogLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
+                }
                 applications[index].executablePath = plan.executable.path
                 session = try await services.processRunner.run(plan: plan, environment: managed, runtime: runtime)
             } else {
@@ -727,6 +1059,41 @@ final class BorealStore {
     private func updateInstallation(_ stage: InstallationStage) {
         if let previous = installation.stage { installation.completedStages.insert(previous) }
         installation.stage = stage
+    }
+
+    private func storeOperationKey(for game: StoreLibraryGame) -> String {
+        "\(game.provider.rawValue)::\(game.externalID)"
+    }
+
+    private func updateStoreDownload(_ progress: StoreGameOperationProgress, key: String, token: UUID) {
+        guard storeOperationTokens[key] == token else { return }
+        storeGameOperations[key] = .installing(progress)
+    }
+
+    private func updateSteamPreparation(_ stage: InstallationStage, key: String, token: UUID) {
+        guard storeOperationTokens[key] == token else { return }
+        let stages = InstallationStage.allCases
+        let index = stages.firstIndex(of: stage) ?? 0
+        let fraction = Double(index) / Double(max(stages.count, 1))
+        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+            message: stage.userMessage,
+            fractionCompleted: fraction
+        ))
+    }
+
+    private func updateEnvironmentPreparation(_ message: String, fraction: Double, key: String, token: UUID) {
+        guard storeOperationTokens[key] == token else { return }
+        storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
+            message: message,
+            fractionCompleted: fraction
+        ))
+    }
+
+    private func finishCancelledStoreOperation(key: String, token: UUID) {
+        guard storeOperationTokens[key] == token else { return }
+        storeOperationTasks[key] = nil
+        storeOperationTokens[key] = nil
+        storeGameOperations[key] = nil
     }
 
     private func present(_ error: Error, title: String, stage: String, retryApplicationID: UUID? = nil) {

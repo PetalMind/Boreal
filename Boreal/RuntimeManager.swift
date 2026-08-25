@@ -415,6 +415,27 @@ actor RuntimeManager: RuntimeManaging {
         let receipt = try await processExecutor.launch(request)
         let result = try await processExecutor.waitForExit(receipt.id)
         guard result.exitCode == 0 else { throw RuntimeManagerError.validationFailed(RuntimeValidation(detectedWineVersion: runtime.wineVersion, versionMatchesManifest: true, missingPaths: ["wineboot smoke test exited with \(result.exitCode)"], unmetRequirements: [], executablePaths: [])) }
+        let expectedPrefixPaths = [
+            prefix.appending(path: "drive_c", directoryHint: .isDirectory),
+            prefix.appending(path: "dosdevices", directoryHint: .isDirectory),
+            prefix.appending(path: "system.reg"),
+            prefix.appending(path: "user.reg")
+        ]
+        for _ in 0..<120 {
+            try Task.checkCancellation()
+            if expectedPrefixPaths.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) { break }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        let missing = expectedPrefixPaths.filter { !fileManager.fileExists(atPath: $0.path) }.map(\.path)
+        guard missing.isEmpty else {
+            throw RuntimeManagerError.validationFailed(RuntimeValidation(
+                detectedWineVersion: runtime.wineVersion,
+                versionMatchesManifest: true,
+                missingPaths: missing,
+                unmetRequirements: [],
+                executablePaths: [runtime.wineBootExecutable.path]
+            ))
+        }
         let serverRequest = ProcessLaunchRequest(
             executable: runtime.wineServerExecutable,
             arguments: ["-k"],
@@ -448,9 +469,10 @@ actor RuntimeManager: RuntimeManaging {
 
     private func containedURL(_ relativePath: String, root: URL) throws -> URL {
         guard isSecureRelativePath(relativePath) else { throw RuntimeManagerError.runtimeLayoutNotFound }
-        let candidate = root.appending(path: relativePath).resolvingSymlinksInPath().standardizedFileURL
+        let candidate = root.appending(path: relativePath).standardizedFileURL
+        let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
         let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
-        guard candidate.path.hasPrefix(canonicalRoot.path + "/") else { throw RuntimeManagerError.runtimeLayoutNotFound }
+        guard resolvedCandidate.path.hasPrefix(canonicalRoot.path + "/") else { throw RuntimeManagerError.runtimeLayoutNotFound }
         return candidate
     }
 

@@ -12,7 +12,12 @@ struct ContentView: View {
     @Environment(BorealStore.self) private var store
     @State private var selection: SidebarDestination? = .library
     @State private var searchText = ""
-    @State private var libraryStyle = LibraryStyle.grid
+    @AppStorage("libraryStyle") private var libraryStyle = LibraryStyle.grid
+    @AppStorage("librarySort") private var librarySort = LibrarySort.nameAscending
+    @AppStorage("libraryGrouping") private var libraryGrouping = LibraryGrouping.source
+    @AppStorage("librarySourceFilters") private var librarySourceFilters = ""
+    @AppStorage("libraryAvailabilityFilters") private var libraryAvailabilityFilters = ""
+    @AppStorage("libraryCompatibilityFilters") private var libraryCompatibilityFilters = ""
     @State private var showsImporter = false
     @State private var installCandidate: InstallCandidate?
     @State private var showsNewEnvironment = false
@@ -26,12 +31,14 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } detail: {
-            destinationView
-                .frame(minWidth: 640, minHeight: 500)
-                .navigationTitle(title)
-                .toolbar { toolbarContent }
+            ZStack {
+                BorealGlassBackdrop()
+                destinationView
+            }
+            .frame(minWidth: 640, minHeight: 500)
+            .navigationTitle(title)
+            .toolbar { toolbarContent }
         }
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search Library")
         .fileImporter(isPresented: $showsImporter, allowedContentTypes: [.windowsExecutable, .windowsInstaller], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { installCandidate = InstallCandidate(url: url) }
         }
@@ -76,7 +83,13 @@ struct ContentView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
-            Label("Designed for Apple Silicon", systemImage: "cpu").font(.caption).foregroundStyle(.secondary).padding()
+            Label(
+                store.runtimeStatuses.contains(where: { $0.source == .installed && $0.isVerified }) ? "Runtime Ready" : "Runtime Setup Needed",
+                systemImage: store.runtimeStatuses.contains(where: { $0.source == .installed && $0.isVerified }) ? "checkmark.circle.fill" : "shippingbox"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding()
         }
     }
 
@@ -84,14 +97,20 @@ struct ContentView: View {
         switch selection ?? .library {
         case .library:
             LibraryView(
-                searchText: searchText,
+                searchText: $searchText,
                 style: libraryStyle,
+                sort: librarySort,
+                grouping: libraryGrouping,
+                sourceFilters: $librarySourceFilters,
+                availabilityFilters: $libraryAvailabilityFilters,
+                compatibilityFilters: $libraryCompatibilityFilters,
                 installAction: { showsImporter = true },
                 syncSteamAction: { store.syncSteamLibrary() },
                 importAction: { installCandidate = InstallCandidate(url: $0) },
                 selectAction: { selection = .application($0) },
                 selectStoreGameAction: { selection = .storeGame($0) }
             )
+            .searchable(text: $searchText, placement: .toolbar, prompt: "Search Library")
         case .accounts: AccountsView()
         case .environments: EnvironmentsView { showsNewEnvironment = true }
         case .downloads: DownloadsView()
@@ -105,7 +124,19 @@ struct ContentView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        if selection == .library || developerMode {
+        if selection == .library {
+            ToolbarItemGroup(placement: .primaryAction) {
+                LibraryToolbarControls(
+                    style: $libraryStyle,
+                    sort: $librarySort,
+                    grouping: $libraryGrouping,
+                    sourceFilters: $librarySourceFilters,
+                    availabilityFilters: $libraryAvailabilityFilters,
+                    compatibilityFilters: $libraryCompatibilityFilters
+                )
+            }
+        }
+        if selection == .library || (developerMode && selection == .environments) {
             ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("Install Windows App…", systemImage: "shippingbox") { showsImporter = true }.keyboardShortcut("o", modifiers: [.command, .shift])
