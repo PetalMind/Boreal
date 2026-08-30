@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct StoreGameDetailView: View {
     @Environment(BorealStore.self) private var store
     let game: StoreLibraryGame
+    var onSelectProducer: (String) -> Void = { _ in }
     @State private var showsInstallationOptions = false
     @State private var showsProgressDetails = false
     @State private var selectedScreenshot: StoreScreenshotSelection?
@@ -41,8 +42,8 @@ struct StoreGameDetailView: View {
             StoreGameInstallationSheet(
                 game: currentGame,
                 defaultDestination: store.defaultGameInstallationRoot(for: game.provider)
-            ) { destination in
-                if game.provider == .steam { store.installSteamWindowsGame(game) }
+            ) { destination, credentials in
+                if game.provider == .steam, let credentials { store.installSteamWindowsGame(game, credentials: credentials) }
                 else { store.installStoreGame(game, destinationRoot: destination) }
             }
         }
@@ -60,6 +61,9 @@ struct StoreGameDetailView: View {
         }
         .task(id: game.id) {
             store.refreshSteamMetadataIfNeeded(for: game)
+        }
+        .task(id: game.id) {
+            await store.loadSteamCurrentPlayerCountIfNeeded(for: game.id)
         }
         .confirmationDialog("Uninstall \(currentGame.name)?", isPresented: $showsUninstallConfirmation) {
             Button("Uninstall Game", role: .destructive) { uninstallGame() }
@@ -89,7 +93,15 @@ struct StoreGameDetailView: View {
                         .foregroundStyle(.white)
                         .lineLimit(2)
                     if let developer = game.developer {
-                        Text(developer).font(.title3).foregroundStyle(.white.opacity(0.72))
+                        Button {
+                            onSelectProducer(developer)
+                        } label: {
+                            Label(developer, systemImage: "person.crop.rectangle.stack")
+                                .font(.title3)
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show all games by \(developer)")
                     }
                     HStack(spacing: 12) {
                         StorePlatformBadge(game: currentGame)
@@ -129,11 +141,7 @@ struct StoreGameDetailView: View {
                     Button("Open Native macOS Version", systemImage: "apple.logo") { openNativeInstallation() }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                 } else if let app = linkedApplication {
-                    Button(app.status == .running ? "Stop" : "Play Windows Version", systemImage: app.status == .running ? "stop.fill" : "play.fill") {
-                        store.toggleRunning(app.id)
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(app.status.isBusy || app.status == .unavailable)
+                    runtimeLaunchControl(for: app, playTitle: "Play Windows Version")
                 } else if currentGame.supportsNativeMacOS == true {
                     Button(currentGame.isInstalled ? "Play Native macOS Version" : "Install Native macOS Version", systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
                         .buttonStyle(.borderedProminent).controlSize(.large)
@@ -154,9 +162,7 @@ struct StoreGameDetailView: View {
                     Button("Open Native macOS Version", systemImage: "apple.logo") { openNativeInstallation() }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                 } else if let app = linkedApplication {
-                    Button(app.status == .running ? "Stop" : "Play in Boreal", systemImage: app.status == .running ? "stop.fill" : "play.fill") { store.toggleRunning(app.id) }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(app.status.isBusy || app.status == .unavailable)
+                    runtimeLaunchControl(for: app, playTitle: "Play in Boreal")
                 } else if storeOperation == nil {
                     runtimePreparationMenu
                 }
@@ -171,6 +177,63 @@ struct StoreGameDetailView: View {
                 Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }.controlSize(.large)
             }
         }
+    }
+
+    @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: String) -> some View {
+        if app.status == .running {
+            Button("Stop", systemImage: "stop.fill") { store.toggleRunning(app.id) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+        } else if canChooseRuntime(for: app) {
+            Menu {
+                if let issue = store.runtimeCompatibilityIssue(for: app, engine: .gamePortingToolkit) {
+                    Button("Game Porting Toolkit (D3DMetal)", systemImage: "cpu") { }
+                        .disabled(true)
+                    Text(issue)
+                } else {
+                    runtimeLaunchButton(.gamePortingToolkit, for: app)
+                }
+                runtimeLaunchButton(.wine, for: app)
+            } label: {
+                Label(playTitle, systemImage: "play.fill")
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .fixedSize()
+            .disabled(app.status.isBusy || app.status == .unavailable || storeOperation != nil)
+        } else {
+            Button(playTitle, systemImage: "play.fill") { store.toggleRunning(app.id) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(app.status.isBusy || app.status == .unavailable)
+        }
+    }
+
+    private func runtimeLaunchButton(_ engine: RuntimeEngine, for app: WindowsApplication) -> some View {
+        let isCurrent = currentRuntimeEngine(for: app) == engine
+        return Button {
+            if isCurrent {
+                store.toggleRunning(app.id)
+            } else {
+                store.recreateEnvironment(app.id, with: engine, launchWhenReady: true)
+            }
+        } label: {
+            Label(
+                engine.displayName + " (" + engine.graphicsName + ")" + (isCurrent ? " · Current" : ""),
+                systemImage: engine == .gamePortingToolkit ? "cpu" : "shippingbox"
+            )
+        }
+    }
+
+    private func canChooseRuntime(for app: WindowsApplication) -> Bool {
+        guard let provider = app.storeProvider else { return false }
+        return [.epic, .gog].contains(provider)
+    }
+
+    private func currentRuntimeEngine(for app: WindowsApplication) -> RuntimeEngine? {
+        guard let graphics = store.environment(id: app.environmentID)?.graphics else { return nil }
+        return graphics == RuntimeEngine.gamePortingToolkit.graphicsName ? .gamePortingToolkit : .wine
     }
 
     private var runtimePreparationMenu: some View {
@@ -458,6 +521,13 @@ struct StoreGameDetailView: View {
             detailCard("Store details", symbol: "storefront") {
                 metric("Source", value: game.provider.rawValue, symbol: game.provider.symbol)
                 metric("Game ID", value: game.externalID, symbol: "number")
+                if game.provider == .steam {
+                    metric(
+                        "Players online",
+                        value: currentGame.currentPlayerCount?.formatted() ?? "Unavailable",
+                        symbol: "person.2.fill"
+                    )
+                }
             }
         }
     }
@@ -570,6 +640,12 @@ struct StoreGameDetailView: View {
 
     private func openSteam() {
         let action = currentGame.isInstalled ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
+        if action == "rungameid", currentGame.installedPlatform == .nativeMacOS, let path = currentGame.installPath {
+            GameOverlayController.shared.expectNativeGame(
+                name: currentGame.name,
+                installationURL: URL(fileURLWithPath: path, isDirectory: true)
+            )
+        }
         if let url = URL(string: "steam://\(action)/\(game.externalID)") { NSWorkspace.shared.open(url) }
     }
 
@@ -583,6 +659,7 @@ struct StoreGameDetailView: View {
         ) {
             for case let candidate as URL in enumerator {
                 if candidate.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+                    GameOverlayController.shared.expectNativeGame(name: currentGame.name, installationURL: candidate)
                     NSWorkspace.shared.open(candidate)
                     return
                 }
@@ -685,10 +762,13 @@ struct BorealDownloadProgressStyle: ProgressViewStyle {
 private struct StoreGameInstallationSheet: View {
     @Environment(\.dismiss) private var dismiss
     let game: StoreLibraryGame
-    let completion: (URL?) -> Void
+    let completion: (URL?, SteamCMDCredentials?) -> Void
     @State private var destination: URL
+    @State private var steamUsername = ""
+    @State private var steamPassword = ""
+    @State private var steamGuardCode = ""
 
-    init(game: StoreLibraryGame, defaultDestination: URL, completion: @escaping (URL?) -> Void) {
+    init(game: StoreLibraryGame, defaultDestination: URL, completion: @escaping (URL?, SteamCMDCredentials?) -> Void) {
         self.game = game
         self.completion = completion
         _destination = State(initialValue: defaultDestination)
@@ -714,9 +794,21 @@ private struct StoreGameInstallationSheet: View {
             } else if game.provider == .steam {
                 Label("Steam chooses the game library", systemImage: "shippingbox.and.arrow.backward")
                     .font(.headline)
-                Text("Boreal will open the official Steam for Windows installer. Choose the target Steam Library in Steam when prompted; your password and Steam Guard code stay inside Steam.")
+                Text("Boreal will download the Windows depots with native SteamCMD. Your credentials are used only for this download and are never saved.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                TextField("Steam username", text: $steamUsername)
+                SecureField("Steam password", text: $steamPassword)
+                TextField("Steam Guard code (if requested)", text: $steamGuardCode)
+                HStack(spacing: 10) {
+                    Button("Open Steam Guard Mobile help", systemImage: "iphone.and.arrow.forward") {
+                        openSteamGuardHelp()
+                    }
+                    .buttonStyle(.bordered)
+                    Text("Use the current code from Steam Mobile; it changes every 30 seconds.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Installation location").font(.headline)
@@ -742,16 +834,21 @@ private struct StoreGameInstallationSheet: View {
                 storageSummary(title: "Space available", value: formattedCapacity, symbol: "externaldrive")
             }
 
+            architectureSummary
+
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Spacer()
-                Button(game.supportsNativeMacOS == true ? "Download Native Version" : "Download and Install") {
-                    completion(game.provider == .steam ? nil : destination)
+                Button(game.supportsNativeMacOS == true ? "Download Native Version" : (game.provider == .steam ? "Download Windows Version" : "Download and Install")) {
+                    let credentials = game.provider == .steam
+                        ? SteamCMDCredentials(username: steamUsername, password: steamPassword, guardCode: steamGuardCode)
+                        : nil
+                    completion(game.provider == .steam ? nil : destination, credentials)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(game.provider != .steam && !destinationIsUsable)
+                .disabled(game.provider != .steam && !destinationIsUsable || (game.provider == .steam && (steamUsername.isEmpty || steamPassword.isEmpty)))
             }
         }
         .padding(28)
@@ -763,6 +860,11 @@ private struct StoreGameInstallationSheet: View {
         let exists = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory)
         if exists { return isDirectory.boolValue && FileManager.default.isWritableFile(atPath: destination.path) }
         return FileManager.default.isWritableFile(atPath: capacityProbeURL.path)
+    }
+
+    private func openSteamGuardHelp() {
+        guard let url = URL(string: "https://help.steampowered.com/en/faqs/view/7EFD-3CAE-64D3-1C31") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private var formattedDownloadSize: String {
@@ -784,6 +886,30 @@ private struct StoreGameInstallationSheet: View {
         guard game.provider != .steam else { return "Shown by Steam" }
         guard let bytes = GameStorage.availableCapacity(at: capacityProbeURL) else { return "Unavailable" }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    @ViewBuilder private var architectureSummary: some View {
+        if game.supportsNativeMacOS != true {
+            if let architecture = game.sizeEstimate?.executableArchitecture {
+                let requiresWine = architecture == .x86
+                Label(
+                    requiresWine
+                        ? "32-bit Windows game · Wine with WoW64 required"
+                        : "64-bit Windows game · Wine or GPTK can be prepared",
+                    systemImage: requiresWine ? "exclamationmark.shield.fill" : "checkmark.shield.fill"
+                )
+                .foregroundStyle(requiresWine ? .orange : .green)
+                Text("Detected from store metadata before download. Boreal will verify the installed executable again before creating its runtime environment.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("Windows architecture unknown", systemImage: "questionmark.diamond")
+                    .foregroundStyle(.secondary)
+                Text("The store did not publish enough information to distinguish a 32-bit game from a 64-bit game. Boreal will inspect the executable after installation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var capacityProbeURL: URL {

@@ -71,9 +71,19 @@ actor InstallerService: Installing {
 
     func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit {
         await progress(.preparingRuntime)
-        let runtime = try await readyRuntime()
+        // The installer is a PE executable, so choose the compatibility engine
+        // before creating the prefix and before running any Windows code.
+        let installerArchitecture = WindowsExecutableArchitecture.inspect(installer)
+        let preferredEngine: RuntimeEngine = installerArchitecture == .x86_64
+            ? .gamePortingToolkit
+            : .wine
+        let environmentArchitecture = installerArchitecture == .x86 ? "win32" : "win64"
+        let runtime = try await readyRuntime(preferredEngine: preferredEngine)
         await progress(.creatingEnvironment)
-        let environment = try await environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
+        let environment = try await environmentManager.create(
+            configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture),
+            runtime: runtime
+        )
         do {
             try await environmentManager.initialize(environment, runtime: runtime)
             let driveC = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory)
@@ -114,8 +124,8 @@ actor InstallerService: Installing {
         }
     }
 
-    private func readyRuntime() async throws -> InstalledRuntime {
-        try await runtimeManager.prepareReadyRuntime()
+    private func readyRuntime(preferredEngine: RuntimeEngine) async throws -> InstalledRuntime {
+        try await runtimeManager.prepareReadyRuntime(preferredEngine: preferredEngine)
     }
 
     private func portableExecutable(_ installer: URL) -> URL? {

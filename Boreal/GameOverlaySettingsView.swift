@@ -11,10 +11,11 @@ struct GameOverlaySettingsView: View {
             Section("In-game performance overlay") {
                 Toggle("Show overlay while a game is running", isOn: $isEnabled)
                 Picker("Information level", selection: $detailLevel) {
-                    Text("Minimal — essential frame data").tag(GameOverlayDetailLevel.minimal.rawValue)
-                    Text("Standard — everyday overview").tag(GameOverlayDetailLevel.standard.rawValue)
-                    Text("Diagnostic — system details").tag(GameOverlayDetailLevel.diagnostic.rawValue)
+                    Text("Minimal").tag(GameOverlayDetailLevel.minimal.rawValue)
+                    Text("Standard").tag(GameOverlayDetailLevel.standard.rawValue)
+                    Text("Diagnostic").tag(GameOverlayDetailLevel.diagnostic.rawValue)
                 }
+                .pickerStyle(.segmented)
                 Picker("Screen position", selection: $position) {
                     Text("Top left").tag("topLeft")
                     Text("Top right").tag("topRight")
@@ -28,7 +29,7 @@ struct GameOverlaySettingsView: View {
                 }
             }
             Section {
-                Text("Minimal shows frame data, Standard adds system load, and Diagnostic adds sensors and runtime details. Values stay unavailable when macOS or the active runtime does not expose them.")
+                Text("Switch while playing with ⌘⌥I, or select Minimal, Standard and Diagnostic directly with ⌘⌥1, ⌘⌥2 and ⌘⌥3. Values stay unavailable when macOS or the active runtime does not expose them.")
                     .foregroundStyle(.secondary)
             }
         }

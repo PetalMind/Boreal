@@ -292,7 +292,7 @@ private struct UnusedEpicLibrary: EpicLibraryProviding {
 }
 
 private struct UnusedSteamWindows: SteamWindowsProviding {
-    func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
+    func downloadWindowsGame(appID: String, destination: URL, credentials: SteamCMDCredentials, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsDownload {
         throw CocoaError(.featureUnsupported)
     }
 }

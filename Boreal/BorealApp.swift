@@ -36,6 +36,16 @@ struct BorealApp: App {
                 Divider()
                 Button("Toggle Game Overlay") { GameOverlayController.shared.toggleVisibility() }
                     .keyboardShortcut("o", modifiers: [.command, .option])
+                Button("Cycle Overlay Information Level") { GameOverlayController.shared.cycleDetailLevel() }
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                Menu("Overlay Information Level") {
+                    Button("Minimal") { GameOverlayController.shared.setDetailLevel(.minimal) }
+                        .keyboardShortcut("1", modifiers: [.command, .option])
+                    Button("Standard") { GameOverlayController.shared.setDetailLevel(.standard) }
+                        .keyboardShortcut("2", modifiers: [.command, .option])
+                    Button("Diagnostic") { GameOverlayController.shared.setDetailLevel(.diagnostic) }
+                        .keyboardShortcut("3", modifiers: [.command, .option])
+                }
             }
         }
 

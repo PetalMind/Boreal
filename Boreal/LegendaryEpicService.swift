@@ -253,7 +253,8 @@ actor LegendaryEpicService: EpicLibraryProviding {
             installedBytes: installedBytes,
             source: .epicManifest,
             platform: platform,
-            buildID: manifest["build_id"].map(String.init(describing:))
+            buildID: manifest["build_id"].map(String.init(describing:)),
+            executableArchitecture: StoreArchitectureInference.fromManifest(root)
         )
     }
 

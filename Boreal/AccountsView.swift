@@ -102,10 +102,13 @@ struct AccountsView: View {
 
     private var steamCard: some View {
         accountCard(symbol: "gamecontroller.fill", title: "Steam", tint: .blue) {
-            Label("Uses the account already signed in to the Steam app", systemImage: "checkmark.shield.fill")
+            Label("Uses the account signed in to the Steam app", systemImage: "checkmark.shield.fill")
                 .foregroundStyle(.secondary)
-            Button("Refresh Steam Library", systemImage: "arrow.clockwise") { store.syncSteamLibrary() }
-                .disabled(store.librarySyncState == .syncing(.steam))
+            HStack {
+                Button("Open Steam to sign in", systemImage: "person.crop.circle.badge.plus") { openSteamSignIn() }
+                Button("Refresh Steam Library", systemImage: "arrow.clockwise") { store.syncSteamLibrary() }
+                    .disabled(store.librarySyncState == .syncing(.steam))
+            }
         }
     }
 
@@ -220,5 +223,10 @@ struct AccountsView: View {
         guard let url = URL(string: value) else { return }
         NSWorkspace.shared.open(url)
         showsGOGAuthorizationCode = true
+    }
+
+    private func openSteamSignIn() {
+        guard let url = URL(string: "steam://openmain") else { return }
+        NSWorkspace.shared.open(url)
     }
 }

@@ -39,6 +39,12 @@ actor SystemProcessExecutor: ProcessExecuting {
         process.currentDirectoryURL = request.currentDirectory
         process.standardOutput = stdout
         process.standardError = stderr
+        if let standardInput = request.standardInput {
+            let input = Pipe()
+            process.standardInput = input
+            input.fileHandleForWriting.write(standardInput)
+            try? input.fileHandleForWriting.close()
+        }
         let id = UUID()
         let startedAt = Date()
         let record = Record(process: process, startedAt: startedAt, stdoutLog: request.stdoutLog, stderrLog: request.stderrLog, stdoutHandle: stdout, stderrHandle: stderr)

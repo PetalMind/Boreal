@@ -19,6 +19,7 @@ struct ContentView: View {
     @AppStorage("librarySourceFilters") private var librarySourceFilters = ""
     @AppStorage("libraryAvailabilityFilters") private var libraryAvailabilityFilters = ""
     @AppStorage("libraryCompatibilityFilters") private var libraryCompatibilityFilters = ""
+    @AppStorage("libraryProducerFilter") private var libraryProducerFilter = ""
     @State private var showsImporter = false
     @State private var installCandidate: InstallCandidate?
     @State private var showsNewEnvironment = false
@@ -96,11 +97,45 @@ struct ContentView: View {
                 Button {
                     showLibrary()
                     librarySourceFilters = ""
+                    libraryAvailabilityFilters = ""
+                    libraryProducerFilter = ""
                 } label: {
                     Label("Home", systemImage: "house.fill")
                 }
                 .buttonStyle(.plain)
                 .tag(SidebarDestination.library)
+                Button {
+                    showInstalledLibrary()
+                } label: {
+                    HStack {
+                        Label("Zainstalowane", systemImage: "checkmark.circle.fill")
+                        Spacer()
+                        Text(installedCount.formatted())
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isInstalledSelected ? Color.accentColor : Color.primary)
+                .disabled(installedCount == 0)
+                .accessibilityAddTraits(isInstalledSelected ? .isSelected : [])
+                Button {
+                    showFavoritesLibrary()
+                } label: {
+                    HStack {
+                        Label("Favorites", systemImage: "heart.fill")
+                        Spacer()
+                        Text(favoriteCount.formatted())
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isFavoritesSelected ? Color.accentColor : Color.primary)
+                .tag(SidebarDestination.favorites)
+                .accessibilityAddTraits(isFavoritesSelected ? .isSelected : [])
                 ForEach(LibrarySourceFilter.allCases, id: \.self) { source in
                     Button {
                         showLibrary(source: source)
@@ -178,7 +213,7 @@ struct ContentView: View {
 
     @ViewBuilder private var destinationView: some View {
         switch selection ?? .library {
-        case .library:
+        case .library, .favorites:
             LibraryView(
                 searchText: $searchText,
                 style: libraryStyle,
@@ -187,6 +222,8 @@ struct ContentView: View {
                 sourceFilters: $librarySourceFilters,
                 availabilityFilters: $libraryAvailabilityFilters,
                 compatibilityFilters: $libraryCompatibilityFilters,
+                producerFilter: $libraryProducerFilter,
+                favoritesOnly: selection == .favorites,
                 installAction: { showsImporter = true },
                 syncSteamAction: { store.syncSteamLibrary() },
                 importAction: { installCandidate = InstallCandidate(url: $0) },
@@ -214,7 +251,10 @@ struct ContentView: View {
                 }
             case .storeGame(let id):
                 if let game = store.storeGame(id: id) {
-                    StoreGameDetailView(game: game)
+                    StoreGameDetailView(game: game) { producer in
+                        libraryProducerFilter = producer
+                        libraryPath.removeAll()
+                    }
                         .navigationTitle(game.name)
                 } else {
                     ContentUnavailableView("Game Not Found", systemImage: "questionmark.app")
@@ -258,6 +298,7 @@ struct ContentView: View {
     private var title: String {
         switch selection ?? .library {
         case .library: "Library"
+        case .favorites: "Favorites"
         case .accounts: "Accounts"
         case .environments: "Environments"
         case .downloads: "Downloads"
@@ -301,6 +342,27 @@ struct ContentView: View {
         libraryPath.removeAll()
         searchText = ""
         librarySourceFilters = source.rawValue
+        libraryAvailabilityFilters = ""
+        libraryProducerFilter = ""
+    }
+
+    private func showInstalledLibrary() {
+        selection = .library
+        libraryPath.removeAll()
+        searchText = ""
+        librarySourceFilters = ""
+        libraryAvailabilityFilters = LibraryAvailabilityFilter.installed.rawValue
+        libraryProducerFilter = ""
+    }
+
+    private func showFavoritesLibrary() {
+        selection = .favorites
+        libraryPath.removeAll()
+        searchText = ""
+        librarySourceFilters = ""
+        libraryAvailabilityFilters = ""
+        libraryCompatibilityFilters = ""
+        libraryProducerFilter = ""
     }
 
     private func sourceCount(_ source: LibrarySourceFilter) -> Int {
@@ -309,7 +371,27 @@ struct ContentView: View {
     }
 
     private func isSelected(_ source: LibrarySourceFilter) -> Bool {
-        selection == .library && librarySourceFilters == source.rawValue
+        selection == .library
+            && librarySourceFilters == source.rawValue
+            && libraryAvailabilityFilters.isEmpty
+    }
+
+    private var installedCount: Int {
+        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames)
+            .lazy.filter(\.installed).count
+    }
+
+    private var isInstalledSelected: Bool {
+        selection == .library
+            && librarySourceFilters.isEmpty
+            && libraryAvailabilityFilters == LibraryAvailabilityFilter.installed.rawValue
+    }
+
+    private var isFavoritesSelected: Bool { selection == .favorites }
+
+    private var favoriteCount: Int {
+        let items = LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames)
+        return items.lazy.filter { store.favoriteKeys.contains($0.favoriteKey) }.count
     }
 }
 

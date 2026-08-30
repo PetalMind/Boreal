@@ -80,6 +80,17 @@ struct SteamLibraryServiceTests {
         ]) == nil)
     }
 
+    @Test func loadsCurrentSteamPlayerCount() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SteamMetadataURLProtocol.self]
+        SteamMetadataURLProtocol.currentPlayersResponse = Data("""
+        {"response":{"player_count":12345,"result":1}}
+        """.utf8)
+        let service = SteamLibraryService(session: URLSession(configuration: configuration))
+
+        #expect(await service.loadCurrentPlayerCount(appID: "730") == 12_345)
+    }
+
     private func makeDirectory(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     }
@@ -91,12 +102,15 @@ struct SteamLibraryServiceTests {
 
 private nonisolated final class SteamMetadataURLProtocol: URLProtocol {
     nonisolated(unsafe) static var responseData = Data()
+    nonisolated(unsafe) static var currentPlayersResponse = Data()
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let data: Data
-        if request.url?.path.contains("/reports/summaries/") == true {
+        if request.url?.path.contains("/ISteamUserStats/GetNumberOfCurrentPlayers/") == true {
+            data = Self.currentPlayersResponse
+        } else if request.url?.path.contains("/reports/summaries/") == true {
             data = Data("""
             {"bestReportedTier":"platinum","confidence":"strong","score":0.71,"tier":"gold","total":2029,"trendingTier":"platinum"}
             """.utf8)

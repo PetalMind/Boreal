@@ -38,6 +38,36 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var dxmt: Bool
 }
 
+nonisolated enum WindowsExecutableArchitecture: Equatable, Sendable {
+    case x86, x86_64, unknown
+
+    static func inspect(_ url: URL) -> Self {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return .unknown }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 64),
+              header.count >= 64,
+              header[0] == 0x4D,
+              header[1] == 0x5A else { return .unknown }
+
+        let peOffset = Int(header[60])
+            | (Int(header[61]) << 8)
+            | (Int(header[62]) << 16)
+            | (Int(header[63]) << 24)
+        guard peOffset >= 0,
+              (try? handle.seek(toOffset: UInt64(peOffset))) != nil,
+              let peHeader = try? handle.read(upToCount: 26),
+              peHeader.count >= 26,
+              Array(peHeader.prefix(4)) == [0x50, 0x45, 0x00, 0x00] else { return .unknown }
+
+        let optionalHeaderMagic = UInt16(peHeader[24]) | (UInt16(peHeader[25]) << 8)
+        switch optionalHeaderMagic {
+        case 0x10B: return .x86
+        case 0x20B: return .x86_64
+        default: return .unknown
+        }
+    }
+}
+
 nonisolated struct RuntimeArtifact: Codable, Sendable, Hashable {
     let url: URL
     let sha256: String
@@ -249,6 +279,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case requirementMissing(RuntimeRequirement)
     case downloadFailed(String)
     case localRuntimeInvalid(String)
+    case incompatible32BitExecutable(runtime: String)
 
     var errorDescription: String? {
         switch self {
@@ -267,6 +298,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .requirementMissing(.gStreamerFramework): "GStreamer.framework is required by this development runtime."
         case .downloadFailed(let reason): "Runtime download failed: \(reason)"
         case .localRuntimeInvalid(let reason): "The installed Wine app can’t be imported: \(reason)"
+        case .incompatible32BitExecutable(let runtime): "This game is 32-bit, but \(runtime) does not provide WoW64 support. Use a Wine runtime that supports 32-bit Windows applications."
         }
     }
 }

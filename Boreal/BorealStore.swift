@@ -33,11 +33,13 @@ final class BorealStore {
         var environments: [WindowsEnvironment]
         var storeGames: [StoreLibraryGame]?
         var storeDownloads: [String: StoreDownloadRecord]?
+        var favoriteKeys: [String]?
     }
 
     var applications: [WindowsApplication] = []
     var environments: [WindowsEnvironment] = []
     var storeGames: [StoreLibraryGame] = []
+    private(set) var favoriteKeys: Set<String> = []
     var librarySyncState: LibrarySyncState = .idle
     var epicConnectionState: EpicConnectionState = .checking
     var gogConnectionState: GOGConnectionState = .checking
@@ -51,6 +53,7 @@ final class BorealStore {
     private let storageURL: URL
     private let services: BorealServices
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
+    private var performanceLogURLs: [UUID: URL] = [:]
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
     private var requestedStops: Set<UUID> = []
@@ -72,12 +75,34 @@ final class BorealStore {
         self.storageURL = storageURL ?? base.appending(path: "Boreal/library.json")
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
         load()
-        for index in applications.indices where applications[index].status != .running && !FileManager.default.fileExists(atPath: applications[index].executablePath) {
+        var didNormalizeApplicationState = false
+        for index in applications.indices {
+            let application = applications[index]
+            if application.installerPath == "steam-windows-client" {
+                applications[index].status = .unavailable
+                applications[index].lastResult = "Legacy Steam client entry disabled"
+                applications[index].lastFailureStage = "Migrating Steam installation"
+                applications[index].lastErrorDetail = "This legacy entry launched Steam for Windows. Re-download the game with native SteamCMD."
+                didNormalizeApplicationState = true
+                continue
+            }
+            let hasExecutable = FileManager.default.fileExists(atPath: application.executablePath)
+            let hasRefreshableStoreInstallation: Bool = {
+                guard let provider = application.storeProvider,
+                      [.epic, .gog].contains(provider),
+                      let externalID = application.storeExternalID else { return false }
+                return storeGames.contains {
+                    $0.provider == provider && $0.externalID == externalID && $0.isInstalled
+                }
+            }()
+            guard !hasExecutable && !hasRefreshableStoreInstallation else { continue }
+            didNormalizeApplicationState = true
             applications[index].status = .unavailable
             applications[index].lastResult = "Executable unavailable"
             applications[index].lastFailureStage = "Checking application files"
             applications[index].lastErrorDetail = "The configured executable no longer exists at \(applications[index].executablePath)."
         }
+        if didNormalizeApplicationState { save() }
         let recoveryAppIDs = applications.filter { $0.status == .running }.map(\.id)
         for index in applications.indices where [.running, .starting, .preparing].contains(applications[index].status) {
             applications[index].status = applications[index].status == .running ? .needsAttention : .ready
@@ -91,7 +116,30 @@ final class BorealStore {
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
-    func performanceLogURL(for applicationID: UUID) -> URL? { activeSessions[applicationID]?.stderrLog }
+    func isFavorite(key: String) -> Bool { favoriteKeys.contains(key) }
+
+    func toggleFavorite(key: String) {
+        if favoriteKeys.contains(key) { favoriteKeys.remove(key) }
+        else { favoriteKeys.insert(key) }
+        save()
+    }
+    func performanceLogURL(for applicationID: UUID) -> URL? {
+        if let url = performanceLogURLs[applicationID] ?? activeSessions[applicationID]?.stderrLog { return url }
+        guard let app = application(id: applicationID),
+              let logsPath = environment(id: app.environmentID)?.logsPath else { return nil }
+        let logsURL = URL(fileURLWithPath: logsPath, isDirectory: true)
+        return (try? FileManager.default.contentsOfDirectory(
+            at: logsURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ))?
+        .filter { $0.lastPathComponent.hasPrefix("launch-") && $0.lastPathComponent.hasSuffix(".stderr.log") }
+        .max { lhs, rhs in
+            let left = try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let right = try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            return (left ?? .distantPast) < (right ?? .distantPast)
+        }
+    }
 
     func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
         guard game.provider == .steam,
@@ -107,6 +155,15 @@ final class BorealStore {
             storeGames[index] = value
             save()
         }
+    }
+
+    func loadSteamCurrentPlayerCountIfNeeded(for gameID: UUID) async {
+        guard let game = storeGame(id: gameID),
+              game.provider == .steam else { return }
+        let count = await services.steamLibrary.loadCurrentPlayerCount(appID: game.externalID)
+        guard let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
+        storeGames[index].currentPlayerCount = count
+        save()
     }
 
     func loadStoreGameSizeIfNeeded(for gameID: UUID) async {
@@ -143,7 +200,12 @@ final class BorealStore {
         save()
     }
     func linkedApplication(for game: StoreLibraryGame) -> WindowsApplication? {
-        applications.first { $0.storeProvider == game.provider && $0.storeExternalID == game.externalID }
+        applications.first {
+            $0.status != .unavailable
+                && $0.installerPath != "steam-windows-client"
+                && $0.storeProvider == game.provider
+                && $0.storeExternalID == game.externalID
+        }
     }
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
     func applications(in environmentID: UUID) -> [WindowsApplication] { applications.filter { $0.environmentID == environmentID } }
@@ -154,6 +216,18 @@ final class BorealStore {
 
     func hasInstalledRuntime(engine: RuntimeEngine) -> Bool {
         runtimeStatuses.contains { $0.source == .installed && $0.state == .installed && $0.engine == engine }
+    }
+
+    func runtimeCompatibilityIssue(for application: WindowsApplication, engine: RuntimeEngine) -> String? {
+        guard engine == .gamePortingToolkit,
+              WindowsExecutableArchitecture.inspect(URL(fileURLWithPath: application.executablePath)) == .x86 else { return nil }
+        let supportsWoW64 = runtimeStatuses.contains {
+            $0.source == .installed
+                && $0.state == .installed
+                && $0.engine == engine
+                && $0.features?.wow64 == true
+        }
+        return supportsWoW64 ? nil : "This game is 32-bit. The installed GPTK runtime does not support WoW64, so use Wine instead."
     }
 
     func install(_ candidate: InstallCandidate) async -> UUID? {
@@ -193,6 +267,7 @@ final class BorealStore {
             environments.append(environment)
             applications.append(app)
             activeSessions[app.id] = commit.firstLaunch
+            performanceLogURLs[app.id] = commit.firstLaunch.stderrLog
             activeEnvironments[app.id] = managed
             activeRuntimes[app.id] = commit.runtime
             save()
@@ -276,7 +351,7 @@ final class BorealStore {
         }
     }
 
-    func installSteamWindowsGame(_ game: StoreLibraryGame) {
+    func installSteamWindowsGame(_ game: StoreLibraryGame, credentials: SteamCMDCredentials) {
         let key = storeOperationKey(for: game)
         guard game.provider == .steam,
               game.supportsWindows != false,
@@ -284,36 +359,62 @@ final class BorealStore {
               storeGameOperations[key] == nil else { return }
         let token = UUID()
         storeOperationTokens[key] = token
+        let folderName = game.name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: "..", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let destination = defaultGameInstallationRoot(for: .steam).appending(path: folderName.isEmpty ? game.externalID : folderName, directoryHint: .isDirectory)
         storeGameOperations[key] = .installing(StoreGameOperationProgress(
-            message: "Preparing Steam for Windows…",
+            message: "Downloading Windows game with SteamCMD…",
             fractionCompleted: nil
         ))
         let task = Task { [weak self] in
             guard let self else { return }
+            var createdEnvironment: ManagedBorealEnvironment?
             do {
-                if let host = applications.first(where: {
-                    $0.storeProvider == .steam && $0.installerPath == "steam-windows-client"
-                        && FileManager.default.fileExists(atPath: $0.executablePath)
-                }) {
-                    try await linkSteamWindowsGame(game, using: host)
-                } else {
-                    let prepared = try await services.steamWindows.prepareClient { [weak self] stage in
-                        await self?.updateSteamPreparation(stage, key: key, token: token)
-                    }
-                    try await linkSteamWindowsGame(game, using: prepared)
+                let download = try await services.steamWindows.downloadWindowsGame(appID: game.externalID, destination: destination, credentials: credentials) { [weak self] stage in
+                    await self?.updateSteamPreparation(stage, key: key, token: token)
+                }
+                let snapshot = ExecutableDiscovery.snapshot(at: download.destination)
+                guard let candidate = ExecutableDiscovery.rankedCandidates(
+                    before: ExecutableFilesystemSnapshot(rootURL: download.destination, entries: []),
+                    after: snapshot,
+                    applicationName: game.name
+                ).first else { throw SteamWindowsError.gameExecutableMissing }
+                let executableArchitecture = WindowsExecutableArchitecture.inspect(candidate.url)
+                let preferredEngine: RuntimeEngine? = executableArchitecture == .x86_64 ? .gamePortingToolkit : .wine
+                let environmentArchitecture = executableArchitecture == .x86 ? "win32" : "win64"
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: preferredEngine)
+                let environment = try await services.environmentManager.create(configuration: EnvironmentConfiguration(name: game.name, architecture: environmentArchitecture), runtime: runtime)
+                createdEnvironment = environment
+                await updateSteamPreparation(.creatingEnvironment, key: key, token: token)
+                try await services.environmentManager.initialize(environment, runtime: runtime)
+                let managed = environment
+                let windowsEnvironment = WindowsEnvironment(id: managed.id, name: game.name, runtime: runtime.runtimeDescription, graphics: runtime.graphicsName, runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path)
+                let app = steamWindowsApplication(game: game, executable: candidate.url, environmentID: managed.id, status: .ready, graphics: runtime.graphicsName)
+                environments.append(windowsEnvironment)
+                applications.append(app)
+                if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
+                    storeGames[index].isInstalled = true
+                    storeGames[index].installPath = destination.path
+                    storeGames[index].installedPlatform = .windows
                 }
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
-                storeGameOperations[key] = .awaitingProvider("Steam for Windows is open. Sign in and follow the game download in Steam.")
+                storeGameOperations[key] = nil
                 storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
                 save()
             } catch is CancellationError {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
                 finishCancelledStoreOperation(key: key, token: token)
             } catch {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
                 guard storeOperationTokens[key] == token else { return }
                 storeGameOperations[key] = .failed(error.localizedDescription)
                 storeOperationTasks[key] = nil
-                present(error, title: "\(game.name) couldn’t be prepared", stage: "Installing Valve’s Windows Steam client in Boreal")
+                present(error, title: "\(game.name) couldn’t be downloaded", stage: "Downloading the Windows build with SteamCMD")
             }
         }
         storeOperationTasks[key] = task
@@ -515,6 +616,92 @@ final class BorealStore {
             destinationRoot: destinationRoot ?? defaultGameInstallationRoot(for: game.provider),
             platform: platform
         )
+    }
+
+    func addExistingWindowsApp(at selectedURL: URL) {
+        let selected = selectedURL.standardizedFileURL
+        guard installationTask == nil else { return }
+        guard selected.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+              FileManager.default.fileExists(atPath: selected.path),
+              ExecutableDiscovery.isEligibleExecutablePath(selected.lastPathComponent) else {
+            presentedIssue = BorealIssue(
+                title: "This game couldn’t be added",
+                stage: "Validating the selected Windows executable.",
+                recovery: "Choose the game’s main .exe file, not an installer, updater, helper, or uninstaller.",
+                technicalDetails: selected.path
+            )
+            return
+        }
+
+        let name = selected.deletingPathExtension().lastPathComponent
+        let architecture = WindowsExecutableArchitecture.inspect(selected)
+        let engine: RuntimeEngine = architecture == .x86_64 ? .gamePortingToolkit : .wine
+        let environmentArchitecture = architecture == .x86 ? "win32" : "win64"
+        installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
+        let task = Task<UUID?, Never> { [weak self] in
+            guard let self else { return nil }
+            var createdEnvironment: ManagedBorealEnvironment?
+            do {
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
+                await updateInstallation(.creatingEnvironment)
+                let managed = try await services.environmentManager.create(
+                    configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture),
+                    runtime: runtime
+                )
+                createdEnvironment = managed
+                try await services.environmentManager.initialize(managed, runtime: runtime)
+                try Task.checkCancellation()
+                await updateInstallation(.verifyingFirstLaunch)
+                let communityProfile = await services.communityCompatibility.profile(named: name)
+                let environment = WindowsEnvironment(
+                    id: managed.id,
+                    name: name,
+                    architecture: environmentArchitecture == "win64" ? "64-bit" : "32-bit",
+                    runtime: runtime.runtimeDescription,
+                    graphics: runtime.graphicsName,
+                    runtimeID: runtime.id,
+                    rootPath: managed.rootURL.path,
+                    prefixPath: managed.prefixURL.path,
+                    logsPath: managed.logsURL.path
+                )
+                let app = WindowsApplication(
+                    name: name,
+                    publisher: "Windows application",
+                    executablePath: selected.path,
+                    installerPath: "existing-installation",
+                    environmentID: managed.id,
+                    status: .ready,
+                    compatibility: communityProfile?.tier.rating ?? .unknown,
+                    graphics: runtime.graphicsName,
+                    storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
+                    iconSymbol: symbol(for: name),
+                    lastResult: "Existing installation added",
+                    communityCompatibility: communityProfile
+                )
+                environments.append(environment)
+                applications.append(app)
+                await updateInstallation(.committing)
+                save()
+                installation.completedStages = Set(InstallationStage.allCases)
+                installation.state = .succeeded(app.id)
+                installationTask = nil
+                await refreshRuntimeStatuses()
+                return app.id
+            } catch is CancellationError {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
+                installation = InstallationProgress(state: .cancelled)
+                installationTask = nil
+                return nil
+            } catch {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
+                installation.state = .failed
+                installation.failureMessage = error.localizedDescription
+                installation.rollbackCompleted = createdEnvironment != nil
+                installationTask = nil
+                return nil
+            }
+        }
+        installationTask = task
     }
 
     func registerExistingGame(_ game: StoreLibraryGame, at selectedURL: URL) {
@@ -981,7 +1168,7 @@ final class BorealStore {
         storeOperationTasks[key] = task
     }
 
-    func recreateEnvironment(_ applicationID: UUID, with engine: RuntimeEngine) {
+    func recreateEnvironment(_ applicationID: UUID, with engine: RuntimeEngine, launchWhenReady: Bool = false) {
         guard let appIndex = applications.firstIndex(where: { $0.id == applicationID }),
               !applications[appIndex].status.isBusy,
               applications[appIndex].status != .running,
@@ -1042,6 +1229,10 @@ final class BorealStore {
                 guard FileManager.default.fileExists(atPath: plan.executable.path) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
+                if WindowsExecutableArchitecture.inspect(plan.executable) == .x86,
+                   runtime.features?.wow64 != true {
+                    throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
+                }
                 let validation = try await services.environmentManager.validate(managed)
                 guard validation.isReady else { throw EnvironmentManagerError.validationFailed(validation) }
                 guard storeOperationTokens[key] == token,
@@ -1071,6 +1262,10 @@ final class BorealStore {
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
                 save()
+
+                if launchWhenReady {
+                    await toggleRunningAsync(applicationID)
+                }
 
                 if applications.allSatisfy({ $0.environmentID != oldEnvironmentID }),
                    let oldRecord = environment(id: oldEnvironmentID),
@@ -1109,65 +1304,6 @@ final class BorealStore {
         storeOperationTasks[key] = task
     }
 
-    private func linkSteamWindowsGame(_ game: StoreLibraryGame, using prepared: SteamWindowsClientCommit) async throws {
-        let commit = prepared.installation
-        let managed = commit.environment
-        let environment = WindowsEnvironment(
-            id: managed.id,
-            name: "Steam for Windows",
-            runtime: commit.runtime.runtimeDescription,
-            graphics: commit.runtime.graphicsName,
-            runtimeID: commit.runtime.id,
-            rootPath: managed.rootURL.path,
-            prefixPath: managed.prefixURL.path,
-            logsPath: managed.logsURL.path
-        )
-        let app = steamWindowsApplication(game: game, executable: prepared.steamExecutable, environmentID: managed.id, status: .running, graphics: commit.runtime.graphicsName)
-        environments.append(environment)
-        applications.append(app)
-        activeSessions[app.id] = commit.firstLaunch
-        activeEnvironments[app.id] = managed
-        activeRuntimes[app.id] = commit.runtime
-        save()
-        monitorLauncher(session: commit.firstLaunch, appID: app.id)
-        monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
-        let installPlan = WindowsLaunchPlan(
-            executable: prepared.steamExecutable,
-            arguments: ["steam://install/\(game.externalID)"],
-            environment: [:],
-            workingDirectory: prepared.steamExecutable.deletingLastPathComponent()
-        )
-        let command = try await services.processRunner.run(plan: installPlan, environment: managed, runtime: commit.runtime)
-        Task { _ = try? await services.processRunner.waitForExit(command) }
-    }
-
-    private func linkSteamWindowsGame(_ game: StoreLibraryGame, using host: WindowsApplication) async throws {
-        guard let environmentRecord = environment(id: host.environmentID),
-              let managed = managedEnvironment(from: environmentRecord),
-              let runtime = try await runtime(for: environmentRecord) else {
-            throw InstallerServiceError.noRuntimeAvailable
-        }
-        let executable = URL(fileURLWithPath: host.executablePath)
-        let app = steamWindowsApplication(game: game, executable: executable, environmentID: managed.id, status: .starting, graphics: runtime.graphicsName)
-        applications.append(app)
-        let plan = WindowsLaunchPlan(
-            executable: executable,
-            arguments: ["steam://install/\(game.externalID)"],
-            environment: [:],
-            workingDirectory: executable.deletingLastPathComponent()
-        )
-        let session = try await services.processRunner.run(plan: plan, environment: managed, runtime: runtime)
-        if let index = applications.firstIndex(where: { $0.id == app.id }) {
-            applications[index].status = .running
-            applications[index].lastOpened = .now
-        }
-        activeSessions[app.id] = session
-        activeEnvironments[app.id] = managed
-        activeRuntimes[app.id] = runtime
-        monitorLauncher(session: session, appID: app.id)
-        monitorEnvironmentSession(environment: managed, runtime: runtime, appID: app.id)
-    }
-
     private func steamWindowsApplication(
         game: StoreLibraryGame,
         executable: URL,
@@ -1179,14 +1315,14 @@ final class BorealStore {
             name: game.name,
             publisher: game.developer ?? "Steam",
             executablePath: executable.path,
-            installerPath: "steam-windows-client",
+            installerPath: "steamcmd-windows-game",
             environmentID: environmentID,
             status: status,
             compatibility: game.compatibility?.tier.rating ?? .unknown,
             graphics: graphics,
             lastOpened: status == .running ? .now : nil,
             iconSymbol: "gamecontroller.fill",
-            lastResult: "Steam for Windows manages download, updates, and launch",
+            lastResult: "Downloaded with SteamCMD; launched with Boreal’s Windows runtime",
             storeProvider: .steam,
             storeExternalID: game.externalID,
             communityCompatibility: game.compatibility
@@ -1246,6 +1382,7 @@ final class BorealStore {
         storeGames = persistedGames.filter { $0.provider != .gog }
             + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
         storeDownloadRecords = state.storeDownloads ?? [:]
+        favoriteKeys = Set(state.favoriteKeys ?? [])
         for (key, record) in Array(storeDownloadRecords) {
             var recovered = record
             if recovered.status == .downloading { recovered.status = .paused }
@@ -1286,16 +1423,35 @@ final class BorealStore {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
             requestedStops.insert(id)
+            var stopError: Error?
             do {
                 if let session = activeSessions[id] {
                     try await services.processRunner.stopApplication(session)
-                } else if let environment = activeEnvironments[id], let runtime = activeRuntimes[id] {
-                    try await services.processRunner.terminateEnvironmentSession(environment: environment, runtime: runtime)
                 }
             }
             catch {
+                stopError = error
+            }
+            // Stopping the Wine launcher does not necessarily stop child
+            // processes or the environment's wineserver. Close both layers so
+            // the environment monitor can reach the terminal Ready state.
+            if let environment = activeEnvironments[id], let runtime = activeRuntimes[id] {
+                do {
+                    try await services.processRunner.terminateEnvironmentSession(environment: environment, runtime: runtime)
+                    // The environment is the authoritative lifecycle owner;
+                    // a stale launcher session error is no longer actionable
+                    // once the Wine session was closed successfully.
+                    stopError = nil
+                }
+                catch {
+                    stopError = stopError ?? error
+                }
+            }
+            if activeSessions[id] == nil && activeEnvironments[id] == nil {
+                markEnvironmentEnded(appID: id)
+            } else if let stopError {
                 requestedStops.remove(id)
-                present(error, title: "\(applications[index].name) couldn’t stop", stage: "Requesting a normal application exit")
+                present(stopError, title: "\(applications[index].name) couldn’t stop", stage: "Requesting a normal application exit")
             }
             return
         }
@@ -1337,7 +1493,7 @@ final class BorealStore {
                     let executable = URL(fileURLWithPath: applications[index].executablePath)
                     plan = WindowsLaunchPlan(
                         executable: executable,
-                        arguments: ["-applaunch", appID],
+                        arguments: [],
                         environment: [:],
                         workingDirectory: executable.deletingLastPathComponent()
                     )
@@ -1352,6 +1508,7 @@ final class BorealStore {
             applications[index].status = .running
             applications[index].lastOpened = .now
             activeSessions[id] = session
+            performanceLogURLs[id] = session.stderrLog
             activeEnvironments[id] = managed
             activeRuntimes[id] = runtime
             save()
@@ -1380,6 +1537,7 @@ final class BorealStore {
             applications.removeAll { $0.id == id }
             if !hasOtherApps { environments.removeAll { $0.id == app.environmentID } }
             activeSessions[id] = nil
+            performanceLogURLs[id] = nil
             activeEnvironments[id] = nil
             activeRuntimes[id] = nil
             environmentSessionStates[app.environmentID] = nil
@@ -1498,6 +1656,7 @@ final class BorealStore {
         }
         environmentSessionStates[environmentID] = .inactive
         activeSessions[appID] = nil
+        performanceLogURLs[appID] = nil
         activeEnvironments[appID] = nil
         activeRuntimes[appID] = nil
         environmentMonitorIDs[appID] = nil
@@ -1520,7 +1679,8 @@ final class BorealStore {
                 applications: applications,
                 environments: environments,
                 storeGames: storeGames,
-                storeDownloads: storeDownloadRecords
+                storeDownloads: storeDownloadRecords,
+                favoriteKeys: Array(favoriteKeys).sorted()
             ))
             try data.write(to: storageURL, options: .atomic)
         } catch {

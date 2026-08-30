@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct InstallationSheet: View {
     @Environment(BorealStore.self) private var store
@@ -115,6 +117,9 @@ struct InstallationSheet: View {
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Spacer()
+                Button("Use Existing Game…", systemImage: "folder.badge.plus") {
+                    chooseExistingGame()
+                }
                 Button("Install") { beginInstallation() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -145,6 +150,20 @@ struct InstallationSheet: View {
 
     private var isInstalling: Bool {
         if case .installing = store.installation.state { true } else { false }
+    }
+
+    private func chooseExistingGame() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Existing Windows Game"
+        panel.message = "Choose the main .exe file of an already installed Windows game."
+        panel.prompt = "Use Game"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "exe") ?? .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.addExistingWindowsApp(at: url)
+        dismiss()
     }
 
     private var installationFraction: Double {

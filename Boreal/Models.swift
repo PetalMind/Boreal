@@ -76,12 +76,54 @@ nonisolated enum StoreGameSizeSource: String, Codable, Hashable, Sendable {
     var isExactManifest: Bool { self != .steamStoreRequirement }
 }
 
+nonisolated enum StoreExecutableArchitecture: String, Codable, Hashable, Sendable {
+    case x86, x86_64
+
+    var displayName: String { self == .x86 ? "32-bit" : "64-bit" }
+}
+
+nonisolated enum StoreArchitectureInference {
+    static func fromManifest(_ value: Any) -> StoreExecutableArchitecture? {
+        var matches = Set<StoreExecutableArchitecture>()
+        inspect(value, key: nil, matches: &matches)
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    static func fromSystemRequirements(_ value: Any?) -> StoreExecutableArchitecture? {
+        guard let requirements = value as? [String: Any] else { return nil }
+        let text = [requirements["minimum"], requirements["recommended"]]
+            .compactMap { $0 as? String }
+            .joined(separator: " ")
+            .lowercased()
+        if text.range(of: #"(?:64[ -]?bit|x86[_-]?64|amd64)"#, options: .regularExpression) != nil { return .x86_64 }
+        if text.range(of: #"(?:32[ -]?bit|\bx86\b)"#, options: .regularExpression) != nil { return .x86 }
+        return nil
+    }
+
+    private static func inspect(_ value: Any, key: String?, matches: inout Set<StoreExecutableArchitecture>) {
+        if let dictionary = value as? [String: Any] {
+            for (childKey, childValue) in dictionary { inspect(childValue, key: childKey, matches: &matches) }
+        } else if let array = value as? [Any] {
+            for child in array { inspect(child, key: key, matches: &matches) }
+        } else if let string = value as? String {
+            let normalizedKey = key?.lowercased() ?? ""
+            guard normalizedKey.contains("architecture")
+                    || normalizedKey.contains("bitness")
+                    || normalizedKey.contains("executable") else { return }
+            let normalized = string.lowercased().replacingOccurrences(of: "\\", with: "/")
+            if normalized.range(of: #"(?:win64|x86[_-]?64|amd64|64[ -]?bit)"#, options: .regularExpression) != nil { matches.insert(.x86_64) }
+            if normalized.range(of: #"(?:win32|32[ -]?bit|(?:^|[/_-])x86(?:[/_.-]|$))"#, options: .regularExpression) != nil { matches.insert(.x86) }
+        }
+    }
+}
+
 nonisolated struct StoreGameSizeEstimate: Codable, Hashable, Sendable {
     var downloadBytes: Int64? = nil
     var installedBytes: Int64? = nil
     var source: StoreGameSizeSource
     var platform: StoreGameInstallationPlatform
     var buildID: String? = nil
+    var executableArchitecture: StoreExecutableArchitecture? = nil
     var fetchedAt: Date = .now
 }
 
@@ -129,6 +171,7 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var storageBytes: Int64?
     var sizeEstimate: StoreGameSizeEstimate?
     var compatibility: CommunityCompatibility?
+    var currentPlayerCount: Int?
 
     var displayedStorageBytes: Int64? {
         if let storageBytes, storageBytes > 0 { return storageBytes }
@@ -442,7 +485,7 @@ nonisolated enum GameStorage {
 }
 
 enum SidebarDestination: Hashable {
-    case library, accounts, environments, downloads
+    case library, favorites, accounts, environments, downloads
 }
 
 enum LibraryRoute: Hashable {

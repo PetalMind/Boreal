@@ -46,9 +46,15 @@ final class GameOverlayController {
     private var panel: NSPanel?
     private var samplingTask: Task<Void, Never>?
     private var activeGames: [OverlayGame] = []
+    private var managedGames: [OverlayGame] = []
+    private var nativeGame: OverlayGame?
+    private var expectedNativeGame: (id: UUID, name: String, installationURL: URL)?
+    private var nativeGameProcessID: pid_t?
     private var isTemporarilyHidden = false
     private var activeSpaceObserver: NSObjectProtocol?
     private var applicationActivationObserver: NSObjectProtocol?
+    private var applicationLaunchObserver: NSObjectProtocol?
+    private var applicationTerminationObserver: NSObjectProtocol?
     private var screenParametersObserver: NSObjectProtocol?
     private var visibilityRefreshTasks: [Task<Void, Never>] = []
 
@@ -59,13 +65,24 @@ final class GameOverlayController {
         applicationActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleFullscreenVisibilityRefresh() } }
+        applicationLaunchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated { self?.nativeApplicationLaunched(notification) }
+        }
+        applicationTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated { self?.nativeApplicationTerminated(notification) }
+        }
         screenParametersObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleFullscreenVisibilityRefresh() } }
     }
 
     func synchronize(games: [OverlayGame]) {
-        activeGames = games.sorted { $0.launchedAt > $1.launchedAt }
+        managedGames = games
+        activeGames = (games + [nativeGame].compactMap { $0 }).sorted { $0.launchedAt > $1.launchedAt }
         if activeGames.isEmpty { isTemporarilyHidden = false }
         guard UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
               let game = activeGames.first, !isTemporarilyHidden else { hide(); return }
@@ -75,7 +92,29 @@ final class GameOverlayController {
         show()
     }
 
+    func expectNativeGame(name: String, installationURL: URL) {
+        let expectation = (id: UUID(), name: name, installationURL: installationURL.standardizedFileURL)
+        expectedNativeGame = expectation
+        if let application = NSWorkspace.shared.runningApplications.first(where: { matches($0, installationURL: expectation.installationURL) }) {
+            activateNativeGame(expectation, application: application)
+        }
+    }
+
     func settingsChanged() { synchronize(games: activeGames); if let panel { position(panel) } }
+    func setDetailLevel(_ level: GameOverlayDetailLevel) {
+        UserDefaults.standard.set(level.rawValue, forKey: "gameOverlayDetailLevel")
+        settingsChanged()
+    }
+
+    func cycleDetailLevel() {
+        let next: GameOverlayDetailLevel = switch configuredDetailLevel {
+        case .minimal: .standard
+        case .standard: .diagnostic
+        case .diagnostic: .minimal
+        }
+        setDetailLevel(next)
+    }
+
     func toggleVisibility() {
         guard !activeGames.isEmpty else { return }
         isTemporarilyHidden.toggle(); synchronize(games: activeGames)
@@ -89,6 +128,47 @@ final class GameOverlayController {
 
     private func hide() {
         samplingTask?.cancel(); samplingTask = nil; panel?.orderOut(nil); model.snapshot = .unavailable
+    }
+
+    private func nativeApplicationLaunched(_ notification: Notification) {
+        guard let expectation = expectedNativeGame,
+              let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              matches(application, installationURL: expectation.installationURL) else { return }
+        activateNativeGame(expectation, application: application)
+    }
+
+    private func nativeApplicationTerminated(_ notification: Notification) {
+        guard let processID = nativeGameProcessID,
+              let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              application.processIdentifier == processID else { return }
+        nativeGame = nil
+        nativeGameProcessID = nil
+        synchronize(games: managedGames)
+    }
+
+    private func activateNativeGame(
+        _ expectation: (id: UUID, name: String, installationURL: URL),
+        application: NSRunningApplication
+    ) {
+        nativeGameProcessID = application.processIdentifier
+        nativeGame = OverlayGame(
+            id: expectation.id,
+            name: expectation.name,
+            launchedAt: .now,
+            performanceLogURL: nil,
+            graphics: "Native macOS"
+        )
+        expectedNativeGame = nil
+        synchronize(games: managedGames)
+        scheduleFullscreenVisibilityRefresh()
+    }
+
+    private func matches(_ application: NSRunningApplication, installationURL: URL) -> Bool {
+        guard let bundleURL = application.bundleURL?.standardizedFileURL else { return false }
+        if installationURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+            return bundleURL == installationURL
+        }
+        return bundleURL.path == installationURL.path || bundleURL.path.hasPrefix(installationURL.path + "/")
     }
 
     private func restoreOverlayVisibility(preferPointerScreen: Bool = false) {

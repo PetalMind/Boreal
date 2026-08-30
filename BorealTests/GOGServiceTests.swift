@@ -196,6 +196,28 @@ struct GOGServiceTests {
         #expect(installation?.lastPathComponent == "Boreal Native Game.app")
     }
 
+    @Test func reportsWhenGOGHasNoNativeMacOSBuild() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "BorealGOGNoNativeBuildTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = root.appending(path: "Tools/GOGDL/1.3.0/gogdl")
+        let account = root.appending(path: "Accounts/GOG")
+        try FileManager.default.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: account, withIntermediateDirectories: true)
+        try Data(Self.noNativeBuildHelperScript.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let service = GOGService(applicationSupportURL: root)
+        _ = try await service.authenticate(authorizationCode: "no-native-build-test")
+
+        await #expect(throws: GOGServiceError.noBuildsFound) {
+            try await service.install(
+                appID: "1207658755",
+                destinationRoot: root.appending(path: "Games"),
+                platform: .nativeMacOS
+            ) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appending(path: "Games/1207658755").path))
+    }
+
     @Test func acceptsNestedGOGDLWindowsInstallationAndResolvesItsRealDirectory() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "BorealGOGNestedTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -292,6 +314,22 @@ struct GOGServiceTests {
       : > "$destination/Hard Truck 18 Wheels of Steel.exe"
       printf '%s\n' '{"playTasks":[{"category":"launcher","isPrimary":true,"path":"Hard Truck 18 Wheels of Steel.exe","type":"FileTask"}]}' > "$destination/goggame-$4.info"
       exit 0
+    fi
+    exit 64
+    """#
+
+    private static let noNativeBuildHelperScript = #"""
+    #!/bin/sh
+    auth_path="$2"
+    command="$3"
+    if [ "$command" = "auth" ]; then
+      printf '{}' > "$auth_path"
+      printf '%s\n' '{"access_token":"private-test-token","user_id":"998877"}'
+      exit 0
+    fi
+    if [ "$command" = "info" ]; then
+      printf '%s\n' '[GENERIC DOWNLOAD_MANAGER] ERROR: No builds found' >&2
+      exit 1
     fi
     exit 64
     """#

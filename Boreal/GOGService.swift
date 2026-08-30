@@ -71,6 +71,7 @@ enum GOGServiceError: LocalizedError, Sendable {
     case helperUnavailable
     case notAuthenticated
     case commandFailed(Int32)
+    case noBuildsFound
     case invalidResponse
     case installationIncomplete(StoreGameInstallationPlatform)
     case invalidLaunchPlan(String)
@@ -84,6 +85,7 @@ enum GOGServiceError: LocalizedError, Sendable {
         case .helperUnavailable: "Install GOG support before connecting your account."
         case .notAuthenticated: "Connect your GOG account, then refresh the Library."
         case .commandFailed(let code): "GOG support stopped with exit code \(code)."
+        case .noBuildsFound: "GOG does not provide a downloadable build for the selected platform."
         case .invalidResponse: "GOG returned Library data in an unsupported format."
         case .installationIncomplete(let platform):
             "GOG finished without creating a valid \(platform == .nativeMacOS ? "macOS" : "Windows") game installation."
@@ -269,7 +271,8 @@ actor GOGService: GOGLibraryProviding {
             installedBytes: installedBytes,
             source: .gogManifest,
             platform: platform,
-            buildID: Self.stringValue(root["buildId"])
+            buildID: Self.stringValue(root["buildId"]),
+            executableArchitecture: StoreArchitectureInference.fromManifest(root)
         )
     }
 
@@ -280,6 +283,12 @@ actor GOGService: GOGLibraryProviding {
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         _ = try await credentials()
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
+        // GOG metadata can advertise a legacy macOS release even when Galaxy
+        // has no macOS build for gogdl to download. Check the actual build
+        // catalogue before creating a download directory or starting a job.
+        if platform == .nativeMacOS {
+            _ = try await loadSizeEstimate(appID: appID, platform: platform)
+        }
         let destination = destinationRoot.appending(path: appID, directoryHint: .isDirectory)
         try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
         let platformName = platform == .nativeMacOS ? "macOS" : "Windows"
@@ -644,6 +653,7 @@ actor GOGService: GOGLibraryProviding {
             let stdout = Pipe()
             let stderr = Pipe()
             let output = GOGOutputBuffer()
+            let errorOutput = GOGOutputBuffer()
             process.executableURL = executable
             process.arguments = arguments
             process.standardOutput = stdout
@@ -660,6 +670,7 @@ actor GOGService: GOGLibraryProviding {
             }
             stderr.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
+                if !data.isEmpty { errorOutput.append(data) }
                 if !data.isEmpty, let progress, let update = StoreProgressParser.update(from: data, provider: "GOG") {
                     Task { await progress(update) }
                 }
@@ -668,9 +679,16 @@ actor GOGService: GOGLibraryProviding {
                 stdout.fileHandleForReading.readabilityHandler = nil
                 stderr.fileHandleForReading.readabilityHandler = nil
                 output.append(stdout.fileHandleForReading.readDataToEndOfFile())
-                _ = stderr.fileHandleForReading.readDataToEndOfFile()
-                if process.terminationStatus == 0 { continuation.resume(returning: output.snapshot()) }
-                else { continuation.resume(throwing: GOGServiceError.commandFailed(process.terminationStatus)) }
+                errorOutput.append(stderr.fileHandleForReading.readDataToEndOfFile())
+                let capturedOutput = output.snapshot()
+                let diagnosticOutput = capturedOutput + errorOutput.snapshot()
+                if process.terminationStatus == 0 {
+                    continuation.resume(returning: capturedOutput)
+                } else if String(data: diagnosticOutput, encoding: .utf8)?.localizedCaseInsensitiveContains("No builds found") == true {
+                    continuation.resume(throwing: GOGServiceError.noBuildsFound)
+                } else {
+                    continuation.resume(throwing: GOGServiceError.commandFailed(process.terminationStatus))
+                }
             }
             do { try process.run(); processBox.attach(process) }
             catch { continuation.resume(throwing: error) }

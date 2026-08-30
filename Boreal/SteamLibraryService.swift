@@ -3,6 +3,7 @@ import Foundation
 nonisolated protocol SteamLibraryLoading: Sendable {
     func loadLibrary() async throws -> [StoreLibraryGame]
     func loadDetails(for game: StoreLibraryGame) async -> StoreLibraryGame
+    func loadCurrentPlayerCount(appID: String) async -> Int?
 }
 
 enum SteamLibraryError: LocalizedError {
@@ -23,6 +24,20 @@ enum SteamLibraryError: LocalizedError {
 }
 
 actor SteamLibraryService: SteamLibraryLoading {
+    private struct CurrentPlayersResponse: Decodable {
+        struct Response: Decodable {
+            let playerCount: Int?
+            let result: Int
+
+            enum CodingKeys: String, CodingKey {
+                case playerCount = "player_count"
+                case result
+            }
+        }
+
+        let response: Response
+    }
+
     private struct LocalGame: Sendable {
         let appID: String
         var name: String?
@@ -157,6 +172,24 @@ actor SteamLibraryService: SteamLibraryLoading {
         return value
     }
 
+    func loadCurrentPlayerCount(appID: String) async -> Int? {
+        guard !appID.isEmpty, appID.allSatisfy(\.isNumber),
+              var components = URLComponents(string: "https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/") else {
+            return nil
+        }
+        components.queryItems = [URLQueryItem(name: "appid", value: appID)]
+        guard let url = components.url,
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let payload = try? JSONDecoder().decode(CurrentPlayersResponse.self, from: data),
+              payload.response.result == 1,
+              let playerCount = payload.response.playerCount,
+              playerCount >= 0 else {
+            return nil
+        }
+        return playerCount
+    }
+
     private func signedInUserDirectories() throws -> [URL] {
         let loginURL = steamRoot.appending(path: "config/loginusers.vdf")
         guard fileManager.fileExists(atPath: loginURL.path) else { return [] }
@@ -277,6 +310,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         let preferredPlatform: StoreGameInstallationPlatform = platforms?["mac"] == true ? .nativeMacOS : .windows
         let requirementsKey = preferredPlatform == .nativeMacOS ? "mac_requirements" : "pc_requirements"
         let requirementBytes = storeRequirementBytes(from: details[requirementsKey])
+        let requirementArchitecture = StoreArchitectureInference.fromSystemRequirements(details[requirementsKey])
         let screenshots = (details["screenshots"] as? [[String: Any]])?.compactMap {
             ($0["path_full"] as? String) ?? ($0["path_thumbnail"] as? String)
         }
@@ -312,13 +346,14 @@ actor SteamLibraryService: SteamLibraryLoading {
             rating: rating,
             supportsWindows: platforms?["windows"],
             supportsNativeMacOS: platforms?["mac"],
-            sizeEstimate: requirementBytes.map {
+            sizeEstimate: (requirementBytes != nil || requirementArchitecture != nil) ?
                 StoreGameSizeEstimate(
-                    installedBytes: $0,
+                    installedBytes: requirementBytes,
                     source: .steamStoreRequirement,
-                    platform: preferredPlatform
+                    platform: preferredPlatform,
+                    executableArchitecture: requirementArchitecture
                 )
-            }
+                : nil
         )
     }
 

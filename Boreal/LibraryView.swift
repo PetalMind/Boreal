@@ -90,6 +90,7 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     let kind: Kind
     let name: String
     let subtitle: String
+    let producer: String?
     let source: LibrarySourceFilter
     let installed: Bool
     let readyToPlay: Bool
@@ -102,6 +103,13 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     let compatibility: CompatibilityRating
     let statusText: String
 
+    var favoriteKey: String {
+        switch kind {
+        case .application(let app): "application:\(app.id.uuidString)"
+        case .storeGame(let game): "\(game.provider.rawValue):\(game.externalID)"
+        }
+    }
+
     var searchText: String {
         [name, subtitle, source.title, installed ? "installed" : "not installed", readyToPlay ? "ready to play" : "", needsAttention ? "needs attention" : "", compatibility.rawValue, statusText]
             .joined(separator: " ")
@@ -110,9 +118,23 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
 
 nonisolated enum LibraryProjector {
     static func makeItems(applications: [WindowsApplication], storeGames: [StoreLibraryGame]) -> [LibraryItem] {
-        let apps = applications.map { app in
+        let storeGamesByLink = Dictionary(
+            storeGames.map { game in (storeLink(provider: game.provider, externalID: game.externalID), game) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let linkedApplications = Dictionary(
+            applications.compactMap { app -> (String, WindowsApplication)? in
+                guard let provider = app.storeProvider, let externalID = app.storeExternalID else { return nil }
+                return (storeLink(provider: provider, externalID: externalID), app)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let apps = applications.filter { app in
+            guard let provider = app.storeProvider, let externalID = app.storeExternalID else { return true }
+            return storeGamesByLink[storeLink(provider: provider, externalID: externalID)] == nil
+        }.map { app in
             LibraryItem(
-                id: .application(app.id), kind: .application(app), name: app.name, subtitle: app.publisher,
+                id: .application(app.id), kind: .application(app), name: app.name, subtitle: app.publisher, producer: app.publisher,
                 source: app.storeProvider.map(source) ?? .boreal,
                 installed: app.status != .unavailable,
                 readyToPlay: app.status == .ready || app.status == .running,
@@ -124,46 +146,56 @@ nonisolated enum LibraryProjector {
                 statusText: app.status.rawValue
             )
         }
-        let linked = Dictionary(
-            applications.compactMap { app -> (String, WindowsApplication)? in
-                guard let provider = app.storeProvider, let externalID = app.storeExternalID else { return nil }
-                return ("\(provider.rawValue)|\(externalID)", app)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
-        // An installed store game is also represented by a WindowsApplication.
-        // Keep the application entry as the canonical library item so the same
-        // game is not shown once as an app and once as its store metadata.
-        let games = storeGames.filter { game in
-            linked["\(game.provider.rawValue)|\(game.externalID)"] == nil
-        }.map { game in
-            let ready = game.provider == .steam && game.isInstalled
-            let running = false
-            let attention = false
+        // Store metadata remains the canonical presentation after installation.
+        // The linked application contributes live runtime state without replacing
+        // artwork, media, ratings, or the store detail route.
+        let games = storeGames.map { game in
+            let linkedApp = linkedApplications[storeLink(provider: game.provider, externalID: game.externalID)]
+            // A stale application record must not make an uninstalled store game
+            // look playable. Unavailable records remain visible through the store
+            // game, but no longer contribute runtime state or installation truth.
+            let usableLinkedApp = linkedApp.flatMap { $0.status == .unavailable ? nil : $0 }
+            let ready = usableLinkedApp.map { $0.status == .ready || $0.status == .running }
+                ?? (game.provider == .steam && game.isInstalled)
+            let running = usableLinkedApp?.status == .running
+            let attention = usableLinkedApp?.status == .needsAttention
+            let installed = usableLinkedApp != nil || game.isInstalled
+            let storageBytes = usableLinkedApp.flatMap { $0.storageBytes > 0 ? $0.storageBytes : nil }
+                ?? game.displayedStorageBytes
+            let compatibility = usableLinkedApp.flatMap { $0.compatibility == .unknown ? nil : $0.compatibility }
+                ?? game.compatibility?.tier.rating
+                ?? .unknown
             return LibraryItem(
                 id: .storeGame(game.id), kind: .storeGame(game), name: game.name,
-                subtitle: game.developer ?? game.provider.rawValue, source: source(game.provider),
-                installed: game.isInstalled, readyToPlay: ready, running: running, needsAttention: attention,
-                lastUsed: game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
-                storageBytes: game.displayedStorageBytes,
-                storageIsEstimate: game.storageBytes == nil && game.sizeEstimate?.installedBytes != nil,
-                compatibility: game.compatibility?.tier.rating ?? .unknown,
-                statusText: attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (game.isInstalled ? "Installed" : "Available")))
+                subtitle: game.developer ?? game.provider.rawValue, producer: game.developer, source: source(game.provider),
+                installed: installed, readyToPlay: ready, running: running, needsAttention: attention,
+                lastUsed: usableLinkedApp?.lastOpened ?? game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
+                storageBytes: storageBytes,
+                storageIsEstimate: usableLinkedApp == nil && game.storageBytes == nil && game.sizeEstimate?.installedBytes != nil,
+                compatibility: compatibility,
+                statusText: usableLinkedApp?.status.rawValue
+                    ?? (attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (installed ? "Installed" : "Available"))))
             )
         }
         return apps + games
     }
 
+    private static func storeLink(provider: GameLibraryProvider, externalID: String) -> String {
+        "\(provider.rawValue)|\(externalID)"
+    }
+
     static func project(
         _ items: [LibraryItem], searchText: String, sources: Set<LibrarySourceFilter>,
         availability: Set<LibraryAvailabilityFilter>, compatibility: Set<LibraryCompatibilityFilter>,
-        sort: LibrarySort
+        sort: LibrarySort, producer: String = "", favorites: Set<String> = [], favoritesOnly: Bool = false
     ) -> [LibraryItem] {
         let terms = normalized(searchText).split(separator: " ").map(String.init)
         let recentCutoff = Calendar.current.date(byAdding: .day, value: -30, to: .now) ?? .distantPast
         return items.filter { item in
             let haystack = normalized(item.searchText)
             guard terms.allSatisfy(haystack.contains) else { return false }
+            guard producer.isEmpty || matchesProducer(producer, item: item) else { return false }
+            guard !favoritesOnly || favorites.contains(item.favoriteKey) else { return false }
             guard sources.isEmpty || sources.contains(item.source) else { return false }
             if !availability.isEmpty {
                 let matches = availability.contains { filter in
@@ -208,6 +240,15 @@ nonisolated enum LibraryProjector {
             .replacingOccurrences(of: "ł", with: "l")
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
+    }
+
+    private static func matchesProducer(_ producer: String, item: LibraryItem) -> Bool {
+        guard let itemProducer = item.producer else { return false }
+        let wanted = normalized(producer)
+        return normalized(itemProducer) == wanted
+            || itemProducer
+                .split { $0 == "," || $0 == ";" || $0 == "|" }
+                .contains { normalized(String($0)) == wanted }
     }
 
     private static func ordered(_ lhs: LibraryItem, before rhs: LibraryItem, by sort: LibrarySort) -> Bool {
@@ -321,6 +362,8 @@ struct LibraryView: View {
     @Binding var sourceFilters: String
     @Binding var availabilityFilters: String
     @Binding var compatibilityFilters: String
+    @Binding var producerFilter: String
+    let favoritesOnly: Bool
     let installAction: () -> Void
     let syncSteamAction: () -> Void
     let importAction: (URL) -> Void
@@ -328,6 +371,7 @@ struct LibraryView: View {
     let selectStoreGameAction: (UUID) -> Void
     @AppStorage("developerMode") private var developerMode = false
     @State private var removeCandidate: WindowsApplication?
+    @State private var uninstallCandidate: StoreLibraryGame?
     @State private var hoveredItemID: LibraryItem.ID?
 
     private var allItems: [LibraryItem] {
@@ -339,12 +383,16 @@ struct LibraryView: View {
             allItems, searchText: searchText,
             sources: rawSet(sourceFilters, as: LibrarySourceFilter.self),
             availability: rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self),
-            compatibility: rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self), sort: sort
+            compatibility: rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self),
+            sort: sort, producer: producerFilter,
+            favorites: favoritesOnly ? store.favoriteKeys : [], favoritesOnly: favoritesOnly
         )
     }
 
     private var activeFilters: [ActiveLibraryFilter] {
-        rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self).map { value in
+        (producerFilter.isEmpty ? [] : [ActiveLibraryFilter(id: "producer", title: producerFilter) {
+            producerFilter = ""
+        }]) + rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self).map { value in
             ActiveLibraryFilter(id: "availability:\(value.rawValue)", title: value.title) { toggle(value, raw: $availabilityFilters) }
         } + rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self).map { value in
             ActiveLibraryFilter(id: "compatibility:\(value.rawValue)", title: value.title) { toggle(value, raw: $compatibilityFilters) }
@@ -359,6 +407,7 @@ struct LibraryView: View {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !selectedSources.isEmpty
             || !activeFilters.isEmpty
+            || favoritesOnly
     }
 
     var body: some View {
@@ -366,7 +415,7 @@ struct LibraryView: View {
             if !allItems.isEmpty { sourceQuickPicker }
             if !activeFilters.isEmpty { activeFilterBar }
             Group {
-                if allItems.isEmpty {
+                if allItems.isEmpty && !favoritesOnly {
                     BorealEmptyState(action: installAction, steamAction: syncSteamAction)
                 } else if items.isEmpty {
                     noResults
@@ -392,6 +441,18 @@ struct LibraryView: View {
             }
             Button("Cancel", role: .cancel) { removeCandidate = nil }
         } message: { Text("This removes the app from Boreal. The original setup file is not deleted.") }
+        .confirmationDialog(
+            "Uninstall \(uninstallCandidate?.name ?? "game")?",
+            isPresented: Binding(get: { uninstallCandidate != nil }, set: { if !$0 { uninstallCandidate = nil } })
+        ) {
+            Button("Uninstall Game", role: .destructive) {
+                if let game = uninstallCandidate { store.uninstallStoreGame(game) }
+                uninstallCandidate = nil
+            }
+            Button("Cancel", role: .cancel) { uninstallCandidate = nil }
+        } message: {
+            Text("The installed game files and its Boreal environment will be removed.")
+        }
     }
 
     private var sourceQuickPicker: some View {
@@ -490,12 +551,14 @@ struct LibraryView: View {
 
     private var noResults: some View {
         ContentUnavailableView {
-            Label("No Matching Items", systemImage: "line.3.horizontal.decrease.circle")
+            Label(favoritesOnly ? "No Favorites Yet" : "No Matching Items", systemImage: favoritesOnly ? "heart" : "line.3.horizontal.decrease.circle")
         } description: {
-            Text(searchText.isEmpty ? "No items match the selected filters." : "No items match “\(searchText)” and the selected filters.")
+            Text(favoritesOnly ? "Games and apps you mark with a heart will appear here." : (searchText.isEmpty ? "No items match the selected filters." : "No items match “\(searchText)” and the selected filters."))
         } actions: {
-            Button("Clear Search and Filters") { searchText = ""; clearFilters() }
-                .buttonStyle(.borderedProminent)
+            if !favoritesOnly {
+                Button("Clear Search and Filters") { searchText = ""; clearFilters() }
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 
@@ -756,6 +819,7 @@ struct LibraryView: View {
                                 .padding(8)
                         }
                     }
+                    .overlay(alignment: .topTrailing) { favoriteButton(for: item) }
                 if hoveredItemID == item.id {
                     HStack(spacing: 8) {
                         Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
@@ -818,6 +882,37 @@ struct LibraryView: View {
         }
     }
 
+    private func favoriteButton(for item: LibraryItem) -> some View {
+        let favorite = store.isFavorite(key: item.favoriteKey)
+        return Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) {
+                store.toggleFavorite(key: item.favoriteKey)
+            }
+        } label: {
+            ZStack {
+                Image(systemName: "heart")
+                    .foregroundStyle(.white)
+                    .opacity(favorite ? 0 : 1)
+                    .scaleEffect(favorite ? 0.7 : 1)
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(.red)
+                    .opacity(favorite ? 1 : 0)
+                    .scaleEffect(favorite ? 1.16 : 0.55)
+            }
+            .font(.title3.weight(.semibold))
+            .shadow(color: .black.opacity(0.7), radius: 3)
+                .frame(width: 34, height: 34)
+                .background(.black.opacity(0.34), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(10)
+        .contentShape(Circle())
+        .help(favorite ? "Remove from Favorites" : "Add to Favorites")
+        .accessibilityLabel(favorite ? "Remove \(item.name) from Favorites" : "Add \(item.name) to Favorites")
+        .accessibilityAddTraits(favorite ? .isSelected : [])
+        .animation(.spring(response: 0.28, dampingFraction: 0.55), value: favorite)
+    }
+
     @ViewBuilder private func itemIcon(_ item: LibraryItem, compact: Bool) -> some View {
         switch item.kind {
         case .application(let app): AppIconView(symbol: app.iconSymbol, size: compact ? 32 : 92)
@@ -834,6 +929,14 @@ struct LibraryView: View {
                 Divider()
             }
             Button("Show Details", systemImage: "info.circle") { select(item) }
+            if case .storeGame(let game) = item.kind,
+               game.isInstalled,
+               [.epic, .gog].contains(game.provider) {
+                Divider()
+                Button("Uninstall…", systemImage: "trash", role: .destructive) {
+                    uninstallCandidate = game
+                }
+            }
         }
     }
 
@@ -936,6 +1039,7 @@ struct LibraryView: View {
         sourceFilters = ""
         availabilityFilters = ""
         compatibilityFilters = ""
+        producerFilter = ""
     }
 
     private func toggle<Value>(_ value: Value, raw: Binding<String>) where Value: RawRepresentable & Hashable, Value.RawValue == String {

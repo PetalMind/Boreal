@@ -10,6 +10,34 @@ import Testing
 @testable import Boreal
 
 struct BorealTests {
+    @Test func windowsExecutableArchitectureReadsPEOptionalHeader() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-pe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let pe32 = root.appending(path: "game32.exe")
+        let pe64 = root.appending(path: "game64.exe")
+        try syntheticPE(optionalHeaderMagic: 0x10B).write(to: pe32)
+        try syntheticPE(optionalHeaderMagic: 0x20B).write(to: pe64)
+
+        #expect(WindowsExecutableArchitecture.inspect(pe32) == .x86)
+        #expect(WindowsExecutableArchitecture.inspect(pe64) == .x86_64)
+        #expect(WindowsExecutableArchitecture.inspect(root.appending(path: "missing.exe")) == .unknown)
+    }
+
+    @Test func storeArchitectureInferenceIsConservative() {
+        #expect(StoreArchitectureInference.fromManifest(["game_executable": "Binaries/Win64/Game.exe"]) == .x86_64)
+        #expect(StoreArchitectureInference.fromManifest(["architecture": "x86"]) == .x86)
+        #expect(StoreArchitectureInference.fromManifest([
+            "game_executable": "Binaries/Win64/Game.exe",
+            "helper_executable": "Tools/Win32/Helper.exe"
+        ]) == nil)
+        #expect(StoreArchitectureInference.fromManifest(["files": ["Binaries/Game.exe"]]) == nil)
+        #expect(StoreArchitectureInference.fromSystemRequirements([
+            "minimum": "Requires a 64-bit processor and operating system"
+        ]) == .x86_64)
+    }
+
     @Test func sha256UsesStreamingCompatibleDigest() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: "boreal-sha-\(UUID().uuidString)")
         try Data("abc".utf8).write(to: url)
@@ -328,9 +356,20 @@ struct BorealTests {
         )
 
         #expect(result.map(\.name) == ["Żółta Przygoda"])
+
+        let producerFiltered = LibraryProjector.project(
+            items,
+            searchText: "",
+            sources: [],
+            availability: [],
+            compatibility: [],
+            sort: .nameAscending,
+            producer: "North Studio"
+        )
+        #expect(producerFiltered.map(\.name) == ["Żółta Przygoda"])
     }
 
-    @Test func libraryProjectionDoesNotDuplicateStoreGameLinkedToApplication() {
+    @Test func libraryProjectionKeepsStoreMetadataForGameLinkedToApplication() {
         let application = WindowsApplication(
             name: "BioShock",
             publisher: "2K",
@@ -340,12 +379,72 @@ struct BorealTests {
             storeProvider: .steam,
             storeExternalID: "7670"
         )
-        let storeGame = StoreLibraryGame(provider: .steam, externalID: "7670", name: "BioShock")
+        let storeGame = StoreLibraryGame(
+            provider: .steam,
+            externalID: "7670",
+            name: "BioShock",
+            developer: "2K Boston",
+            summary: "A store description",
+            portraitImageURL: "https://example.com/bioshock-cover.jpg",
+            backgroundImageURL: "https://example.com/bioshock-background.jpg"
+        )
 
         let items = LibraryProjector.makeItems(applications: [application], storeGames: [storeGame])
 
         #expect(items.count == 1)
         #expect(items.first?.name == "BioShock")
+        #expect(items.first?.id == .storeGame(storeGame.id))
+        #expect(items.first?.readyToPlay == true)
+        guard case .storeGame(let projectedGame) = items.first?.kind else {
+            Issue.record("A linked store game must remain the canonical library item")
+            return
+        }
+        #expect(projectedGame.summary == "A store description")
+        #expect(projectedGame.portraitImageURL == "https://example.com/bioshock-cover.jpg")
+        #expect(projectedGame.backgroundImageURL == "https://example.com/bioshock-background.jpg")
+    }
+
+    @Test func libraryProjectionIgnoresUnavailableLinkedApplicationForStoreState() {
+        let application = WindowsApplication(
+            name: "Not Downloaded",
+            publisher: "Publisher",
+            executablePath: "/tmp/missing-game.exe",
+            installerPath: "/tmp/missing-installer.exe",
+            environmentID: UUID(),
+            status: .unavailable,
+            storeProvider: .gog,
+            storeExternalID: "not-downloaded"
+        )
+        let storeGame = StoreLibraryGame(
+            provider: .gog,
+            externalID: "not-downloaded",
+            name: "Not Downloaded",
+            isInstalled: false
+        )
+
+        let item = LibraryProjector.makeItems(applications: [application], storeGames: [storeGame]).first
+
+        #expect(item?.running == false)
+        #expect(item?.installed == false)
+        #expect(item?.readyToPlay == false)
+        #expect(item?.needsAttention == false)
+        #expect(item?.statusText == "Available")
+    }
+
+    @Test func libraryProjectionKeepsLinkedApplicationWhenStoreMetadataIsUnavailable() {
+        let application = WindowsApplication(
+            name: "Orphaned Store Game",
+            publisher: "Publisher",
+            executablePath: "/tmp/orphan.exe",
+            installerPath: "/tmp/orphan-installer.exe",
+            environmentID: UUID(),
+            storeProvider: .gog,
+            storeExternalID: "missing"
+        )
+
+        let items = LibraryProjector.makeItems(applications: [application], storeGames: [])
+
+        #expect(items.count == 1)
         #expect(items.first?.id == .application(application.id))
     }
 
@@ -394,6 +493,18 @@ struct BorealTests {
     private func executable(_ contents: String, at url: URL) throws {
         try Data(contents.utf8).write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func syntheticPE(optionalHeaderMagic: UInt16) -> Data {
+        var bytes = Data(repeating: 0, count: 0x80 + 26)
+        bytes[0] = 0x4D
+        bytes[1] = 0x5A
+        bytes[60] = 0x80
+        bytes[0x80] = 0x50
+        bytes[0x81] = 0x45
+        bytes[0x98] = UInt8(optionalHeaderMagic & 0xFF)
+        bytes[0x99] = UInt8(optionalHeaderMagic >> 8)
+        return bytes
     }
 }
 

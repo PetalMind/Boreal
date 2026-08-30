@@ -18,5 +18,4 @@ Imported entries are persisted in Boreal's `library.json`, retain stable Boreal 
 
 ## Current boundary
 
-This is an integration with an existing signed-in Steam installation. It does not yet implement a standalone Steam login inside Boreal, download Windows depots, install Steam games into a Boreal Wine environment, or enumerate owned-but-never-seen games that are absent from Steam's local account cache. Those require a separately authorized account/provider integration and are not inferred from private credentials.
-
+The library importer remains read-only for the existing macOS Steam installation. Windows-only Steam games can be downloaded separately through native SteamCMD from the game detail flow; credentials are entered for that operation only and are not inferred from or copied out of the macOS Steam session.

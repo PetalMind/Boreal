@@ -1,92 +1,93 @@
 import Foundation
 
-nonisolated struct SteamWindowsClientCommit: Sendable {
-    let installation: InstallationCommit
-    let steamExecutable: URL
+nonisolated struct SteamCMDCredentials: Sendable {
+    let username: String
+    let password: String
+    let guardCode: String
+}
+
+nonisolated struct SteamWindowsDownload: Sendable {
+    let destination: URL
+    let log: URL
 }
 
 nonisolated protocol SteamWindowsProviding: Sendable {
-    func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit
+    func downloadWindowsGame(appID: String, destination: URL, credentials: SteamCMDCredentials, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsDownload
 }
 
 enum SteamWindowsError: LocalizedError, Sendable {
-    case downloadFailed
-    case invalidInstaller
-    case clientExecutableMissing
+    case steamCMDNotFound
+    case downloadFailed(Int32, URL)
+    case authenticationFailed(URL)
+    case credentialsRequired
+    case gameExecutableMissing
 
     var errorDescription: String? {
         switch self {
-        case .downloadFailed: "Boreal couldn’t download Valve’s official Steam for Windows installer."
-        case .invalidInstaller: "Valve’s download did not contain a valid Windows installer."
-        case .clientExecutableMissing: "Steam setup finished, but steam.exe was not found in the isolated environment."
+        case .steamCMDNotFound: "SteamCMD was not found. Install it with Homebrew using: brew install steamcmd"
+        case .downloadFailed(let code, let log): "SteamCMD could not download the Windows game (exit code \(code)). See \(log.path)."
+        case .authenticationFailed(let log): "SteamCMD could not sign in. Open Steam Guard Mobile, approve the sign-in if prompted, then enter the current code and try again. See \(log.path)."
+        case .credentialsRequired: "Enter your Steam username and password to download this game."
+        case .gameExecutableMissing: "SteamCMD finished, but no Windows game executable was found in the destination folder."
         }
     }
 }
 
 actor SteamWindowsService: SteamWindowsProviding {
     private let fileManager: FileManager
-    private let session: URLSession
-    private let installer: any Installing
-    private let installerURL: URL
-    private let setupURL = URL(string: "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe")!
+    private let processExecutor: any ProcessExecuting
+    private let applicationSupportURL: URL
 
-    init(
-        applicationSupportURL: URL,
-        installer: any Installing,
-        fileManager: FileManager = .default,
-        session: URLSession = .shared
-    ) {
+    init(applicationSupportURL: URL, processExecutor: any ProcessExecuting, fileManager: FileManager = .default) {
+        self.applicationSupportURL = applicationSupportURL
+        self.processExecutor = processExecutor
         self.fileManager = fileManager
-        self.session = session
-        self.installer = installer
-        self.installerURL = applicationSupportURL.appending(path: "Installers/Steam/SteamSetup.exe")
     }
 
-    func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
-        try await downloadCurrentInstaller()
-        let commit = try await installer.install(installerURL, name: "Steam") { stage in
-            await progress(stage)
+    func downloadWindowsGame(appID: String, destination: URL, credentials: SteamCMDCredentials, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsDownload {
+        guard !credentials.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !credentials.password.isEmpty else { throw SteamWindowsError.credentialsRequired }
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        await progress(.preparingRuntime)
+        guard let executable = steamCMDExecutable() else { throw SteamWindowsError.steamCMDNotFound }
+        await progress(.startingInstaller)
+        let log = applicationSupportURL.appending(path: "Logs/SteamCMD/\(appID)-\(UUID().uuidString).log")
+        // SteamCMD's documented login syntax is `+login <username> <password> [<guard-code>]`.
+        // Feeding these values to stdin is unreliable when SteamCMD is launched without a TTY:
+        // it can consume the input before the login command asks for it. The values are held only
+        // for this process invocation and are never persisted by Boreal.
+        var loginArguments = ["+login", credentials.username, credentials.password]
+        if !credentials.guardCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            loginArguments.append(credentials.guardCode.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        guard let steamExecutable = steamExecutable(in: commit.environment, discovered: commit.executable) else {
-            throw SteamWindowsError.clientExecutableMissing
+        let request = ProcessLaunchRequest(
+            executable: executable,
+            arguments: [
+                "+@sSteamCmdForcePlatformType", "windows",
+            ] + loginArguments + [
+                "+force_install_dir", destination.path, "+app_update", appID, "validate", "+quit"
+            ], environment: [:], currentDirectory: destination, stdoutLog: log, stderrLog: log
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await withTaskCancellationHandler {
+            try await processExecutor.waitForExit(receipt.id)
+        } onCancel: {
+            Task { try? await self.processExecutor.terminate(receipt.id) }
         }
-        return SteamWindowsClientCommit(installation: commit, steamExecutable: steamExecutable)
+        let logText = (try? String(contentsOf: log, encoding: .utf8))?.lowercased() ?? ""
+        if logText.contains("need two-factor code")
+            || logText.contains("account logon denied")
+            || logText.contains("invalid password")
+            || logText.contains("login failure") {
+            throw SteamWindowsError.authenticationFailed(log)
+        }
+        guard result.exitCode == 0 else { throw SteamWindowsError.downloadFailed(result.exitCode, log) }
+        await progress(.detectingApplication)
+        guard !ExecutableDiscovery.snapshot(at: destination, fileManager: fileManager).entries.isEmpty else { throw SteamWindowsError.gameExecutableMissing }
+        await progress(.committing)
+        return SteamWindowsDownload(destination: destination, log: log)
     }
 
-    private func downloadCurrentInstaller() async throws {
-        let (data, response): (Data, URLResponse)
-        do { (data, response) = try await session.data(from: setupURL) }
-        catch { throw SteamWindowsError.downloadFailed }
-        guard let http = response as? HTTPURLResponse,
-              http.statusCode == 200,
-              http.url?.scheme == "https",
-              http.url?.host == setupURL.host,
-              data.count > 1_000_000,
-              data.prefix(2) == Data([0x4D, 0x5A]) else {
-            throw SteamWindowsError.invalidInstaller
-        }
-        try fileManager.createDirectory(at: installerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: installerURL, options: .atomic)
-    }
-
-    private func steamExecutable(in environment: ManagedBorealEnvironment, discovered: URL) -> URL? {
-        let driveC = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory).standardizedFileURL
-        let candidates = [
-            driveC.appending(path: "Program Files (x86)/Steam/steam.exe"),
-            driveC.appending(path: "Program Files/Steam/steam.exe"),
-            discovered
-        ]
-        for candidate in candidates {
-            let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL
-            guard resolved.path.hasPrefix(driveC.path + "/") else { continue }
-            if fileManager.fileExists(atPath: resolved.path), resolved.lastPathComponent.caseInsensitiveCompare("steam.exe") == .orderedSame {
-                return resolved
-            }
-        }
-        let snapshot = ExecutableDiscovery.snapshot(at: driveC, fileManager: fileManager)
-        return snapshot.entries.first(where: {
-            ($0.relativePath as NSString).lastPathComponent.caseInsensitiveCompare("steam.exe") == .orderedSame
-        })
-            .map { driveC.appending(path: $0.relativePath).resolvingSymlinksInPath().standardizedFileURL }
+    private func steamCMDExecutable() -> URL? {
+        ["/opt/homebrew/bin/steamcmd", "/usr/local/bin/steamcmd", "/opt/homebrew/bin/steamcmd.sh", "/usr/local/bin/steamcmd.sh"].map(URL.init(fileURLWithPath:)).first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 }

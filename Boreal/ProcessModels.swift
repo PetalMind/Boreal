@@ -31,6 +31,7 @@ nonisolated struct ProcessLaunchRequest: Sendable {
     var arguments: [String] = []
     var environment: [String: String] = [:]
     var currentDirectory: URL?
+    var standardInput: Data? = nil
     let stdoutLog: URL
     let stderrLog: URL
 }

@@ -64,7 +64,7 @@ nonisolated struct BorealServices: Sendable {
             processRunner: runner,
             installer: installer,
             steamLibrary: SteamLibraryService(),
-            steamWindows: SteamWindowsService(applicationSupportURL: applicationSupportURL, installer: installer),
+            steamWindows: SteamWindowsService(applicationSupportURL: applicationSupportURL, processExecutor: executor),
             epicLibrary: LegendaryEpicService(applicationSupportURL: applicationSupportURL),
             gogLibrary: GOGService(applicationSupportURL: applicationSupportURL),
             communityCompatibility: CodeWeaversCompatibilityService()
