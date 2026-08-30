@@ -31,7 +31,7 @@ struct SteamLibraryServiceTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SteamMetadataURLProtocol.self]
         SteamMetadataURLProtocol.responseData = Data("""
-        {"730":{"success":true,"data":{"name":"Counter-Strike 2","developers":["Valve"],"short_description":"A &amp; B <b>game</b>","header_image":"https://example.com/header.jpg","background_raw":"https://example.com/background.jpg","platforms":{"windows":true,"mac":false},"metacritic":{"score":82},"screenshots":[{"path_full":"https://example.com/shot.jpg"}],"movies":[{"id":7,"name":"Trailer","thumbnail":"https://example.com/trailer.jpg","hls_h264":"https://example.com/trailer.m3u8"}]}}}
+        {"730":{"success":true,"data":{"name":"Counter-Strike 2","developers":["Valve"],"short_description":"A &amp; B <b>game</b>","header_image":"https://example.com/header.jpg","background_raw":"https://example.com/background.jpg","platforms":{"windows":true,"mac":false},"pc_requirements":{"minimum":"<strong>Memory:</strong> 16 GB RAM<br><strong>Storage:</strong> 85 GB available space"},"metacritic":{"score":82},"screenshots":[{"path_full":"https://example.com/shot.jpg"}],"movies":[{"id":7,"name":"Trailer","thumbnail":"https://example.com/trailer.jpg","hls_h264":"https://example.com/trailer.m3u8"}]}}}
         """.utf8)
         let service = SteamLibraryService(steamRoot: root, session: URLSession(configuration: configuration))
 
@@ -56,9 +56,28 @@ struct SteamLibraryServiceTests {
         #expect(game.storeRating?.criticScore == 82)
         #expect(game.supportsWindows == true)
         #expect(game.supportsNativeMacOS == false)
+        #expect(game.sizeEstimate?.installedBytes == 85_000_000_000)
+        #expect(game.sizeEstimate?.source == .steamStoreRequirement)
         #expect(game.compatibility?.tier == .gold)
         #expect(game.compatibility?.trendingTier == .platinum)
         #expect(game.compatibility?.reportCount == 2_029)
+
+        var staleGame = game
+        staleGame.screenshotURLs = nil
+        staleGame.videos = nil
+        let refreshed = await service.loadDetails(for: staleGame)
+        #expect(refreshed.screenshotURLs == ["https://example.com/shot.jpg"])
+        #expect(refreshed.videos?.first?.videoURL == "https://example.com/trailer.m3u8")
+    }
+
+    @Test func parsesOnlyExplicitSteamStorageRequirement() {
+        #expect(SteamLibraryService.storeRequirementBytes(from: [
+            "minimum": "<strong>Memory:</strong> 32 GB RAM<br><strong>Storage:</strong> 70 GB available space",
+            "recommended": "<strong>Miejsce na dysku:</strong> 92,5 GB"
+        ]) == 92_500_000_000)
+        #expect(SteamLibraryService.storeRequirementBytes(from: [
+            "minimum": "<strong>Memory:</strong> 128 GB RAM"
+        ]) == nil)
     }
 
     private func makeDirectory(_ url: URL) throws {

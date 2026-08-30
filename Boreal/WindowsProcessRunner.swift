@@ -155,7 +155,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
         values["WINEARCH"] = environment.configuration.architecture
-        values["WINEDEBUG"] = values["WINEDEBUG"] ?? "warn+all,err+all"
+        let debugChannels = values["WINEDEBUG"] ?? "warn+all,err+all"
+        values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")
         return values
     }

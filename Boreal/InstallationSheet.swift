@@ -45,7 +45,17 @@ struct InstallationSheet: View {
                 .frame(width: 390)
         case .installing:
             VStack(spacing: 14) {
-                ProgressView().controlSize(.small).frame(width: 340)
+                HStack(alignment: .firstTextBaseline) {
+                    Text(store.installation.stage?.title ?? "Preparing")
+                        .font(.callout.weight(.medium))
+                    Spacer()
+                    Text("\(installationPercentage)%")
+                        .font(.title3.bold().monospacedDigit())
+                        .contentTransition(.numericText())
+                }
+                ProgressView(value: installationFraction)
+                    .progressViewStyle(BorealDownloadProgressStyle())
+                    .frame(width: 340)
                 DisclosureGroup("Show Details", isExpanded: $showsDetails) {
                     installationSteps.padding(.top, 8)
                 }
@@ -135,6 +145,17 @@ struct InstallationSheet: View {
 
     private var isInstalling: Bool {
         if case .installing = store.installation.state { true } else { false }
+    }
+
+    private var installationFraction: Double {
+        let stages = InstallationStage.allCases
+        guard let stage = store.installation.stage,
+              let index = stages.firstIndex(of: stage) else { return 0 }
+        return Double(index) / Double(max(stages.count - 1, 1))
+    }
+
+    private var installationPercentage: Int {
+        Int((installationFraction * 100).rounded())
     }
 
     private var title: String {

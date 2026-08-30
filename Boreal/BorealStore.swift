@@ -1,6 +1,30 @@
 import Foundation
 import Observation
 
+private actor StoreSizeEstimateGate {
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { self.limit = limit }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            active = max(0, active - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class BorealStore {
@@ -8,6 +32,7 @@ final class BorealStore {
         var applications: [WindowsApplication]
         var environments: [WindowsEnvironment]
         var storeGames: [StoreLibraryGame]?
+        var storeDownloads: [String: StoreDownloadRecord]?
     }
 
     var applications: [WindowsApplication] = []
@@ -34,6 +59,11 @@ final class BorealStore {
     private var environmentMonitorIDs: [UUID: UUID] = [:]
     private var storeOperationTasks: [String: Task<Void, Never>] = [:]
     private var storeOperationTokens: [String: UUID] = [:]
+    private var storeDownloadRecords: [String: StoreDownloadRecord] = [:]
+    private var lastDownloadRecordSave: [String: Date] = [:]
+    private var steamMetadataRefreshes: Set<String> = []
+    private var storeSizeEstimateLoads: Set<String> = []
+    private let storeSizeEstimateGate = StoreSizeEstimateGate(limit: 3)
     private var installationTask: Task<UUID?, Never>?
     private var installationToken: UUID?
 
@@ -61,6 +91,57 @@ final class BorealStore {
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
+    func performanceLogURL(for applicationID: UUID) -> URL? { activeSessions[applicationID]?.stderrLog }
+
+    func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
+        guard game.provider == .steam,
+              (game.screenshotURLs?.isEmpty != false || game.videos?.isEmpty != false),
+              steamMetadataRefreshes.insert(game.externalID).inserted else { return }
+        Task {
+            let refreshed = await services.steamLibrary.loadDetails(for: game)
+            guard let index = storeGames.firstIndex(where: {
+                $0.provider == .steam && $0.externalID == game.externalID
+            }) else { return }
+            var value = refreshed
+            value.id = storeGames[index].id
+            storeGames[index] = value
+            save()
+        }
+    }
+
+    func loadStoreGameSizeIfNeeded(for gameID: UUID) async {
+        guard let game = storeGame(id: gameID) else { return }
+        let platform: StoreGameInstallationPlatform = game.supportsNativeMacOS == true ? .nativeMacOS : .windows
+        if let cached = game.sizeEstimate,
+           cached.platform == platform,
+           Date.now.timeIntervalSince(cached.fetchedAt) < 86_400 {
+            return
+        }
+        let key = "\(storeOperationKey(for: game))::\(platform.rawValue)"
+        guard storeSizeEstimateLoads.insert(key).inserted else { return }
+        defer { storeSizeEstimateLoads.remove(key) }
+        await storeSizeEstimateGate.acquire()
+
+        let estimate: StoreGameSizeEstimate?
+        do {
+            switch game.provider {
+            case .gog:
+                estimate = try await services.gogLibrary.loadSizeEstimate(appID: game.externalID, platform: platform)
+            case .epic:
+                estimate = try await services.epicLibrary.loadSizeEstimate(appID: game.externalID, platform: platform)
+            case .steam:
+                estimate = await services.steamLibrary.loadDetails(for: game).sizeEstimate
+            }
+        } catch {
+            await storeSizeEstimateGate.release()
+            return
+        }
+        await storeSizeEstimateGate.release()
+        guard let estimate,
+              let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
+        storeGames[index].sizeEstimate = estimate
+        save()
+    }
     func linkedApplication(for game: StoreLibraryGame) -> WindowsApplication? {
         applications.first { $0.storeProvider == game.provider && $0.storeExternalID == game.externalID }
     }
@@ -73,6 +154,7 @@ final class BorealStore {
             let commit = try await services.installer.install(candidate.url, name: candidate.name) { [weak self] stage in
                 await self?.updateInstallation(stage)
             }
+            let communityProfile = await services.communityCompatibility.profile(named: candidate.name)
             let managed = commit.environment
             let environment = WindowsEnvironment(
                 id: managed.id,
@@ -93,11 +175,12 @@ final class BorealStore {
                 installerPath: candidate.url.path,
                 environmentID: environment.id,
                 status: .running,
-                compatibility: .unknown,
+                compatibility: communityProfile?.tier.rating ?? .unknown,
                 graphics: "WineD3D",
                 lastOpened: .now,
                 iconSymbol: symbol(for: candidate.name),
-                lastResult: "First launch verified"
+                lastResult: "First launch verified",
+                communityCompatibility: communityProfile
             )
             environments.append(environment)
             applications.append(app)
@@ -167,6 +250,7 @@ final class BorealStore {
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
                             value.compatibility = game.compatibility ?? existing.compatibility
+                            value.sizeEstimate = game.sizeEstimate ?? existing.sizeEstimate
                         }
                         return value
                     }
@@ -288,7 +372,12 @@ final class BorealStore {
                     )
                     let normalized = imported.map { game in
                         var value = game
-                        if let existing = existingGames[game.externalID] { value.id = existing.id }
+                        if let existing = existingGames[game.externalID] {
+                            value.id = existing.id
+                            value.compatibility = value.compatibility ?? existing.compatibility
+                            value.installedPlatform = existing.installedPlatform
+                            value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
+                        }
                         return value
                     }
                     storeGames.removeAll { $0.provider == .epic }
@@ -366,7 +455,20 @@ final class BorealStore {
                     )
                     let normalized = imported.map { game in
                         var value = game
-                        if let existing = existingGames[game.externalID] { value.id = existing.id }
+                        if let existing = existingGames[game.externalID] {
+                            value.id = existing.id
+                            value.compatibility = value.compatibility ?? existing.compatibility
+                            value.installedPlatform = existing.installedPlatform
+                            value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
+                            if existing.isInstalled,
+                               let path = existing.installPath,
+                               FileManager.default.fileExists(atPath: path) {
+                                value.isInstalled = true
+                                value.installPath = path
+                                value.storageBytes = GameStorage.allocatedSize(of: URL(fileURLWithPath: path, isDirectory: true))
+                                    ?? existing.storageBytes
+                            }
+                        }
                         return value
                     }
                     storeGames.removeAll { $0.provider == .gog }
@@ -397,31 +499,77 @@ final class BorealStore {
         installStoreGame(game)
     }
 
-    func installStoreGame(_ game: StoreLibraryGame) {
+    func installStoreGame(_ game: StoreLibraryGame, destinationRoot: URL? = nil) {
+        let platform: StoreGameInstallationPlatform = game.supportsNativeMacOS == true ? .nativeMacOS : .windows
+        startStoreGameInstallation(
+            game,
+            destinationRoot: destinationRoot ?? defaultGameInstallationRoot(for: game.provider),
+            platform: platform
+        )
+    }
+
+    private func startStoreGameInstallation(
+        _ game: StoreLibraryGame,
+        destinationRoot: URL,
+        platform: StoreGameInstallationPlatform
+    ) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider), storeGameOperations[key] == nil else { return }
         let token = UUID()
-        storeOperationTokens[key] = token
-        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+        let previousRecord = storeDownloadRecords[key]
+        var initialProgress = StoreGameOperationProgress(
             message: "Preparing \(game.provider.rawValue) download…",
             fractionCompleted: nil
-        ))
+        )
+        if let startedAt = previousRecord?.lastProgress?.startedAt {
+            initialProgress.startedAt = startedAt
+        }
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .installing(initialProgress)
+        storeDownloadRecords[key] = StoreDownloadRecord(
+            provider: game.provider,
+            externalID: game.externalID,
+            destinationRootPath: destinationRoot.path,
+            platform: platform,
+            status: .downloading,
+            lastProgress: initialProgress,
+            samples: previousRecord?.samples
+        )
+        save()
         let task = Task { [weak self] in
             guard let self else { return }
             do {
                 let update: @Sendable (StoreGameOperationProgress) async -> Void = { [weak self] progress in
                     await self?.updateStoreDownload(progress, key: key, token: token)
                 }
+                let root = destinationRoot
                 switch game.provider {
-                case .epic: try await services.epicLibrary.install(appID: game.externalID, progress: update)
-                case .gog: try await services.gogLibrary.install(appID: game.externalID, progress: update)
+                case .epic: try await services.epicLibrary.install(appID: game.externalID, destinationRoot: root, platform: platform, progress: update)
+                case .gog: try await services.gogLibrary.install(appID: game.externalID, destinationRoot: root, platform: platform, progress: update)
                 case .steam: return
                 }
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
+                if game.provider == .gog,
+                   let index = storeGames.firstIndex(where: { $0.id == game.id }) {
+                    let installationURL = root.appending(path: game.externalID, directoryHint: .isDirectory)
+                    storeGames[index].isInstalled = true
+                    storeGames[index].installPath = installationURL.path
+                    storeGames[index].installedPlatform = platform
+                    storeGames[index].storageBytes = GameStorage.allocatedSize(of: installationURL)
+                    save()
+                }
+                if game.provider == .epic,
+                   let index = storeGames.firstIndex(where: { $0.id == game.id }) {
+                    storeGames[index].installedPlatform = platform
+                    save()
+                }
                 storeGameOperations[key] = nil
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
+                storeDownloadRecords[key] = nil
+                lastDownloadRecordSave[key] = nil
+                save()
                 syncLibrary(game.provider)
             } catch is CancellationError {
                 finishCancelledStoreOperation(key: key, token: token)
@@ -429,7 +577,16 @@ final class BorealStore {
                 guard storeOperationTokens[key] == token else { return }
                 storeGameOperations[key] = .failed(error.localizedDescription)
                 storeOperationTasks[key] = nil
-                present(error, title: "\(game.name) couldn’t be installed", stage: "Downloading the Windows build from \(game.provider.rawValue)")
+                storeOperationTokens[key] = nil
+                if var record = storeDownloadRecords[key] {
+                    record.status = .failed
+                    record.lastError = error.localizedDescription
+                    record.updatedAt = .now
+                    storeDownloadRecords[key] = record
+                    save()
+                }
+                let platformName = platform == .nativeMacOS ? "native macOS" : "Windows"
+                present(error, title: "\(game.name) couldn’t be installed", stage: "Downloading the \(platformName) build from \(game.provider.rawValue)")
             }
         }
         storeOperationTasks[key] = task
@@ -439,9 +596,64 @@ final class BorealStore {
         storeGameOperations[storeOperationKey(for: game)]
     }
 
+    func canResumeStoreGameOperation(_ game: StoreLibraryGame) -> Bool {
+        storeDownloadRecords[storeOperationKey(for: game)] != nil
+            && storeOperationTasks[storeOperationKey(for: game)] == nil
+    }
+
+    func storeDownloadRecord(for game: StoreLibraryGame) -> StoreDownloadRecord? {
+        storeDownloadRecords[storeOperationKey(for: game)]
+    }
+
+    func resumeStoreGameOperation(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard let record = storeDownloadRecords[key], storeOperationTasks[key] == nil else { return }
+        storeGameOperations[key] = nil
+        startStoreGameInstallation(
+            game,
+            destinationRoot: URL(fileURLWithPath: record.destinationRootPath, isDirectory: true),
+            platform: record.platform
+        )
+    }
+
+    func loadCommunityCompatibility(for gameID: UUID) async {
+        guard let game = storeGame(id: gameID), game.compatibility == nil else { return }
+        guard let profile = await services.communityCompatibility.profile(named: game.name),
+              let index = storeGames.firstIndex(where: { $0.id == gameID }),
+              storeGames[index].compatibility == nil else { return }
+        storeGames[index].compatibility = profile
+        if let appIndex = applications.firstIndex(where: {
+            $0.storeProvider == game.provider && $0.storeExternalID == game.externalID && $0.compatibility == .unknown
+        }) {
+            applications[appIndex].compatibility = profile.tier.rating
+            applications[appIndex].communityCompatibility = profile
+        }
+        save()
+    }
+
     var activeStoreGameOperations: [(game: StoreLibraryGame, state: StoreGameOperationState)] {
         storeGames.compactMap { game in
             storeGameOperation(for: game).map { (game, $0) }
+        }
+    }
+
+    var hasResumableStoreGameOperations: Bool {
+        activeStoreGameOperations.contains { $0.state.isResumable || canResumeStoreGameOperation($0.game) }
+    }
+
+    var hasPausableStoreGameOperations: Bool {
+        activeStoreGameOperations.contains { $0.state.isCancellable }
+    }
+
+    func resumeAllStoreGameOperations() {
+        for operation in activeStoreGameOperations where operation.state.isResumable || canResumeStoreGameOperation(operation.game) {
+            resumeStoreGameOperation(operation.game)
+        }
+    }
+
+    func pauseAllStoreGameOperations() {
+        for operation in activeStoreGameOperations where operation.state.isCancellable {
+            cancelStoreGameOperation(operation.game)
         }
     }
 
@@ -449,14 +661,29 @@ final class BorealStore {
         let key = storeOperationKey(for: game)
         storeGameOperations[key] = nil
         storeOperationTokens[key] = nil
+        storeDownloadRecords[key] = nil
+        lastDownloadRecordSave[key] = nil
+        save()
     }
 
     func cancelStoreGameOperation(_ game: StoreLibraryGame) {
         let key = storeOperationKey(for: game)
+        let progress = storeGameOperations[key]?.progress ?? storeDownloadRecords[key]?.lastProgress
+            ?? StoreGameOperationProgress(message: "Download paused", fractionCompleted: nil)
         storeOperationTasks[key]?.cancel()
         storeOperationTasks[key] = nil
         storeOperationTokens[key] = nil
-        storeGameOperations[key] = nil
+        if var record = storeDownloadRecords[key] {
+            record.status = .paused
+            record.lastProgress = progress
+            record.lastError = nil
+            record.updatedAt = .now
+            storeDownloadRecords[key] = record
+            storeGameOperations[key] = .paused(progress, reason: "Paused. Downloaded files were kept and can be resumed.")
+            save()
+        } else {
+            storeGameOperations[key] = nil
+        }
     }
 
     func prepareEpicGame(_ game: StoreLibraryGame) {
@@ -479,6 +706,7 @@ final class BorealStore {
             guard let self else { return }
             var createdEnvironment: ManagedBorealEnvironment?
             do {
+                async let communityProfile = services.communityCompatibility.profile(named: game.name)
                 updateEnvironmentPreparation("Preparing a verified Wine runtime…", fraction: 0.1, key: key, token: token)
                 let runtime = try await services.runtimeManager.prepareReadyRuntime()
                 try Task.checkCancellation()
@@ -497,7 +725,15 @@ final class BorealStore {
                 let plan: WindowsLaunchPlan
                 switch game.provider {
                 case .epic: plan = try await services.epicLibrary.launchPlan(appID: game.externalID, runtime: runtime, environment: managed)
-                case .gog: plan = try await services.gogLibrary.launchPlan(appID: game.externalID, runtime: runtime, environment: managed)
+                case .gog:
+                    let installationURL = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                        ?? defaultGameInstallationRoot(for: .gog).appending(path: game.externalID, directoryHint: .isDirectory)
+                    plan = try await services.gogLibrary.launchPlan(
+                        appID: game.externalID,
+                        installationURL: installationURL,
+                        runtime: runtime,
+                        environment: managed
+                    )
                 case .steam: return
                 }
                 let environment = WindowsEnvironment(
@@ -510,6 +746,8 @@ final class BorealStore {
                     prefixPath: managed.prefixURL.path,
                     logsPath: managed.logsURL.path
                 )
+                let loadedCommunityProfile = await communityProfile
+                let resolvedCompatibility = game.compatibility ?? loadedCommunityProfile
                 let app = WindowsApplication(
                     name: game.name,
                     publisher: game.developer ?? game.provider.rawValue,
@@ -517,15 +755,21 @@ final class BorealStore {
                     installerPath: game.installPath ?? "",
                     environmentID: managed.id,
                     status: .ready,
-                    compatibility: game.compatibility?.tier.rating ?? .unknown,
+                    compatibility: resolvedCompatibility?.tier.rating ?? .unknown,
                     graphics: "WineD3D",
                     iconSymbol: "gamecontroller.fill",
                     lastResult: "Ready to launch through \(game.provider.rawValue)",
                     storeProvider: game.provider,
-                    storeExternalID: game.externalID
+                    storeExternalID: game.externalID,
+                    communityCompatibility: resolvedCompatibility
                 )
                 environments.append(environment)
                 applications.append(app)
+                if let resolvedCompatibility,
+                   let gameIndex = storeGames.firstIndex(where: { $0.id == game.id }),
+                   storeGames[gameIndex].compatibility == nil {
+                    storeGames[gameIndex].compatibility = resolvedCompatibility
+                }
                 guard storeOperationTokens[key] == token else { return }
                 storeGameOperations[key] = nil
                 storeOperationTasks[key] = nil
@@ -623,7 +867,8 @@ final class BorealStore {
             iconSymbol: "gamecontroller.fill",
             lastResult: "Steam for Windows manages download, updates, and launch",
             storeProvider: .steam,
-            storeExternalID: game.externalID
+            storeExternalID: game.externalID,
+            communityCompatibility: game.compatibility
         )
     }
 
@@ -676,7 +921,26 @@ final class BorealStore {
         guard let data = try? Data(contentsOf: storageURL), let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
         applications = state.applications
         environments = state.environments
-        storeGames = state.storeGames ?? []
+        let persistedGames = state.storeGames ?? []
+        storeGames = persistedGames.filter { $0.provider != .gog }
+            + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
+        storeDownloadRecords = state.storeDownloads ?? [:]
+        for (key, record) in Array(storeDownloadRecords) {
+            var recovered = record
+            if recovered.status == .downloading { recovered.status = .paused }
+            recovered.updatedAt = .now
+            storeDownloadRecords[key] = recovered
+            let progress = recovered.lastProgress
+                ?? StoreGameOperationProgress(message: "Download ready to resume", fractionCompleted: nil)
+            storeGameOperations[key] = .paused(
+                progress,
+                reason: record.status == .downloading
+                    ? "Boreal closed during this download. Resume it when you are ready."
+                    : (record.lastError ?? "Paused. Downloaded files were kept.")
+            )
+        }
+        storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if !storeDownloadRecords.isEmpty { save() }
     }
 
     func forceQuit(_ id: UUID) {
@@ -929,7 +1193,12 @@ final class BorealStore {
     private func save() {
         do {
             try FileManager.default.createDirectory(at: storageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(PersistedState(applications: applications, environments: environments, storeGames: storeGames))
+            let data = try JSONEncoder().encode(PersistedState(
+                applications: applications,
+                environments: environments,
+                storeGames: storeGames,
+                storeDownloads: storeDownloadRecords
+            ))
             try data.write(to: storageURL, options: .atomic)
         } catch {
             present(error, title: "Boreal couldn’t save your Library", stage: "Saving application state")
@@ -1065,8 +1334,40 @@ final class BorealStore {
         "\(game.provider.rawValue)::\(game.externalID)"
     }
 
+    func defaultGameInstallationRoot(for provider: GameLibraryProvider) -> URL {
+        storageURL.deletingLastPathComponent()
+            .appending(path: "Games/\(provider == .epic ? "Epic" : provider.rawValue)", directoryHint: .isDirectory)
+    }
+
     private func updateStoreDownload(_ progress: StoreGameOperationProgress, key: String, token: UUID) {
         guard storeOperationTokens[key] == token else { return }
+        var progress = progress
+        if var record = storeDownloadRecords[key] {
+            if let startedAt = record.lastProgress?.startedAt { progress.startedAt = startedAt }
+            record.status = .downloading
+            record.lastProgress = progress
+            record.lastError = nil
+            record.updatedAt = .now
+            var samples = record.samples ?? []
+            if progress.networkBytesPerSecond != nil || progress.diskBytesPerSecond != nil,
+               samples.last.map({ Date.now.timeIntervalSince($0.timestamp) >= 1 }) != false {
+                samples.append(StoreDownloadSample(
+                    timestamp: .now,
+                    networkBytesPerSecond: progress.networkBytesPerSecond,
+                    diskBytesPerSecond: progress.diskBytesPerSecond
+                ))
+                if samples.count > 120 {
+                    samples.removeFirst(samples.count - 120)
+                }
+                record.samples = samples
+            }
+            storeDownloadRecords[key] = record
+            let now = Date()
+            if lastDownloadRecordSave[key].map({ now.timeIntervalSince($0) >= 2 }) != false {
+                lastDownloadRecordSave[key] = now
+                save()
+            }
+        }
         storeGameOperations[key] = .installing(progress)
     }
 

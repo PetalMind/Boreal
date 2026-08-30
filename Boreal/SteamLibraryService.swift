@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated protocol SteamLibraryLoading: Sendable {
     func loadLibrary() async throws -> [StoreLibraryGame]
+    func loadDetails(for game: StoreLibraryGame) async -> StoreLibraryGame
 }
 
 enum SteamLibraryError: LocalizedError {
@@ -32,6 +33,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         var artworkPath: String?
         var isInstalled = false
         var installPath: String?
+        var storageBytes: Int64?
     }
 
     private struct StoreMetadata: Sendable {
@@ -46,6 +48,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         var rating: StoreRating?
         var supportsWindows: Bool?
         var supportsNativeMacOS: Bool?
+        var sizeEstimate: StoreGameSizeEstimate?
     }
 
     private let fileManager: FileManager
@@ -110,6 +113,8 @@ actor SteamLibraryService: SteamLibraryLoading {
                             lastPlayed: game.lastPlayed,
                             isInstalled: game.isInstalled,
                             installPath: game.installPath,
+                            storageBytes: game.storageBytes,
+                            sizeEstimate: metadata?.sizeEstimate,
                             compatibility: compatibility
                         )
                     }
@@ -122,6 +127,34 @@ actor SteamLibraryService: SteamLibraryLoading {
         }
 
         return results.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    func loadDetails(for game: StoreLibraryGame) async -> StoreLibraryGame {
+        guard game.provider == .steam else { return game }
+        async let metadataRequest = Self.fetchMetadata(appID: game.externalID, session: session)
+        async let compatibilityRequest = compatibilityLoader.profile(appID: game.externalID)
+        let (metadata, compatibility) = await (metadataRequest, compatibilityRequest)
+        guard let metadata else {
+            var value = game
+            value.compatibility = compatibility ?? value.compatibility
+            return value
+        }
+
+        var value = game
+        value.name = metadata.name ?? value.name
+        value.developer = metadata.developer ?? value.developer
+        value.summary = metadata.summary ?? value.summary
+        value.portraitImageURL = metadata.portraitImageURL ?? value.portraitImageURL
+        value.headerImageURL = metadata.headerImageURL ?? value.headerImageURL
+        value.backgroundImageURL = metadata.backgroundImageURL ?? value.backgroundImageURL
+        value.screenshotURLs = metadata.screenshotURLs?.isEmpty == false ? metadata.screenshotURLs : value.screenshotURLs
+        value.videos = metadata.videos?.isEmpty == false ? metadata.videos : value.videos
+        value.storeRating = metadata.rating ?? value.storeRating
+        value.supportsWindows = metadata.supportsWindows ?? value.supportsWindows
+        value.supportsNativeMacOS = metadata.supportsNativeMacOS ?? value.supportsNativeMacOS
+        value.sizeEstimate = metadata.sizeEstimate ?? value.sizeEstimate
+        value.compatibility = compatibility ?? value.compatibility
+        return value
     }
 
     private func signedInUserDirectories() throws -> [URL] {
@@ -206,8 +239,15 @@ actor SteamLibraryService: SteamLibraryLoading {
                 var game = games[appID] ?? LocalGame(appID: appID)
                 game.name = state.string("name") ?? game.name
                 game.isInstalled = true
+                if let value = state.string("SizeOnDisk"), let bytes = Int64(value), bytes > 0 {
+                    game.storageBytes = bytes
+                }
                 if let installDirectory = state.string("installdir") {
-                    game.installPath = steamApps.appending(path: "common/\(installDirectory)").path
+                    let installationURL = steamApps.appending(path: "common/\(installDirectory)", directoryHint: .isDirectory)
+                    game.installPath = installationURL.path
+                    if game.storageBytes == nil {
+                        game.storageBytes = GameStorage.allocatedSize(of: installationURL)
+                    }
                 }
                 let cover = steamRoot.appending(path: "appcache/librarycache/\(appID)/library_600x900.jpg")
                 if fileManager.fileExists(atPath: cover.path) { game.artworkPath = cover.path }
@@ -234,6 +274,9 @@ actor SteamLibraryService: SteamLibraryLoading {
         let developers = details["developers"] as? [String]
         let publishers = details["publishers"] as? [String]
         let platforms = details["platforms"] as? [String: Bool]
+        let preferredPlatform: StoreGameInstallationPlatform = platforms?["mac"] == true ? .nativeMacOS : .windows
+        let requirementsKey = preferredPlatform == .nativeMacOS ? "mac_requirements" : "pc_requirements"
+        let requirementBytes = storeRequirementBytes(from: details[requirementsKey])
         let screenshots = (details["screenshots"] as? [[String: Any]])?.compactMap {
             ($0["path_full"] as? String) ?? ($0["path_thumbnail"] as? String)
         }
@@ -268,8 +311,44 @@ actor SteamLibraryService: SteamLibraryLoading {
             videos: movies,
             rating: rating,
             supportsWindows: platforms?["windows"],
-            supportsNativeMacOS: platforms?["mac"]
+            supportsNativeMacOS: platforms?["mac"],
+            sizeEstimate: requirementBytes.map {
+                StoreGameSizeEstimate(
+                    installedBytes: $0,
+                    source: .steamStoreRequirement,
+                    platform: preferredPlatform
+                )
+            }
         )
+    }
+
+    static func storeRequirementBytes(from value: Any?) -> Int64? {
+        guard let requirements = value as? [String: Any] else { return nil }
+        let candidates = [requirements["minimum"], requirements["recommended"]]
+            .compactMap { $0 as? String }
+            .compactMap(requirementBytes)
+        return candidates.max()
+    }
+
+    private static func requirementBytes(in html: String) -> Int64? {
+        let plain = html
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+        let pattern = #"(?i)(?:storage|disk space|miejsce na dysku|pamięć masowa)\s*:?\s*([0-9]+(?:[.,][0-9]+)?)\s*(TB|GB|MB)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: plain, range: NSRange(plain.startIndex..., in: plain)),
+              let amountRange = Range(match.range(at: 1), in: plain),
+              let unitRange = Range(match.range(at: 2), in: plain),
+              let amount = Double(plain[amountRange].replacingOccurrences(of: ",", with: ".")) else { return nil }
+        let multiplier: Double
+        switch plain[unitRange].uppercased() {
+        case "TB": multiplier = 1_000_000_000_000
+        case "GB": multiplier = 1_000_000_000
+        default: multiplier = 1_000_000
+        }
+        let bytes = amount * multiplier
+        guard bytes > 0, bytes <= Double(Int64.max) else { return nil }
+        return Int64(bytes.rounded())
     }
 
     private static func fetchReviewRating(appID: String, session: URLSession) async -> StoreRating? {

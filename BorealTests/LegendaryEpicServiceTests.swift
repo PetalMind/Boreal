@@ -38,12 +38,23 @@ struct LegendaryEpicServiceTests {
         #expect(game.supportsNativeMacOS == false)
         #expect(game.isInstalled)
         #expect(game.installPath == gameDirectory.path)
+        #expect(game.sizeEstimate?.installedBytes == 8_000_000_000)
+
+        let size = try #require(try await service.loadSizeEstimate(appID: game.externalID, platform: .windows))
+        #expect(size.downloadBytes == 5_000_000_000)
+        #expect(size.installedBytes == 8_000_000_000)
+        #expect(size.source == .epicManifest)
+        #expect(size.buildID == "epic-build-7")
 
         try await service.install(appID: "BorealEpicApp") { _ in }
         let installArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
         #expect(installArguments.contains("install BorealEpicApp"))
         #expect(installArguments.contains("--platform Windows"))
         #expect(installArguments.contains("--skip-dlcs"))
+
+        try await service.install(appID: "BorealEpicApp", destinationRoot: root.appending(path: "Native"), platform: .nativeMacOS) { _ in }
+        let nativeInstallArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
+        #expect(nativeInstallArguments.contains("--platform Mac"))
 
         let runtime = InstalledRuntime(
             id: "test-runtime",
@@ -92,7 +103,7 @@ struct LegendaryEpicServiceTests {
       exit 0
     fi
     if [ "$1" = "list-installed" ]; then
-      printf '%s\n' '[{"app_name":"BorealEpicApp","install_path":"\#(gameDirectory.path)"}]'
+      printf '%s\n' '[{"app_name":"BorealEpicApp","install_path":"\#(gameDirectory.path)","install_size":8000000000}]'
       exit 0
     fi
     if [ "$1" = "list" ]; then
@@ -101,6 +112,10 @@ struct LegendaryEpicServiceTests {
     fi
     if [ "$1" = "launch" ]; then
       printf '{"game_parameters":["-windowed"],"game_executable":"BorealGame.exe","game_directory":"\#(gameDirectory.path)","egl_parameters":["-epicusername=player"],"launch_command":["%s"],"working_directory":"\#(gameDirectory.path)","user_parameters":[],"environment":{"WINEPREFIX":"/unsafe","PATH":"/unsafe","EOS_USE_ANTICHEATCLIENTNULL":"1"},"pre_launch_command":""}\n' "$5"
+      exit 0
+    fi
+    if [ "$1" = "info" ]; then
+      printf '%s\n' '{"game":{"app_name":"BorealEpicApp"},"manifest":{"download_size":5000000000,"disk_size":8000000000,"build_id":"epic-build-7"}}'
       exit 0
     fi
     exit 64

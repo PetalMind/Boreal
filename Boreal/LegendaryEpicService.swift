@@ -24,9 +24,30 @@ nonisolated protocol EpicLibraryProviding: Sendable {
     func prepareSupport() async throws
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
+    func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate?
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
+}
+
+extension EpicLibraryProviding {
+    func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
+        _ = appID
+        _ = platform
+        return nil
+    }
+
+    func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = platform
+        try await install(appID: appID, destinationRoot: destinationRoot, progress: progress)
+    }
+
+    func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = destinationRoot
+        try await install(appID: appID, progress: progress)
+    }
 }
 
 enum LegendaryEpicError: LocalizedError, Sendable {
@@ -64,10 +85,12 @@ actor LegendaryEpicService: EpicLibraryProviding {
     private struct InstalledGame: Decodable {
         let appName: String
         let installPath: String
+        let installSize: Int64?
 
         enum CodingKeys: String, CodingKey {
             case appName = "app_name"
             case installPath = "install_path"
+            case installSize = "install_size"
         }
     }
 
@@ -151,7 +174,7 @@ actor LegendaryEpicService: EpicLibraryProviding {
             throw LegendaryEpicError.invalidLibraryResponse
         }
         let installed = (try? JSONDecoder().decode([InstalledGame].self, from: localData)) ?? []
-        let installedByID = Dictionary(uniqueKeysWithValues: installed.map { ($0.appName, $0.installPath) })
+        let installedByID = Dictionary(uniqueKeysWithValues: installed.map { ($0.appName, $0) })
         return rows.compactMap { row in
             guard let appName = row["app_name"] as? String,
                   let title = row["app_title"] as? String,
@@ -173,7 +196,8 @@ actor LegendaryEpicService: EpicLibraryProviding {
             }
             let releaseInfo = metadata?["releaseInfo"] as? [[String: Any]]
             let platforms = releaseInfo?.flatMap { $0["platform"] as? [String] ?? [] } ?? []
-            let installPath = installedByID[appName]
+            let installedGame = installedByID[appName]
+            let installPath = installedGame?.installPath
             return StoreLibraryGame(
                 provider: .epic,
                 externalID: appName,
@@ -188,10 +212,43 @@ actor LegendaryEpicService: EpicLibraryProviding {
                 supportsWindows: platforms.contains { $0.caseInsensitiveCompare("Windows") == .orderedSame },
                 supportsNativeMacOS: platforms.contains { $0.caseInsensitiveCompare("Mac") == .orderedSame },
                 isInstalled: installPath != nil,
-                installPath: installPath
+                installPath: installPath,
+                storageBytes: installPath.flatMap { GameStorage.allocatedSize(of: URL(fileURLWithPath: $0, isDirectory: true)) },
+                sizeEstimate: installedGame?.installSize.flatMap { bytes in
+                    bytes > 0 ? StoreGameSizeEstimate(
+                        installedBytes: bytes,
+                        source: .epicManifest,
+                        platform: .windows
+                    ) : nil
+                }
             )
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
+        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
+        let data = try await run([
+            "info", appID,
+            "--platform", platform == .nativeMacOS ? "Mac" : "Windows",
+            "--json"
+        ])
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let manifest = root["manifest"] as? [String: Any] else {
+            throw LegendaryEpicError.invalidLibraryResponse
+        }
+        let downloadBytes = Self.int64Value(manifest["download_size"])
+        let installedBytes = Self.int64Value(manifest["disk_size"])
+        guard downloadBytes.map({ $0 > 0 }) == true || installedBytes.map({ $0 > 0 }) == true else {
+            throw LegendaryEpicError.invalidLibraryResponse
+        }
+        return StoreGameSizeEstimate(
+            downloadBytes: downloadBytes,
+            installedBytes: installedBytes,
+            source: .epicManifest,
+            platform: platform,
+            buildID: manifest["build_id"].map(String.init(describing:))
+        )
     }
 
     func disconnect() async throws {
@@ -200,15 +257,24 @@ actor LegendaryEpicService: EpicLibraryProviding {
     }
 
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
-        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
-        let gamesURL = configURL.deletingLastPathComponent().deletingLastPathComponent()
+        let defaultRoot = configURL.deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Games/Epic", directoryHint: .isDirectory)
-        try fileManager.createDirectory(at: gamesURL, withIntermediateDirectories: true)
-        await progress(StoreGameOperationProgress(message: "Preparing Epic Games download…", fractionCompleted: nil))
+        try await install(appID: appID, destinationRoot: defaultRoot, progress: progress)
+    }
+
+    func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        try await install(appID: appID, destinationRoot: destinationRoot, platform: .windows, progress: progress)
+    }
+
+    func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
+        try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        let platformName = platform == .nativeMacOS ? "macOS" : "Windows"
+        await progress(StoreGameOperationProgress(message: "Preparing Epic Games \(platformName) download…", fractionCompleted: nil))
         _ = try await run([
             "-y", "install", appID,
-            "--platform", "Windows",
-            "--base-path", gamesURL.path,
+            "--platform", platform == .nativeMacOS ? "Mac" : "Windows",
+            "--base-path", destinationRoot.path,
             "--skip-dlcs"
         ], progress: progress)
         try Task.checkCancellation()
@@ -275,6 +341,14 @@ actor LegendaryEpicService: EpicLibraryProviding {
         guard let data = try? Data(contentsOf: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return (root["displayName"] as? String) ?? (root["account_id"] as? String).map { "Epic account \($0.suffix(6))" }
+    }
+
+    private static func int64Value(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) }
+        return nil
     }
 
     private static var artifact: ReleaseArtifact? {

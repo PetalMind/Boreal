@@ -9,6 +9,29 @@ nonisolated struct BorealServices: Sendable {
     let steamWindows: any SteamWindowsProviding
     let epicLibrary: any EpicLibraryProviding
     let gogLibrary: any GOGLibraryProviding
+    let communityCompatibility: any CommunityCompatibilityLoading
+
+    init(
+        runtimeManager: any RuntimeManaging,
+        environmentManager: any EnvironmentManaging,
+        processRunner: any WindowsProcessRunning,
+        installer: any Installing,
+        steamLibrary: any SteamLibraryLoading,
+        steamWindows: any SteamWindowsProviding,
+        epicLibrary: any EpicLibraryProviding,
+        gogLibrary: any GOGLibraryProviding,
+        communityCompatibility: any CommunityCompatibilityLoading = CodeWeaversCompatibilityService()
+    ) {
+        self.runtimeManager = runtimeManager
+        self.environmentManager = environmentManager
+        self.processRunner = processRunner
+        self.installer = installer
+        self.steamLibrary = steamLibrary
+        self.steamWindows = steamWindows
+        self.epicLibrary = epicLibrary
+        self.gogLibrary = gogLibrary
+        self.communityCompatibility = communityCompatibility
+    }
 
     @MainActor static func live(applicationSupportURL: URL) -> BorealServices {
         let executor = SystemProcessExecutor()
@@ -43,7 +66,8 @@ nonisolated struct BorealServices: Sendable {
             steamLibrary: SteamLibraryService(),
             steamWindows: SteamWindowsService(applicationSupportURL: applicationSupportURL, installer: installer),
             epicLibrary: LegendaryEpicService(applicationSupportURL: applicationSupportURL),
-            gogLibrary: GOGService(applicationSupportURL: applicationSupportURL)
+            gogLibrary: GOGService(applicationSupportURL: applicationSupportURL),
+            communityCompatibility: CodeWeaversCompatibilityService()
         )
     }
 }

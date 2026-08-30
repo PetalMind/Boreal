@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct DownloadsView: View {
     @Environment(BorealStore.self) private var store
@@ -36,7 +37,7 @@ struct DownloadsView: View {
                 }
             }
             .padding(32)
-            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: 1120, alignment: .leading)
         }
         .task { await store.refreshRuntimeStatuses() }
     }
@@ -46,49 +47,50 @@ struct DownloadsView: View {
     }
 
     private var gameOperations: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Game operations").font(.headline)
-            ForEach(store.activeStoreGameOperations, id: \.game.id) { operation in
-                HStack(spacing: 14) {
-                    GameArtworkView(game: operation.game, width: 54, height: 76)
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack {
-                            Text(operation.game.name).fontWeight(.semibold)
-                            Text(operation.game.provider.rawValue)
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let progress = operation.state.progress {
-                            if let fraction = progress.clampedFraction {
-                                ProgressView(value: fraction)
-                                Text("\(progress.message) · \(Int(fraction * 100))%")
-                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                            } else {
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text(progress.message).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        } else if case .awaitingProvider(let message) = operation.state {
-                            Label(message, systemImage: "info.circle")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else if case .failed(let message) = operation.state {
-                            Label(message, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption).foregroundStyle(.orange)
-                        }
-                    }
-                    Spacer()
-                    if operation.state.isCancellable {
-                        Button("Cancel", role: .cancel) { store.cancelStoreGameOperation(operation.game) }
-                            .buttonStyle(.bordered)
-                    } else {
-                        Button("Dismiss") { store.clearStoreGameOperation(for: operation.game) }
-                            .buttonStyle(.plain)
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Game Downloads").font(.title3.bold())
+                    Text(downloadQueueSummary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(14)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14)) }
+                Spacer()
+                if store.hasPausableStoreGameOperations {
+                    Button("Pause All", systemImage: "pause.fill") { store.pauseAllStoreGameOperations() }
+                        .buttonStyle(.plain)
+                }
+                if store.hasResumableStoreGameOperations {
+                    Button("Resume All", systemImage: "play.fill") { store.resumeAllStoreGameOperations() }
+                        .buttonStyle(.bordered)
+                }
             }
+            ForEach(sortedGameOperations, id: \.game.id) { operation in
+                DownloadOperationCard(
+                    game: operation.game,
+                    state: operation.state,
+                    record: store.storeDownloadRecord(for: operation.game),
+                    onPause: { store.cancelStoreGameOperation(operation.game) },
+                    onResume: { store.resumeStoreGameOperation(operation.game) },
+                    onRemove: { store.clearStoreGameOperation(for: operation.game) }
+                )
+            }
+        }
+    }
+
+    private var downloadQueueSummary: String {
+        let operations = store.activeStoreGameOperations
+        let active = operations.filter { $0.state.isCancellable }.count
+        let paused = operations.filter { $0.state.isResumable || store.canResumeStoreGameOperation($0.game) }.count
+        if active > 0 && paused > 0 { return "\(active) active · \(paused) waiting" }
+        if active > 0 { return "\(active) active" }
+        return "\(paused) ready to resume"
+    }
+
+    private var sortedGameOperations: [(game: StoreLibraryGame, state: StoreGameOperationState)] {
+        store.activeStoreGameOperations.sorted { lhs, rhs in
+            if lhs.state.isCancellable != rhs.state.isCancellable { return lhs.state.isCancellable }
+            return lhs.game.name.localizedStandardCompare(rhs.game.name) == .orderedAscending
         }
     }
 
@@ -251,5 +253,384 @@ struct DownloadsView: View {
         case .needsAttention:
             Label("Needs Attention", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         }
+    }
+}
+
+private struct DownloadOperationCard: View {
+    let game: StoreLibraryGame
+    let state: StoreGameOperationState
+    let record: StoreDownloadRecord?
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onRemove: () -> Void
+
+    @State private var showsDetails = false
+
+    private var progress: StoreGameOperationProgress? { state.progress ?? record?.lastProgress }
+    private var samples: [StoreDownloadSample] { record?.samples ?? [] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+
+            if let progress {
+                phaseStrip(progress.phase)
+                progressSection(progress)
+                metrics(progress)
+                transferChart
+                footer(progress)
+            } else {
+                stateMessage
+                footer(nil)
+            }
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.white.opacity(0.13), lineWidth: 1)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 15) {
+            GameArtworkView(game: game, width: 64, height: 88)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(game.name)
+                    .font(.title3.bold())
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    Label(game.provider.rawValue, systemImage: providerSymbol)
+                    if let platform = record?.platform {
+                        Label(platform == .nativeMacOS ? "Native macOS" : "Windows", systemImage: platform == .nativeMacOS ? "apple.logo" : "windows")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 16)
+            statusBadge
+            actionButtons
+        }
+    }
+
+    @ViewBuilder private var statusBadge: some View {
+        switch state {
+        case .installing(let progress), .preparingEnvironment(let progress):
+            Label(progress.phase.title, systemImage: progress.phase == .downloading ? "arrow.down.circle.fill" : "gearshape.2.fill")
+                .foregroundStyle(.cyan)
+                .downloadStatusBadge()
+        case .paused:
+            Label("Paused", systemImage: "pause.fill")
+                .foregroundStyle(.secondary)
+                .downloadStatusBadge()
+        case .awaitingProvider:
+            Label("Waiting", systemImage: "clock.fill")
+                .foregroundStyle(.secondary)
+                .downloadStatusBadge()
+        case .failed:
+            Label("Needs Attention", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .downloadStatusBadge()
+        }
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        if state.isCancellable {
+            Button("Pause", systemImage: "pause.fill", action: onPause)
+                .buttonStyle(.bordered)
+        } else if state.isResumable || record != nil {
+            Button("Resume", systemImage: "play.fill", action: onResume)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func phaseStrip(_ current: StoreGameOperationPhase) -> some View {
+        HStack(spacing: 8) {
+            ForEach(StoreGameOperationPhase.allCasesForDisplay, id: \.self) { phase in
+                HStack(spacing: 6) {
+                    Image(systemName: phase == current ? "circle.inset.filled" : "circle")
+                    Text(phase.title)
+                        .lineLimit(1)
+                }
+                .font(.caption.weight(phase == current ? .semibold : .regular))
+                .foregroundStyle(phase == current ? Color.primary : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(phase == current ? Color.accentColor.opacity(0.14) : Color.clear, in: Capsule())
+            }
+        }
+        .padding(4)
+        .background(.black.opacity(0.12), in: Capsule())
+    }
+
+    private func progressSection(_ progress: StoreGameOperationProgress) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(progress.phase.detail)
+                        .font(.headline)
+                    Text(progress.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let fraction = progress.clampedFraction {
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.title2.bold().monospacedDigit())
+                        .contentTransition(.numericText())
+                }
+            }
+            if let fraction = progress.clampedFraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(BorealDownloadProgressStyle())
+                    .scaleEffect(x: 1, y: 1.35, anchor: .center)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            HStack {
+                Text(amountSummary(progress))
+                Spacer()
+                Text(progress.estimatedTimeRemaining.map { "About \($0) remaining" } ?? "Time remaining unavailable")
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func metrics(_ progress: StoreGameOperationProgress) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+            DownloadMetric(title: "NETWORK", value: speed(progress.networkBytesPerSecond), symbol: "arrow.down")
+            DownloadMetric(title: "DISK USAGE", value: speed(progress.diskBytesPerSecond), symbol: "internaldrive")
+            DownloadMetric(title: "PEAK", value: speed(peakSpeed), symbol: "chart.line.uptrend.xyaxis")
+            DownloadMetric(title: "ELAPSED", value: elapsed(since: progress.startedAt), symbol: "clock")
+        }
+    }
+
+    private var transferChart: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Transfer Activity").font(.headline)
+                Spacer()
+                if !samples.isEmpty {
+                    Text("Last \(samples.count) samples")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if chartPoints.isEmpty {
+                VStack(spacing: 7) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.title2)
+                    Text("Speed history will appear when the transfer starts")
+                        .font(.caption)
+                }
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .background(.black.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+            } else {
+                Chart(chartPoints) { point in
+                    AreaMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Speed", point.bytesPerSecond)
+                    )
+                    .foregroundStyle(by: .value("Activity", point.kind))
+                    .opacity(0.12)
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("Speed", point.bytesPerSecond)
+                    )
+                    .foregroundStyle(by: .value("Activity", point.kind))
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineJoin: .round))
+                    .interpolationMethod(.catmullRom)
+                }
+                .chartForegroundStyleScale(["Network": Color.cyan, "Disk": Color.orange])
+                .chartXAxis(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine().foregroundStyle(.white.opacity(0.08))
+                        AxisValueLabel {
+                            if let bytes = value.as(Double.self) {
+                                Text(shortSpeed(bytes))
+                            }
+                        }
+                    }
+                }
+                .chartLegend(position: .top, alignment: .trailing, spacing: 14)
+                .frame(height: 178)
+                .padding(10)
+                .background(.black.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    @ViewBuilder private func footer(_ progress: StoreGameOperationProgress?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if case .paused(_, let reason) = state {
+                Label(reason, systemImage: "pause.circle")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            } else if case .failed(let message) = state {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+
+            Divider()
+            HStack(alignment: .center) {
+                DisclosureGroup(isExpanded: $showsDetails) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let path = record?.destinationRootPath {
+                            detailRow("Install location", path)
+                        }
+                        if let updatedAt = record?.updatedAt {
+                            detailRow("Last update", updatedAt.formatted(date: .abbreviated, time: .standard))
+                        }
+                        detailRow("Average network", speed(average(\.networkBytesPerSecond)))
+                        detailRow("Average disk", speed(average(\.diskBytesPerSecond)))
+                        if let raw = progress?.rawDetail {
+                            Text("Latest helper message")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(raw)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(.top, 10)
+                } label: {
+                    Text(showsDetails ? "Hide Details" : "Details")
+                        .font(.callout)
+                }
+                .disclosureGroupStyle(.automatic)
+                Spacer()
+                if !state.isCancellable {
+                    Button("Remove from Queue", role: .destructive, action: onRemove)
+                        .buttonStyle(.plain)
+                        .font(.callout)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var stateMessage: some View {
+        if case .awaitingProvider(let message) = state {
+            Label(message, systemImage: "info.circle")
+                .foregroundStyle(.secondary)
+        } else if case .failed(let message) = state {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer(minLength: 20)
+            Text(value).textSelection(.enabled)
+        }
+        .font(.caption)
+    }
+
+    private var chartPoints: [TransferChartPoint] {
+        samples.flatMap { sample in
+            var points: [TransferChartPoint] = []
+            if let value = sample.networkBytesPerSecond {
+                points.append(TransferChartPoint(timestamp: sample.timestamp, bytesPerSecond: value, kind: "Network"))
+            }
+            if let value = sample.diskBytesPerSecond {
+                points.append(TransferChartPoint(timestamp: sample.timestamp, bytesPerSecond: value, kind: "Disk"))
+            }
+            return points
+        }
+    }
+
+    private var peakSpeed: Double? {
+        chartPoints.map(\.bytesPerSecond).max()
+    }
+
+    private func average(_ path: KeyPath<StoreDownloadSample, Double?>) -> Double? {
+        let values = samples.compactMap { $0[keyPath: path] }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private func amountSummary(_ progress: StoreGameOperationProgress) -> String {
+        switch (progress.transferred, progress.total) {
+        case let (.some(completed), .some(total)): "\(completed) of \(total)"
+        case let (.some(completed), nil): completed
+        case (nil, .some(let total)): "Total: \(total)"
+        case (nil, nil): "Size information unavailable"
+        }
+    }
+
+    private func speed(_ bytes: Double?) -> String {
+        guard let bytes else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) + "/s"
+    }
+
+    private func shortSpeed(_ bytes: Double) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) + "/s"
+    }
+
+    private func elapsed(since start: Date) -> String {
+        let seconds = max(0, Int(Date.now.timeIntervalSince(start)))
+        if seconds >= 3_600 { return "\(seconds / 3_600)h \((seconds % 3_600) / 60)m" }
+        if seconds >= 60 { return "\(seconds / 60)m \(seconds % 60)s" }
+        return "\(seconds)s"
+    }
+
+    private var providerSymbol: String {
+        switch game.provider {
+        case .steam: "s.circle.fill"
+        case .epic: "e.circle.fill"
+        case .gog: "g.circle.fill"
+        }
+    }
+}
+
+private struct DownloadMetric: View {
+    let title: String
+    let value: String
+    let symbol: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: symbol)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.black.opacity(0.11), in: RoundedRectangle(cornerRadius: 11))
+    }
+}
+
+private struct TransferChartPoint: Identifiable {
+    let timestamp: Date
+    let bytesPerSecond: Double
+    let kind: String
+    var id: String { "\(timestamp.timeIntervalSinceReferenceDate)-\(kind)" }
+}
+
+private extension View {
+    func downloadStatusBadge() -> some View {
+        font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.16), in: Capsule())
+    }
+}
+
+private extension StoreGameOperationPhase {
+    static var allCasesForDisplay: [StoreGameOperationPhase] {
+        [.preparing, .downloading, .installing, .verifying]
     }
 }

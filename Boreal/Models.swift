@@ -46,6 +46,7 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var lastErrorDetail: String?
     var storeProvider: GameLibraryProvider?
     var storeExternalID: String?
+    var communityCompatibility: CommunityCompatibility?
 }
 
 nonisolated enum GameLibraryProvider: String, Codable, Hashable, CaseIterable, Sendable {
@@ -60,6 +61,28 @@ nonisolated enum GameLibraryProvider: String, Codable, Hashable, CaseIterable, S
         case .gog: "g.square.fill"
         }
     }
+}
+
+nonisolated enum StoreGameInstallationPlatform: String, Codable, Hashable, Sendable {
+    case windows
+    case nativeMacOS
+}
+
+nonisolated enum StoreGameSizeSource: String, Codable, Hashable, Sendable {
+    case gogManifest
+    case epicManifest
+    case steamStoreRequirement
+
+    var isExactManifest: Bool { self != .steamStoreRequirement }
+}
+
+nonisolated struct StoreGameSizeEstimate: Codable, Hashable, Sendable {
+    var downloadBytes: Int64? = nil
+    var installedBytes: Int64? = nil
+    var source: StoreGameSizeSource
+    var platform: StoreGameInstallationPlatform
+    var buildID: String? = nil
+    var fetchedAt: Date = .now
 }
 
 nonisolated struct StoreRating: Codable, Hashable, Sendable {
@@ -102,24 +125,44 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var lastPlayed: Date?
     var isInstalled = false
     var installPath: String?
+    var installedPlatform: StoreGameInstallationPlatform?
+    var storageBytes: Int64?
+    var sizeEstimate: StoreGameSizeEstimate?
     var compatibility: CommunityCompatibility?
+
+    var displayedStorageBytes: Int64? {
+        if let storageBytes, storageBytes > 0 { return storageBytes }
+        if let installedBytes = sizeEstimate?.installedBytes, installedBytes > 0 { return installedBytes }
+        return nil
+    }
 }
 
 nonisolated enum CompatibilitySource: String, Codable, Hashable, Sendable {
     case protonDB = "ProtonDB"
+    case codeWeavers = "CodeWeavers"
 }
 
 nonisolated enum CompatibilityTier: String, Codable, Hashable, Sendable {
     case native, platinum, gold, silver, bronze, borked, pending, unknown
+    case runsGreat, runsWell, limitedFunctionality, installsButDoesNotRun, willNotInstall
 
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .runsGreat: "Runs Great"
+        case .runsWell: "Runs Well"
+        case .limitedFunctionality: "Limited Functionality"
+        case .installsButDoesNotRun: "Installs, Will Not Run"
+        case .willNotInstall: "Will Not Install"
+        default: rawValue.capitalized
+        }
+    }
 
     var rating: CompatibilityRating {
         switch self {
-        case .native, .platinum: .excellent
-        case .gold: .good
-        case .silver, .bronze: .limited
-        case .borked: .unsupported
+        case .native, .platinum, .runsGreat: .excellent
+        case .gold, .runsWell: .good
+        case .silver, .bronze, .limitedFunctionality: .limited
+        case .borked, .installsButDoesNotRun, .willNotInstall: .unsupported
         case .pending, .unknown: .unknown
         }
     }
@@ -134,6 +177,9 @@ nonisolated struct CommunityCompatibility: Codable, Hashable, Sendable {
     var score: Double?
     var reportCount: Int
     var fetchedAt: Date
+    var sourceURL: String? = nil
+    var platform: String? = nil
+    var sourceUpdatedAt: Date? = nil
 }
 
 nonisolated enum LibrarySyncState: Equatable, Sendable {
@@ -171,25 +217,84 @@ nonisolated enum GOGConnectionState: Equatable, Sendable {
     }
 }
 
-nonisolated struct StoreGameOperationProgress: Equatable, Sendable {
+nonisolated enum StoreGameOperationPhase: String, Codable, Hashable, Sendable {
+    case preparing
+    case downloading
+    case installing
+    case verifying
+
+    var title: String {
+        switch self {
+        case .preparing: "Preparing"
+        case .downloading: "Downloading"
+        case .installing: "Installing"
+        case .verifying: "Verifying"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .preparing: "Preparing download"
+        case .downloading: "Downloading game files"
+        case .installing: "Writing game files"
+        case .verifying: "Verifying game files"
+        }
+    }
+}
+
+nonisolated struct StoreGameOperationProgress: Codable, Equatable, Sendable {
     var message: String
     var fractionCompleted: Double?
     var startedAt: Date = .now
+    var phase: StoreGameOperationPhase = .preparing
+    var transferRate: String? = nil
+    var transferred: String? = nil
+    var total: String? = nil
+    var estimatedTimeRemaining: String? = nil
+    var rawDetail: String? = nil
+    var networkBytesPerSecond: Double? = nil
+    var diskBytesPerSecond: Double? = nil
 
     var clampedFraction: Double? {
         fractionCompleted.map { min(max($0, 0), 1) }
     }
 }
 
+nonisolated struct StoreDownloadSample: Codable, Equatable, Sendable, Identifiable {
+    var id: Date { timestamp }
+    var timestamp: Date
+    var networkBytesPerSecond: Double?
+    var diskBytesPerSecond: Double?
+}
+
+nonisolated struct StoreDownloadRecord: Codable, Equatable, Sendable {
+    enum Status: String, Codable, Sendable {
+        case downloading
+        case paused
+        case failed
+    }
+
+    var provider: GameLibraryProvider
+    var externalID: String
+    var destinationRootPath: String
+    var platform: StoreGameInstallationPlatform
+    var status: Status
+    var lastProgress: StoreGameOperationProgress?
+    var lastError: String?
+    var samples: [StoreDownloadSample]? = nil
+    var updatedAt: Date = .now
+}
+
 nonisolated enum StoreGameOperationState: Equatable, Sendable {
     case installing(StoreGameOperationProgress)
     case preparingEnvironment(StoreGameOperationProgress)
+    case paused(StoreGameOperationProgress, reason: String)
     case awaitingProvider(String)
     case failed(String)
 
     var progress: StoreGameOperationProgress? {
         switch self {
-        case .installing(let value), .preparingEnvironment(let value): value
+        case .installing(let value), .preparingEnvironment(let value), .paused(let value, _): value
         case .awaitingProvider, .failed: nil
         }
     }
@@ -197,8 +302,13 @@ nonisolated enum StoreGameOperationState: Equatable, Sendable {
     var isCancellable: Bool {
         switch self {
         case .installing, .preparingEnvironment: true
-        case .awaitingProvider, .failed: false
+        case .paused, .awaitingProvider, .failed: false
         }
+    }
+
+    var isResumable: Bool {
+        if case .paused = self { return true }
+        return false
     }
 }
 
@@ -304,8 +414,36 @@ struct InstallCandidate: Identifiable, Hashable, Sendable {
     var fileType: String { url.pathExtension.uppercased() }
 }
 
+nonisolated enum GameStorage {
+    static func allocatedSize(of directory: URL, fileManager: FileManager = .default) -> Int64? {
+        guard fileManager.fileExists(atPath: directory.path) else { return nil }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsPackageDescendants],
+            errorHandler: { _, _ in true }
+        ) else { return nil }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0)
+        }
+        return total > 0 ? total : nil
+    }
+
+    static func availableCapacity(at directory: URL) -> Int64? {
+        let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
+    }
+}
+
 enum SidebarDestination: Hashable {
     case library, accounts, environments, downloads
+}
+
+enum LibraryRoute: Hashable {
     case application(UUID)
     case storeGame(UUID)
 }

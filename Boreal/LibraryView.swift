@@ -97,6 +97,8 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     let needsAttention: Bool
     let lastUsed: Date?
     let playtimeMinutes: Int?
+    let storageBytes: Int64?
+    let storageIsEstimate: Bool
     let compatibility: CompatibilityRating
     let statusText: String
 
@@ -116,7 +118,9 @@ nonisolated enum LibraryProjector {
                 readyToPlay: app.status == .ready || app.status == .running,
                 running: app.status == .running,
                 needsAttention: app.status == .needsAttention || app.status == .unavailable,
-                lastUsed: app.lastOpened, playtimeMinutes: nil, compatibility: app.compatibility,
+                lastUsed: app.lastOpened, playtimeMinutes: nil, storageBytes: app.storageBytes > 0 ? app.storageBytes : nil,
+                storageIsEstimate: false,
+                compatibility: app.compatibility,
                 statusText: app.status.rawValue
             )
         }
@@ -138,6 +142,8 @@ nonisolated enum LibraryProjector {
                 subtitle: game.developer ?? game.provider.rawValue, source: source(game.provider),
                 installed: game.isInstalled, readyToPlay: ready, running: running, needsAttention: attention,
                 lastUsed: game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
+                storageBytes: game.displayedStorageBytes,
+                storageIsEstimate: game.storageBytes == nil && game.sizeEstimate?.installedBytes != nil,
                 compatibility: game.compatibility?.tier.rating ?? .unknown,
                 statusText: attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (game.isInstalled ? "Installed" : "Available")))
             )
@@ -512,7 +518,7 @@ struct LibraryView: View {
                 }
             }
             .padding(32)
-            .frame(maxWidth: 1100)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -690,6 +696,15 @@ struct LibraryView: View {
                     Text(item.name).font(.headline).lineLimit(1)
                     Label(item.statusText, systemImage: statusSymbol(item))
                         .font(.caption).foregroundStyle(statusColor(item)).lineLimit(1)
+                    if let storageBytes = item.storageBytes, storageBytes > 0 {
+                        Label(
+                            "\(item.storageIsEstimate ? "≈ " : "")\(ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file))",
+                            systemImage: "internaldrive"
+                        )
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -712,6 +727,11 @@ struct LibraryView: View {
         }
         .contextMenu { itemContextMenu(item) }
         .accessibilityLabel("\(item.name), \(item.source.title), \(item.statusText)")
+        .task(id: item.id) {
+            if case .storeGame(let game) = item.kind {
+                await store.loadStoreGameSizeIfNeeded(for: game.id)
+            }
+        }
     }
 
     @ViewBuilder private func itemIcon(_ item: LibraryItem, compact: Bool) -> some View {

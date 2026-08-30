@@ -24,9 +24,36 @@ nonisolated protocol GOGLibraryProviding: Sendable {
     func prepareSupport() async throws
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
+    func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate?
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
+    func launchPlan(appID: String, installationURL: URL, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
+}
+
+extension GOGLibraryProviding {
+    func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
+        _ = appID
+        _ = platform
+        return nil
+    }
+
+    func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = platform
+        try await install(appID: appID, destinationRoot: destinationRoot, progress: progress)
+    }
+
+    func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = destinationRoot
+        try await install(appID: appID, progress: progress)
+    }
+
+    func launchPlan(appID: String, installationURL: URL, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {
+        _ = installationURL
+        return try await launchPlan(appID: appID, runtime: runtime, environment: environment)
+    }
 }
 
 enum GOGServiceError: LocalizedError, Sendable {
@@ -190,7 +217,8 @@ actor GOGService: GOGLibraryProviding {
                             supportsWindows: metadata.supportsWindows,
                             supportsNativeMacOS: metadata.supportsNativeMacOS,
                             isInstalled: installed,
-                            installPath: installed ? installURL.path : nil
+                            installPath: installed ? installURL.path : nil,
+                            storageBytes: installed ? GameStorage.allocatedSize(of: installURL, fileManager: fileManager) : nil
                         )
                     }
                 }
@@ -201,19 +229,57 @@ actor GOGService: GOGLibraryProviding {
             games.append(contentsOf: values)
         }
         guard !games.isEmpty else { throw GOGServiceError.invalidResponse }
-        return games.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return GOGReleaseNormalizer.deduplicate(games)
     }
 
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        try await install(appID: appID, destinationRoot: gamesURL, progress: progress)
+    }
+
+    func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
         _ = try await credentials()
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
-        let destination = gamesURL.appending(path: appID, directoryHint: .isDirectory)
-        try fileManager.createDirectory(at: gamesURL, withIntermediateDirectories: true)
-        await progress(StoreGameOperationProgress(message: "Preparing GOG download…", fractionCompleted: nil))
+        let data = try await run([
+            "info", appID,
+            "--platform", platform == .nativeMacOS ? "osx" : "windows",
+            "--lang", "en-US",
+            "--skip-dlcs"
+        ])
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let size = root["size"] as? [String: Any] else {
+            throw GOGServiceError.invalidResponse
+        }
+        let common = Self.sizeValues(size["*"])
+        let language = Self.sizeValues(size["en-US"])
+            ?? Self.sizeValues(size["en"])
+            ?? size.first(where: { $0.key != "*" }).flatMap { Self.sizeValues($0.value) }
+        let downloadBytes = Self.positiveSum(common?.downloadBytes, language?.downloadBytes)
+        let installedBytes = Self.positiveSum(common?.installedBytes, language?.installedBytes)
+        guard downloadBytes != nil || installedBytes != nil else { throw GOGServiceError.invalidResponse }
+        return StoreGameSizeEstimate(
+            downloadBytes: downloadBytes,
+            installedBytes: installedBytes,
+            source: .gogManifest,
+            platform: platform,
+            buildID: Self.stringValue(root["buildId"])
+        )
+    }
+
+    func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        try await install(appID: appID, destinationRoot: destinationRoot, platform: .windows, progress: progress)
+    }
+
+    func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = try await credentials()
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
+        let destination = destinationRoot.appending(path: appID, directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        let platformName = platform == .nativeMacOS ? "macOS" : "Windows"
+        await progress(StoreGameOperationProgress(message: "Preparing GOG \(platformName) download…", fractionCompleted: nil))
         _ = try await run([
             "download", appID,
             "--path", destination.path,
-            "--platform", "windows",
+            "--platform", platform == .nativeMacOS ? "osx" : "windows",
             "--skip-dlcs"
         ], progress: progress)
         try Task.checkCancellation()
@@ -223,11 +289,19 @@ actor GOGService: GOGLibraryProviding {
     }
 
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {
+        try await launchPlan(
+            appID: appID,
+            installationURL: gamesURL.appending(path: appID, directoryHint: .isDirectory),
+            runtime: runtime,
+            environment: environment
+        )
+    }
+
+    func launchPlan(appID: String, installationURL: URL, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {
         _ = runtime
         _ = environment
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidLaunchPlan("invalid game ID") }
-        let gameDirectory = gamesURL.appending(path: appID, directoryHint: .isDirectory)
-            .resolvingSymlinksInPath().standardizedFileURL
+        let gameDirectory = installationURL.resolvingSymlinksInPath().standardizedFileURL
         let infoURL = gameDirectory.appending(path: "goggame-\(appID).info")
         guard let data = try? Data(contentsOf: infoURL),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -274,6 +348,24 @@ actor GOGService: GOGLibraryProviding {
             throw GOGServiceError.notAuthenticated
         }
         return credentials
+    }
+
+    private static func sizeValues(_ value: Any?) -> (downloadBytes: Int64?, installedBytes: Int64?)? {
+        guard let value = value as? [String: Any] else { return nil }
+        return (int64Value(value["download_size"]), int64Value(value["disk_size"]))
+    }
+
+    private static func positiveSum(_ first: Int64?, _ second: Int64?) -> Int64? {
+        let values = [first, second].compactMap { value in value.flatMap { $0 > 0 ? $0 : nil } }
+        return values.isEmpty ? nil : values.reduce(0, +)
+    }
+
+    private static func int64Value(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) }
+        return nil
     }
 
     private func libraryEntries(credentials: Credentials) async throws -> [LibraryEntry] {
@@ -486,5 +578,74 @@ actor GOGService: GOGLibraryProviding {
         }
         try Task.checkCancellation()
         return result
+    }
+}
+
+nonisolated enum GOGReleaseNormalizer {
+    private static let promotionalSuffixes = [
+        " - Amazon Prime",
+        " - Amazon Luna",
+        " - Prime Giveaway"
+    ]
+
+    static func deduplicate(_ games: [StoreLibraryGame]) -> [StoreLibraryGame] {
+        let baseNames = Set(games.compactMap { game -> String? in
+            guard promotionalBaseName(game.name) == nil else { return nil }
+            return comparisonKey(game.name)
+        })
+        let grouped = Dictionary(grouping: games) { game -> String in
+            if let base = promotionalBaseName(game.name), baseNames.contains(comparisonKey(base)) {
+                return "title:\(comparisonKey(base))"
+            }
+            let key = comparisonKey(game.name)
+            return baseNames.contains(key) ? "title:\(key)" : "id:\(game.externalID)"
+        }
+
+        return grouped.values.map { candidates in
+            guard candidates.count > 1,
+                  let canonical = candidates.first(where: { promotionalBaseName($0.name) == nil }) else {
+                return candidates[0]
+            }
+            let identity = candidates.first(where: { $0.isInstalled }) ?? canonical
+            let metadata = candidates.max { metadataScore($0) < metadataScore($1) } ?? canonical
+            var result = identity
+            result.name = canonical.name
+            result.developer = metadata.developer ?? result.developer
+            result.summary = metadata.summary ?? result.summary
+            result.artworkPath = metadata.artworkPath ?? result.artworkPath
+            result.portraitImageURL = metadata.portraitImageURL ?? result.portraitImageURL
+            result.headerImageURL = metadata.headerImageURL ?? result.headerImageURL
+            result.backgroundImageURL = metadata.backgroundImageURL ?? result.backgroundImageURL
+            result.screenshotURLs = metadata.screenshotURLs?.isEmpty == false ? metadata.screenshotURLs : result.screenshotURLs
+            result.videos = metadata.videos?.isEmpty == false ? metadata.videos : result.videos
+            result.storeRating = metadata.storeRating ?? result.storeRating
+            result.supportsWindows = metadata.supportsWindows ?? result.supportsWindows
+            result.supportsNativeMacOS = metadata.supportsNativeMacOS ?? result.supportsNativeMacOS
+            return result
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static func promotionalBaseName(_ name: String) -> String? {
+        let lowercased = name.lowercased()
+        for suffix in promotionalSuffixes where lowercased.hasSuffix(suffix.lowercased()) {
+            return String(name.dropLast(suffix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    private static func comparisonKey(_ name: String) -> String {
+        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private static func metadataScore(_ game: StoreLibraryGame) -> Int {
+        (game.portraitImageURL == nil ? 0 : 4)
+            + (game.headerImageURL == nil ? 0 : 2)
+            + (game.backgroundImageURL == nil ? 0 : 2)
+            + min(game.screenshotURLs?.count ?? 0, 10)
+            + (game.summary?.isEmpty == false ? 2 : 0)
+            + (game.developer?.isEmpty == false ? 1 : 0)
     }
 }

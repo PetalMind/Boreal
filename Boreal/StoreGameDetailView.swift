@@ -5,8 +5,12 @@ import SwiftUI
 struct StoreGameDetailView: View {
     @Environment(BorealStore.self) private var store
     let game: StoreLibraryGame
-    @State private var confirmsStoreInstall = false
+    @State private var showsInstallationOptions = false
+    @State private var showsProgressDetails = false
+    @State private var selectedScreenshot: StoreScreenshotSelection?
     @State private var selectedVideo: StoreVideo?
+
+    private var currentGame: StoreLibraryGame { store.storeGame(id: game.id) ?? game }
 
     var body: some View {
         ScrollView {
@@ -29,21 +33,31 @@ struct StoreGameDetailView: View {
                                     }
                                     .buttonStyle(.borderedProminent).controlSize(.large)
                                     .disabled(app.status.isBusy || app.status == .unavailable)
-                                } else if game.supportsNativeMacOS == false, game.supportsWindows == true, storeOperation == nil {
+                                } else if currentGame.supportsNativeMacOS == true {
+                                    Button(currentGame.isInstalled ? "Play Native macOS Version" : "Install Native macOS Version", systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") {
+                                        openSteam()
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.large)
+                                } else if currentGame.supportsWindows == true, storeOperation == nil {
                                     Button("Install Windows Version", systemImage: "arrow.down.circle.fill") {
-                                        confirmsStoreInstall = true
+                                        showsInstallationOptions = true
                                     }
                                     .buttonStyle(.borderedProminent).controlSize(.large)
                                 } else {
-                                    Button(game.isInstalled ? "Play Native macOS Version" : "Open in Steam", systemImage: game.isInstalled ? "play.fill" : "arrow.up.right.square") {
+                                    Button("Open in Steam", systemImage: "arrow.up.right.square") {
                                         openSteam()
                                     }
                                     .buttonStyle(.borderedProminent).controlSize(.large)
                                 }
                                 Button("Store Page", systemImage: "storefront") { openStorePage() }
                                     .controlSize(.large)
-                            } else if game.isInstalled {
-                                if let app = linkedApplication {
+                            } else if currentGame.isInstalled {
+                                if currentGame.installedPlatform == .nativeMacOS {
+                                    Button("Open Native macOS Version", systemImage: "apple.logo") {
+                                        openNativeInstallation()
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.large)
+                                } else if let app = linkedApplication {
                                     Button(app.status == .running ? "Stop" : "Play in Boreal", systemImage: app.status == .running ? "stop.fill" : "play.fill") {
                                         store.toggleRunning(app.id)
                                     }
@@ -55,15 +69,15 @@ struct StoreGameDetailView: View {
                                     }
                                     .buttonStyle(.borderedProminent).controlSize(.large)
                                 }
-                                if let installPath = game.installPath {
+                                if let installPath = currentGame.installPath {
                                     Button("Show Game Files", systemImage: "folder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
                                     }
                                     .controlSize(.large)
                                 }
                             } else if storeOperation == nil {
-                                Button("Install Windows Version", systemImage: "arrow.down.circle.fill") {
-                                    confirmsStoreInstall = true
+                                Button(installButtonTitle, systemImage: "arrow.down.circle.fill") {
+                                    showsInstallationOptions = true
                                 }
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             }
@@ -71,6 +85,7 @@ struct StoreGameDetailView: View {
                         .padding(.top, 4)
                         if let progress = storeOperation?.progress {
                             operationProgress(progress)
+                                .padding(.bottom, 10)
                         } else if case .awaitingProvider(let message) = storeOperation {
                             VStack(alignment: .leading, spacing: 8) {
                                 Label(message, systemImage: "info.circle.fill")
@@ -80,26 +95,31 @@ struct StoreGameDetailView: View {
                             }
                         } else if case .failed(let message) = storeOperation {
                             Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                            if game.provider == .steam {
+                            if store.canResumeStoreGameOperation(game) {
+                                Button("Resume Download", systemImage: "arrow.clockwise") {
+                                    store.resumeStoreGameOperation(game)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            } else if game.provider == .steam {
                                 Button("Try Windows Installation Again", systemImage: "arrow.clockwise") {
                                     store.clearStoreGameOperation(for: game)
-                                    confirmsStoreInstall = true
+                                    showsInstallationOptions = true
                                 }
-                            } else if game.isInstalled {
+                            } else if currentGame.isInstalled {
                                 Button("Try Preparation Again", systemImage: "arrow.clockwise") {
                                     store.clearStoreGameOperation(for: game)
                                     store.prepareStoreGame(game)
                                 }
                             } else {
-                                Button("Try Installation Again", systemImage: "arrow.clockwise") {
+                                Button("Try \(preferredPlatformName) Installation Again", systemImage: "arrow.clockwise") {
                                     store.clearStoreGameOperation(for: game)
-                                    confirmsStoreInstall = true
+                                    showsInstallationOptions = true
                                 }
                             }
                         }
                         if linkedApplication != nil {
                             Label("Windows version managed by Boreal and \(game.provider.rawValue)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                        } else if game.isInstalled {
+                        } else if currentGame.isInstalled {
                             Label("Installed from \(game.provider.rawValue)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                         } else {
                             Label("Available in your \(game.provider.rawValue) Library", systemImage: "cloud.fill").foregroundStyle(.secondary)
@@ -107,7 +127,8 @@ struct StoreGameDetailView: View {
                         HStack(spacing: 16) {
                             StorePlatformBadge(game: game)
                             StoreRatingBadge(rating: game.storeRating)
-                            if let compatibility = game.compatibility {
+                            if currentGame.supportsNativeMacOS != true,
+                               let compatibility = currentGame.compatibility {
                                 MacCompatibilityBadge(rating: compatibility.tier.rating)
                             }
                         }
@@ -122,7 +143,9 @@ struct StoreGameDetailView: View {
                     }
                 }
 
-                if game.provider == .steam { compatibilitySection }
+                if currentGame.supportsNativeMacOS != true {
+                    compatibilitySection
+                }
 
                 mediaSection
 
@@ -135,6 +158,14 @@ struct StoreGameDetailView: View {
                         metric("Source", value: game.provider.rawValue, symbol: "person.crop.circle.badge.checkmark")
                         metric("Store game ID", value: game.externalID, symbol: "number")
                     }
+                    GridRow {
+                        metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
+                        metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
+                    }
+                    GridRow {
+                        metric("Installation", value: installationLocation, symbol: "folder")
+                        metric("Size source", value: sizeSource, symbol: "doc.text.magnifyingglass")
+                    }
                 }
 
                 if let installPath = game.installPath {
@@ -144,23 +175,31 @@ struct StoreGameDetailView: View {
                 }
             }
             .padding(36)
-            .frame(maxWidth: 960, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .confirmationDialog("Install \(game.name)?", isPresented: $confirmsStoreInstall) {
-            Button("Download and Install") {
+        .sheet(isPresented: $showsInstallationOptions) {
+            StoreGameInstallationSheet(
+                game: currentGame,
+                defaultDestination: store.defaultGameInstallationRoot(for: game.provider)
+            ) { destination in
                 if game.provider == .steam { store.installSteamWindowsGame(game) }
-                else { store.installStoreGame(game) }
+                else { store.installStoreGame(game, destinationRoot: destination) }
             }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            if game.provider == .steam {
-                Text("Boreal will install Valve’s official Steam for Windows client in an isolated environment and open this game’s installation. Sign in inside Steam; Boreal never receives your password or Steam Guard code.")
-            } else {
-                Text("Boreal will download the Windows build from \(game.provider.rawValue) using its verified support component. Game downloads can be large and continue until the operation finishes or the app is closed.")
-            }
+        }
+        .task(id: game.id) {
+            await store.loadCommunityCompatibility(for: game.id)
+        }
+        .task(id: game.id) {
+            await store.loadStoreGameSizeIfNeeded(for: game.id)
         }
         .sheet(item: $selectedVideo) { video in
             StoreVideoPlayerView(video: video)
+        }
+        .sheet(item: $selectedScreenshot) { screenshot in
+            StoreScreenshotViewer(screenshot: screenshot, gameName: game.name)
+        }
+        .task(id: game.id) {
+            store.refreshSteamMetadataIfNeeded(for: game)
         }
     }
 
@@ -187,30 +226,137 @@ struct StoreGameDetailView: View {
         return String(format: "%.1f hours", Double(game.playtimeMinutes) / 60)
     }
 
+    private var formattedDownloadSize: String {
+        guard let bytes = currentGame.sizeEstimate?.downloadBytes, bytes > 0 else { return "Not provided" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private var requiredStorageTitle: String {
+        currentGame.storageBytes.map { $0 > 0 } == true ? "On disk" : "Required space"
+    }
+
+    private var formattedRequiredStorage: String {
+        if let bytes = currentGame.storageBytes, bytes > 0 {
+            return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+        guard let estimate = currentGame.sizeEstimate,
+              let bytes = estimate.installedBytes, bytes > 0 else { return "Checking availability…" }
+        let formatted = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return estimate.source.isExactManifest ? formatted : "≈ \(formatted)"
+    }
+
+    private var sizeSource: String {
+        if currentGame.storageBytes.map({ $0 > 0 }) == true { return "Installed files" }
+        switch currentGame.sizeEstimate?.source {
+        case .gogManifest: return "GOG manifest"
+        case .epicManifest: return "Epic manifest"
+        case .steamStoreRequirement: return "Steam store requirement"
+        case nil: return "Unavailable"
+        }
+    }
+
+    private var installationLocation: String {
+        guard let path = currentGame.installPath else { return "Not installed" }
+        return URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
+    }
+
     private var storeOperation: StoreGameOperationState? {
         store.storeGameOperation(for: game)
     }
 
     private func operationProgress(_ progress: StoreGameOperationProgress) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 9) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(progress.phase.title) \(game.name)")
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(progress.phase.detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
                 if let fraction = progress.clampedFraction {
-                    ProgressView(value: fraction).frame(maxWidth: 270)
-                    Text("\(Int(fraction * 100))%").monospacedDigit()
-                } else {
-                    ProgressView().controlSize(.small)
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.title3.bold().monospacedDigit())
+                        .contentTransition(.numericText())
                 }
-                Text(progress.message).foregroundStyle(.secondary)
             }
-            if storeOperation?.isCancellable == true {
-                Button("Cancel Operation", systemImage: "xmark.circle", role: .cancel) {
-                    store.cancelStoreGameOperation(game)
+            if let fraction = progress.clampedFraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(BorealDownloadProgressStyle())
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(.cyan)
+            }
+
+            if !progressSummary(progress).isEmpty {
+                Text(progressSummary(progress))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if case .paused(_, let reason) = storeOperation {
+                Label(reason, systemImage: "pause.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if progress.rawDetail != nil || storeOperation?.isCancellable == true || storeOperation?.isResumable == true {
+                HStack(alignment: .firstTextBaseline) {
+                    if let rawDetail = progress.rawDetail {
+                        DisclosureGroup("Details", isExpanded: $showsProgressDetails) {
+                            Text(rawDetail)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 7)
+                        }
+                        .font(.callout)
+                    }
+                    Spacer()
+                    if storeOperation?.isCancellable == true {
+                        Button("Pause") {
+                            store.cancelStoreGameOperation(game)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Pause and keep downloaded files")
+                    } else if storeOperation?.isResumable == true {
+                        Button("Remove from Queue", role: .destructive) {
+                            store.clearStoreGameOperation(for: game)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        Button("Resume") {
+                            store.resumeStoreGameOperation(game)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
                 }
-                .buttonStyle(.bordered)
             }
         }
+        .padding(16)
+        .frame(maxWidth: 500)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14)) }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(progress.message)
+        .accessibilityLabel("\(progress.phase.title) \(game.name), \(progress.phase.detail)")
+    }
+
+    private func progressSummary(_ progress: StoreGameOperationProgress) -> String {
+        var values: [String] = []
+        if let transferred = progress.transferred, let total = progress.total {
+            values.append("\(transferred) of \(total)")
+        }
+        if let rate = progress.transferRate { values.append(rate) }
+        if let remaining = progress.estimatedTimeRemaining { values.append("About \(remaining) remaining") }
+        return values.joined(separator: "  •  ")
     }
 
     @ViewBuilder private var mediaSection: some View {
@@ -221,14 +367,30 @@ struct StoreGameDetailView: View {
                 Text("Media").font(.title2).fontWeight(.semibold)
                 ScrollView(.horizontal) {
                     HStack(spacing: 14) {
-                        ForEach(Array(screenshots.enumerated()), id: \.offset) { _, value in
+                        ForEach(Array(screenshots.enumerated()), id: \.offset) { index, value in
                             if let url = URL(string: value) {
-                                AsyncImage(url: url) { phase in
-                                    if let image = phase.image { image.resizable().scaledToFill() }
-                                    else { Rectangle().fill(.background.secondary) }
+                                Button {
+                                    let galleryURLs = screenshots.compactMap(URL.init(string:))
+                                    selectedScreenshot = StoreScreenshotSelection(
+                                        urls: galleryURLs,
+                                        initialIndex: galleryURLs.firstIndex(of: url) ?? index
+                                    )
+                                } label: {
+                                    AsyncImage(url: url) { phase in
+                                        if let image = phase.image { image.resizable().scaledToFill() }
+                                        else { Rectangle().fill(.background.secondary) }
+                                    }
+                                    .frame(width: 310, height: 174)
+                                    .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                    .overlay(alignment: .bottomTrailing) {
+                                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                            .padding(9)
+                                            .background(.ultraThinMaterial, in: Circle())
+                                            .padding(9)
+                                    }
                                 }
-                                .frame(width: 310, height: 174)
-                                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                .buttonStyle(.plain)
+                                .help("Open screenshot")
                             }
                         }
                         ForEach(videos) { video in
@@ -258,18 +420,26 @@ struct StoreGameDetailView: View {
 
     private var linkedApplication: WindowsApplication? { store.linkedApplication(for: game) }
 
+    private var preferredPlatformName: String {
+        currentGame.supportsNativeMacOS == true ? "macOS" : "Windows"
+    }
+
+    private var installButtonTitle: String {
+        currentGame.supportsNativeMacOS == true ? "Install Native macOS Version" : "Install Windows Version"
+    }
+
     private var compatibilitySection: some View {
         VStack(alignment: .leading, spacing: 13) {
             Text("Windows Compatibility").font(.title2).fontWeight(.semibold)
-            if let profile = game.compatibility {
+            if let profile = currentGame.compatibility {
                 HStack(alignment: .top, spacing: 18) {
                     CommunityCompatibilityBadge(profile: profile)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Community reports from \(profile.source.rawValue)")
+                        Text("macOS compatibility from \(profile.source.rawValue)")
                             .fontWeight(.medium)
                         Text(compatibilitySummary(profile))
                             .font(.callout).foregroundStyle(.secondary)
-                        Text("This is Proton/Wine community evidence, not a guarantee for Boreal on macOS.")
+                        Text("This is community or CrossOver evidence, not a guarantee for Boreal's Wine configuration.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -277,12 +447,21 @@ struct StoreGameDetailView: View {
                 ContentUnavailableView(
                     "No compatibility reports",
                     systemImage: "questionmark.circle",
-                    description: Text("No ProtonDB summary was available for this Steam App ID.")
+                    description: Text("Boreal did not find an unambiguous macOS/Wine compatibility result for this title.")
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             }
             HStack {
-                Button("Open ProtonDB", systemImage: "safari") { openProtonDB() }
+                if game.provider == .steam {
+                    Button("Open ProtonDB", systemImage: "safari") { openProtonDB() }
+                }
+                if currentGame.compatibility?.source == .codeWeavers,
+                   let value = currentGame.compatibility?.sourceURL,
+                   let url = URL(string: value) {
+                    Button("Open CodeWeavers", systemImage: "safari") { NSWorkspace.shared.open(url) }
+                } else {
+                    Button("Search CodeWeavers", systemImage: "magnifyingglass") { openCodeWeaversSearch() }
+                }
                 Button("Browse WineHQ AppDB", systemImage: "magnifyingglass") { openWineAppDB() }
             }
         }
@@ -292,6 +471,12 @@ struct StoreGameDetailView: View {
     }
 
     private func compatibilitySummary(_ profile: CommunityCompatibility) -> String {
+        if profile.source == .codeWeavers {
+            var parts = [profile.tier.title]
+            if let score = profile.score { parts.append("\(Int(score))/5 stars") }
+            if let date = profile.sourceUpdatedAt { parts.append("Updated \(date.formatted(date: .abbreviated, time: .omitted))") }
+            return parts.joined(separator: " · ")
+        }
         var parts = ["\(profile.reportCount.formatted()) reports"]
         if let confidence = profile.confidence { parts.append("\(confidence.capitalized) confidence") }
         if let trending = profile.trendingTier, trending != profile.tier { parts.append("Trending: \(trending.title)") }
@@ -310,8 +495,26 @@ struct StoreGameDetailView: View {
     }
 
     private func openSteam() {
-        let action = game.isInstalled ? "rungameid" : "store"
+        let action = currentGame.isInstalled ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
         if let url = URL(string: "steam://\(action)/\(game.externalID)") { NSWorkspace.shared.open(url) }
+    }
+
+    private func openNativeInstallation() {
+        guard let path = currentGame.installPath else { return }
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        if let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) {
+            for case let candidate as URL in enumerator {
+                if candidate.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+                    NSWorkspace.shared.open(candidate)
+                    return
+                }
+            }
+        }
+        NSWorkspace.shared.open(root)
     }
 
     private func openStorePage() {
@@ -322,6 +525,15 @@ struct StoreGameDetailView: View {
         if let url = URL(string: "https://www.protondb.com/app/\(game.externalID)") { NSWorkspace.shared.open(url) }
     }
 
+    private func openCodeWeaversSearch() {
+        var components = URLComponents(string: "https://www.codeweavers.com/compatibility")
+        components?.queryItems = [
+            URLQueryItem(name: "name", value: game.name),
+            URLQueryItem(name: "search", value: "app")
+        ]
+        if let url = components?.url { NSWorkspace.shared.open(url) }
+    }
+
     private func openWineAppDB() {
         var components = URLComponents(string: "https://appdb.winehq.org/objectManager.php")
         components?.queryItems = [
@@ -330,6 +542,270 @@ struct StoreGameDetailView: View {
             URLQueryItem(name: "iItemsPerPage", value: "25")
         ]
         if let url = components?.url { NSWorkspace.shared.open(url) }
+    }
+}
+
+struct BorealDownloadProgressStyle: ProgressViewStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GeometryReader { proxy in
+            let fraction = min(max(configuration.fractionCompleted ?? 0, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.10))
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [.cyan, .blue, .indigo],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(0, proxy.size.width * fraction))
+                    .shadow(color: .cyan.opacity(0.35), radius: 6)
+            }
+        }
+        .frame(height: 12)
+        .animation(.smooth(duration: 0.25), value: configuration.fractionCompleted)
+    }
+}
+
+private struct StoreGameInstallationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let game: StoreLibraryGame
+    let completion: (URL?) -> Void
+    @State private var destination: URL
+
+    init(game: StoreLibraryGame, defaultDestination: URL, completion: @escaping (URL?) -> Void) {
+        self.game = game
+        self.completion = completion
+        _destination = State(initialValue: defaultDestination)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 16) {
+                GameArtworkView(game: game, width: 68, height: 96)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Install \(game.name)").font(.title2.bold())
+                    Text(game.provider.rawValue).foregroundStyle(.secondary)
+                }
+            }
+
+            if game.supportsNativeMacOS == true {
+                Label("Native macOS version", systemImage: "apple.logo")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                Text("Boreal will download the native Mac release. The Windows/Wine version is used only when a native release is unavailable.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if game.provider == .steam {
+                Label("Steam chooses the game library", systemImage: "shippingbox.and.arrow.backward")
+                    .font(.headline)
+                Text("Boreal will open the official Steam for Windows installer. Choose the target Steam Library in Steam when prompted; your password and Steam Guard code stay inside Steam.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Installation location").font(.headline)
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder.fill").foregroundStyle(.cyan)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(destination.lastPathComponent).fontWeight(.medium).lineLimit(1)
+                            Text(destination.path).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer()
+                        Button("Choose…") { chooseDestination() }
+                    }
+                    .padding(12)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    Text("Boreal will create a dedicated game folder inside this location.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                storageSummary(title: "Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
+                storageSummary(title: "Required", value: formattedRequiredSize, symbol: "internaldrive")
+                storageSummary(title: "Space available", value: formattedCapacity, symbol: "externaldrive")
+            }
+
+            HStack {
+                Button("Cancel", role: .cancel) { dismiss() }
+                Spacer()
+                Button(game.supportsNativeMacOS == true ? "Download Native Version" : "Download and Install") {
+                    completion(game.provider == .steam ? nil : destination)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(game.provider != .steam && !destinationIsUsable)
+            }
+        }
+        .padding(28)
+        .frame(width: 680)
+    }
+
+    private var destinationIsUsable: Bool {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory)
+        if exists { return isDirectory.boolValue && FileManager.default.isWritableFile(atPath: destination.path) }
+        return FileManager.default.isWritableFile(atPath: capacityProbeURL.path)
+    }
+
+    private var formattedDownloadSize: String {
+        guard let bytes = game.sizeEstimate?.downloadBytes, bytes > 0 else { return "Not provided" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private var formattedRequiredSize: String {
+        if let bytes = game.storageBytes, bytes > 0 {
+            return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+        guard let estimate = game.sizeEstimate,
+              let bytes = estimate.installedBytes, bytes > 0 else { return "Unavailable" }
+        let value = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        return estimate.source.isExactManifest ? value : "≈ \(value)"
+    }
+
+    private var formattedCapacity: String {
+        guard game.provider != .steam else { return "Shown by Steam" }
+        guard let bytes = GameStorage.availableCapacity(at: capacityProbeURL) else { return "Unavailable" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private var capacityProbeURL: URL {
+        var candidate = destination
+        while !FileManager.default.fileExists(atPath: candidate.path), candidate.path != "/" {
+            candidate.deleteLastPathComponent()
+        }
+        return candidate
+    }
+
+    private func storageSummary(title: String, value: String, symbol: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.callout.weight(.medium)).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func chooseDestination() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Game Installation Location"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = destination
+        if panel.runModal() == .OK, let selected = panel.url {
+            destination = selected.standardizedFileURL
+        }
+    }
+}
+
+private struct StoreScreenshotSelection: Identifiable {
+    let urls: [URL]
+    let initialIndex: Int
+    var id: String { "\(urls.first?.absoluteString ?? "screenshots")#\(initialIndex)" }
+}
+
+private struct StoreScreenshotViewer: View {
+    @Environment(\.dismiss) private var dismiss
+    let screenshot: StoreScreenshotSelection
+    let gameName: String
+    @State private var currentIndex: Int
+
+    init(screenshot: StoreScreenshotSelection, gameName: String) {
+        self.screenshot = screenshot
+        self.gameName = gameName
+        _currentIndex = State(initialValue: min(max(screenshot.initialIndex, 0), max(screenshot.urls.count - 1, 0)))
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text(gameName).font(.title2).fontWeight(.semibold)
+                Spacer()
+                if screenshot.urls.count > 1 {
+                    Text("\(currentIndex + 1) of \(screenshot.urls.count)")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Button("Close", systemImage: "xmark") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            ZStack {
+                Color.black.opacity(0.88)
+                if let url = currentURL {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFit()
+                        } else if phase.error != nil {
+                            ContentUnavailableView("Screenshot Unavailable", systemImage: "photo.badge.exclamationmark")
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, screenshot.urls.count > 1 ? 72 : 18)
+                    .padding(.vertical, 18)
+                }
+                if screenshot.urls.count > 1 {
+                    HStack {
+                        galleryButton(title: "Previous screenshot", symbol: "chevron.left", action: showPrevious)
+                        Spacer()
+                        galleryButton(title: "Next screenshot", symbol: "chevron.right", action: showNext)
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.14)) }
+        }
+        .padding(22)
+        .frame(minWidth: 1_280, idealWidth: 1_440, minHeight: 760, idealHeight: 900)
+        .background(.ultraThinMaterial)
+        .background {
+            Button("Previous screenshot", action: showPrevious)
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .hidden()
+            Button("Next screenshot", action: showNext)
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .hidden()
+        }
+    }
+
+    private var currentURL: URL? {
+        screenshot.urls.indices.contains(currentIndex) ? screenshot.urls[currentIndex] : nil
+    }
+
+    private func showPrevious() {
+        guard !screenshot.urls.isEmpty else { return }
+        currentIndex = (currentIndex - 1 + screenshot.urls.count) % screenshot.urls.count
+    }
+
+    private func showNext() {
+        guard !screenshot.urls.isEmpty else { return }
+        currentIndex = (currentIndex + 1) % screenshot.urls.count
+    }
+
+    private func galleryButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 24, weight: .semibold))
+                .frame(width: 48, height: 64)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
     }
 }
 

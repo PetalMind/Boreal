@@ -101,6 +101,66 @@ struct P0SessionRecoveryTests {
     }
 
     @MainActor
+    @Test func interruptedStoreDownloadRecoversAsResumableWithoutDiscardingProgress() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-download-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let game = StoreLibraryGame(
+            provider: .gog,
+            externalID: "12345",
+            name: "Recoverable Game",
+            supportsWindows: true
+        )
+        let progress = StoreGameOperationProgress(
+            message: "Downloading game files",
+            fractionCompleted: 0.42,
+            phase: .downloading,
+            transferRate: "18.2 MiB/s"
+        )
+        let key = "GOG::12345"
+        let record = StoreDownloadRecord(
+            provider: .gog,
+            externalID: game.externalID,
+            destinationRootPath: root.appending(path: "Games/GOG").path,
+            platform: .windows,
+            status: .downloading,
+            lastProgress: progress
+        )
+        let storageURL = root.appending(path: "library.json")
+        try JSONEncoder().encode(TestPersistedState(
+            applications: [],
+            environments: [],
+            storeGames: [game],
+            storeDownloads: [key: record]
+        )).write(to: storageURL)
+        let services = BorealServices(
+            runtimeManager: TestRuntimeManager(runtime: TestRuntime.make(root: root)),
+            environmentManager: UnusedEnvironmentManager(),
+            processRunner: RecoveryProcessRunner(),
+            installer: UnusedInstaller(),
+            steamLibrary: SteamLibraryService(),
+            steamWindows: UnusedSteamWindows(),
+            epicLibrary: UnusedEpicLibrary(),
+            gogLibrary: UnusedGOGLibrary()
+        )
+
+        let store = BorealStore(storageURL: storageURL, services: services)
+        let recoveredGame = try #require(store.storeGames.first)
+        guard case .paused(let recoveredProgress, let reason) = store.storeGameOperation(for: recoveredGame) else {
+            Issue.record("Expected a paused, resumable download")
+            return
+        }
+
+        #expect(recoveredProgress.fractionCompleted == 0.42)
+        #expect(recoveredProgress.transferRate == "18.2 MiB/s")
+        #expect(reason.contains("closed during this download"))
+        #expect(store.canResumeStoreGameOperation(recoveredGame))
+
+        let saved = try JSONDecoder().decode(TestPersistedState.self, from: Data(contentsOf: storageURL))
+        #expect(saved.storeDownloads?[key]?.status == .paused)
+    }
+
+    @MainActor
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<100 {
             if condition() { return }
@@ -175,6 +235,8 @@ private struct SessionFixture {
 private struct TestPersistedState: Codable {
     var applications: [WindowsApplication]
     var environments: [WindowsEnvironment]
+    var storeGames: [StoreLibraryGame]? = nil
+    var storeDownloads: [String: StoreDownloadRecord]? = nil
 }
 
 private enum TestRuntime {
