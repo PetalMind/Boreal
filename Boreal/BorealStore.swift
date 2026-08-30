@@ -508,6 +508,123 @@ final class BorealStore {
         )
     }
 
+    func registerExistingGame(_ game: StoreLibraryGame, at selectedURL: URL) {
+        let selected = selectedURL.standardizedFileURL
+        let key = storeOperationKey(for: game)
+        guard storeGameOperations[key] == nil else { return }
+
+        if selected.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+            guard game.supportsNativeMacOS == true,
+                  FileManager.default.fileExists(atPath: selected.path) else {
+                presentedIssue = BorealIssue(
+                    title: "This installation couldn’t be added",
+                    stage: "Validating the selected native macOS game.",
+                    recovery: "Choose the installed game’s .app bundle.",
+                    technicalDetails: selected.path
+                )
+                return
+            }
+            guard let index = storeGames.firstIndex(where: { $0.id == game.id }) else { return }
+            storeGames[index].isInstalled = true
+            storeGames[index].installPath = selected.path
+            storeGames[index].installedPlatform = .nativeMacOS
+            storeGames[index].storageBytes = GameStorage.allocatedSize(of: selected)
+            save()
+            return
+        }
+
+        guard selected.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+              FileManager.default.fileExists(atPath: selected.path),
+              ExecutableDiscovery.isEligibleExecutablePath(selected.lastPathComponent) else {
+            presentedIssue = BorealIssue(
+                title: "This installation couldn’t be added",
+                stage: "Validating the selected Windows game executable.",
+                recovery: "Choose the game’s main .exe file, not an installer, updater, helper, or uninstaller.",
+                technicalDetails: selected.path
+            )
+            return
+        }
+
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
+            message: "Preparing the existing installation…",
+            fractionCompleted: 0
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            var createdEnvironment: ManagedBorealEnvironment?
+            do {
+                async let communityProfile = services.communityCompatibility.profile(named: game.name)
+                updateEnvironmentPreparation("Preparing a verified Wine runtime…", fraction: 0.15, key: key, token: token)
+                let runtime = try await services.runtimeManager.prepareReadyRuntime()
+                try Task.checkCancellation()
+                updateEnvironmentPreparation("Creating an isolated Windows environment…", fraction: 0.4, key: key, token: token)
+                var managed = try await services.environmentManager.create(
+                    configuration: EnvironmentConfiguration(name: game.name),
+                    runtime: runtime
+                )
+                createdEnvironment = managed
+                try await services.environmentManager.initialize(managed, runtime: runtime)
+                managed.state = .ready
+                try Task.checkCancellation()
+                guard storeOperationTokens[key] == token else { throw CancellationError() }
+
+                let environment = WindowsEnvironment(
+                    id: managed.id,
+                    name: game.name,
+                    runtime: "\(runtime.displayName) · Wine \(runtime.wineVersion)",
+                    graphics: "WineD3D",
+                    runtimeID: runtime.id,
+                    rootPath: managed.rootURL.path,
+                    prefixPath: managed.prefixURL.path,
+                    logsPath: managed.logsURL.path
+                )
+                let loadedCompatibility = await communityProfile
+                let compatibility = game.compatibility ?? loadedCompatibility
+                let app = WindowsApplication(
+                    name: game.name,
+                    publisher: game.developer ?? game.provider.rawValue,
+                    executablePath: selected.path,
+                    installerPath: "existing-installation",
+                    environmentID: managed.id,
+                    compatibility: compatibility?.tier.rating ?? .unknown,
+                    graphics: "WineD3D",
+                    storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
+                    iconSymbol: "gamecontroller.fill",
+                    lastResult: "Existing installation added",
+                    storeProvider: game.provider,
+                    storeExternalID: game.externalID,
+                    communityCompatibility: compatibility
+                )
+                environments.append(environment)
+                applications.append(app)
+                if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
+                    storeGames[index].isInstalled = true
+                    storeGames[index].installPath = selected.deletingLastPathComponent().path
+                    storeGames[index].installedPlatform = .windows
+                    storeGames[index].storageBytes = app.storageBytes
+                    if storeGames[index].compatibility == nil { storeGames[index].compatibility = compatibility }
+                }
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                save()
+            } catch is CancellationError {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                present(error, title: "\(game.name) couldn’t be added", stage: "Preparing the existing Windows installation")
+            }
+        }
+        storeOperationTasks[key] = task
+    }
+
     private func startStoreGameInstallation(
         _ game: StoreLibraryGame,
         destinationRoot: URL,
@@ -979,7 +1096,8 @@ final class BorealStore {
             return
         }
         guard !applications[index].status.isBusy else { return }
-        let refreshesExecutableAtLaunch = [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
+        let usesExistingExecutable = applications[index].installerPath == "existing-installation"
+        let refreshesExecutableAtLaunch = !usesExistingExecutable && [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
         guard refreshesExecutableAtLaunch || FileManager.default.fileExists(atPath: applications[index].executablePath) else {
             applications[index].status = .unavailable
             applications[index].lastResult = "Executable unavailable"
@@ -1005,7 +1123,8 @@ final class BorealStore {
             }
             applications[index].status = .starting
             let session: WindowsProcessSession
-            if let provider = applications[index].storeProvider,
+            if !usesExistingExecutable,
+               let provider = applications[index].storeProvider,
                [.steam, .epic, .gog].contains(provider),
                let appID = applications[index].storeExternalID {
                 let plan: WindowsLaunchPlan

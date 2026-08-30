@@ -1,6 +1,7 @@
 import AppKit
 import AVKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StoreGameDetailView: View {
     @Environment(BorealStore.self) private var store
@@ -14,164 +15,22 @@ struct StoreGameDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 30) {
+            VStack(alignment: .leading, spacing: 26) {
                 hero
-                HStack(alignment: .top, spacing: 26) {
-                    GameArtworkView(game: game, width: 190, height: 266)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label(game.provider.rawValue, systemImage: game.provider.symbol)
-                            .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-                        Text(game.name).font(.largeTitle).fontWeight(.bold)
-                        if let developer = game.developer {
-                            Text(developer).font(.title3).foregroundStyle(.secondary)
-                        }
-                        HStack(spacing: 10) {
-                            if game.provider == .steam {
-                                if let app = linkedApplication {
-                                    Button(app.status == .running ? "Stop" : "Play Windows Version", systemImage: app.status == .running ? "stop.fill" : "play.fill") {
-                                        store.toggleRunning(app.id)
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                    .disabled(app.status.isBusy || app.status == .unavailable)
-                                } else if currentGame.supportsNativeMacOS == true {
-                                    Button(currentGame.isInstalled ? "Play Native macOS Version" : "Install Native macOS Version", systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") {
-                                        openSteam()
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                } else if currentGame.supportsWindows == true, storeOperation == nil {
-                                    Button("Install Windows Version", systemImage: "arrow.down.circle.fill") {
-                                        showsInstallationOptions = true
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                } else {
-                                    Button("Open in Steam", systemImage: "arrow.up.right.square") {
-                                        openSteam()
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                }
-                                Button("Store Page", systemImage: "storefront") { openStorePage() }
-                                    .controlSize(.large)
-                            } else if currentGame.isInstalled {
-                                if currentGame.installedPlatform == .nativeMacOS {
-                                    Button("Open Native macOS Version", systemImage: "apple.logo") {
-                                        openNativeInstallation()
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                } else if let app = linkedApplication {
-                                    Button(app.status == .running ? "Stop" : "Play in Boreal", systemImage: app.status == .running ? "stop.fill" : "play.fill") {
-                                        store.toggleRunning(app.id)
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                    .disabled(app.status.isBusy || app.status == .unavailable)
-                                } else if storeOperation == nil {
-                                    Button("Prepare to Play", systemImage: "wand.and.stars") {
-                                        store.prepareStoreGame(game)
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.large)
-                                }
-                                if let installPath = currentGame.installPath {
-                                    Button("Show Game Files", systemImage: "folder") {
-                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
-                                    }
-                                    .controlSize(.large)
-                                }
-                            } else if storeOperation == nil {
-                                Button(installButtonTitle, systemImage: "arrow.down.circle.fill") {
-                                    showsInstallationOptions = true
-                                }
-                                .buttonStyle(.borderedProminent).controlSize(.large)
-                            }
-                        }
-                        .padding(.top, 4)
-                        if let progress = storeOperation?.progress {
-                            operationProgress(progress)
-                                .padding(.bottom, 10)
-                        } else if case .awaitingProvider(let message) = storeOperation {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label(message, systemImage: "info.circle.fill")
-                                    .foregroundStyle(.secondary)
-                                Button("Dismiss Status") { store.clearStoreGameOperation(for: game) }
-                                    .buttonStyle(.plain)
-                            }
-                        } else if case .failed(let message) = storeOperation {
-                            Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                            if store.canResumeStoreGameOperation(game) {
-                                Button("Resume Download", systemImage: "arrow.clockwise") {
-                                    store.resumeStoreGameOperation(game)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            } else if game.provider == .steam {
-                                Button("Try Windows Installation Again", systemImage: "arrow.clockwise") {
-                                    store.clearStoreGameOperation(for: game)
-                                    showsInstallationOptions = true
-                                }
-                            } else if currentGame.isInstalled {
-                                Button("Try Preparation Again", systemImage: "arrow.clockwise") {
-                                    store.clearStoreGameOperation(for: game)
-                                    store.prepareStoreGame(game)
-                                }
-                            } else {
-                                Button("Try \(preferredPlatformName) Installation Again", systemImage: "arrow.clockwise") {
-                                    store.clearStoreGameOperation(for: game)
-                                    showsInstallationOptions = true
-                                }
-                            }
-                        }
-                        if linkedApplication != nil {
-                            Label("Windows version managed by Boreal and \(game.provider.rawValue)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                        } else if currentGame.isInstalled {
-                            Label("Installed from \(game.provider.rawValue)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                        } else {
-                            Label("Available in your \(game.provider.rawValue) Library", systemImage: "cloud.fill").foregroundStyle(.secondary)
-                        }
-                        HStack(spacing: 16) {
-                            StorePlatformBadge(game: game)
-                            StoreRatingBadge(rating: game.storeRating)
-                            if currentGame.supportsNativeMacOS != true,
-                               let compatibility = currentGame.compatibility {
-                                MacCompatibilityBadge(rating: compatibility.tier.rating)
-                            }
-                        }
-                    }
-                    Spacer()
-                }
-
-                if let summary = game.summary, !summary.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("About").font(.title2).fontWeight(.semibold)
-                        Text(summary).font(.body).foregroundStyle(.secondary).lineSpacing(4)
-                    }
-                }
-
-                if currentGame.supportsNativeMacOS != true {
-                    compatibilitySection
-                }
-
+                operationStatus
                 mediaSection
-
-                Grid(alignment: .leading, horizontalSpacing: 48, verticalSpacing: 18) {
-                    GridRow {
-                        metric("Playtime", value: playtime, symbol: "clock")
-                        metric("Last played", value: game.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never", symbol: "calendar")
+                HStack(alignment: .top, spacing: 28) {
+                    VStack(alignment: .leading, spacing: 26) {
+                        if let summary = game.summary, !summary.isEmpty {
+                            section("About this game") {
+                                Text(summary).font(.body).foregroundStyle(.secondary).lineSpacing(4)
+                            }
+                        }
+                        if currentGame.supportsNativeMacOS != true { compatibilitySection }
                     }
-                    GridRow {
-                        metric("Source", value: game.provider.rawValue, symbol: "person.crop.circle.badge.checkmark")
-                        metric("Store game ID", value: game.externalID, symbol: "number")
-                    }
-                    GridRow {
-                        metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
-                        metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
-                    }
-                    GridRow {
-                        metric("Installation", value: installationLocation, symbol: "folder")
-                        metric("Size source", value: sizeSource, symbol: "doc.text.magnifyingglass")
-                    }
-                }
-
-                if let installPath = game.installPath {
-                    Button("Show Game Files", systemImage: "folder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    detailsSidebar
+                        .frame(width: 300)
                 }
             }
             .padding(36)
@@ -203,19 +62,146 @@ struct StoreGameDetailView: View {
         }
     }
 
-    @ViewBuilder private var hero: some View {
+    private var hero: some View {
+        ZStack(alignment: .bottomLeading) {
+            heroBackground
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.35), .black.opacity(0.88)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            HStack(alignment: .bottom, spacing: 24) {
+                GameArtworkView(game: game, width: 156, height: 218)
+                    .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(game.provider.rawValue, systemImage: game.provider.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                    Text(game.name)
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    if let developer = game.developer {
+                        Text(developer).font(.title3).foregroundStyle(.white.opacity(0.72))
+                    }
+                    HStack(spacing: 12) {
+                        StorePlatformBadge(game: currentGame)
+                        StoreRatingBadge(rating: currentGame.storeRating)
+                        if currentGame.supportsNativeMacOS != true,
+                           let compatibility = currentGame.compatibility {
+                            MacCompatibilityBadge(rating: compatibility.tier.rating)
+                        }
+                    }
+                    primaryActions
+                        .padding(.top, 2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+        }
+        .frame(maxWidth: .infinity, minHeight: 360, maxHeight: 420, alignment: .bottomLeading)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.white.opacity(0.16)) }
+    }
+
+    @ViewBuilder private var heroBackground: some View {
         if let value = game.backgroundImageURL ?? game.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    Rectangle().fill(.clear)
-                }
+                if let image = phase.image { image.resizable().scaledToFill() }
+                else { Color.accentColor.opacity(0.12) }
             }
-            .frame(height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(.white.opacity(0.16))
+        } else {
+            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+    }
+
+    @ViewBuilder private var primaryActions: some View {
+        HStack(spacing: 10) {
+            if game.provider == .steam {
+                if currentGame.isInstalled, currentGame.installedPlatform == .nativeMacOS, currentGame.installPath != nil {
+                    Button("Open Native macOS Version", systemImage: "apple.logo") { openNativeInstallation() }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                } else if let app = linkedApplication {
+                    Button(app.status == .running ? "Stop" : "Play Windows Version", systemImage: app.status == .running ? "stop.fill" : "play.fill") {
+                        store.toggleRunning(app.id)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .disabled(app.status.isBusy || app.status == .unavailable)
+                } else if currentGame.supportsNativeMacOS == true {
+                    Button(currentGame.isInstalled ? "Play Native macOS Version" : "Install Native macOS Version", systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                } else if currentGame.supportsWindows == true, storeOperation == nil {
+                    Button("Install Windows Version", systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                } else {
+                    Button("Open in Steam", systemImage: "arrow.up.right.square") { openSteam() }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                }
+                Button("Store Page", systemImage: "storefront") { openStorePage() }.controlSize(.large)
+            } else if currentGame.isInstalled {
+                if currentGame.installedPlatform == .nativeMacOS {
+                    Button("Open Native macOS Version", systemImage: "apple.logo") { openNativeInstallation() }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                } else if let app = linkedApplication {
+                    Button(app.status == .running ? "Stop" : "Play in Boreal", systemImage: app.status == .running ? "stop.fill" : "play.fill") { store.toggleRunning(app.id) }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .disabled(app.status.isBusy || app.status == .unavailable)
+                } else if storeOperation == nil {
+                    Button("Prepare to Play", systemImage: "wand.and.stars") { store.prepareStoreGame(game) }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                }
+                if currentGame.installPath != nil {
+                    Button("Show Game Files", systemImage: "folder") { showGameFiles() }.controlSize(.large)
+                }
+            } else if storeOperation == nil {
+                Button(installButtonTitle, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }.controlSize(.large)
+            }
+        }
+    }
+
+    @ViewBuilder private var operationStatus: some View {
+        if let progress = storeOperation?.progress {
+            operationProgress(progress)
+        } else if case .awaitingProvider(let message) = storeOperation {
+            statusCard(symbol: "info.circle.fill", tint: .secondary) {
+                Text(message)
+                Button("Dismiss Status") { store.clearStoreGameOperation(for: game) }.buttonStyle(.plain)
+            }
+        } else if case .failed(let message) = storeOperation {
+            statusCard(symbol: "exclamationmark.triangle.fill", tint: .orange) {
+                Text(message)
+                retryAction
+            }
+        }
+    }
+
+    private func statusCard<Content: View>(symbol: String, tint: Color, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 8) { content() }
+            Spacer()
+        }
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder private var retryAction: some View {
+        if store.canResumeStoreGameOperation(game) {
+            Button("Resume Download", systemImage: "arrow.clockwise") { store.resumeStoreGameOperation(game) }
+                .buttonStyle(.borderedProminent)
+        } else if game.provider == .steam {
+            Button("Try Windows Installation Again", systemImage: "arrow.clockwise") {
+                store.clearStoreGameOperation(for: game); showsInstallationOptions = true
+            }
+        } else if currentGame.isInstalled {
+            Button("Try Preparation Again", systemImage: "arrow.clockwise") {
+                store.clearStoreGameOperation(for: game); store.prepareStoreGame(game)
+            }
+        } else {
+            Button("Try \(preferredPlatformName) Installation Again", systemImage: "arrow.clockwise") {
+                store.clearStoreGameOperation(for: game); showsInstallationOptions = true
             }
         }
     }
@@ -515,6 +501,23 @@ struct StoreGameDetailView: View {
             }
         }
         NSWorkspace.shared.open(root)
+    }
+
+    private func locateInstalledGame() {
+        let panel = NSOpenPanel()
+        panel.title = "Locate \(game.name)"
+        panel.message = currentGame.supportsNativeMacOS == true
+            ? "Choose the installed macOS .app or the main Windows .exe file."
+            : "Choose the installed game’s main Windows .exe file."
+        panel.prompt = "Add to Boreal"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        var types = [UTType(filenameExtension: "exe") ?? .data]
+        if currentGame.supportsNativeMacOS == true { types.append(.applicationBundle) }
+        panel.allowedContentTypes = types
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.registerExistingGame(game, at: url)
     }
 
     private func openStorePage() {
