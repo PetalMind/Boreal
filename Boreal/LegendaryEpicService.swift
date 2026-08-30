@@ -28,11 +28,17 @@ nonisolated protocol EpicLibraryProviding: Sendable {
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func uninstall(appID: String) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
 
 extension EpicLibraryProviding {
+    func uninstall(appID: String) async throws {
+        _ = appID
+        throw CocoaError(.featureUnsupported)
+    }
+
     func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
         _ = appID
         _ = platform
@@ -280,6 +286,12 @@ actor LegendaryEpicService: EpicLibraryProviding {
         try Task.checkCancellation()
     }
 
+    func uninstall(appID: String) async throws {
+        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
+        guard Self.isSafeAppID(appID) else { throw LegendaryEpicError.invalidLibraryResponse }
+        _ = try await run(["-y", "uninstall", appID])
+    }
+
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {
         guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
         let data = try await run([
@@ -349,6 +361,12 @@ actor LegendaryEpicService: EpicLibraryProviding {
         if let value = value as? NSNumber { return value.int64Value }
         if let value = value as? String { return Int64(value) }
         return nil
+    }
+
+    private static func isSafeAppID(_ value: String) -> Bool {
+        !value.isEmpty && value.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-"
+        }
     }
 
     private static var artifact: ReleaseArtifact? {

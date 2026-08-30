@@ -28,12 +28,19 @@ nonisolated protocol GOGLibraryProviding: Sendable {
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL?
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func launchPlan(appID: String, installationURL: URL, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
 
 extension GOGLibraryProviding {
+    func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL? {
+        _ = platform
+        let candidate = destinationRoot.appending(path: appID, directoryHint: .isDirectory)
+        return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+    }
+
     func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
         _ = appID
         _ = platform
@@ -65,7 +72,7 @@ enum GOGServiceError: LocalizedError, Sendable {
     case notAuthenticated
     case commandFailed(Int32)
     case invalidResponse
-    case installationIncomplete
+    case installationIncomplete(StoreGameInstallationPlatform)
     case invalidLaunchPlan(String)
 
     var errorDescription: String? {
@@ -78,7 +85,8 @@ enum GOGServiceError: LocalizedError, Sendable {
         case .notAuthenticated: "Connect your GOG account, then refresh the Library."
         case .commandFailed(let code): "GOG support stopped with exit code \(code)."
         case .invalidResponse: "GOG returned Library data in an unsupported format."
-        case .installationIncomplete: "GOG finished without creating a valid Windows game installation."
+        case .installationIncomplete(let platform):
+            "GOG finished without creating a valid \(platform == .nativeMacOS ? "macOS" : "Windows") game installation."
         case .invalidLaunchPlan(let detail): "The installed GOG game has an unsafe or incomplete launch task: \(detail)"
         }
     }
@@ -199,9 +207,8 @@ actor GOGService: GOGLibraryProviding {
                             accessToken: credentials.accessToken,
                             session: session
                         ) else { return nil }
-                        let installURL = gamesURL.appending(path: entry.externalID, directoryHint: .isDirectory)
-                        let infoURL = installURL.appending(path: "goggame-\(entry.externalID).info")
-                        let installed = fileManager.fileExists(atPath: infoURL.path)
+                        let containerURL = gamesURL.appending(path: entry.externalID, directoryHint: .isDirectory)
+                        let installation = Self.findInstallation(appID: entry.externalID, containerURL: containerURL, fileManager: fileManager)
                         return StoreLibraryGame(
                             provider: .gog,
                             externalID: entry.externalID,
@@ -216,9 +223,10 @@ actor GOGService: GOGLibraryProviding {
                             storeRating: metadata.rating,
                             supportsWindows: metadata.supportsWindows,
                             supportsNativeMacOS: metadata.supportsNativeMacOS,
-                            isInstalled: installed,
-                            installPath: installed ? installURL.path : nil,
-                            storageBytes: installed ? GameStorage.allocatedSize(of: installURL, fileManager: fileManager) : nil
+                            isInstalled: installation != nil,
+                            installPath: installation?.url.path,
+                            installedPlatform: installation?.platform,
+                            storageBytes: installation.flatMap { GameStorage.allocatedSize(of: $0.url, fileManager: fileManager) }
                         )
                     }
                 }
@@ -283,9 +291,57 @@ actor GOGService: GOGLibraryProviding {
             "--skip-dlcs"
         ], progress: progress)
         try Task.checkCancellation()
-        guard fileManager.fileExists(atPath: destination.appending(path: "goggame-\(appID).info").path) else {
-            throw GOGServiceError.installationIncomplete
+        guard Self.findInstallation(appID: appID, containerURL: destination, platform: platform, fileManager: fileManager) != nil else {
+            throw GOGServiceError.installationIncomplete(platform)
         }
+    }
+
+    func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL? {
+        guard Self.isSafeAppID(appID) else { return nil }
+        let container = destinationRoot.appending(path: appID, directoryHint: .isDirectory)
+        return Self.findInstallation(appID: appID, containerURL: container, platform: platform, fileManager: fileManager)?.url
+    }
+
+    private static func findInstallation(
+        appID: String,
+        containerURL: URL,
+        platform: StoreGameInstallationPlatform? = nil,
+        fileManager: FileManager
+    ) -> (url: URL, platform: StoreGameInstallationPlatform)? {
+        guard fileManager.fileExists(atPath: containerURL.path) else { return nil }
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
+        var directories = [containerURL]
+        var nativeApplication: URL?
+        var index = 0
+        while index < directories.count {
+            let directory = directories[index]
+            index += 1
+            guard let children = try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for candidate in children {
+                if candidate.lastPathComponent == "goggame-\(appID).info" {
+                    if platform != .nativeMacOS { return (directory, .windows) }
+                    continue
+                }
+                let values = try? candidate.resourceValues(forKeys: Set(keys))
+                if candidate.pathExtension.caseInsensitiveCompare("app") == .orderedSame,
+                   values?.isPackage == true,
+                   fileManager.fileExists(
+                       atPath: candidate
+                           .appending(path: "Contents/MacOS", directoryHint: .isDirectory)
+                           .path
+                   ) {
+                    nativeApplication = candidate
+                    if platform == .nativeMacOS { return (candidate, .nativeMacOS) }
+                } else if directory == containerURL, values?.isDirectory == true {
+                    directories.append(candidate)
+                }
+            }
+        }
+        return nativeApplication.map { ($0, .nativeMacOS) }
     }
 
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {
@@ -301,7 +357,20 @@ actor GOGService: GOGLibraryProviding {
         _ = runtime
         _ = environment
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidLaunchPlan("invalid game ID") }
-        let gameDirectory = installationURL.resolvingSymlinksInPath().standardizedFileURL
+        let requestedDirectory = installationURL.resolvingSymlinksInPath().standardizedFileURL
+        let gameDirectory: URL
+        if fileManager.fileExists(atPath: requestedDirectory.appending(path: "goggame-\(appID).info").path) {
+            gameDirectory = requestedDirectory
+        } else if let discovered = Self.findInstallation(
+            appID: appID,
+            containerURL: requestedDirectory,
+            platform: .windows,
+            fileManager: fileManager
+        )?.url {
+            gameDirectory = discovered.resolvingSymlinksInPath().standardizedFileURL
+        } else {
+            gameDirectory = requestedDirectory
+        }
         let infoURL = gameDirectory.appending(path: "goggame-\(appID).info")
         guard let data = try? Data(contentsOf: infoURL),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

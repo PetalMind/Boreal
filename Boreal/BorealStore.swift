@@ -161,8 +161,8 @@ final class BorealStore {
                 name: managed.configuration.name,
                 windowsVersion: "Windows 11",
                 architecture: managed.configuration.architecture == "win64" ? "64-bit" : "32-bit",
-                runtime: "\(commit.runtime.displayName) · Wine \(commit.runtime.wineVersion)",
-                graphics: "WineD3D",
+                runtime: commit.runtime.runtimeDescription,
+                graphics: commit.runtime.graphicsName,
                 runtimeID: commit.runtime.id,
                 rootPath: managed.rootURL.path,
                 prefixPath: managed.prefixURL.path,
@@ -176,7 +176,7 @@ final class BorealStore {
                 environmentID: environment.id,
                 status: .running,
                 compatibility: communityProfile?.tier.rating ?? .unknown,
-                graphics: "WineD3D",
+                graphics: commit.runtime.graphicsName,
                 lastOpened: .now,
                 iconSymbol: symbol(for: candidate.name),
                 lastResult: "First launch verified",
@@ -458,9 +458,10 @@ final class BorealStore {
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
                             value.compatibility = value.compatibility ?? existing.compatibility
-                            value.installedPlatform = existing.installedPlatform
+                            value.installedPlatform = value.installedPlatform ?? existing.installedPlatform
                             value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
-                            if existing.isInstalled,
+                            if !value.isInstalled,
+                               existing.isInstalled,
                                let path = existing.installPath,
                                FileManager.default.fileExists(atPath: path) {
                                 value.isInstalled = true
@@ -573,8 +574,8 @@ final class BorealStore {
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
-                    runtime: "\(runtime.displayName) · Wine \(runtime.wineVersion)",
-                    graphics: "WineD3D",
+                    runtime: runtime.runtimeDescription,
+                    graphics: runtime.graphicsName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
                     prefixPath: managed.prefixURL.path,
@@ -589,7 +590,7 @@ final class BorealStore {
                     installerPath: "existing-installation",
                     environmentID: managed.id,
                     compatibility: compatibility?.tier.rating ?? .unknown,
-                    graphics: "WineD3D",
+                    graphics: runtime.graphicsName,
                     storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
                     iconSymbol: "gamecontroller.fill",
                     lastResult: "Existing installation added",
@@ -669,7 +670,13 @@ final class BorealStore {
                 guard storeOperationTokens[key] == token else { return }
                 if game.provider == .gog,
                    let index = storeGames.firstIndex(where: { $0.id == game.id }) {
-                    let installationURL = root.appending(path: game.externalID, directoryHint: .isDirectory)
+                    guard let installationURL = await services.gogLibrary.installationURL(
+                        appID: game.externalID,
+                        destinationRoot: root,
+                        platform: platform
+                    ) else {
+                        throw GOGServiceError.installationIncomplete(platform)
+                    }
                     storeGames[index].isInstalled = true
                     storeGames[index].installPath = installationURL.path
                     storeGames[index].installedPlatform = platform
@@ -807,6 +814,65 @@ final class BorealStore {
         prepareStoreGame(game)
     }
 
+    func uninstallStoreGame(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard [.epic, .gog].contains(game.provider),
+              game.isInstalled,
+              storeGameOperations[key] == nil else { return }
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
+            message: "Uninstalling \(game.name)…",
+            fractionCompleted: nil
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                if let app = linkedApplication(for: game) {
+                    await removeApplicationAndEnvironment(app.id)
+                    guard application(id: app.id) == nil else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                }
+                try Task.checkCancellation()
+                switch game.provider {
+                case .epic:
+                    try await services.epicLibrary.uninstall(appID: game.externalID)
+                case .gog:
+                    guard let path = game.installPath else { throw CocoaError(.fileNoSuchFile) }
+                    let installationURL = URL(fileURLWithPath: path).standardizedFileURL
+                    guard FileManager.default.fileExists(atPath: installationURL.path) else {
+                        throw CocoaError(.fileNoSuchFile)
+                    }
+                    _ = try FileManager.default.trashItem(at: installationURL, resultingItemURL: nil)
+                case .steam:
+                    return
+                }
+                guard storeOperationTokens[key] == token else { return }
+                if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
+                    storeGames[index].isInstalled = false
+                    storeGames[index].installPath = nil
+                    storeGames[index].installedPlatform = nil
+                    storeGames[index].storageBytes = nil
+                }
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                save()
+                syncLibrary(game.provider)
+            } catch is CancellationError {
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                present(error, title: "\(game.name) couldn’t be uninstalled", stage: "Removing the installed game and its Boreal environment")
+            }
+        }
+        storeOperationTasks[key] = task
+    }
+
     func prepareStoreGame(_ game: StoreLibraryGame) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider),
@@ -856,8 +922,8 @@ final class BorealStore {
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
-                    runtime: "\(runtime.displayName) · Wine \(runtime.wineVersion)",
-                    graphics: "WineD3D",
+                    runtime: runtime.runtimeDescription,
+                    graphics: runtime.graphicsName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
                     prefixPath: managed.prefixURL.path,
@@ -873,7 +939,7 @@ final class BorealStore {
                     environmentID: managed.id,
                     status: .ready,
                     compatibility: resolvedCompatibility?.tier.rating ?? .unknown,
-                    graphics: "WineD3D",
+                    graphics: runtime.graphicsName,
                     iconSymbol: "gamecontroller.fill",
                     lastResult: "Ready to launch through \(game.provider.rawValue)",
                     storeProvider: game.provider,
@@ -912,14 +978,14 @@ final class BorealStore {
         let environment = WindowsEnvironment(
             id: managed.id,
             name: "Steam for Windows",
-            runtime: "\(commit.runtime.displayName) · Wine \(commit.runtime.wineVersion)",
-            graphics: "WineD3D",
+            runtime: commit.runtime.runtimeDescription,
+            graphics: commit.runtime.graphicsName,
             runtimeID: commit.runtime.id,
             rootPath: managed.rootURL.path,
             prefixPath: managed.prefixURL.path,
             logsPath: managed.logsURL.path
         )
-        let app = steamWindowsApplication(game: game, executable: prepared.steamExecutable, environmentID: managed.id, status: .running)
+        let app = steamWindowsApplication(game: game, executable: prepared.steamExecutable, environmentID: managed.id, status: .running, graphics: commit.runtime.graphicsName)
         environments.append(environment)
         applications.append(app)
         activeSessions[app.id] = commit.firstLaunch
@@ -945,7 +1011,7 @@ final class BorealStore {
             throw InstallerServiceError.noRuntimeAvailable
         }
         let executable = URL(fileURLWithPath: host.executablePath)
-        let app = steamWindowsApplication(game: game, executable: executable, environmentID: managed.id, status: .starting)
+        let app = steamWindowsApplication(game: game, executable: executable, environmentID: managed.id, status: .starting, graphics: runtime.graphicsName)
         applications.append(app)
         let plan = WindowsLaunchPlan(
             executable: executable,
@@ -969,7 +1035,8 @@ final class BorealStore {
         game: StoreLibraryGame,
         executable: URL,
         environmentID: UUID,
-        status: ApplicationStatus
+        status: ApplicationStatus,
+        graphics: String
     ) -> WindowsApplication {
         WindowsApplication(
             name: game.name,
@@ -979,7 +1046,7 @@ final class BorealStore {
             environmentID: environmentID,
             status: status,
             compatibility: game.compatibility?.tier.rating ?? .unknown,
-            graphics: "WineD3D",
+            graphics: graphics,
             lastOpened: status == .running ? .now : nil,
             iconSymbol: "gamecontroller.fill",
             lastResult: "Steam for Windows manages download, updates, and launch",
@@ -1004,7 +1071,7 @@ final class BorealStore {
                       try await services.runtimeManager.validate(runtime).isReady else { throw InstallerServiceError.noRuntimeAvailable }
                 let managed = try await services.environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
                 try await services.environmentManager.initialize(managed, runtime: runtime)
-                environments.append(WindowsEnvironment(id: managed.id, name: name, runtime: "\(runtime.displayName) · Wine \(runtime.wineVersion)", graphics: "WineD3D", runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path))
+                environments.append(WindowsEnvironment(id: managed.id, name: name, runtime: runtime.runtimeDescription, graphics: runtime.graphicsName, runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path))
                 save()
             } catch { present(error, title: "Environment couldn’t be created", stage: "Preparing the Windows environment") }
         }
@@ -1342,7 +1409,9 @@ final class BorealStore {
                         ? (runtime.origin == .localImport ? "Validated local snapshot" : nil)
                         : "Runtime verification failed",
                     source: .installed,
-                    origin: runtime.origin
+                    origin: runtime.origin,
+                    engine: runtime.resolvedEngine,
+                    features: runtime.features
                 ))
             }
             let installedIDs = Set(installed.map(\.id))
@@ -1367,7 +1436,9 @@ final class BorealStore {
                     compressedSize: runtime.artifact.compressedSize,
                     state: .available,
                     isVerified: false,
-                    source: .catalog
+                    source: .catalog,
+                    engine: runtime.features.d3dmetal ? .gamePortingToolkit : .wine,
+                    features: runtime.features
                 ))
             }
             runtimeStatuses = values

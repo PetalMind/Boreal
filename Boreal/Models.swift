@@ -399,6 +399,8 @@ struct RuntimeStatus: Identifiable, Sendable {
     var detail: String?
     var source: Source
     var origin: RuntimeOrigin? = nil
+    var engine: RuntimeEngine = .wine
+    var features: RuntimeFeatures? = nil
 }
 
 enum RuntimeDiscoveryState: Equatable, Sendable {

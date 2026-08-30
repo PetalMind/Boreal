@@ -40,7 +40,12 @@ actor RuntimeManager: RuntimeManaging {
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for app in apps where app.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
-                let wine = app.appending(path: "Contents/Resources/wine/bin/wine")
+                let relativeWine = firstExecutable(in: app, candidates: [
+                    "Contents/Resources/wine/bin/wine",
+                    "Contents/Resources/wine/bin/wine64"
+                ])
+                guard let relativeWine else { continue }
+                let wine = app.appending(path: relativeWine)
                 let server = app.appending(path: "Contents/Resources/wine/bin/wineserver")
                 let boot = app.appending(path: "Contents/Resources/wine/bin/wineboot")
                 guard [wine, server, boot].allSatisfy({ fileManager.isExecutableFile(atPath: $0.path) }),
@@ -52,6 +57,7 @@ actor RuntimeManager: RuntimeManaging {
                     ?? (info?["CFBundleName"] as? String)
                     ?? app.deletingPathExtension().lastPathComponent
                 let minimumMacOS = (info?["LSMinimumSystemVersion"] as? String) ?? "10.15"
+                let engine = detectEngine(app: app, name: name)
                 var requirements = Set<RuntimeRequirement>()
                 #if arch(arm64)
                 if architecture == .x86_64 { requirements.insert(.rosetta2) }
@@ -66,7 +72,19 @@ actor RuntimeManager: RuntimeManaging {
                     architecture: architecture,
                     requirements: requirements,
                     minimumMacOS: minimumMacOS,
-                    estimatedSize: nil
+                    estimatedSize: nil,
+                    engine: engine,
+                    features: RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: engine == .gamePortingToolkit, dxmt: false),
+                    layout: RuntimeLayout(
+                        wineExecutable: "Runtime/Wine.app/\(relativeWine)",
+                        wineServerExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineserver",
+                        wineBootExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineboot",
+                        dependenciesDirectory: "Dependencies",
+                        supportDirectory: "Support",
+                        licensesDirectory: "Licenses",
+                        noticesFile: "Licenses/THIRD_PARTY_NOTICES.txt",
+                        sbomFile: "SBOM.spdx.json"
+                    )
                 ))
             }
         }
@@ -97,7 +115,11 @@ actor RuntimeManager: RuntimeManaging {
               source.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
             throw RuntimeManagerError.localRuntimeInvalid("Only Wine apps installed directly in an Applications folder are supported.")
         }
-        let sourceWine = source.appending(path: "Contents/Resources/wine/bin/wine")
+        let copiedPrefix = "Runtime/Wine.app/"
+        guard candidate.layout.wineExecutable.hasPrefix(copiedPrefix) else {
+            throw RuntimeManagerError.localRuntimeInvalid("Its runtime layout is invalid.")
+        }
+        let sourceWine = source.appending(path: String(candidate.layout.wineExecutable.dropFirst(copiedPrefix.count)))
         guard fileManager.isExecutableFile(atPath: sourceWine.path) else {
             throw RuntimeManagerError.localRuntimeInvalid("The Wine executable is missing.")
         }
@@ -156,7 +178,8 @@ actor RuntimeManager: RuntimeManaging {
                 minimumMacOS: candidate.minimumMacOS,
                 channel: .preview,
                 requirements: candidate.requirements,
-                features: RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false),
+                features: candidate.features,
+                layout: candidate.layout,
                 artifact: RuntimeArtifact(url: source, sha256: String(repeating: "0", count: 64), compressedSize: 0)
             )
             try makeEncoder().encode(localManifest.packageManifest)
@@ -172,12 +195,14 @@ actor RuntimeManager: RuntimeManaging {
                 displayName: localManifest.displayName,
                 wineVersion: candidate.wineVersion,
                 rootURL: destination,
-                wineExecutable: destination.appending(path: RuntimeLayout.canonical.wineExecutable),
-                wineServerExecutable: destination.appending(path: RuntimeLayout.canonical.wineServerExecutable),
-                wineBootExecutable: destination.appending(path: RuntimeLayout.canonical.wineBootExecutable),
+                wineExecutable: destination.appending(path: candidate.layout.wineExecutable),
+                wineServerExecutable: destination.appending(path: candidate.layout.wineServerExecutable),
+                wineBootExecutable: destination.appending(path: candidate.layout.wineBootExecutable),
                 architecture: candidate.architecture,
                 requirements: candidate.requirements,
-                origin: .localImport
+                origin: .localImport,
+                engine: candidate.engine,
+                features: candidate.features
             )
             try makeEncoder().encode(installed)
                 .write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
@@ -245,7 +270,9 @@ actor RuntimeManager: RuntimeManaging {
                 wineServerExecutable: destination.appending(path: relativeServer),
                 wineBootExecutable: destination.appending(path: relativeBoot),
                 architecture: runtime.architecture,
-                requirements: runtime.requirements
+                requirements: runtime.requirements,
+                engine: runtime.features.d3dmetal ? .gamePortingToolkit : .wine,
+                features: runtime.features
             )
             let descriptorData = try makeEncoder().encode(installed)
             try descriptorData.write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
@@ -394,7 +421,7 @@ actor RuntimeManager: RuntimeManaging {
         }
         if manifest.features.wineMono { guard fileManager.fileExists(atPath: try containedURL(manifest.layout.supportDirectory + "/wine-mono", root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound } }
         if manifest.features.wineGecko { guard fileManager.fileExists(atPath: try containedURL(manifest.layout.supportDirectory + "/wine-gecko", root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound } }
-        return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements)
+        return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements, engine: manifest.features.d3dmetal ? .gamePortingToolkit : .wine, features: manifest.features)
     }
 
     private func smokeTest(_ runtime: InstalledRuntime) async throws {
@@ -532,7 +559,19 @@ actor RuntimeManager: RuntimeManaging {
             let relative = (try? relativePath(of: url, inside: oldRoot)) ?? url.lastPathComponent
             return newRoot.appending(path: relative)
         }
-        return InstalledRuntime(id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion, rootURL: newRoot, wineExecutable: move(runtime.wineExecutable), wineServerExecutable: move(runtime.wineServerExecutable), wineBootExecutable: move(runtime.wineBootExecutable), architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin)
+        return InstalledRuntime(id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion, rootURL: newRoot, wineExecutable: move(runtime.wineExecutable), wineServerExecutable: move(runtime.wineServerExecutable), wineBootExecutable: move(runtime.wineBootExecutable), architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin, engine: runtime.engine, features: runtime.features)
+    }
+
+    private func firstExecutable(in app: URL, candidates: [String]) -> String? {
+        candidates.first { fileManager.isExecutableFile(atPath: app.appending(path: $0).path) }
+    }
+
+    private func detectEngine(app: URL, name: String) -> RuntimeEngine {
+        let normalizedName = name.lowercased()
+        if normalizedName.contains("game porting toolkit") || normalizedName.contains("gptk") { return .gamePortingToolkit }
+        let resources = app.appending(path: "Contents/Resources")
+        let markers = ["lib/external/libD3DMetal.dylib", "wine/lib/wine/dxgi.dll", "wine/lib/wine/x86_64-windows/d3d12.dll"]
+        return markers.contains(where: { fileManager.fileExists(atPath: resources.appending(path: $0).path) }) ? .gamePortingToolkit : .wine
     }
 
     private func localRuntimeID(name: String, version: String, architecture: RuntimeArchitecture) -> String {

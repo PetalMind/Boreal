@@ -9,8 +9,14 @@ actor GameMetricsSampler {
     }
 
     private var previousTicks: CPUTicks?
+    private var recentFrameRates: [Double] = []
+    private var sampledGameID: UUID?
 
-    func sample(frameRateLogURL: URL? = nil) -> GamePerformanceSnapshot {
+    func sample(frameRateLogURL: URL? = nil, gameID: UUID? = nil) -> GamePerformanceSnapshot {
+        if sampledGameID != gameID {
+            sampledGameID = gameID
+            recentFrameRates.removeAll(keepingCapacity: true)
+        }
         let currentTicks = cpuTicks()
         let cpuUsage: Double?
         if let previousTicks, let currentTicks {
@@ -24,15 +30,40 @@ actor GameMetricsSampler {
 
         let memory = memoryUsage()
         let gpu = gpuStatistics()
+        let framesPerSecond = frameRate(in: frameRateLogURL)
+        if let framesPerSecond {
+            recentFrameRates.append(framesPerSecond)
+            recentFrameRates = Array(recentFrameRates.suffix(120))
+        }
         return GamePerformanceSnapshot(
-            framesPerSecond: frameRate(in: frameRateLogURL),
+            framesPerSecond: framesPerSecond,
             cpuUsage: cpuUsage,
             gpuUsage: gpu.utilization,
             memoryUsedBytes: memory?.used,
             memoryTotalBytes: memory?.total,
             cpuTemperatureCelsius: nil,
-            gpuTemperatureCelsius: gpu.temperature
+            gpuTemperatureCelsius: gpu.temperature,
+            frameTimeMilliseconds: framesPerSecond.flatMap { $0 > 0 ? 1_000 / $0 : nil },
+            onePercentLowFPS: onePercentLow,
+            thermalState: thermalState
         )
+    }
+
+    private var onePercentLow: Double? {
+        guard recentFrameRates.count >= 10 else { return nil }
+        let sorted = recentFrameRates.sorted()
+        let count = max(1, Int(ceil(Double(sorted.count) * 0.01)))
+        return sorted.prefix(count).reduce(0, +) / Double(count)
+    }
+
+    private var thermalState: String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: "Normal"
+        case .fair: "Elevated"
+        case .serious: "Serious"
+        case .critical: "Critical"
+        @unknown default: "Unknown"
+        }
     }
 
     private func frameRate(in logURL: URL?) -> Double? {

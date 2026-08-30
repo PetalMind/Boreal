@@ -56,6 +56,10 @@ struct LegendaryEpicServiceTests {
         let nativeInstallArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
         #expect(nativeInstallArguments.contains("--platform Mac"))
 
+        try await service.uninstall(appID: "BorealEpicApp")
+        let uninstallArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
+        #expect(uninstallArguments.contains("uninstall BorealEpicApp"))
+
         let runtime = InstalledRuntime(
             id: "test-runtime",
             displayName: "Test Runtime",

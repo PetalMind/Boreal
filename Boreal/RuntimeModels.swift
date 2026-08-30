@@ -16,6 +16,19 @@ nonisolated enum RuntimeChannel: String, Codable, Sendable {
 }
 nonisolated enum RuntimeRequirement: String, Codable, Sendable, Hashable { case rosetta2, gStreamerFramework }
 nonisolated enum RuntimeOrigin: String, Codable, Sendable, Hashable { case catalog, localImport }
+nonisolated enum RuntimeEngine: String, Codable, Sendable, Hashable {
+    case wine
+    case gamePortingToolkit
+
+    var displayName: String {
+        switch self {
+        case .wine: "Wine"
+        case .gamePortingToolkit: "Game Porting Toolkit"
+        }
+    }
+
+    var graphicsName: String { self == .gamePortingToolkit ? "D3DMetal" : "WineD3D" }
+}
 
 nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wow64: Bool
@@ -188,6 +201,15 @@ nonisolated struct InstalledRuntime: Codable, Identifiable, Sendable, Hashable {
     let architecture: RuntimeArchitecture
     let requirements: Set<RuntimeRequirement>
     var origin: RuntimeOrigin? = nil
+    var engine: RuntimeEngine? = nil
+    var features: RuntimeFeatures? = nil
+
+    var resolvedEngine: RuntimeEngine {
+        engine ?? (features?.d3dmetal == true ? .gamePortingToolkit : .wine)
+    }
+
+    var runtimeDescription: String { "\(displayName) · \(resolvedEngine.displayName) \(wineVersion)" }
+    var graphicsName: String { resolvedEngine.graphicsName }
 }
 
 nonisolated struct LocalRuntimeCandidate: Identifiable, Sendable, Hashable {
@@ -199,6 +221,9 @@ nonisolated struct LocalRuntimeCandidate: Identifiable, Sendable, Hashable {
     let requirements: Set<RuntimeRequirement>
     let minimumMacOS: String
     let estimatedSize: Int64?
+    var engine: RuntimeEngine = .wine
+    var features: RuntimeFeatures = RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
+    var layout: RuntimeLayout = .canonical
 }
 
 nonisolated struct RuntimeValidation: Sendable, Equatable {

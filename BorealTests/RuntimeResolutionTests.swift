@@ -4,6 +4,36 @@ import Testing
 
 @Suite("Runtime resolution")
 struct RuntimeResolutionTests {
+    @Test func gamePortingToolkitRuntimeUsesD3DMetalIdentity() {
+        let root = URL(fileURLWithPath: "/private/tmp/boreal-gptk-runtime")
+        let runtime = InstalledRuntime(
+            id: "gptk-2",
+            displayName: "Game Porting Toolkit 2",
+            wineVersion: "7.7",
+            rootURL: root,
+            wineExecutable: root.appending(path: "wine64"),
+            wineServerExecutable: root.appending(path: "wineserver"),
+            wineBootExecutable: root.appending(path: "wineboot"),
+            architecture: .x86_64,
+            requirements: [.rosetta2],
+            engine: .gamePortingToolkit,
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: true, dxmt: false)
+        )
+
+        #expect(runtime.resolvedEngine == .gamePortingToolkit)
+        #expect(runtime.graphicsName == "D3DMetal")
+        #expect(runtime.runtimeDescription.contains("Game Porting Toolkit"))
+    }
+
+    @Test func legacyRuntimeDescriptorStillDecodesAsWine() throws {
+        let json = """
+        {"id":"legacy","displayName":"Wine","wineVersion":"9.0","rootURL":"file:///tmp/legacy","wineExecutable":"file:///tmp/legacy/wine","wineServerExecutable":"file:///tmp/legacy/wineserver","wineBootExecutable":"file:///tmp/legacy/wineboot","architecture":"x86_64","requirements":[]}
+        """
+        let runtime = try JSONDecoder().decode(InstalledRuntime.self, from: Data(json.utf8))
+        #expect(runtime.resolvedEngine == .wine)
+        #expect(runtime.graphicsName == "WineD3D")
+    }
+
     @Test func importsDetectedLocalWineWhenNoRuntimeWasPreparedEarlier() async throws {
         let root = URL(fileURLWithPath: "/private/tmp/boreal-runtime-resolution")
         let runtime = InstalledRuntime(

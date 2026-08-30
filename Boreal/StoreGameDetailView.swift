@@ -10,6 +10,7 @@ struct StoreGameDetailView: View {
     @State private var showsProgressDetails = false
     @State private var selectedScreenshot: StoreScreenshotSelection?
     @State private var selectedVideo: StoreVideo?
+    @State private var showsUninstallConfirmation = false
 
     private var currentGame: StoreLibraryGame { store.storeGame(id: game.id) ?? game }
 
@@ -59,6 +60,12 @@ struct StoreGameDetailView: View {
         }
         .task(id: game.id) {
             store.refreshSteamMetadataIfNeeded(for: game)
+        }
+        .confirmationDialog("Uninstall \(currentGame.name)?", isPresented: $showsUninstallConfirmation) {
+            Button("Uninstall Game", role: .destructive) { uninstallGame() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(uninstallConfirmationMessage)
         }
     }
 
@@ -138,6 +145,10 @@ struct StoreGameDetailView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large)
                 }
                 Button("Store Page", systemImage: "storefront") { openStorePage() }.controlSize(.large)
+                if currentGame.isInstalled || linkedApplication != nil {
+                    Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
+                        .controlSize(.large)
+                }
             } else if currentGame.isInstalled {
                 if currentGame.installedPlatform == .nativeMacOS {
                     Button("Open Native macOS Version", systemImage: "apple.logo") { openNativeInstallation() }
@@ -153,6 +164,8 @@ struct StoreGameDetailView: View {
                 if currentGame.installPath != nil {
                     Button("Show Game Files", systemImage: "folder") { showGameFiles() }.controlSize(.large)
                 }
+                Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
+                    .controlSize(.large)
             } else if storeOperation == nil {
                 Button(installButtonTitle, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
                     .buttonStyle(.borderedProminent).controlSize(.large)
@@ -404,6 +417,55 @@ struct StoreGameDetailView: View {
         }
     }
 
+    private var detailsSidebar: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            detailCard("Your game", symbol: "person.crop.circle") {
+                metric("Status", value: libraryStatus, symbol: currentGame.isInstalled ? "checkmark.circle.fill" : "cloud.fill")
+                metric("Playtime", value: playtime, symbol: "clock")
+                metric("Last played", value: game.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never", symbol: "calendar")
+            }
+            detailCard("Installation", symbol: "internaldrive") {
+                metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
+                metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
+                metric("Location", value: installationLocation, symbol: "folder")
+                metric("Size source", value: sizeSource, symbol: "doc.text.magnifyingglass")
+                if currentGame.installPath != nil {
+                    Button("Show Game Files", systemImage: "folder") { showGameFiles() }
+                        .buttonStyle(.link)
+                }
+            }
+            detailCard("Store details", symbol: "storefront") {
+                metric("Source", value: game.provider.rawValue, symbol: game.provider.symbol)
+                metric("Game ID", value: game.externalID, symbol: "number")
+            }
+        }
+    }
+
+    private var libraryStatus: String {
+        if linkedApplication != nil { return "Managed by Boreal" }
+        if currentGame.isInstalled { return "Installed" }
+        return "In your library"
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.title2.weight(.semibold))
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func detailCard<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Label(title, systemImage: symbol).font(.headline)
+            content()
+        }
+        .padding(17)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12)) }
+    }
+
     private var linkedApplication: WindowsApplication? { store.linkedApplication(for: game) }
 
     private var preferredPlatformName: String {
@@ -480,6 +542,11 @@ struct StoreGameDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func showGameFiles() {
+        guard let installPath = currentGame.installPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
+    }
+
     private func openSteam() {
         let action = currentGame.isInstalled ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
         if let url = URL(string: "steam://\(action)/\(game.externalID)") { NSWorkspace.shared.open(url) }
@@ -522,6 +589,28 @@ struct StoreGameDetailView: View {
 
     private func openStorePage() {
         if let url = URL(string: "https://store.steampowered.com/app/\(game.externalID)") { NSWorkspace.shared.open(url) }
+    }
+
+    private var uninstallConfirmationMessage: String {
+        if game.provider == .steam {
+            return "Steam will manage removal of the game. Boreal will open Steam’s uninstall screen."
+        }
+        if linkedApplication != nil {
+            return game.provider == .gog
+                ? "This removes the installed game and its Boreal Windows environment. The game files are moved to the Trash."
+                : "This removes the installed game and its Boreal Windows environment. Legendary also clears its installation record."
+        }
+        return game.provider == .gog
+            ? "The installed game will be moved to the Trash. Your GOG library ownership is not affected."
+            : "Legendary will remove the installed game. Your Epic Games library ownership is not affected."
+    }
+
+    private func uninstallGame() {
+        if game.provider == .steam {
+            if let url = URL(string: "steam://uninstall/\(game.externalID)") { NSWorkspace.shared.open(url) }
+        } else {
+            store.uninstallStoreGame(currentGame)
+        }
     }
 
     private func openProtonDB() {

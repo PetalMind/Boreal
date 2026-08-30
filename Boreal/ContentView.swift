@@ -84,7 +84,8 @@ struct ContentView: View {
                 id: application.id,
                 name: application.name,
                 launchedAt: application.lastOpened ?? .distantPast,
-                performanceLogURL: store.performanceLogURL(for: application.id)
+                performanceLogURL: store.performanceLogURL(for: application.id),
+                graphics: application.graphics
             )
         }
     }

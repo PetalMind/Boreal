@@ -165,10 +165,65 @@ struct GOGServiceTests {
         let service = GOGService(applicationSupportURL: root)
         _ = try await service.authenticate(authorizationCode: "native-test")
 
-        try await service.install(appID: "12345", destinationRoot: root.appending(path: "Games"), platform: .nativeMacOS) { _ in }
+        let games = root.appending(path: "Games")
+        try await service.install(appID: "12345", destinationRoot: games, platform: .nativeMacOS) { _ in }
 
         let arguments = try String(contentsOf: account.appending(path: "download-args.txt"), encoding: .utf8)
         #expect(arguments.contains("--platform osx"))
+        let installation = await service.installationURL(
+            appID: "12345",
+            destinationRoot: games,
+            platform: .nativeMacOS
+        )
+        #expect(installation?.lastPathComponent == "Boreal Native Game.app")
+    }
+
+    @Test func acceptsNestedGOGDLWindowsInstallationAndResolvesItsRealDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "BorealGOGNestedTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = root.appending(path: "Tools/GOGDL/1.3.0/gogdl")
+        let account = root.appending(path: "Accounts/GOG")
+        try FileManager.default.createDirectory(at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: account, withIntermediateDirectories: true)
+        try Data(Self.nestedHelperScript.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let service = GOGService(applicationSupportURL: root)
+        _ = try await service.authenticate(authorizationCode: "nested-test")
+        let games = root.appending(path: "Games")
+
+        try await service.install(appID: "1088641408", destinationRoot: games, platform: .windows) { _ in }
+
+        let installation = await service.installationURL(appID: "1088641408", destinationRoot: games, platform: .windows)
+        #expect(installation?.lastPathComponent == "18 Wheels of Steel Hard Truck")
+
+        let runtime = InstalledRuntime(
+            id: "test-runtime",
+            displayName: "Test Runtime",
+            wineVersion: "test",
+            rootURL: root.appending(path: "Runtime"),
+            wineExecutable: root.appending(path: "Runtime/wine"),
+            wineServerExecutable: root.appending(path: "Runtime/wineserver"),
+            wineBootExecutable: root.appending(path: "Runtime/wineboot"),
+            architecture: .x86_64,
+            requirements: []
+        )
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "GOG"),
+            runtimeID: runtime.id,
+            rootURL: root.appending(path: "Environment"),
+            prefixURL: root.appending(path: "Environment/prefix"),
+            logsURL: root.appending(path: "Environment/Logs"),
+            state: .ready
+        )
+        let container = games.appending(path: "1088641408", directoryHint: .isDirectory)
+        let plan = try await service.launchPlan(
+            appID: "1088641408",
+            installationURL: container,
+            runtime: runtime,
+            environment: environment
+        )
+        #expect(plan.executable.lastPathComponent == "Hard Truck 18 Wheels of Steel.exe")
     }
 
     private static let helperScript = #"""
@@ -185,6 +240,11 @@ struct GOGServiceTests {
     if [ "$command" = "download" ]; then
       printf '%s\n' "$*" > "$(dirname "$auth_path")/download-args.txt"
       destination="$6"
+      if [ "$8" = "osx" ]; then
+        mkdir -p "$destination/Boreal Native Game.app/Contents/MacOS"
+        : > "$destination/Boreal Native Game.app/Contents/MacOS/BorealGame"
+        exit 0
+      fi
       mkdir -p "$destination/bin"
       : > "$destination/bin/BorealGame.exe"
       printf '%s\n' '{"playTasks":[{"isPrimary":true,"type":"FileTask","path":"bin\\BorealGame.exe","workingDir":"bin","arguments":"-windowed \"player one\""}]}' > "$destination/goggame-$4.info"
@@ -192,6 +252,27 @@ struct GOGServiceTests {
     fi
     if [ "$command" = "info" ]; then
       printf '%s\n' '{"size":{"*":{"download_size":4000000000,"disk_size":7000000000},"en-US":{"download_size":500000000,"disk_size":500000000}},"buildId":"gog-build-42"}'
+      exit 0
+    fi
+    exit 64
+    """#
+
+    private static let nestedHelperScript = #"""
+    #!/bin/sh
+    auth_path="$2"
+    command="$3"
+    if [ "$command" = "auth" ]; then
+      if [ "$4" = "--code" ]; then
+        printf '{}' > "$auth_path"
+      fi
+      printf '%s\n' '{"access_token":"private-test-token","user_id":"998877"}'
+      exit 0
+    fi
+    if [ "$command" = "download" ]; then
+      destination="$6/18 Wheels of Steel Hard Truck"
+      mkdir -p "$destination"
+      : > "$destination/Hard Truck 18 Wheels of Steel.exe"
+      printf '%s\n' '{"playTasks":[{"category":"launcher","isPrimary":true,"path":"Hard Truck 18 Wheels of Steel.exe","type":"FileTask"}]}' > "$destination/goggame-$4.info"
       exit 0
     fi
     exit 64

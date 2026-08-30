@@ -2,7 +2,7 @@ import SwiftUI
 
 struct GameOverlaySettingsView: View {
     @AppStorage("gameOverlayEnabled") private var isEnabled = true
-    @AppStorage("gameOverlayCompact") private var isCompact = false
+    @AppStorage("gameOverlayDetailLevel") private var detailLevel = GameOverlayDetailLevel.standard.rawValue
     @AppStorage("gameOverlayPosition") private var position = "topRight"
     @AppStorage("gameOverlayRefreshInterval") private var refreshInterval = 1.0
 
@@ -10,7 +10,11 @@ struct GameOverlaySettingsView: View {
         Form {
             Section("In-game performance overlay") {
                 Toggle("Show overlay while a game is running", isOn: $isEnabled)
-                Toggle("Compact layout", isOn: $isCompact)
+                Picker("Information level", selection: $detailLevel) {
+                    Text("Minimal — essential frame data").tag(GameOverlayDetailLevel.minimal.rawValue)
+                    Text("Standard — everyday overview").tag(GameOverlayDetailLevel.standard.rawValue)
+                    Text("Diagnostic — system details").tag(GameOverlayDetailLevel.diagnostic.rawValue)
+                }
                 Picker("Screen position", selection: $position) {
                     Text("Top left").tag("topLeft")
                     Text("Top right").tag("topRight")
@@ -24,7 +28,7 @@ struct GameOverlaySettingsView: View {
                 }
             }
             Section {
-                Text("CPU, memory and supported GPU sensors are read locally. FPS and temperature stay unavailable when the active runtime or Mac does not expose them.")
+                Text("Minimal shows frame data, Standard adds system load, and Diagnostic adds sensors and runtime details. Values stay unavailable when macOS or the active runtime does not expose them.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -32,7 +36,7 @@ struct GameOverlaySettingsView: View {
         .frame(width: 560, height: 350)
         .navigationTitle("Overlay")
         .onChange(of: isEnabled) { GameOverlayController.shared.settingsChanged() }
-        .onChange(of: isCompact) { GameOverlayController.shared.settingsChanged() }
+        .onChange(of: detailLevel) { GameOverlayController.shared.settingsChanged() }
         .onChange(of: position) { GameOverlayController.shared.settingsChanged() }
         .onChange(of: refreshInterval) { GameOverlayController.shared.settingsChanged() }
     }
