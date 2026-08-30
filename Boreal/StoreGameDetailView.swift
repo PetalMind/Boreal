@@ -158,8 +158,7 @@ struct StoreGameDetailView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(app.status.isBusy || app.status == .unavailable)
                 } else if storeOperation == nil {
-                    Button("Prepare to Play", systemImage: "wand.and.stars") { store.prepareStoreGame(game) }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
+                    runtimePreparationMenu
                 }
                 if currentGame.installPath != nil {
                     Button("Show Game Files", systemImage: "folder") { showGameFiles() }.controlSize(.large)
@@ -172,6 +171,28 @@ struct StoreGameDetailView: View {
                 Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }.controlSize(.large)
             }
         }
+    }
+
+    private var runtimePreparationMenu: some View {
+        Menu {
+            let recommended = store.recommendedRuntimeEngine(for: currentGame)
+            Button("Recommended: \(recommended.displayName)", systemImage: recommended == .gamePortingToolkit ? "cpu.fill" : "shippingbox.fill") {
+                store.prepareStoreGame(currentGame, runtimeEngine: recommended)
+            }
+            Divider()
+            Button("Game Porting Toolkit (D3DMetal)", systemImage: "cpu") {
+                store.prepareStoreGame(currentGame, runtimeEngine: .gamePortingToolkit)
+            }
+            Button("Wine (WineD3D)", systemImage: "shippingbox") {
+                store.prepareStoreGame(currentGame, runtimeEngine: .wine)
+            }
+        } label: {
+            Label("Prepare to Play", systemImage: "wand.and.stars")
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .fixedSize()
     }
 
     @ViewBuilder private var operationStatus: some View {

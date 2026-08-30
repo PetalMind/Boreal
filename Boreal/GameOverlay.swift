@@ -237,7 +237,9 @@ private struct GameOverlayView: View {
     private func number(_ value: Double?) -> String { value.map { "\(Int($0.rounded()))" } ?? "—" }
     private func temperature(_ value: Double?) -> String { value.map { "\(Int($0.rounded()))°C" } ?? "—" }
     private func milliseconds(_ value: Double?) -> String { value.map { String(format: "%.1f ms", $0) } ?? "—" }
-    private func fps(_ value: Double?) -> String { value.map { "\(Int($0.rounded())) FPS" } ?? "—" }
+    private func fps(_ value: Double?) -> String {
+        value.map { $0 < 10 ? String(format: "%.1f FPS", $0) : "\(Int($0.rounded())) FPS" } ?? "—"
+    }
     private var memory: String { model.snapshot.memoryUsedBytes.map { String(format: "%.1f GB", Double($0) / 1_073_741_824) } ?? "—" }
     private var totalMemory: String { model.snapshot.memoryTotalBytes.map { String(format: "%.0f GB", Double($0) / 1_073_741_824) } ?? "—" }
 }

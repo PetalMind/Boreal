@@ -131,12 +131,15 @@ nonisolated enum LibraryProjector {
             },
             uniquingKeysWith: { first, _ in first }
         )
-        let games = storeGames.map { game in
-            let app = linked["\(game.provider.rawValue)|\(game.externalID)"]
-            let ready = app.map { $0.status == .ready || $0.status == .running }
-                ?? (game.provider == .steam && game.isInstalled)
-            let running = app?.status == .running
-            let attention = app.map { $0.status == .needsAttention || $0.status == .unavailable } ?? false
+        // An installed store game is also represented by a WindowsApplication.
+        // Keep the application entry as the canonical library item so the same
+        // game is not shown once as an app and once as its store metadata.
+        let games = storeGames.filter { game in
+            linked["\(game.provider.rawValue)|\(game.externalID)"] == nil
+        }.map { game in
+            let ready = game.provider == .steam && game.isInstalled
+            let running = false
+            let attention = false
             return LibraryItem(
                 id: .storeGame(game.id), kind: .storeGame(game), name: game.name,
                 subtitle: game.developer ?? game.provider.rawValue, source: source(game.provider),
@@ -500,7 +503,7 @@ struct LibraryView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
                 if !hasActiveRefinement, !attentionItems.isEmpty { attentionSection }
-                if !hasActiveRefinement, !recentItems.isEmpty { recentSection }
+                if !hasActiveRefinement, !recentItems.isEmpty { continuePlayingSection }
                 ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: 16) {
                         if let title = group.title, showsHeader(for: group) {
@@ -628,33 +631,114 @@ struct LibraryView: View {
         }
     }
 
-    private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recently Used").font(.title3.weight(.semibold))
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(recentItems) { item in
-                        Button { quickAction(item) } label: {
-                            HStack(spacing: 10) {
-                                itemIcon(item, compact: true)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name).fontWeight(.medium).lineLimit(1)
-                                    Text(item.statusText).font(.caption).foregroundStyle(statusColor(item))
-                                }
-                            }
-                            .padding(10)
-                            .frame(width: 190, alignment: .leading)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                    .stroke(.white.opacity(0.1), lineWidth: 1)
-                            }
+    private var continuePlayingSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Jump Back In").font(.title2.weight(.bold))
+                Text("Your most recent games").font(.callout).foregroundStyle(.secondary)
+            }
+
+            if let featured = recentItems.first {
+                HStack(alignment: .top, spacing: 18) {
+                    featuredCard(featured)
+                    VStack(spacing: 8) {
+                        ForEach(Array(recentItems.dropFirst().prefix(4))) { item in
+                            recentRow(item)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .frame(width: 250)
                 }
             }
         }
+    }
+
+    private func featuredCard(_ item: LibraryItem) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            featuredArtwork(item)
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.32), .black.opacity(0.88)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            HStack(alignment: .bottom, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("CONTINUE PLAYING", systemImage: "clock.arrow.circlepath")
+                        .font(.caption2.weight(.bold)).tracking(1.1).foregroundStyle(.white.opacity(0.78))
+                    Text(item.name).font(.title2.weight(.bold)).foregroundStyle(.white).lineLimit(1)
+                    Text(featuredMetadata(item)).font(.callout).foregroundStyle(.white.opacity(0.72)).lineLimit(1)
+                }
+                Spacer(minLength: 12)
+                Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.white)
+                    .foregroundStyle(.black)
+            }
+            .padding(22)
+        }
+        .frame(maxWidth: .infinity, minHeight: 230, maxHeight: 230)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.white.opacity(0.14), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onTapGesture { select(item) }
+        .accessibilityLabel("Continue \(item.name), \(item.statusText)")
+    }
+
+    private func recentRow(_ item: LibraryItem) -> some View {
+        Button { select(item) } label: {
+            HStack(spacing: 11) {
+                itemIcon(item, compact: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.name).font(.callout.weight(.semibold)).lineLimit(1)
+                    HStack(spacing: 5) {
+                        Image(systemName: item.source.symbol)
+                        Text(relativeDate(item.lastUsed))
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private func featuredArtwork(_ item: LibraryItem) -> some View {
+        switch item.kind {
+        case .application(let app):
+            LinearGradient(colors: [.indigo.opacity(0.9), .cyan.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay { Image(systemName: app.iconSymbol).font(.system(size: 92)).foregroundStyle(.white.opacity(0.22)) }
+        case .storeGame(let game):
+            if let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else if let value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL,
+                      let url = URL(string: value) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image { image.resizable().scaledToFill() }
+                    else { LinearGradient(colors: [.indigo, .cyan.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing) }
+                }
+            } else {
+                LinearGradient(colors: [.indigo, .cyan.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+    }
+
+    private func featuredMetadata(_ item: LibraryItem) -> String {
+        [item.source.title, playtime(item.playtimeMinutes), item.statusText]
+            .filter { $0 != "—" }.joined(separator: "  •  ")
+    }
+
+    private func relativeDate(_ date: Date?) -> String {
+        guard let date else { return "Not played yet" }
+        return date.formatted(.relative(presentation: .named))
     }
 
     private func showsHeader(for group: LibraryGroup) -> Bool {

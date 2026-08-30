@@ -40,24 +40,29 @@ actor RuntimeManager: RuntimeManaging {
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for app in apps where app.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
+                let info = Bundle(url: app)?.infoDictionary
+                let name = (info?["CFBundleDisplayName"] as? String)
+                    ?? (info?["CFBundleName"] as? String)
+                    ?? app.deletingPathExtension().lastPathComponent
+                let engine = detectEngine(app: app, name: name)
                 let relativeWine = firstExecutable(in: app, candidates: [
                     "Contents/Resources/wine/bin/wine",
-                    "Contents/Resources/wine/bin/wine64"
+                    "Contents/Resources/wine/bin/wine64",
+                    "Contents/MacOS/wine"
                 ])
                 guard let relativeWine else { continue }
                 let wine = app.appending(path: relativeWine)
                 let server = app.appending(path: "Contents/Resources/wine/bin/wineserver")
-                let boot = app.appending(path: "Contents/Resources/wine/bin/wineboot")
-                guard [wine, server, boot].allSatisfy({ fileManager.isExecutableFile(atPath: $0.path) }),
+                let relativeBoot = "Contents/Resources/wine/bin/wineboot"
+                let boot = app.appending(path: relativeBoot)
+                let usesGeneratedGPTKWineBoot = engine == .gamePortingToolkit
+                    && !fileManager.fileExists(atPath: boot.path)
+                guard [wine, server].allSatisfy({ fileManager.isExecutableFile(atPath: $0.path) }),
+                      (fileManager.isExecutableFile(atPath: boot.path) || usesGeneratedGPTKWineBoot),
                       let architecture = executableArchitecture(at: wine) else { continue }
-                let info = Bundle(url: app)?.infoDictionary
                 let version = (info?["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard let version, !version.isEmpty else { continue }
-                let name = (info?["CFBundleDisplayName"] as? String)
-                    ?? (info?["CFBundleName"] as? String)
-                    ?? app.deletingPathExtension().lastPathComponent
                 let minimumMacOS = (info?["LSMinimumSystemVersion"] as? String) ?? "10.15"
-                let engine = detectEngine(app: app, name: name)
                 var requirements = Set<RuntimeRequirement>()
                 #if arch(arm64)
                 if architecture == .x86_64 { requirements.insert(.rosetta2) }
@@ -74,11 +79,13 @@ actor RuntimeManager: RuntimeManaging {
                     minimumMacOS: minimumMacOS,
                     estimatedSize: nil,
                     engine: engine,
-                    features: RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: engine == .gamePortingToolkit, dxmt: false),
+                    features: RuntimeFeatures(wow64: engine == .gamePortingToolkit, wineMono: false, wineGecko: false, d3dmetal: engine == .gamePortingToolkit, dxmt: false),
                     layout: RuntimeLayout(
                         wineExecutable: "Runtime/Wine.app/\(relativeWine)",
                         wineServerExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineserver",
-                        wineBootExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineboot",
+                        wineBootExecutable: usesGeneratedGPTKWineBoot
+                            ? "Support/wineboot"
+                            : "Runtime/Wine.app/\(relativeBoot)",
                         dependenciesDirectory: "Dependencies",
                         supportDirectory: "Support",
                         licensesDirectory: "Licenses",
@@ -168,6 +175,17 @@ actor RuntimeManager: RuntimeManaging {
             ]
             try JSONSerialization.data(withJSONObject: sbom, options: [.prettyPrinted, .sortedKeys])
                 .write(to: staging.appending(path: RuntimeLayout.canonical.sbomFile), options: .atomic)
+
+            if candidate.engine == .gamePortingToolkit,
+               candidate.layout.wineBootExecutable == "Support/wineboot" {
+                let wrapper = staging.appending(path: candidate.layout.wineBootExecutable)
+                let script = """
+                #!/bin/sh
+                exec "$(dirname "$0")/../Runtime/Wine.app/Contents/Resources/wine/bin/wine64" wineboot "$@"
+                """
+                try Data(script.utf8).write(to: wrapper, options: .atomic)
+                try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+            }
 
             let localManifest = BorealRuntime(
                 schemaVersion: 1,
@@ -331,7 +349,18 @@ actor RuntimeManager: RuntimeManaging {
                 detectedVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        return RuntimeValidation(detectedWineVersion: detectedVersion, versionMatchesManifest: detectedVersion?.contains(runtime.wineVersion) == true, missingPaths: missing, unmetRequirements: unmet, executablePaths: executables.map(\.path))
+        let versionMatchesManifest: Bool
+        if runtime.resolvedEngine == .gamePortingToolkit {
+            // GPTK's app bundle version (for example 3.0-2) intentionally
+            // differs from the embedded Wine version string (for example
+            // wine-7.7 (Game Porting Toolkit 1.1)). Confirm the engine
+            // identity here; the package version remains sourced from the
+            // copied app's signed Info.plist metadata.
+            versionMatchesManifest = detectedVersion?.localizedCaseInsensitiveContains("Game Porting Toolkit") == true
+        } else {
+            versionMatchesManifest = detectedVersion?.contains(runtime.wineVersion) == true
+        }
+        return RuntimeValidation(detectedWineVersion: detectedVersion, versionMatchesManifest: versionMatchesManifest, missingPaths: missing, unmetRequirements: unmet, executablePaths: executables.map(\.path))
     }
 
     func remove(_ runtime: InstalledRuntime) async throws {
@@ -570,7 +599,11 @@ actor RuntimeManager: RuntimeManaging {
         let normalizedName = name.lowercased()
         if normalizedName.contains("game porting toolkit") || normalizedName.contains("gptk") { return .gamePortingToolkit }
         let resources = app.appending(path: "Contents/Resources")
-        let markers = ["lib/external/libD3DMetal.dylib", "wine/lib/wine/dxgi.dll", "wine/lib/wine/x86_64-windows/d3d12.dll"]
+        let markers = [
+            "wine/lib/external/libD3DMetal.dylib",
+            "wine/lib/external/D3DMetal.framework/Versions/A/D3DMetal",
+            "wine/lib/wine/x86_64-windows/d3d12.dll"
+        ]
         return markers.contains(where: { fileManager.fileExists(atPath: resources.appending(path: $0).path) }) ? .gamePortingToolkit : .wine
     }
 

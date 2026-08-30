@@ -138,6 +138,11 @@ struct AppDetailView: View {
             HStack {
                 Button("Try Again", systemImage: "arrow.clockwise") { store.retry(app.id) }
                     .buttonStyle(.borderedProminent)
+                if canRecreateWithGPTK {
+                    Button("Recreate Environment with GPTK", systemImage: "arrow.triangle.2.circlepath") {
+                        store.recreateEnvironment(app.id, with: .gamePortingToolkit)
+                    }
+                }
                 if let detail = app.lastErrorDetail {
                     DisclosureGroup("Details") {
                         Text(detail).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(.top, 6)
@@ -175,6 +180,11 @@ struct AppDetailView: View {
             }
             HStack {
                 Button("Open C: Drive", systemImage: "folder") { openCDrive(environment) }
+                if canRecreateWithGPTK {
+                    Button("Recreate Environment with GPTK", systemImage: "arrow.triangle.2.circlepath") {
+                        store.recreateEnvironment(app.id, with: .gamePortingToolkit)
+                    }
+                }
                 if developerMode {
                     Button("Reveal Environment in Finder", systemImage: "finder") {
                         if let root = environment.rootPath { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: root)]) }
@@ -183,6 +193,14 @@ struct AppDetailView: View {
                 }
             }
         }
+    }
+
+    private var canRecreateWithGPTK: Bool {
+        app.storeProvider == .gog
+            && app.storeExternalID == "2022341186"
+            && store.environment(id: app.environmentID)?.graphics != RuntimeEngine.gamePortingToolkit.graphicsName
+            && app.status != .running
+            && !app.status.isBusy
     }
 
     private func infoGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

@@ -14,7 +14,6 @@ struct DownloadsView: View {
                     Text("Manage game transfers, installations, and the shared components Boreal uses to run them.")
                         .foregroundStyle(.secondary)
                 }
-                downloadOverview
                 gameOperations
                 componentsSection
             }
@@ -22,39 +21,6 @@ struct DownloadsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task { await store.refreshRuntimeStatuses() }
-    }
-
-    private var downloadOverview: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            DownloadSummaryTile(
-                title: "ACTIVE",
-                value: "\(activeOperationCount)",
-                detail: activeOperationCount == 1 ? "transfer in progress" : "transfers in progress",
-                symbol: "arrow.down.circle.fill",
-                tint: .cyan
-            )
-            DownloadSummaryTile(
-                title: "PAUSED",
-                value: "\(resumableOperationCount)",
-                detail: resumableOperationCount == 1 ? "ready to resume" : "ready to resume",
-                symbol: "pause.circle.fill",
-                tint: .secondary
-            )
-            DownloadSummaryTile(
-                title: "WAITING",
-                value: "\(waitingOperationCount)",
-                detail: "managed by a provider",
-                symbol: "clock.fill",
-                tint: .indigo
-            )
-            DownloadSummaryTile(
-                title: "ATTENTION",
-                value: "\(failedOperationCount)",
-                detail: failedOperationCount == 1 ? "item needs action" : "items need action",
-                symbol: "exclamationmark.triangle.fill",
-                tint: failedOperationCount > 0 ? .orange : .secondary
-            )
-        }
     }
 
     private var componentsSection: some View {
@@ -114,7 +80,7 @@ struct DownloadsView: View {
                         .buttonStyle(.bordered)
                 }
             }
-            if sortedGameOperations.isEmpty {
+            if activeGameOperations.isEmpty && queuedGameOperations.isEmpty {
                 ContentUnavailableView {
                     Label("No Game Downloads", systemImage: "arrow.down.circle")
                 } description: {
@@ -124,15 +90,40 @@ struct DownloadsView: View {
                 .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.separator.opacity(0.55)) }
             } else {
-                ForEach(sortedGameOperations, id: \.game.id) { operation in
+                ForEach(activeGameOperations, id: \.game.id) { operation in
                     DownloadOperationCard(
                         game: operation.game,
                         state: operation.state,
                         record: store.storeDownloadRecord(for: operation.game),
+                        presentation: .active,
                         onPause: { store.cancelStoreGameOperation(operation.game) },
                         onResume: { store.resumeStoreGameOperation(operation.game) },
                         onRemove: { store.clearStoreGameOperation(for: operation.game) }
                     )
+                }
+                if !queuedGameOperations.isEmpty {
+                    HStack {
+                        Text("Queue").font(.headline)
+                        Text("\(queuedGameOperations.count)")
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(.background.secondary, in: Capsule())
+                        Spacer()
+                    }
+                    .padding(.top, activeGameOperations.isEmpty ? 0 : 6)
+                    ForEach(queuedGameOperations, id: \.game.id) { operation in
+                        DownloadOperationCard(
+                            game: operation.game,
+                            state: operation.state,
+                            record: store.storeDownloadRecord(for: operation.game),
+                            presentation: .queued,
+                            onPause: { store.cancelStoreGameOperation(operation.game) },
+                            onResume: { store.resumeStoreGameOperation(operation.game) },
+                            onRemove: { store.clearStoreGameOperation(for: operation.game) }
+                        )
+                    }
                 }
             }
         }
@@ -177,8 +168,25 @@ struct DownloadsView: View {
         }
     }
 
+    private var activeGameOperations: [(game: StoreLibraryGame, state: StoreGameOperationState)] {
+        sortedGameOperations.filter { $0.state.isCancellable }
+    }
+
+    private var queuedGameOperations: [(game: StoreLibraryGame, state: StoreGameOperationState)] {
+        sortedGameOperations.filter { !$0.state.isCancellable }
+    }
+
     private var runtimeList: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Spacer()
+                Button("Check Again", systemImage: "arrow.clockwise") {
+                    Task { await store.refreshRuntimeStatuses() }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 0) {
             ForEach(Array(store.runtimeStatuses.enumerated()), id: \.element.id) { index, runtime in
                 HStack(spacing: 14) {
                     Image(systemName: runtime.isVerified ? "checkmark.seal.fill" : "shippingbox.fill")
@@ -198,7 +206,33 @@ struct DownloadsView: View {
                 }.padding(16)
                 if index < store.runtimeStatuses.count - 1 { Divider().padding(.leading, 66) }
             }
+            }
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
+
+            ForEach(store.localRuntimeCandidates) { candidate in
+                localRuntimeRow(candidate)
+            }
         }
+    }
+
+    private func localRuntimeRow(_ candidate: LocalRuntimeCandidate) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: candidate.engine == .gamePortingToolkit ? "cpu.fill" : "shippingbox.and.arrow.backward.fill")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 36)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(candidate.displayName).font(.headline)
+                Text("Available to import · \(candidate.engine.graphicsName)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Import") { store.importLocalRuntime(id: candidate.id) }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(16)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
     }
@@ -314,7 +348,7 @@ struct DownloadsView: View {
         if let detail = runtime.detail { return detail }
         switch runtime.state {
         case .installed:
-            if runtime.origin == .localImport { return runtime.isVerified ? "Installed · Validated local snapshot" : "Installed local snapshot" }
+            if runtime.origin == .localImport { return runtime.isVerified ? "Installed · Independent validated snapshot" : "Installed independent snapshot" }
             return runtime.isVerified ? "Installed · Verified catalog runtime" : "Installed"
         case .available:
             if let size = runtime.compressedSize, size > 0 { return "\(runtime.engine.displayName) runtime · \(store.formattedBytes(size))" }
@@ -340,9 +374,15 @@ struct DownloadsView: View {
 }
 
 private struct DownloadOperationCard: View {
+    enum Presentation: Equatable {
+        case active
+        case queued
+    }
+
     let game: StoreLibraryGame
     let state: StoreGameOperationState
     let record: StoreDownloadRecord?
+    let presentation: Presentation
     let onPause: () -> Void
     let onResume: () -> Void
     let onRemove: () -> Void
@@ -357,17 +397,18 @@ private struct DownloadOperationCard: View {
             header
 
             if let progress {
-                phaseStrip(progress.phase)
                 progressSection(progress)
-                metrics(progress)
-                transferChart
+                if presentation == .active {
+                    metrics(progress)
+                    transferChart
+                }
                 footer(progress)
             } else {
                 stateMessage
                 footer(nil)
             }
         }
-        .padding(20)
+        .padding(presentation == .active ? 20 : 16)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -426,38 +467,6 @@ private struct DownloadOperationCard: View {
             Button("Resume", systemImage: "play.fill", action: onResume)
                 .buttonStyle(.borderedProminent)
         }
-    }
-
-    private func phaseStrip(_ current: StoreGameOperationPhase) -> some View {
-        HStack(spacing: 8) {
-            ForEach(StoreGameOperationPhase.allCasesForDisplay, id: \.self) { phase in
-                let state = phaseDisplayState(phase, current: current)
-                HStack(spacing: 6) {
-                    Image(systemName: state.symbol)
-                    Text(phase.title)
-                        .lineLimit(1)
-                }
-                .font(.caption.weight(state == .current ? .semibold : .regular))
-                .foregroundStyle(state.foregroundStyle)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-                .background(state == .current ? Color.accentColor.opacity(0.14) : Color.clear, in: Capsule())
-            }
-        }
-        .padding(4)
-        .background(.black.opacity(0.12), in: Capsule())
-    }
-
-    private func phaseDisplayState(
-        _ phase: StoreGameOperationPhase,
-        current: StoreGameOperationPhase
-    ) -> DownloadPhaseDisplayState {
-        let phases = StoreGameOperationPhase.allCasesForDisplay
-        guard let phaseIndex = phases.firstIndex(of: phase),
-              let currentIndex = phases.firstIndex(of: current) else { return .upcoming }
-        if phaseIndex < currentIndex { return .complete }
-        if phaseIndex == currentIndex { return .current }
-        return .upcoming
     }
 
     private func progressSection(_ progress: StoreGameOperationProgress) -> some View {
@@ -688,37 +697,6 @@ private struct DownloadOperationCard: View {
     }
 }
 
-private struct DownloadSummaryTile: View {
-    let title: String
-    let value: String
-    let detail: String
-    let symbol: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(value).font(.title2.bold().monospacedDigit())
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.11)) }
-    }
-}
-
 private struct DownloadMetric: View {
     let title: String
     let value: String
@@ -747,39 +725,11 @@ private struct TransferChartPoint: Identifiable {
     var id: String { "\(timestamp.timeIntervalSinceReferenceDate)-\(kind)" }
 }
 
-private enum DownloadPhaseDisplayState {
-    case complete
-    case current
-    case upcoming
-
-    var symbol: String {
-        switch self {
-        case .complete: "checkmark.circle.fill"
-        case .current: "circle.inset.filled"
-        case .upcoming: "circle"
-        }
-    }
-
-    var foregroundStyle: Color {
-        switch self {
-        case .complete: .green
-        case .current: .primary
-        case .upcoming: .secondary
-        }
-    }
-}
-
 private extension View {
     func downloadStatusBadge() -> some View {
         font(.caption.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(.black.opacity(0.16), in: Capsule())
-    }
-}
-
-private extension StoreGameOperationPhase {
-    static var allCasesForDisplay: [StoreGameOperationPhase] {
-        [.preparing, .downloading, .installing, .verifying]
     }
 }

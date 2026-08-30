@@ -81,7 +81,10 @@ actor GameMetricsSampler {
             return nil
         }
 
-        let tailSize: UInt64 = 32 * 1_024
+        // Wine may emit thousands of unrelated lines between two +fps records.
+        // Keep the read bounded, but large enough to find the latest record in
+        // sessions started with the older verbose WINEDEBUG configuration.
+        let tailSize: UInt64 = 4 * 1_024 * 1_024
         try? handle.seek(toOffset: end > tailSize ? end - tailSize : 0)
 
         let data: Data
@@ -93,7 +96,7 @@ actor GameMetricsSampler {
         guard let text = String(data: data, encoding: .utf8) else {
             return nil
         }
-        let pattern = #"([0-9]+(?:\.[0-9]+)?)\s*(?:frames\s+per\s+second|fps)"#
+        let pattern = #"(?:approx\s+)?([0-9]+(?:\.[0-9]+)?)\s*(?:frames\s+per\s+second|fps)"#
 
         guard let expression = try? NSRegularExpression(
             pattern: pattern,
@@ -107,7 +110,7 @@ actor GameMetricsSampler {
         guard let match = expression.matches(in: text, range: range).last,
               let valueRange = Range(match.range(at: 1), in: text),
               let value = Double(text[valueRange]),
-              (0...1_000).contains(value) else {
+              (0..<1_000).contains(value) else {
             return nil
         }
 

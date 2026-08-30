@@ -27,18 +27,30 @@ nonisolated protocol Installing: Sendable {
 }
 
 extension RuntimeManaging {
-    func prepareReadyRuntime() async throws -> InstalledRuntime {
-        for runtime in try await installedRuntimes() {
+    func prepareReadyRuntime(preferredEngine: RuntimeEngine? = nil) async throws -> InstalledRuntime {
+        let installed = try await installedRuntimes()
+        let orderedInstalled = installed.sorted { lhs, rhs in
+            guard let preferredEngine else { return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending }
+            let lhsPreferred = lhs.resolvedEngine == preferredEngine
+            let rhsPreferred = rhs.resolvedEngine == preferredEngine
+            if lhsPreferred != rhsPreferred { return lhsPreferred }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }
+        for runtime in orderedInstalled {
             try Task.checkCancellation()
+            if let preferredEngine, runtime.resolvedEngine != preferredEngine { continue }
             if try await validate(runtime).isReady { return runtime }
         }
 
-        if let local = await localRuntimeCandidates().first {
+        let localCandidates = await localRuntimeCandidates()
+        if let local = localCandidates.first(where: { preferredEngine == nil || $0.engine == preferredEngine }) {
             try Task.checkCancellation()
             return try await importLocalRuntime(local)
         }
 
-        guard let available = try await availableRuntimes().first else {
+        guard let available = try await availableRuntimes().first(where: {
+            preferredEngine == nil || ($0.features.d3dmetal ? RuntimeEngine.gamePortingToolkit : .wine) == preferredEngine
+        }) else {
             throw InstallerServiceError.noRuntimeAvailable
         }
         try Task.checkCancellation()

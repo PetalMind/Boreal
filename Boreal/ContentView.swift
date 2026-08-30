@@ -92,8 +92,35 @@ struct ContentView: View {
 
     private var sidebar: some View {
         List(selection: sidebarSelection) {
-            Section("Boreal") {
-                Label("Library", systemImage: "square.grid.2x2").tag(SidebarDestination.library)
+            Section {
+                Button {
+                    showLibrary()
+                    librarySourceFilters = ""
+                } label: {
+                    Label("Home", systemImage: "house.fill")
+                }
+                .buttonStyle(.plain)
+                .tag(SidebarDestination.library)
+                ForEach(LibrarySourceFilter.allCases, id: \.self) { source in
+                    Button {
+                        showLibrary(source: source)
+                    } label: {
+                        HStack {
+                            Label(source.title, systemImage: source.symbol)
+                            Spacer()
+                            Text(sourceCount(source).formatted())
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(isSelected(source) ? Color.accentColor : Color.primary)
+                    .disabled(sourceCount(source) == 0)
+                    .accessibilityAddTraits(isSelected(source) ? .isSelected : [])
+                }
+            } header: {
+                Text("Library")
             }
             Section("Services") {
                 Label("Accounts", systemImage: "person.crop.circle.badge.checkmark").tag(SidebarDestination.accounts)
@@ -106,6 +133,20 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .top) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles.rectangle.stack.fill")
+                    .font(.title2)
+                    .foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Boreal").font(.headline)
+                    Text("Your games, one place").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
         .safeAreaInset(edge: .bottom) {
             Button {
                 selection = .downloads
@@ -253,6 +294,22 @@ struct ContentView: View {
         if let style { libraryStyle = style }
         selection = .library
         libraryPath = route.map { [$0] } ?? []
+    }
+
+    private func showLibrary(source: LibrarySourceFilter) {
+        selection = .library
+        libraryPath.removeAll()
+        searchText = ""
+        librarySourceFilters = source.rawValue
+    }
+
+    private func sourceCount(_ source: LibrarySourceFilter) -> Int {
+        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames)
+            .lazy.filter { $0.source == source }.count
+    }
+
+    private func isSelected(_ source: LibrarySourceFilter) -> Bool {
+        selection == .library && librarySourceFilters == source.rawValue
     }
 }
 

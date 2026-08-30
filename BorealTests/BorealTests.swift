@@ -208,6 +208,43 @@ struct BorealTests {
         #expect(candidate.appURL.resolvingSymlinksInPath() == app.resolvingSymlinksInPath())
     }
 
+    @Test func localGPTKDiscoverySupportsBundledWine64WithoutNativeWineboot() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-gptk-discovery-\(UUID().uuidString)")
+        let applications = root.appending(path: "Applications", directoryHint: .isDirectory)
+        let app = applications.appending(path: "Game Porting Toolkit.app", directoryHint: .isDirectory)
+        let contents = app.appending(path: "Contents", directoryHint: .isDirectory)
+        let bin = contents.appending(path: "Resources/wine/bin", directoryHint: .isDirectory)
+        let d3dMetal = contents.appending(path: "Resources/wine/lib/external/D3DMetal.framework/Versions/A", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: d3dMetal, withIntermediateDirectories: true)
+        for name in ["wine64", "wineserver"] {
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: bin.appending(path: name))
+        }
+        try Data().write(to: d3dMetal.appending(path: "D3DMetal"))
+        let info: [String: Any] = [
+            "CFBundleName": "Game Porting Toolkit",
+            "CFBundleShortVersionString": "3.0-2",
+            "LSMinimumSystemVersion": "14.0"
+        ]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: contents.appending(path: "Info.plist"))
+        let manager = RuntimeManager(
+            applicationSupportURL: root.appending(path: "support"),
+            catalog: StaticCatalog(runtimes: []),
+            processExecutor: SystemProcessExecutor(),
+            requirementChecker: SatisfiedRequirements(),
+            localApplicationRoots: [applications]
+        )
+
+        let candidate = try #require(await manager.localRuntimeCandidates().first)
+        #expect(candidate.displayName == "Game Porting Toolkit")
+        #expect(candidate.wineVersion == "3.0-2")
+        #expect(candidate.engine == .gamePortingToolkit)
+        #expect(candidate.features.d3dmetal)
+        #expect(candidate.layout.wineExecutable.hasSuffix("/wine64"))
+        #expect(candidate.layout.wineBootExecutable == "Support/wineboot")
+    }
+
     @Test func providerLaunchPlanCannotOverrideManagedPrefixOrRuntimePath() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-launch-plan-\(UUID().uuidString)")
         let runtimeBin = root.appending(path: "runtime/bin", directoryHint: .isDirectory)
@@ -291,6 +328,25 @@ struct BorealTests {
         )
 
         #expect(result.map(\.name) == ["Żółta Przygoda"])
+    }
+
+    @Test func libraryProjectionDoesNotDuplicateStoreGameLinkedToApplication() {
+        let application = WindowsApplication(
+            name: "BioShock",
+            publisher: "2K",
+            executablePath: "/tmp/bioshock.exe",
+            installerPath: "/tmp/bioshock-installer.exe",
+            environmentID: UUID(),
+            storeProvider: .steam,
+            storeExternalID: "7670"
+        )
+        let storeGame = StoreLibraryGame(provider: .steam, externalID: "7670", name: "BioShock")
+
+        let items = LibraryProjector.makeItems(applications: [application], storeGames: [storeGame])
+
+        #expect(items.count == 1)
+        #expect(items.first?.name == "BioShock")
+        #expect(items.first?.id == .application(application.id))
     }
 
     @Test func libraryProjectionSortsMissingActivityLastAndRecognizesAttention() {

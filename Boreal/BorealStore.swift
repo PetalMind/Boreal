@@ -148,6 +148,14 @@ final class BorealStore {
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
     func applications(in environmentID: UUID) -> [WindowsApplication] { applications.filter { $0.environmentID == environmentID } }
 
+    func recommendedRuntimeEngine(for game: StoreLibraryGame) -> RuntimeEngine {
+        game.provider == .gog && game.externalID == "2022341186" ? .gamePortingToolkit : .wine
+    }
+
+    func hasInstalledRuntime(engine: RuntimeEngine) -> Bool {
+        runtimeStatuses.contains { $0.source == .installed && $0.state == .installed && $0.engine == engine }
+    }
+
     func install(_ candidate: InstallCandidate) async -> UUID? {
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
         do {
@@ -873,16 +881,17 @@ final class BorealStore {
         storeOperationTasks[key] = task
     }
 
-    func prepareStoreGame(_ game: StoreLibraryGame) {
+    func prepareStoreGame(_ game: StoreLibraryGame, runtimeEngine: RuntimeEngine? = nil) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider),
               game.isInstalled,
               linkedApplication(for: game) == nil,
               storeGameOperations[key] == nil else { return }
         let token = UUID()
+        let selectedEngine = runtimeEngine ?? recommendedRuntimeEngine(for: game)
         storeOperationTokens[key] = token
         storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
-            message: "Finding a compatible Wine runtime…",
+            message: "Finding a compatible \(selectedEngine.displayName) runtime…",
             fractionCompleted: 0
         ))
         let task = Task { [weak self] in
@@ -890,8 +899,8 @@ final class BorealStore {
             var createdEnvironment: ManagedBorealEnvironment?
             do {
                 async let communityProfile = services.communityCompatibility.profile(named: game.name)
-                updateEnvironmentPreparation("Preparing a verified Wine runtime…", fraction: 0.1, key: key, token: token)
-                let runtime = try await services.runtimeManager.prepareReadyRuntime()
+                updateEnvironmentPreparation("Preparing a verified \(selectedEngine.displayName) runtime…", fraction: 0.1, key: key, token: token)
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: selectedEngine)
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Creating an isolated Windows environment…", fraction: 0.25, key: key, token: token)
                 var managed = try await services.environmentManager.create(
@@ -967,6 +976,134 @@ final class BorealStore {
                 storeGameOperations[key] = .failed(error.localizedDescription)
                 storeOperationTasks[key] = nil
                 present(error, title: "\(game.name) couldn’t be prepared", stage: "Creating its isolated Windows environment")
+            }
+        }
+        storeOperationTasks[key] = task
+    }
+
+    func recreateEnvironment(_ applicationID: UUID, with engine: RuntimeEngine) {
+        guard let appIndex = applications.firstIndex(where: { $0.id == applicationID }),
+              !applications[appIndex].status.isBusy,
+              applications[appIndex].status != .running,
+              let provider = applications[appIndex].storeProvider,
+              let externalID = applications[appIndex].storeExternalID,
+              [.epic, .gog].contains(provider),
+              let game = storeGames.first(where: { $0.provider == provider && $0.externalID == externalID }) else { return }
+
+        let key = storeOperationKey(for: game)
+        guard storeGameOperations[key] == nil else { return }
+        let token = UUID()
+        let oldEnvironmentID = applications[appIndex].environmentID
+        let previousStatus = applications[appIndex].status
+        storeOperationTokens[key] = token
+        applications[appIndex].status = .preparing
+        applications[appIndex].lastResult = "Recreating environment with \(engine.displayName)"
+        applications[appIndex].lastErrorDetail = nil
+        storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
+            message: "Preparing \(engine.displayName)…",
+            fractionCompleted: 0
+        ))
+        save()
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            var replacement: ManagedBorealEnvironment?
+            do {
+                updateEnvironmentPreparation("Validating \(engine.displayName)…", fraction: 0.1, key: key, token: token)
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
+                try Task.checkCancellation()
+                updateEnvironmentPreparation("Creating a new isolated prefix…", fraction: 0.3, key: key, token: token)
+                var managed = try await services.environmentManager.create(
+                    configuration: EnvironmentConfiguration(name: game.name),
+                    runtime: runtime
+                )
+                replacement = managed
+                try await services.environmentManager.initialize(managed, runtime: runtime)
+                managed.state = .ready
+                try Task.checkCancellation()
+                updateEnvironmentPreparation("Validating the game launch plan…", fraction: 0.75, key: key, token: token)
+
+                let plan: WindowsLaunchPlan
+                switch provider {
+                case .epic:
+                    plan = try await services.epicLibrary.launchPlan(appID: externalID, runtime: runtime, environment: managed)
+                case .gog:
+                    let installationURL = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                        ?? defaultGameInstallationRoot(for: .gog).appending(path: externalID, directoryHint: .isDirectory)
+                    plan = try await services.gogLibrary.launchPlan(
+                        appID: externalID,
+                        installationURL: installationURL,
+                        runtime: runtime,
+                        environment: managed
+                    )
+                case .steam:
+                    return
+                }
+                guard FileManager.default.fileExists(atPath: plan.executable.path) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let validation = try await services.environmentManager.validate(managed)
+                guard validation.isReady else { throw EnvironmentManagerError.validationFailed(validation) }
+                guard storeOperationTokens[key] == token,
+                      let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) else {
+                    throw CancellationError()
+                }
+
+                environments.append(WindowsEnvironment(
+                    id: managed.id,
+                    name: game.name,
+                    runtime: runtime.runtimeDescription,
+                    graphics: runtime.graphicsName,
+                    runtimeID: runtime.id,
+                    rootPath: managed.rootURL.path,
+                    prefixPath: managed.prefixURL.path,
+                    logsPath: managed.logsURL.path
+                ))
+                applications[currentIndex].environmentID = managed.id
+                applications[currentIndex].executablePath = plan.executable.path
+                applications[currentIndex].graphics = runtime.graphicsName
+                applications[currentIndex].status = .ready
+                applications[currentIndex].lastResult = "Environment recreated with \(engine.displayName)"
+                applications[currentIndex].lastExitCode = nil
+                applications[currentIndex].lastFailureStage = nil
+                applications[currentIndex].lastErrorDetail = nil
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                save()
+
+                if applications.allSatisfy({ $0.environmentID != oldEnvironmentID }),
+                   let oldRecord = environment(id: oldEnvironmentID),
+                   let oldManaged = managedEnvironment(from: oldRecord) {
+                    do {
+                        try await services.environmentManager.remove(oldManaged)
+                        environments.removeAll { $0.id == oldEnvironmentID }
+                        save()
+                    } catch {
+                        present(error, title: "The previous environment couldn’t be removed", stage: "Cleaning up after the successful runtime migration")
+                    }
+                }
+            } catch is CancellationError {
+                if let replacement { try? await services.environmentManager.remove(replacement) }
+                if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                    applications[currentIndex].status = previousStatus
+                    applications[currentIndex].lastResult = "Environment migration cancelled"
+                }
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                if let replacement { try? await services.environmentManager.remove(replacement) }
+                guard storeOperationTokens[key] == token else { return }
+                if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                    applications[currentIndex].status = previousStatus
+                    applications[currentIndex].lastResult = "Environment migration failed"
+                    applications[currentIndex].lastFailureStage = "Recreating environment"
+                    applications[currentIndex].lastErrorDetail = error.localizedDescription
+                }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                save()
+                present(error, title: "\(game.name) couldn’t switch runtime", stage: "Creating and validating a new \(engine.displayName) environment")
             }
         }
         storeOperationTasks[key] = task

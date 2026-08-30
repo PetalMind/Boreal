@@ -66,6 +66,62 @@ struct RuntimeResolutionTests {
         #expect(await manager.importCount == 1)
         #expect(await manager.catalogInstallCount == 0)
     }
+
+    @Test func preferredRuntimeEngineSelectsGPTKInsteadOfInstalledWine() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/boreal-preferred-runtime")
+        let wine = InstalledRuntime(
+            id: "wine",
+            displayName: "Wine",
+            wineVersion: "11.15",
+            rootURL: root.appending(path: "wine"),
+            wineExecutable: root.appending(path: "wine/wine"),
+            wineServerExecutable: root.appending(path: "wine/wineserver"),
+            wineBootExecutable: root.appending(path: "wine/wineboot"),
+            architecture: .x86_64,
+            requirements: [],
+            engine: .wine
+        )
+        let gptk = InstalledRuntime(
+            id: "gptk",
+            displayName: "Game Porting Toolkit",
+            wineVersion: "3.0-2",
+            rootURL: root.appending(path: "gptk"),
+            wineExecutable: root.appending(path: "gptk/wine64"),
+            wineServerExecutable: root.appending(path: "gptk/wineserver"),
+            wineBootExecutable: root.appending(path: "gptk/wineboot"),
+            architecture: .x86_64,
+            requirements: [],
+            engine: .gamePortingToolkit,
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: true, dxmt: false)
+        )
+        let manager = PreferredRuntimeManager(installed: [wine, gptk])
+
+        let selected = try await manager.prepareReadyRuntime(preferredEngine: .gamePortingToolkit)
+
+        #expect(selected.id == gptk.id)
+    }
+}
+
+private actor PreferredRuntimeManager: RuntimeManaging {
+    let installed: [InstalledRuntime]
+
+    init(installed: [InstalledRuntime]) { self.installed = installed }
+
+    func availableRuntimes() async throws -> [BorealRuntime] { [] }
+    func installedRuntimes() async throws -> [InstalledRuntime] { installed }
+    func localRuntimeCandidates() async -> [LocalRuntimeCandidate] { [] }
+    func importLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime { throw CocoaError(.featureUnsupported) }
+    func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime { throw CocoaError(.featureUnsupported) }
+    func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation {
+        RuntimeValidation(
+            detectedWineVersion: runtime.wineVersion,
+            versionMatchesManifest: true,
+            missingPaths: [],
+            unmetRequirements: [],
+            executablePaths: [runtime.wineExecutable.path]
+        )
+    }
+    func remove(_ runtime: InstalledRuntime) async throws { }
 }
 
 private actor RuntimeResolutionManager: RuntimeManaging {

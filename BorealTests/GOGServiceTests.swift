@@ -4,6 +4,24 @@ import Testing
 
 @Suite(.serialized)
 struct GOGServiceTests {
+    @Test func appliesEngineSpecificBioShockLaunchProfiles() {
+        let gptk = GOGService.compatibilityLaunchConfiguration(
+            appID: "2022341186",
+            runtimeEngine: .gamePortingToolkit,
+            arguments: ["-dx9", "-windowed"]
+        )
+        #expect(gptk.arguments == ["-windowed", "-dx10"])
+        #expect(gptk.environment.isEmpty)
+
+        let wine = GOGService.compatibilityLaunchConfiguration(
+            appID: "2022341186",
+            runtimeEngine: .wine,
+            arguments: ["-dx10"]
+        )
+        #expect(wine.arguments == ["-dx9"])
+        #expect(wine.environment["WINED3D_RENDERER"] == "vulkan")
+    }
+
     @Test func collapsesPromotionalDuplicateIntoRichCanonicalRelease() {
         let canonical = StoreLibraryGame(
             provider: .gog,

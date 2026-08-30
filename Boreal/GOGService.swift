@@ -397,11 +397,44 @@ actor GOGService: GOGLibraryProviding {
         guard fileManager.fileExists(atPath: workingDirectory.path) else {
             throw GOGServiceError.invalidLaunchPlan("the working directory is missing")
         }
-        let arguments: [String]
+        var arguments: [String]
         if let values = task["arguments"] as? [String] { arguments = values }
         else if let value = task["arguments"] as? String { arguments = Self.parseCommandLine(value) }
         else { arguments = [] }
-        return WindowsLaunchPlan(executable: executable, arguments: arguments, environment: [:], workingDirectory: workingDirectory)
+
+        let configuration = Self.compatibilityLaunchConfiguration(
+            appID: appID,
+            runtimeEngine: runtime.resolvedEngine,
+            arguments: arguments
+        )
+        return WindowsLaunchPlan(executable: executable, arguments: configuration.arguments, environment: configuration.environment, workingDirectory: workingDirectory)
+    }
+
+    nonisolated static func compatibilityLaunchConfiguration(
+        appID: String,
+        runtimeEngine: RuntimeEngine,
+        arguments: [String]
+    ) -> (arguments: [String], environment: [String: String]) {
+        var arguments = arguments
+        var environment: [String: String] = [:]
+        guard appID == "2022341186" else { return (arguments, environment) }
+
+        switch runtimeEngine {
+        case .gamePortingToolkit:
+            arguments.removeAll { $0.caseInsensitiveCompare("-dx9") == .orderedSame }
+            if !arguments.contains(where: { $0.caseInsensitiveCompare("-dx10") == .orderedSame }) {
+                arguments.append("-dx10")
+            }
+        case .wine:
+            arguments.removeAll { $0.caseInsensitiveCompare("-dx10") == .orderedSame }
+            if !arguments.contains(where: { $0.caseInsensitiveCompare("-dx9") == .orderedSame }) {
+                arguments.append("-dx9")
+            }
+            // WineD3D's OpenGL card selector does not recognize Apple GPUs
+            // on the affected runtime. Its Vulkan backend avoids that path.
+            environment["WINED3D_RENDERER"] = "vulkan"
+        }
+        return (arguments, environment)
     }
 
     func disconnect() async throws {
