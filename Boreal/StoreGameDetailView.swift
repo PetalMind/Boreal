@@ -20,22 +20,12 @@ struct StoreGameDetailView: View {
             VStack(alignment: .leading, spacing: 26) {
                 hero
                 operationStatus
+                libraryOverview
                 mediaSection
-                HStack(alignment: .top, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 26) {
-                        if let summary = game.summary, !summary.isEmpty {
-                            section("About this game") {
-                                Text(summary).font(.body).foregroundStyle(.secondary).lineSpacing(4)
-                            }
-                        }
-                        if currentGame.supportsNativeMacOS != true { compatibilitySection }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    detailsSidebar
-                        .frame(width: 300)
-                }
+                detailContent
             }
-            .padding(36)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 28)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: $showsInstallationOptions) {
@@ -77,57 +67,110 @@ struct StoreGameDetailView: View {
         ZStack(alignment: .bottomLeading) {
             heroBackground
             LinearGradient(
-                colors: [.clear, .black.opacity(0.35), .black.opacity(0.88)],
+                colors: [.black.opacity(0.04), .black.opacity(0.38), .black.opacity(0.94)],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            HStack(alignment: .bottom, spacing: 24) {
-                GameArtworkView(game: game, width: 156, height: 218)
-                    .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
-                VStack(alignment: .leading, spacing: 10) {
-                    Label(game.provider.rawValue, systemImage: game.provider.symbol)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.78))
-                    Text(game.name)
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    if let developer = game.developer {
-                        Button {
-                            onSelectProducer(developer)
-                        } label: {
-                            Label(developer, systemImage: "person.crop.rectangle.stack")
-                                .font(.title3)
-                                .foregroundStyle(.white.opacity(0.72))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show all games by \(developer)")
-                    }
-                    HStack(spacing: 12) {
-                        StorePlatformBadge(game: currentGame)
-                        StoreRatingBadge(rating: currentGame.storeRating)
-                        if currentGame.supportsNativeMacOS != true,
-                           let compatibility = currentGame.compatibility {
-                            MacCompatibilityBadge(rating: compatibility.tier.rating)
-                        }
-                    }
-                    primaryActions
-                        .padding(.top, 2)
-                }
-                Spacer(minLength: 0)
+            ViewThatFits(in: .horizontal) {
+                heroWideContent
+                heroCompactContent
             }
             .padding(24)
         }
-        .frame(maxWidth: .infinity, minHeight: 360, maxHeight: 420, alignment: .bottomLeading)
+        .frame(maxWidth: .infinity, minHeight: 380, maxHeight: 440, alignment: .bottomLeading)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.white.opacity(0.16)) }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var heroWideContent: some View {
+        HStack(alignment: .bottom, spacing: 24) {
+            heroArtwork
+            heroIdentity
+            Spacer(minLength: 20)
+            heroActionPanel
+                .frame(width: 310)
+        }
+    }
+
+    private var heroCompactContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .bottom, spacing: 18) {
+                GameArtworkView(game: currentGame, width: 112, height: 158)
+                heroIdentity
+            }
+            heroActionPanel
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var heroArtwork: some View {
+        GameArtworkView(game: currentGame, width: 156, height: 218)
+            .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+    }
+
+    private var heroIdentity: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label(currentGame.provider.rawValue, systemImage: currentGame.provider.symbol)
+                Text("IN YOUR LIBRARY")
+            }
+            .font(.caption.weight(.bold))
+            .tracking(0.7)
+            .foregroundStyle(.white.opacity(0.72))
+            Text(currentGame.name)
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+            if let developer = currentGame.developer {
+                Button {
+                    onSelectProducer(developer)
+                } label: {
+                    Text(developer)
+                        .font(.title3)
+                        .foregroundStyle(.white.opacity(0.76))
+                }
+                .buttonStyle(.plain)
+                .help("Show all games by \(developer)")
+            }
+            HStack(spacing: 8) {
+                StorePlatformBadge(game: currentGame)
+                StoreRatingBadge(rating: currentGame.storeRating)
+                if currentGame.supportsNativeMacOS != true,
+                   let compatibility = currentGame.compatibility {
+                    MacCompatibilityBadge(rating: compatibility.tier.rating)
+                }
+            }
+        }
+    }
+
+    private var heroActionPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(libraryStatus, systemImage: libraryStatusSymbol)
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text(actionContext)
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.70))
+                .fixedSize(horizontal: false, vertical: true)
+            primaryActions
+        }
+        .padding(16)
+        .background(.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(.ultraThinMaterial.opacity(0.28), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.18)) }
     }
 
     @ViewBuilder private var heroBackground: some View {
-        if let value = game.backgroundImageURL ?? game.headerImageURL, let url = URL(string: value) {
+        if let value = currentGame.backgroundImageURL ?? currentGame.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in
-                if let image = phase.image { image.resizable().scaledToFill() }
-                else { Color.accentColor.opacity(0.12) }
+                switch phase {
+                case .success(let image): image.resizable().scaledToFill()
+                case .failure: storeImageFailurePlaceholder
+                case .empty: Color.accentColor.opacity(0.12).overlay { ProgressView().tint(.white) }
+                @unknown default: Color.accentColor.opacity(0.12)
+                }
             }
         } else {
             LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -152,11 +195,6 @@ struct StoreGameDetailView: View {
                     Button("Open in Steam", systemImage: "arrow.up.right.square") { openSteam() }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                 }
-                Button("Store Page", systemImage: "storefront") { openStorePage() }.controlSize(.large)
-                if currentGame.isInstalled || linkedApplication != nil {
-                    Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
-                        .controlSize(.large)
-                }
             } else if currentGame.isInstalled {
                 if currentGame.installedPlatform == .nativeMacOS {
                     Button("Open Native macOS Version", systemImage: "apple.logo") { openNativeInstallation() }
@@ -166,17 +204,39 @@ struct StoreGameDetailView: View {
                 } else if storeOperation == nil {
                     runtimePreparationMenu
                 }
-                if currentGame.installPath != nil {
-                    Button("Show Game Files", systemImage: "folder") { showGameFiles() }.controlSize(.large)
-                }
-                Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
-                    .controlSize(.large)
             } else if storeOperation == nil {
                 Button(installButtonTitle, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }.controlSize(.large)
             }
+            managementMenu
         }
+        .tint(.cyan)
+    }
+
+    private var managementMenu: some View {
+        Menu {
+            if currentGame.installPath != nil {
+                Button("Show Game Files", systemImage: "folder") { showGameFiles() }
+            }
+            if !currentGame.isInstalled && linkedApplication == nil {
+                Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }
+            }
+            if currentGame.provider == .steam {
+                Button("View Steam Store Page", systemImage: "arrow.up.right.square") { openStorePage() }
+            }
+            if currentGame.isInstalled || linkedApplication != nil {
+                Divider()
+                Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
+            }
+        } label: {
+            Label("Manage", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .help("Manage installation")
+        .accessibilityLabel("Manage game")
     }
 
     @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: String) -> some View {
@@ -313,6 +373,93 @@ struct StoreGameDetailView: View {
         guard game.playtimeMinutes > 0 else { return "Not played" }
         if game.playtimeMinutes < 60 { return "\(game.playtimeMinutes) min" }
         return String(format: "%.1f hours", Double(game.playtimeMinutes) / 60)
+    }
+
+    private var libraryOverview: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                overviewMetric("Library status", value: libraryStatus, symbol: libraryStatusSymbol)
+                overviewDivider
+                overviewMetric("Playtime", value: playtime, symbol: "clock.fill")
+                overviewDivider
+                overviewMetric(
+                    "Last played",
+                    value: currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never",
+                    symbol: "calendar"
+                )
+                overviewDivider
+                overviewMetric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive.fill")
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                overviewMetric("Library status", value: libraryStatus, symbol: libraryStatusSymbol)
+                Divider()
+                overviewMetric("Playtime", value: playtime, symbol: "clock.fill")
+                Divider()
+                overviewMetric(
+                    "Last played",
+                    value: currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never",
+                    symbol: "calendar"
+                )
+                Divider()
+                overviewMetric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive.fill")
+            }
+        }
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12)) }
+    }
+
+    private func overviewMetric(_ title: String, value: String, symbol: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(.cyan)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+    }
+
+    private var overviewDivider: some View {
+        Divider().frame(height: 42)
+    }
+
+    private var detailContent: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 28) {
+                editorialContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                detailsSidebar
+                    .frame(width: 310)
+            }
+            VStack(alignment: .leading, spacing: 26) {
+                editorialContent
+                detailsSidebar
+            }
+        }
+    }
+
+    private var editorialContent: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            if let summary = currentGame.summary, !summary.isEmpty {
+                section("About this game") {
+                    Text(summary)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                }
+            }
+            if currentGame.supportsNativeMacOS != true { compatibilitySection }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var formattedDownloadSize: String {
@@ -466,8 +613,8 @@ struct StoreGameDetailView: View {
     }
 
     @ViewBuilder private var mediaSection: some View {
-        let screenshots = game.screenshotURLs ?? []
-        let videos = game.videos ?? []
+        let screenshots = currentGame.screenshotURLs ?? []
+        let videos = currentGame.videos ?? []
         if !screenshots.isEmpty || !videos.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Media").font(.title2).fontWeight(.semibold)
@@ -483,8 +630,12 @@ struct StoreGameDetailView: View {
                                     )
                                 } label: {
                                     AsyncImage(url: url) { phase in
-                                        if let image = phase.image { image.resizable().scaledToFill() }
-                                        else { Rectangle().fill(.background.secondary) }
+                                        switch phase {
+                                        case .success(let image): image.resizable().scaledToFill()
+                                        case .failure: storeImageFailurePlaceholder
+                                        case .empty: Rectangle().fill(.background.secondary).overlay { ProgressView() }
+                                        @unknown default: Rectangle().fill(.background.secondary)
+                                        }
                                     }
                                     .frame(width: 310, height: 174)
                                     .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -524,6 +675,15 @@ struct StoreGameDetailView: View {
         }
     }
 
+    private var storeImageFailurePlaceholder: some View {
+        ZStack {
+            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.82))
+        }
+    }
+
     private var detailsSidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
             detailCard("Your game", symbol: "person.crop.circle") {
@@ -559,6 +719,21 @@ struct StoreGameDetailView: View {
         if linkedApplication != nil { return "Managed by Boreal" }
         if currentGame.isInstalled { return "Installed" }
         return "In your library"
+    }
+
+    private var libraryStatusSymbol: String {
+        if linkedApplication?.status == .running { return "play.circle.fill" }
+        if linkedApplication != nil { return "checkmark.seal.fill" }
+        if currentGame.isInstalled { return "checkmark.circle.fill" }
+        return "books.vertical.fill"
+    }
+
+    private var actionContext: String {
+        if linkedApplication?.status == .running { return "The game is running now." }
+        if storeOperation != nil { return "An installation task is currently in progress." }
+        if linkedApplication != nil { return "Ready to launch with its configured Boreal runtime." }
+        if currentGame.isInstalled { return "Installed locally and ready to open." }
+        return "Owned on \(currentGame.provider.rawValue). Install it when you are ready to play."
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

@@ -30,10 +30,14 @@ struct LegendaryEpicServiceTests {
         #expect(game.externalID == "BorealEpicApp")
         #expect(game.name == "Boreal Epic Game")
         #expect(game.developer == "Example Studio")
-        #expect(game.summary == "A real Epic library item")
+        #expect(game.summary == "A & B\n\nA real Epic library item")
         #expect(game.portraitImageURL == "https://example.com/portrait.jpg")
         #expect(game.headerImageURL == "https://example.com/header.jpg")
-        #expect(game.screenshotURLs == ["https://example.com/screenshot.jpg"])
+        #expect(game.screenshotURLs == [
+            "https://example.com/header.jpg",
+            "https://example.com/screenshot.jpg",
+            "https://example.com/featured.jpg"
+        ])
         #expect(game.supportsWindows == true)
         #expect(game.supportsNativeMacOS == false)
         #expect(game.isInstalled)
@@ -111,7 +115,7 @@ struct LegendaryEpicServiceTests {
       exit 0
     fi
     if [ "$1" = "list" ]; then
-      printf '%s\n' '[{"app_name":"BorealEpicApp","app_title":"Boreal Epic Game","metadata":{"developer":"Example Studio","description":"A real Epic library item","releaseInfo":[{"platform":["Windows"]}],"keyImages":[{"type":"DieselStoreFrontTall","url":"https://example.com/portrait.jpg"},{"type":"DieselGameBox","url":"https://example.com/header.jpg"},{"type":"Screenshot","url":"https://example.com/screenshot.jpg"}]}}]'
+      printf '%s\n' '[{"app_name":"BorealEpicApp","app_title":"Boreal Epic Game","metadata":{"developer":"Example Studio","description":"Fallback description","longDescription":"<p>A &amp; B</p><p>A real Epic library item</p>","releaseInfo":[{"platform":["Windows"]}],"keyImages":[{"type":"DieselStoreFrontTall","url":"https://example.com/portrait.jpg","width":1200,"height":1600},{"type":"DieselGameBox","url":"https://example.com/header.jpg","width":2560,"height":1440},{"type":"Screenshot","url":"https://example.com/screenshot.jpg","width":1920,"height":1080},{"type":"Featured","url":"https://example.com/featured.jpg","width":1920,"height":1080},{"type":"DieselGameBoxLogo","url":"https://example.com/logo.png","width":800,"height":800}]}}]'
       exit 0
     fi
     if [ "$1" = "launch" ]; then

@@ -5,109 +5,93 @@ nonisolated protocol ProtonCompatibilityLoading: Sendable {
 }
 
 nonisolated protocol CommunityCompatibilityLoading: Sendable {
-    func profile(named applicationName: String) async -> CommunityCompatibility?
+    func profile(for game: StoreLibraryGame) async -> CommunityCompatibility?
 }
 
-actor CodeWeaversCompatibilityService: CommunityCompatibilityLoading {
+actor ProtonStoreCompatibilityService: CommunityCompatibilityLoading {
+    private struct SearchResponse: Decodable {
+        struct Item: Decodable { let id: Int; let name: String }
+        let items: [Item]
+    }
+
+    private struct DetailsResponse: Decodable {
+        struct Payload: Decodable {
+            let name: String
+            let developers: [String]?
+            let publishers: [String]?
+        }
+        let success: Bool
+        let data: Payload?
+    }
+
     private let session: URLSession
+    private let proton: any ProtonCompatibilityLoading
     private var cachedProfiles: [String: CommunityCompatibility] = [:]
     private var missingProfiles: Set<String> = []
 
     init(session: URLSession = .shared) {
         self.session = session
+        proton = ProtonCompatibilityService(session: session)
     }
 
-    func profile(named applicationName: String) async -> CommunityCompatibility? {
-        let key = Self.normalized(applicationName)
-        guard !key.isEmpty else { return nil }
+    func profile(for game: StoreLibraryGame) async -> CommunityCompatibility? {
+        let key = "\(game.provider.rawValue)|\(game.externalID)|\(Self.normalized(game.name))"
         if let cached = cachedProfiles[key] { return cached }
         if missingProfiles.contains(key) { return nil }
 
-        guard var components = URLComponents(string: "https://www.codeweavers.com/compatibility") else { return nil }
-        components.queryItems = [
-            URLQueryItem(name: "name", value: applicationName),
-            URLQueryItem(name: "search", value: "app")
-        ]
-        guard let url = components.url else { return nil }
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue("Boreal/1.0 macOS compatibility lookup", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await session.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let html = String(data: data, encoding: .utf8),
-              let match = Self.exactMatch(in: html, normalizedName: key) else {
+        let appID: String?
+        if game.provider == .steam, game.externalID.allSatisfy(\.isNumber) {
+            appID = game.externalID
+        } else {
+            appID = await resolveSteamAppID(for: game)
+        }
+        guard let appID, var profile = await proton.profile(appID: appID) else {
             missingProfiles.insert(key)
             return nil
         }
-
-        let profile = CommunityCompatibility(
-            source: .codeWeavers,
-            tier: Self.tier(forStars: match.stars),
-            confidence: "macOS rating",
-            score: Double(match.stars),
-            reportCount: 0,
-            fetchedAt: .now,
-            sourceURL: "https://www.codeweavers.com\(match.path)",
-            platform: "macOS",
-            sourceUpdatedAt: match.updatedAt
-        )
+        profile.sourceURL = "https://www.protondb.com/app/\(appID)"
+        profile.platform = "Linux / Proton"
         cachedProfiles[key] = profile
         return profile
     }
 
-    private struct Match {
-        let path: String
-        let stars: Int
-        let updatedAt: Date?
-    }
-
-    private static func exactMatch(in html: String, normalizedName: String) -> Match? {
-        let pattern = #"(?s)<tr\b[^>]*>(.*?)</tr>"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let fullRange = NSRange(html.startIndex..., in: html)
-        let rows = expression.matches(in: html, range: fullRange).compactMap { result -> Match? in
-            guard let range = Range(result.range(at: 1), in: html) else { return nil }
-            return match(inRow: String(html[range]), normalizedName: normalizedName)
+    private func resolveSteamAppID(for game: StoreLibraryGame) async -> String? {
+        guard var components = URLComponents(string: "https://store.steampowered.com/api/storesearch/") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "term", value: game.name),
+            URLQueryItem(name: "l", value: "english"),
+            URLQueryItem(name: "cc", value: "US")
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let search = try? JSONDecoder().decode(SearchResponse.self, from: data) else { return nil }
+        let normalizedName = Self.normalized(game.name)
+        let exact = search.items.filter { Self.normalized($0.name) == normalizedName }
+        guard !exact.isEmpty else { return nil }
+        if exact.count == 1 { return String(exact[0].id) }
+        guard let expectedDeveloper = game.developer, !Self.normalized(expectedDeveloper).isEmpty else { return nil }
+        var verified: [Int] = []
+        for candidate in exact.prefix(5) {
+            if await matchesDeveloper(candidate.id, expected: expectedDeveloper, normalizedName: normalizedName) {
+                verified.append(candidate.id)
+            }
         }
-        return rows.count == 1 ? rows[0] : nil
+        return verified.count == 1 ? String(verified[0]) : nil
     }
 
-    private static func match(inRow row: String, normalizedName: String) -> Match? {
-        let linkPattern = #"<a\s+href=\"(/compatibility/crossover/[^\"]+)\"[^>]*>(.*?)</a>"#
-        guard let expression = try? NSRegularExpression(pattern: linkPattern, options: [.dotMatchesLineSeparators]),
-              let result = expression.firstMatch(in: row, range: NSRange(row.startIndex..., in: row)),
-              let pathRange = Range(result.range(at: 1), in: row),
-              let nameRange = Range(result.range(at: 2), in: row),
-              normalized(stripMarkup(String(row[nameRange]))) == normalizedName else { return nil }
-        let stars = row.components(separatedBy: #"<li class="active">"#).count - 1
-        guard (1...5).contains(stars) else { return nil }
-        return Match(path: String(row[pathRange]), stars: stars, updatedAt: updatedDate(in: row))
-    }
-
-    private static func updatedDate(in row: String) -> Date? {
-        let pattern = #"\b(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}\b"#
-        guard let expression = try? NSRegularExpression(pattern: pattern),
-              let result = expression.firstMatch(in: row, range: NSRange(row.startIndex..., in: row)),
-              let range = Range(result.range(at: 1), in: row) else { return nil }
-        return try? Date(String(row[range]), strategy: .iso8601.year().month().day())
-    }
-
-    private static func tier(forStars stars: Int) -> CompatibilityTier {
-        switch stars {
-        case 5: .runsGreat
-        case 4: .runsWell
-        case 3: .limitedFunctionality
-        case 2: .installsButDoesNotRun
-        default: .willNotInstall
-        }
-    }
-
-    private static func stripMarkup(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&trade;", with: "™")
+    private func matchesDeveloper(_ appID: Int, expected: String, normalizedName: String) async -> Bool {
+        guard let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appID)&l=english&cc=US"),
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONDecoder().decode([String: DetailsResponse].self, from: data),
+              let result = root[String(appID)], result.success, let details = result.data,
+              Self.normalized(details.name) == normalizedName else { return false }
+        let expectedValue = Self.normalized(expected)
+        return (details.developers ?? [])
+            .map(Self.normalized)
+            .contains(expectedValue)
+            || (details.publishers ?? []).map(Self.normalized).contains(expectedValue)
     }
 
     private static func normalized(_ value: String) -> String {

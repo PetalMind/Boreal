@@ -283,22 +283,43 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidManifest: "The runtime manifest is invalid."
-        case .manifestSignatureInvalid: "The runtime manifest signature is invalid."
-        case .alreadyInstalled(let id): "Runtime \(id) is already installed."
-        case .checksumMismatch: "Runtime verification failed because its SHA-256 checksum does not match."
-        case .unsupportedArchive: "The runtime archive format is not supported."
-        case .runtimeLayoutNotFound: "Boreal couldn’t locate Wine inside the runtime package."
-        case .packageManifestMismatch: "The runtime package manifest does not match the signed catalog entry."
-        case .unsafeArchive(let path): "The runtime archive contains an unsafe path: \(path)"
-        case .nonSelfContained(.gStreamerFramework): "This runtime depends on a system GStreamer installation and is not self-contained."
-        case .nonSelfContained(.rosetta2): "Rosetta is a platform requirement, not a bundled runtime dependency."
-        case .validationFailed: "The installed runtime did not pass validation."
-        case .requirementMissing(.rosetta2): "Rosetta 2 is required by this runtime."
-        case .requirementMissing(.gStreamerFramework): "GStreamer.framework is required by this development runtime."
-        case .downloadFailed(let reason): "Runtime download failed: \(reason)"
-        case .localRuntimeInvalid(let reason): "The installed Wine app can’t be imported: \(reason)"
-        case .incompatible32BitExecutable(let runtime): "This game is 32-bit, but \(runtime) does not provide WoW64 support. Use a Wine runtime that supports 32-bit Windows applications."
+        case .invalidManifest: return "The runtime manifest is invalid."
+        case .manifestSignatureInvalid: return "The runtime manifest signature is invalid."
+        case .alreadyInstalled(let id): return "Runtime \(id) is already installed."
+        case .checksumMismatch: return "Runtime verification failed because its SHA-256 checksum does not match."
+        case .unsupportedArchive: return "The runtime archive format is not supported."
+        case .runtimeLayoutNotFound: return "Boreal couldn’t locate Wine inside the runtime package."
+        case .packageManifestMismatch: return "The runtime package manifest does not match the signed catalog entry."
+        case .unsafeArchive(let path): return "The runtime archive contains an unsafe path: \(path)"
+        case .nonSelfContained(.gStreamerFramework): return "This runtime depends on a system GStreamer installation and is not self-contained."
+        case .nonSelfContained(.rosetta2): return "Rosetta is a platform requirement, not a bundled runtime dependency."
+        case .validationFailed(let validation):
+            var details: [String] = []
+            if !validation.missingPaths.isEmpty {
+                details.append("Missing or incomplete: \(validation.missingPaths.joined(separator: ", "))")
+            }
+            if !validation.unmetRequirements.isEmpty {
+                let requirements = validation.unmetRequirements.map {
+                    switch $0 {
+                    case .rosetta2: "Rosetta 2"
+                    case .gStreamerFramework: "GStreamer.framework"
+                    }
+                }.sorted()
+                details.append("Unmet requirements: \(requirements.joined(separator: ", "))")
+            }
+            if validation.detectedWineVersion == nil {
+                details.append("Wine did not return a version.")
+            } else if !validation.versionMatchesManifest {
+                details.append("Detected Wine version does not match the imported app.")
+            }
+            return details.isEmpty
+                ? "The installed runtime did not pass validation."
+                : "The installed runtime did not pass validation. \(details.joined(separator: " "))"
+        case .requirementMissing(.rosetta2): return "Rosetta 2 is required by this runtime."
+        case .requirementMissing(.gStreamerFramework): return "GStreamer.framework is required by this development runtime."
+        case .downloadFailed(let reason): return "Runtime download failed: \(reason)"
+        case .localRuntimeInvalid(let reason): return "The installed Wine app can’t be imported: \(reason)"
+        case .incompatible32BitExecutable(let runtime): return "This game is 32-bit, but \(runtime) does not provide WoW64 support. Use a Wine runtime that supports 32-bit Windows applications."
         }
     }
 }

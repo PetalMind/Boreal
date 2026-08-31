@@ -96,6 +96,31 @@ actor GameMetricsSampler {
         guard let text = String(data: data, encoding: .utf8) else {
             return nil
         }
+        return Self.frameRate(inLogText: text)
+    }
+
+    /// Supports both Wine's `+fps` trace and Metal HUD's once-per-second CSV.
+    /// Metal HUD records three header values followed by present-interval/GPU-
+    /// time pairs in milliseconds. Averaging the frame intervals avoids
+    /// presenting a single-frame spike as the current FPS.
+    nonisolated static func frameRate(inLogText text: String) -> Double? {
+        if let metalLine = text.split(whereSeparator: \.isNewline).last(where: { $0.contains("metal-HUD:") }),
+           let marker = metalLine.range(of: "metal-HUD:") {
+            let fields = metalLine[marker.upperBound...]
+                .split(separator: ",")
+                .compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if fields.count >= 5 {
+                let intervals = stride(from: 3, to: fields.count, by: 2)
+                    .map { fields[$0] }
+                    .filter { (0..<1_000).contains($0) }
+                if !intervals.isEmpty {
+                    let averageInterval = intervals.reduce(0, +) / Double(intervals.count)
+                    let value = 1_000 / averageInterval
+                    if (0..<1_000).contains(value) { return value }
+                }
+            }
+        }
+
         let pattern = #"(?:approx\s+)?([0-9]+(?:\.[0-9]+)?)\s*(?:frames\s+per\s+second|fps)"#
 
         guard let expression = try? NSRegularExpression(

@@ -184,7 +184,6 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
 
 nonisolated enum CompatibilitySource: String, Codable, Hashable, Sendable {
     case protonDB = "ProtonDB"
-    case codeWeavers = "CodeWeavers"
 }
 
 nonisolated enum CompatibilityTier: String, Codable, Hashable, Sendable {

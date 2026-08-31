@@ -78,8 +78,29 @@ nonisolated enum LibraryAvailabilityFilter: String, CaseIterable, Sendable {
 }
 
 nonisolated enum LibraryCompatibilityFilter: String, CaseIterable, Sendable {
-    case excellent, good, limited, unsupported, unknown
-    var title: String { rawValue.capitalized }
+    case nativeMacOS, excellent, good, limited, unsupported, unknown
+
+    var title: String {
+        switch self {
+        case .nativeMacOS: "Native macOS"
+        case .excellent: "Excellent"
+        case .good: "Good"
+        case .limited: "Limited"
+        case .unsupported: "Unsupported"
+        case .unknown: "Unknown"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .nativeMacOS: "apple.logo"
+        case .excellent: "checkmark.seal.fill"
+        case .good: "checkmark.circle.fill"
+        case .limited: "exclamationmark.triangle.fill"
+        case .unsupported: "xmark.octagon.fill"
+        case .unknown: "questionmark.circle"
+        }
+    }
 }
 
 nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
@@ -100,6 +121,7 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     let playtimeMinutes: Int?
     let storageBytes: Int64?
     let storageIsEstimate: Bool
+    let supportsNativeMacOS: Bool
     let compatibility: CompatibilityRating
     let statusText: String
 
@@ -143,6 +165,7 @@ nonisolated enum LibraryProjector {
                 needsAttention: app.status == .needsAttention || app.status == .unavailable,
                 lastUsed: app.lastOpened, playtimeMinutes: nil, storageBytes: app.storageBytes > 0 ? app.storageBytes : nil,
                 storageIsEstimate: false,
+                supportsNativeMacOS: false,
                 compatibility: app.compatibility,
                 statusText: app.status.rawValue
             )
@@ -173,6 +196,7 @@ nonisolated enum LibraryProjector {
                 lastUsed: usableLinkedApp?.lastOpened ?? game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
                 storageBytes: storageBytes,
                 storageIsEstimate: usableLinkedApp == nil && game.storageBytes == nil && game.sizeEstimate?.installedBytes != nil,
+                supportsNativeMacOS: game.supportsNativeMacOS == true,
                 compatibility: compatibility,
                 statusText: usableLinkedApp?.status.rawValue
                     ?? (attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (installed ? "Installed" : "Available"))))
@@ -211,7 +235,7 @@ nonisolated enum LibraryProjector {
                 }
                 guard matches else { return false }
             }
-            guard compatibility.isEmpty || compatibility.contains(compatibilityFilter(item.compatibility)) else { return false }
+            guard compatibility.isEmpty || compatibility.contains(compatibilityFilter(item)) else { return false }
             return true
         }
         .sorted { ordered($0, before: $1, by: sort) }
@@ -225,6 +249,10 @@ nonisolated enum LibraryProjector {
         case .unsupported: .unsupported
         case .unknown: .unknown
         }
+    }
+
+    static func compatibilityFilter(_ item: LibraryItem) -> LibraryCompatibilityFilter {
+        item.supportsNativeMacOS ? .nativeMacOS : compatibilityFilter(item.compatibility)
     }
 
     private static func source(_ provider: GameLibraryProvider) -> LibrarySourceFilter {
@@ -404,6 +432,14 @@ struct LibraryView: View {
         rawSet(sourceFilters, as: LibrarySourceFilter.self)
     }
 
+    private var selectedCompatibility: Set<LibraryCompatibilityFilter> {
+        rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self)
+    }
+
+    private var compatibilityCountItems: [LibraryItem] {
+        selectedSources.isEmpty ? allItems : allItems.filter { selectedSources.contains($0.source) }
+    }
+
     private var hasActiveRefinement: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !selectedSources.isEmpty
@@ -413,7 +449,7 @@ struct LibraryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !allItems.isEmpty { sourceQuickPicker }
+            if !allItems.isEmpty { quickFilters }
             if !activeFilters.isEmpty { activeFilterBar }
             Group {
                 if allItems.isEmpty && !favoritesOnly {
@@ -456,7 +492,7 @@ struct LibraryView: View {
         }
     }
 
-    private var sourceQuickPicker: some View {
+    private var quickFilters: some View {
         VStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -484,6 +520,41 @@ struct LibraryView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 10)
+            }
+            .background(.bar)
+            Divider().opacity(0.55)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Text("Compatibility")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    compatibilityButton(
+                        title: "All",
+                        symbol: "circle.grid.2x2",
+                        count: compatibilityCountItems.count,
+                        selected: selectedCompatibility.isEmpty
+                    ) {
+                        compatibilityFilters = ""
+                    }
+
+                    ForEach(LibraryCompatibilityFilter.allCases, id: \.self) { value in
+                        let count = compatibilityCountItems.lazy.filter {
+                            LibraryProjector.compatibilityFilter($0) == value
+                        }.count
+                        compatibilityButton(
+                            title: value.title,
+                            symbol: value.symbol,
+                            count: count,
+                            selected: selectedCompatibility.contains(value)
+                        ) {
+                            selectQuickCompatibility(value)
+                        }
+                        .disabled(count == 0)
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 9)
             }
             .background(.bar)
             Divider()
@@ -521,6 +592,39 @@ struct LibraryView: View {
 
     private func selectQuickSource(_ source: LibrarySourceFilter) {
         sourceFilters = selectedSources == [source] ? "" : serialized(Set([source]))
+    }
+
+    private func compatibilityButton(
+        title: String,
+        symbol: String,
+        count: Int,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                Text(title)
+                Text(count.formatted())
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption.weight(selected ? .semibold : .regular))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(selected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.045), in: Capsule())
+            .overlay {
+                Capsule().stroke(selected ? Color.accentColor.opacity(0.55) : .clear, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(count == 0 ? "No games rated \(title)" : "Show \(title) games")
+        .accessibilityLabel("Compatibility \(title), \(count) games")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func selectQuickCompatibility(_ value: LibraryCompatibilityFilter) {
+        compatibilityFilters = selectedCompatibility == [value] ? "" : serialized(Set([value]))
     }
 
     private var activeFilterBar: some View {
@@ -613,7 +717,13 @@ struct LibraryView: View {
                 Label(item.statusText, systemImage: statusSymbol(item)).foregroundStyle(statusColor(item))
             }
             .width(min: 105, ideal: 135)
-            TableColumn("Compatibility") { item in CompatibilityLabel(rating: item.compatibility) }
+            TableColumn("Compatibility") { item in
+                if item.supportsNativeMacOS {
+                    NativeMacOSBadge(compact: true)
+                } else {
+                    CompatibilityLabel(rating: item.compatibility)
+                }
+            }
                 .width(min: 115, ideal: 145)
             TableColumn("Last Used") { item in
                 Text(item.lastUsed?.formatted(date: .abbreviated, time: .omitted) ?? "Never")
@@ -648,7 +758,7 @@ struct LibraryView: View {
             }
         case .compatibility:
             LibraryCompatibilityFilter.allCases.compactMap { value in
-                let values = items.filter { LibraryProjector.compatibilityFilter($0.compatibility) == value }
+                let values = items.filter { LibraryProjector.compatibilityFilter($0) == value }
                 return values.isEmpty ? nil : LibraryGroup(id: value.rawValue, title: value.title, source: nil, items: values)
             }
         }

@@ -20,7 +20,7 @@ nonisolated struct BorealServices: Sendable {
         steamWindows: any SteamWindowsProviding,
         epicLibrary: any EpicLibraryProviding,
         gogLibrary: any GOGLibraryProviding,
-        communityCompatibility: any CommunityCompatibilityLoading = CodeWeaversCompatibilityService()
+        communityCompatibility: any CommunityCompatibilityLoading = ProtonStoreCompatibilityService()
     ) {
         self.runtimeManager = runtimeManager
         self.environmentManager = environmentManager
@@ -67,7 +67,7 @@ nonisolated struct BorealServices: Sendable {
             steamWindows: SteamWindowsService(applicationSupportURL: applicationSupportURL, installer: installer),
             epicLibrary: LegendaryEpicService(applicationSupportURL: applicationSupportURL),
             gogLibrary: GOGService(applicationSupportURL: applicationSupportURL),
-            communityCompatibility: CodeWeaversCompatibilityService()
+            communityCompatibility: ProtonStoreCompatibilityService()
         )
     }
 }

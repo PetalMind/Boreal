@@ -187,7 +187,11 @@ actor LegendaryEpicService: EpicLibraryProviding {
                   !appName.isEmpty, !title.isEmpty else { return nil }
             let metadata = row["metadata"] as? [String: Any]
             let developer = (metadata?["developer"] as? String) ?? (metadata?["publisher"] as? String)
-            let description = (metadata?["description"] as? String) ?? (metadata?["shortDescription"] as? String)
+            let description = Self.cleanText(
+                (metadata?["longDescription"] as? String)
+                    ?? (metadata?["description"] as? String)
+                    ?? (metadata?["shortDescription"] as? String)
+            )
             let images = metadata?["keyImages"] as? [[String: Any]]
             let artwork = Self.imageURL(from: images, preferredTypes: [
                 "DieselGameBoxTall", "DieselStoreFrontTall", "OfferImageTall", "Thumbnail"
@@ -195,11 +199,7 @@ actor LegendaryEpicService: EpicLibraryProviding {
             let header = Self.imageURL(from: images, preferredTypes: [
                 "DieselGameBox", "DieselStoreFrontWide", "OfferImageWide", "DieselGameBoxWide"
             ])
-            let screenshots = images?.compactMap { image -> String? in
-                guard let type = image["type"] as? String,
-                      type.localizedCaseInsensitiveContains("screenshot") else { return nil }
-                return image["url"] as? String
-            }
+            let media = Self.mediaURLs(from: images, excluding: [artwork].compactMap { $0 })
             let releaseInfo = metadata?["releaseInfo"] as? [[String: Any]]
             let platforms = releaseInfo?.flatMap { $0["platform"] as? [String] ?? [] } ?? []
             let installedGame = installedByID[appName]
@@ -214,7 +214,11 @@ actor LegendaryEpicService: EpicLibraryProviding {
                 portraitImageURL: artwork ?? header,
                 headerImageURL: header ?? artwork,
                 backgroundImageURL: header,
-                screenshotURLs: screenshots?.isEmpty == false ? screenshots : nil,
+                // Epic's library response generally exposes promotional artwork,
+                // not images explicitly labelled as screenshots. Keep every
+                // additional landscape asset as store media instead of hiding the
+                // Media section solely because Epic used a different type label.
+                screenshotURLs: media.isEmpty ? nil : media,
                 supportsWindows: platforms.contains { $0.caseInsensitiveCompare("Windows") == .orderedSame },
                 supportsNativeMacOS: platforms.contains { $0.caseInsensitiveCompare("Mac") == .orderedSame },
                 isInstalled: installPath != nil,
@@ -401,6 +405,39 @@ actor LegendaryEpicService: EpicLibraryProviding {
             if let url = images?.first(where: { ($0["type"] as? String) == type })?["url"] as? String { return url }
         }
         return images?.first?["url"] as? String
+    }
+
+    private static func mediaURLs(from images: [[String: Any]]?, excluding excludedURLs: [String]) -> [String] {
+        let excluded = Set(excludedURLs)
+        var seen = Set<String>()
+        return (images ?? []).compactMap { image in
+            guard let url = image["url"] as? String,
+                  !url.isEmpty,
+                  !excluded.contains(url),
+                  seen.insert(url).inserted else { return nil }
+            let type = (image["type"] as? String)?.lowercased() ?? ""
+            let width = int64Value(image["width"]) ?? 0
+            let height = int64Value(image["height"]) ?? 0
+            let isLandscape = width > height && height > 0
+            let isMediaType = type.contains("screenshot") || type.contains("featured") || type.contains("wide")
+            return isLandscape || isMediaType ? url : nil
+        }
+    }
+
+    private static func cleanText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let lineBreaks = value
+            .replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "</p>", with: "\n\n", options: .caseInsensitive)
+        let plain = lineBreaks.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        let decoded = plain
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return decoded.isEmpty ? nil : decoded
     }
 
     private nonisolated static func runProcess(

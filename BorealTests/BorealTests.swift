@@ -10,6 +10,23 @@ import Testing
 @testable import Boreal
 
 struct BorealTests {
+    @Test func gameMetricsParsesWineAndMetalHUDFrameRates() {
+        #expect(GameMetricsSampler.frameRate(inLogText: "trace:fps:wglSwapBuffers @ approx 25.28fps") == 25.28)
+
+        let metalLog = "metal-HUD: 120,512.0,2048.0,16.0,4.0,17.0,5.0,15.0,4.5"
+        let metalFPS = GameMetricsSampler.frameRate(inLogText: metalLog)
+        #expect(metalFPS != nil)
+        #expect(abs((metalFPS ?? 0) - 62.5) < 0.001)
+    }
+
+    @Test func gameMetricsUsesMostRecentMetalHUDRecord() {
+        let log = """
+        metal-HUD: 1,100.0,200.0,20.0,2.0,20.0,2.0
+        metal-HUD: 2,100.0,200.0,10.0,2.0,10.0,2.0
+        """
+        #expect(GameMetricsSampler.frameRate(inLogText: log) == 100)
+    }
+
     @Test func windowsExecutableArchitectureReadsPEOptionalHeader() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-pe-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -161,7 +178,7 @@ struct BorealTests {
           wine) echo wine-11.15 ;;
           wineboot)
             mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
-            touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg"
+            touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg" "$WINEPREFIX/userdef.reg"
             ;;
           *) exit 64 ;;
         esac
@@ -200,6 +217,20 @@ struct BorealTests {
 
         try await manager.remove(installed)
         #expect(!FileManager.default.fileExists(atPath: installed.rootURL.path))
+    }
+
+    @Test func runtimeValidationErrorIdentifiesIncompleteSmokeTestArtifacts() {
+        let validation = RuntimeValidation(
+            detectedWineVersion: "11.16",
+            versionMatchesManifest: true,
+            missingPaths: ["/tmp/smoke/userdef.reg"],
+            unmetRequirements: [],
+            executablePaths: ["/tmp/runtime/wineboot"]
+        )
+
+        let message = RuntimeManagerError.validationFailed(validation).errorDescription
+        #expect(message?.contains("userdef.reg") == true)
+        #expect(message?.contains("Missing or incomplete") == true)
     }
 
     @Test func localWineDiscoveryReadsCanonicalAppMetadataAndArchitecture() async throws {
@@ -344,7 +375,14 @@ struct BorealTests {
             )
         )
         let epic = StoreLibraryGame(provider: .epic, externalID: "20", name: "Cloud Quest", isInstalled: false)
-        let items = LibraryProjector.makeItems(applications: [], storeGames: [epic, steam])
+        let native = StoreLibraryGame(
+            provider: .gog,
+            externalID: "30",
+            name: "Mac Native",
+            supportsNativeMacOS: true,
+            isInstalled: false
+        )
+        let items = LibraryProjector.makeItems(applications: [], storeGames: [epic, native, steam])
 
         let result = LibraryProjector.project(
             items,
@@ -367,6 +405,17 @@ struct BorealTests {
             producer: "North Studio"
         )
         #expect(producerFiltered.map(\.name) == ["Żółta Przygoda"])
+
+        let nativeFiltered = LibraryProjector.project(
+            items,
+            searchText: "",
+            sources: [],
+            availability: [],
+            compatibility: [.nativeMacOS],
+            sort: .nameAscending
+        )
+        #expect(nativeFiltered.map(\.name) == ["Mac Native"])
+        #expect(LibraryProjector.compatibilityFilter(nativeFiltered[0]) == .nativeMacOS)
     }
 
     @Test func libraryProjectionKeepsStoreMetadataForGameLinkedToApplication() {

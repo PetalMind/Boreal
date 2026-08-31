@@ -74,8 +74,16 @@ struct GameArtworkView: View {
             Image(nsImage: image).resizable().scaledToFill()
         } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in
-                if let image = phase.image { image.resizable().scaledToFill() }
-                else { placeholder }
+                switch phase {
+                case .success(let image): image.resizable().scaledToFill()
+                case .failure:
+                    placeholder.overlay(alignment: .topTrailing) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption).padding(8).foregroundStyle(.yellow)
+                    }
+                case .empty: placeholder.overlay { ProgressView().tint(.white) }
+                @unknown default: placeholder
+                }
             }
         } else {
             placeholder

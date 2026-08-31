@@ -160,6 +160,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // recent FPS record out of the sampler's bounded read window.
         let debugChannels = values["WINEDEBUG"] ?? "-all"
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
+        if runtime.resolvedEngine == .gamePortingToolkit {
+            // D3DMetal does not pass its presents through Wine's +fps channel.
+            // Ask Metal HUD to emit per-frame present intervals to the launch
+            // console instead. The native HUD stays transparent because Boreal
+            // renders those metrics in its own overlay.
+            values["MTL_HUD_ENABLED"] = "1"
+            values["MTL_HUD_LOG_ENABLED"] = "1"
+            values["MTL_HUD_ELEMENTS"] = "fps,frameinterval"
+            values["MTL_HUD_OPACITY"] = "0.0"
+            values["MTL_HUD_DISABLE_MENU_BAR"] = "1"
+        }
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")
         return values
     }

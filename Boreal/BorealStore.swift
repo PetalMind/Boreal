@@ -252,7 +252,7 @@ final class BorealStore {
             let commit = try await services.installer.install(candidate.url, name: candidate.name) { [weak self] stage in
                 await self?.updateInstallation(stage)
             }
-            let communityProfile = await services.communityCompatibility.profile(named: candidate.name)
+            let communityProfile: CommunityCompatibility? = nil
             let managed = commit.environment
             let environment = WindowsEnvironment(
                 id: managed.id,
@@ -589,14 +589,27 @@ final class BorealStore {
                         var value = game
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
+                            value.developer = value.developer ?? existing.developer
+                            value.summary = value.summary ?? existing.summary
+                            value.artworkPath = value.artworkPath ?? existing.artworkPath
+                            value.portraitImageURL = value.portraitImageURL ?? existing.portraitImageURL
+                            value.headerImageURL = value.headerImageURL ?? existing.headerImageURL
+                            value.backgroundImageURL = value.backgroundImageURL ?? existing.backgroundImageURL
+                            value.screenshotURLs = value.screenshotURLs?.isEmpty == false
+                                ? value.screenshotURLs : existing.screenshotURLs
+                            value.videos = value.videos?.isEmpty == false ? value.videos : existing.videos
+                            value.storeRating = value.storeRating ?? existing.storeRating
+                            value.supportsWindows = value.supportsWindows ?? existing.supportsWindows
+                            value.supportsNativeMacOS = value.supportsNativeMacOS ?? existing.supportsNativeMacOS
                             value.compatibility = value.compatibility ?? existing.compatibility
                             value.installedPlatform = existing.installedPlatform
                             value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
                         }
                         return value
                     }
+                    let enriched = await enrichCompatibility(in: normalized)
                     storeGames.removeAll { $0.provider == .epic }
-                    storeGames.append(contentsOf: normalized)
+                    storeGames.append(contentsOf: enriched)
                     storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     librarySyncState = .succeeded(.epic, count: normalized.count)
                     epicConnectionState = await services.epicLibrary.connectionState()
@@ -687,8 +700,9 @@ final class BorealStore {
                         }
                         return value
                     }
+                    let enriched = await enrichCompatibility(in: normalized)
                     storeGames.removeAll { $0.provider == .gog }
-                    storeGames.append(contentsOf: normalized)
+                    storeGames.append(contentsOf: enriched)
                     storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     librarySyncState = .succeeded(.gog, count: normalized.count)
                     gogConnectionState = await services.gogLibrary.connectionState()
@@ -758,7 +772,7 @@ final class BorealStore {
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 try Task.checkCancellation()
                 await updateInstallation(.verifyingFirstLaunch)
-                let communityProfile = await services.communityCompatibility.profile(named: name)
+                let communityProfile: CommunityCompatibility? = nil
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: name,
@@ -857,7 +871,7 @@ final class BorealStore {
             guard let self else { return }
             var createdEnvironment: ManagedBorealEnvironment?
             do {
-                async let communityProfile = services.communityCompatibility.profile(named: game.name)
+                async let communityProfile = services.communityCompatibility.profile(for: game)
                 updateEnvironmentPreparation("Preparing a verified Wine runtime…", fraction: 0.15, key: key, token: token)
                 let runtime = try await services.runtimeManager.prepareReadyRuntime()
                 try Task.checkCancellation()
@@ -1043,7 +1057,8 @@ final class BorealStore {
 
     func loadCommunityCompatibility(for gameID: UUID) async {
         guard let game = storeGame(id: gameID), game.compatibility == nil else { return }
-        guard let profile = await services.communityCompatibility.profile(named: game.name),
+        guard game.supportsNativeMacOS != true,
+              let profile = await services.communityCompatibility.profile(for: game),
               let index = storeGames.firstIndex(where: { $0.id == gameID }),
               storeGames[index].compatibility == nil else { return }
         storeGames[index].compatibility = profile
@@ -1054,6 +1069,29 @@ final class BorealStore {
             applications[appIndex].communityCompatibility = profile
         }
         save()
+    }
+
+    private func enrichCompatibility(in games: [StoreLibraryGame]) async -> [StoreLibraryGame] {
+        var result = games
+        let candidates = games.indices.filter {
+            games[$0].compatibility == nil && games[$0].supportsNativeMacOS != true
+        }
+        for start in stride(from: 0, to: candidates.count, by: 3) {
+            let indices = Array(candidates[start..<min(start + 3, candidates.count)])
+            let loaded = await withTaskGroup(of: (Int, CommunityCompatibility?).self) { group in
+                for index in indices {
+                    let game = games[index]
+                    group.addTask { [services] in
+                        (index, await services.communityCompatibility.profile(for: game))
+                    }
+                }
+                var values: [(Int, CommunityCompatibility?)] = []
+                for await value in group { values.append(value) }
+                return values
+            }
+            for (index, profile) in loaded where profile != nil { result[index].compatibility = profile }
+        }
+        return result
     }
 
     var activeStoreGameOperations: [(game: StoreLibraryGame, state: StoreGameOperationState)] {
@@ -1191,7 +1229,7 @@ final class BorealStore {
             guard let self else { return }
             var createdEnvironment: ManagedBorealEnvironment?
             do {
-                async let communityProfile = services.communityCompatibility.profile(named: game.name)
+                async let communityProfile = services.communityCompatibility.profile(for: game)
                 updateEnvironmentPreparation("Preparing a verified \(selectedEngine.displayName) runtime…", fraction: 0.1, key: key, token: token)
                 let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: selectedEngine)
                 try Task.checkCancellation()
@@ -1481,7 +1519,9 @@ final class BorealStore {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storageURL), let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
+        guard let originalData = try? Data(contentsOf: storageURL),
+              let data = Self.removingNonProtonCompatibility(from: originalData),
+              let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
         applications = state.applications
         environments = state.environments
         let persistedGames = state.storeGames ?? []
@@ -1505,6 +1545,30 @@ final class BorealStore {
         }
         storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         if !storeDownloadRecords.isEmpty { save() }
+    }
+
+    private nonisolated static func removingNonProtonCompatibility(from data: Data) -> Data? {
+        guard var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return data }
+        if var games = root["storeGames"] as? [[String: Any]] {
+            for index in games.indices {
+                if let profile = games[index]["compatibility"] as? [String: Any],
+                   profile["source"] as? String != CompatibilitySource.protonDB.rawValue {
+                    games[index].removeValue(forKey: "compatibility")
+                }
+            }
+            root["storeGames"] = games
+        }
+        if var apps = root["applications"] as? [[String: Any]] {
+            for index in apps.indices {
+                if let profile = apps[index]["communityCompatibility"] as? [String: Any],
+                   profile["source"] as? String != CompatibilitySource.protonDB.rawValue {
+                    apps[index].removeValue(forKey: "communityCompatibility")
+                    apps[index]["compatibility"] = CompatibilityRating.unknown.rawValue
+                }
+            }
+            root["applications"] = apps
+        }
+        return try? JSONSerialization.data(withJSONObject: root)
     }
 
     func forceQuit(_ id: UUID) {

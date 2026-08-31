@@ -98,6 +98,7 @@ struct ContentView: View {
                     showLibrary()
                     librarySourceFilters = ""
                     libraryAvailabilityFilters = ""
+                    libraryCompatibilityFilters = ""
                     libraryProducerFilter = ""
                 } label: {
                     BorealSidebarRow(
@@ -363,6 +364,7 @@ struct ContentView: View {
         searchText = ""
         librarySourceFilters = source.rawValue
         libraryAvailabilityFilters = ""
+        libraryCompatibilityFilters = ""
         libraryProducerFilter = ""
     }
 
@@ -372,6 +374,7 @@ struct ContentView: View {
         searchText = ""
         librarySourceFilters = ""
         libraryAvailabilityFilters = LibraryAvailabilityFilter.installed.rawValue
+        libraryCompatibilityFilters = ""
         libraryProducerFilter = ""
     }
 
@@ -394,6 +397,7 @@ struct ContentView: View {
         selection == .library
             && librarySourceFilters == source.rawValue
             && libraryAvailabilityFilters.isEmpty
+            && libraryCompatibilityFilters.isEmpty
     }
 
     private var installedCount: Int {
@@ -405,12 +409,14 @@ struct ContentView: View {
         selection == .library
             && librarySourceFilters.isEmpty
             && libraryAvailabilityFilters == LibraryAvailabilityFilter.installed.rawValue
+            && libraryCompatibilityFilters.isEmpty
     }
 
     private var isHomeSelected: Bool {
         selection == .library
             && librarySourceFilters.isEmpty
             && libraryAvailabilityFilters.isEmpty
+            && libraryCompatibilityFilters.isEmpty
             && libraryProducerFilter.isEmpty
     }
 
