@@ -293,7 +293,18 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .unsafeArchive(let path): "The runtime archive contains an unsafe path: \(path)"
         case .nonSelfContained(.gStreamerFramework): "This runtime depends on a system GStreamer installation and is not self-contained."
         case .nonSelfContained(.rosetta2): "Rosetta is a platform requirement, not a bundled runtime dependency."
-        case .validationFailed: "The installed runtime did not pass validation."
+        case .validationFailed(let validation):
+            if !validation.missingPaths.isEmpty {
+                "The installed runtime did not pass validation. Missing or incomplete: \(validation.missingPaths.joined(separator: ", "))."
+            } else if !validation.unmetRequirements.isEmpty {
+                "The installed runtime did not pass validation. Unmet requirements: \(validation.unmetRequirements.map(\.rawValue).sorted().joined(separator: ", "))."
+            } else if let detected = validation.detectedWineVersion, !validation.versionMatchesManifest {
+                "The installed runtime reported \(detected), which does not match its package version."
+            } else if validation.detectedWineVersion == nil {
+                "The installed runtime did not report a Wine version."
+            } else {
+                "The installed runtime did not pass validation."
+            }
         case .requirementMissing(.rosetta2): "Rosetta 2 is required by this runtime."
         case .requirementMissing(.gStreamerFramework): "GStreamer.framework is required by this development runtime."
         case .downloadFailed(let reason): "Runtime download failed: \(reason)"

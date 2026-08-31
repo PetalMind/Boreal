@@ -149,6 +149,20 @@ struct BorealTests {
         #expect(preview == .preview)
     }
 
+    @Test func runtimeValidationErrorIdentifiesIncompleteSmokeTestArtifacts() {
+        let validation = RuntimeValidation(
+            detectedWineVersion: "wine-11.16",
+            versionMatchesManifest: true,
+            missingPaths: ["system.reg", "user.reg"],
+            unmetRequirements: [],
+            executablePaths: []
+        )
+
+        let message = RuntimeManagerError.validationFailed(validation).localizedDescription
+        #expect(message.contains("system.reg"))
+        #expect(message.contains("user.reg"))
+    }
+
     @Test func localWineImportCreatesValidatedImmutableSnapshot() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-local-runtime-\(UUID().uuidString)")
         let applications = root.appending(path: "Applications", directoryHint: .isDirectory)

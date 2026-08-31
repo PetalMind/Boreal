@@ -24,14 +24,14 @@ struct SteamLibraryServiceTests {
         "libraryfolders" { "0" { "path" "\(root.path)" } }
         """, to: root.appending(path: "steamapps/libraryfolders.vdf"))
         try write("""
-        "AppState" { "appid" "730" "name" "Local Name" "installdir" "Counter-Strike Global Offensive" }
+        "AppState" { "appid" "730" "name" "Local Name" "installdir" "Counter-Strike Global Offensive" "buildid" "19283746" }
         """, to: root.appending(path: "steamapps/appmanifest_730.acf"))
         try Data([0xFF, 0xD8, 0xFF]).write(to: root.appending(path: "appcache/librarycache/730/library_600x900.jpg"))
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SteamMetadataURLProtocol.self]
         SteamMetadataURLProtocol.responseData = Data("""
-        {"730":{"success":true,"data":{"name":"Counter-Strike 2","developers":["Valve"],"short_description":"A &amp; B <b>game</b>","header_image":"https://example.com/header.jpg","background_raw":"https://example.com/background.jpg","platforms":{"windows":true,"mac":false},"pc_requirements":{"minimum":"<strong>Memory:</strong> 16 GB RAM<br><strong>Storage:</strong> 85 GB available space"},"metacritic":{"score":82},"screenshots":[{"path_full":"https://example.com/shot.jpg"}],"movies":[{"id":7,"name":"Trailer","thumbnail":"https://example.com/trailer.jpg","hls_h264":"https://example.com/trailer.m3u8"}]}}}
+        {"730":{"success":true,"data":{"name":"Counter-Strike 2","developers":["Valve"],"short_description":"A &amp; B <b>game</b>","header_image":"https://example.com/header.jpg","background_raw":"https://example.com/background.jpg","platforms":{"windows":true,"mac":false},"pc_requirements":{"minimum":"<strong>Memory:</strong> 16 GB RAM<br><strong>Storage:</strong> 85 GB available space","recommended":"<strong>Memory:</strong> 32 GB RAM"},"achievements":{"total":10,"highlighted":[{"name":"First Win","path":"https://example.com/achievement.jpg"}]},"metacritic":{"score":82},"screenshots":[{"path_full":"https://example.com/shot.jpg"}],"movies":[{"id":7,"name":"Trailer","thumbnail":"https://example.com/trailer.jpg","hls_h264":"https://example.com/trailer.m3u8"}]}}}
         """.utf8)
         let service = SteamLibraryService(steamRoot: root, session: URLSession(configuration: configuration))
 
@@ -58,6 +58,11 @@ struct SteamLibraryServiceTests {
         #expect(game.supportsNativeMacOS == false)
         #expect(game.sizeEstimate?.installedBytes == 85_000_000_000)
         #expect(game.sizeEstimate?.source == .steamStoreRequirement)
+        #expect(game.currentBuildID == "19283746")
+        #expect(game.minimumSystemRequirements?.contains("16 GB RAM") == true)
+        #expect(game.recommendedSystemRequirements?.contains("32 GB RAM") == true)
+        #expect(game.achievementCount == 10)
+        #expect(game.achievements?.first?.name == "First Win")
         #expect(game.compatibility?.tier == .gold)
         #expect(game.compatibility?.trendingTier == .platinum)
         #expect(game.compatibility?.reportCount == 2_029)

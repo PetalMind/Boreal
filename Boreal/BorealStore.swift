@@ -60,6 +60,7 @@ final class BorealStore {
     private var unexpectedLauncherFailures: Set<UUID> = []
     private var environmentSessionStates: [UUID: EnvironmentSessionState] = [:]
     private var environmentMonitorIDs: [UUID: UUID] = [:]
+    private var playSessionStartedAt: [UUID: Date] = [:]
     private var storeOperationTasks: [String: Task<Void, Never>] = [:]
     private var storeOperationTokens: [String: UUID] = [:]
     private var storeDownloadRecords: [String: StoreDownloadRecord] = [:]
@@ -159,7 +160,15 @@ final class BorealStore {
 
     func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
         guard game.provider == .steam,
-              (game.screenshotURLs?.isEmpty != false || game.videos?.isEmpty != false),
+              (game.screenshotURLs?.isEmpty != false
+                || game.videos?.isEmpty != false
+                || game.publisher == nil
+                || game.releaseDate == nil
+                || game.genres?.isEmpty != false
+                || game.websiteURL == nil
+                || game.minimumSystemRequirements == nil
+                || game.patchNotes == nil
+                || game.achievementCount == nil),
               steamMetadataRefreshes.insert(game.externalID).inserted else { return }
         Task {
             let refreshed = await services.steamLibrary.loadDetails(for: game)
@@ -1618,6 +1627,7 @@ final class BorealStore {
             }
             applications[index].status = .running
             applications[index].lastOpened = .now
+            playSessionStartedAt[id] = .now
             activeSessions[id] = session
             performanceLogURLs[id] = session.stderrLog
             activeEnvironments[id] = managed
@@ -1771,7 +1781,21 @@ final class BorealStore {
         activeEnvironments[appID] = nil
         activeRuntimes[appID] = nil
         environmentMonitorIDs[appID] = nil
+        recordPlaySession(for: appID)
         save()
+    }
+
+    private func recordPlaySession(for appID: UUID, endedAt: Date = .now) {
+        guard let startedAt = playSessionStartedAt.removeValue(forKey: appID),
+              let app = application(id: appID),
+              let provider = app.storeProvider,
+              let externalID = app.storeExternalID else { return }
+        let elapsedMinutes = max(1, Int(endedAt.timeIntervalSince(startedAt) / 60))
+        guard let gameIndex = storeGames.firstIndex(where: {
+            $0.provider == provider && $0.externalID == externalID
+        }) else { return }
+        storeGames[gameIndex].playtimeMinutes += elapsedMinutes
+        storeGames[gameIndex].lastPlayed = endedAt
     }
 
     private func markEnvironmentUnknown(appID: UUID, detail: String) {

@@ -49,11 +49,16 @@ actor SteamLibraryService: SteamLibraryLoading {
         var isInstalled = false
         var installPath: String?
         var storageBytes: Int64?
+        var buildID: String?
     }
 
     private struct StoreMetadata: Sendable {
         var name: String?
         var developer: String?
+        var publisher: String?
+        var releaseDate: String?
+        var genres: [String]?
+        var features: [String]?
         var summary: String?
         var portraitImageURL: String?
         var headerImageURL: String?
@@ -64,6 +69,13 @@ actor SteamLibraryService: SteamLibraryLoading {
         var supportsWindows: Bool?
         var supportsNativeMacOS: Bool?
         var sizeEstimate: StoreGameSizeEstimate?
+        var websiteURL: String?
+        var supportURL: String?
+        var minimumSystemRequirements: String?
+        var recommendedSystemRequirements: String?
+        var achievements: [StoreAchievement]?
+        var achievementCount: Int?
+        var patchNotes: [StorePatchNote]?
     }
 
     private let fileManager: FileManager
@@ -114,6 +126,10 @@ actor SteamLibraryService: SteamLibraryLoading {
                             externalID: game.appID,
                             name: metadata?.name ?? game.name ?? "Steam App \(game.appID)",
                             developer: metadata?.developer ?? game.developer,
+                            publisher: metadata?.publisher,
+                            releaseDate: metadata?.releaseDate,
+                            genres: metadata?.genres,
+                            features: metadata?.features,
                             summary: metadata?.summary ?? game.summary,
                             artworkPath: game.artworkPath,
                             portraitImageURL: metadata?.portraitImageURL,
@@ -130,7 +146,15 @@ actor SteamLibraryService: SteamLibraryLoading {
                             installPath: game.installPath,
                             storageBytes: game.storageBytes,
                             sizeEstimate: metadata?.sizeEstimate,
-                            compatibility: compatibility
+                            compatibility: compatibility,
+                            websiteURL: metadata?.websiteURL,
+                            supportURL: metadata?.supportURL,
+                            minimumSystemRequirements: metadata?.minimumSystemRequirements,
+                            recommendedSystemRequirements: metadata?.recommendedSystemRequirements,
+                            currentBuildID: game.buildID,
+                            achievements: metadata?.achievements,
+                            achievementCount: metadata?.achievementCount,
+                            patchNotes: metadata?.patchNotes
                         )
                     }
                 }
@@ -158,6 +182,10 @@ actor SteamLibraryService: SteamLibraryLoading {
         var value = game
         value.name = metadata.name ?? value.name
         value.developer = metadata.developer ?? value.developer
+        value.publisher = metadata.publisher ?? value.publisher
+        value.releaseDate = metadata.releaseDate ?? value.releaseDate
+        value.genres = metadata.genres?.isEmpty == false ? metadata.genres : value.genres
+        value.features = metadata.features?.isEmpty == false ? metadata.features : value.features
         value.summary = metadata.summary ?? value.summary
         value.portraitImageURL = metadata.portraitImageURL ?? value.portraitImageURL
         value.headerImageURL = metadata.headerImageURL ?? value.headerImageURL
@@ -169,6 +197,13 @@ actor SteamLibraryService: SteamLibraryLoading {
         value.supportsNativeMacOS = metadata.supportsNativeMacOS ?? value.supportsNativeMacOS
         value.sizeEstimate = metadata.sizeEstimate ?? value.sizeEstimate
         value.compatibility = compatibility ?? value.compatibility
+        value.websiteURL = metadata.websiteURL ?? value.websiteURL
+        value.supportURL = metadata.supportURL ?? value.supportURL
+        value.minimumSystemRequirements = metadata.minimumSystemRequirements ?? value.minimumSystemRequirements
+        value.recommendedSystemRequirements = metadata.recommendedSystemRequirements ?? value.recommendedSystemRequirements
+        value.achievements = metadata.achievements ?? value.achievements
+        value.achievementCount = metadata.achievementCount ?? value.achievementCount
+        value.patchNotes = metadata.patchNotes ?? value.patchNotes
         return value
     }
 
@@ -275,6 +310,7 @@ actor SteamLibraryService: SteamLibraryLoading {
                 if let value = state.string("SizeOnDisk"), let bytes = Int64(value), bytes > 0 {
                     game.storageBytes = bytes
                 }
+                game.buildID = state.string("buildid")
                 if let installDirectory = state.string("installdir") {
                     let installationURL = steamApps.appending(path: "common/\(installDirectory)", directoryHint: .isDirectory)
                     game.installPath = installationURL.path
@@ -298,6 +334,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         guard let url = components.url else { return nil }
         async let detailsRequest = session.data(from: url)
         async let reviewsRequest = fetchReviewRating(appID: appID, session: session)
+        async let newsRequest = fetchPatchNotes(appID: appID, session: session)
         guard let (data, response) = try? await detailsRequest,
               (response as? HTTPURLResponse)?.statusCode == 200,
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -306,9 +343,14 @@ actor SteamLibraryService: SteamLibraryLoading {
               let details = envelope["data"] as? [String: Any] else { return nil }
         let developers = details["developers"] as? [String]
         let publishers = details["publishers"] as? [String]
+        let genres = (details["genres"] as? [[String: Any]])?.compactMap { $0["description"] as? String }
+        let categories = (details["categories"] as? [[String: Any]])?.compactMap { $0["description"] as? String }
+        let releaseDate = (details["release_date"] as? [String: Any])?["date"] as? String
+        let supportURL = (details["support_info"] as? [String: Any])?["url"] as? String
         let platforms = details["platforms"] as? [String: Bool]
         let preferredPlatform: StoreGameInstallationPlatform = platforms?["mac"] == true ? .nativeMacOS : .windows
         let requirementsKey = preferredPlatform == .nativeMacOS ? "mac_requirements" : "pc_requirements"
+        let requirements = details[requirementsKey] as? [String: Any]
         let requirementBytes = storeRequirementBytes(from: details[requirementsKey])
         let requirementArchitecture = StoreArchitectureInference.fromSystemRequirements(details[requirementsKey])
         let screenshots = (details["screenshots"] as? [[String: Any]])?.compactMap {
@@ -330,6 +372,17 @@ actor SteamLibraryService: SteamLibraryLoading {
             )
         }
         let reviewRating = await reviewsRequest
+        let patchNotes = await newsRequest
+        let achievementPayload = details["achievements"] as? [String: Any]
+        let highlightedAchievements = (achievementPayload?["highlighted"] as? [[String: Any]])?.compactMap { item -> StoreAchievement? in
+            guard let name = item["name"] as? String else { return nil }
+            return StoreAchievement(
+                id: (item["path"] as? String) ?? name,
+                name: name,
+                description: nil,
+                iconURL: item["path"] as? String
+            )
+        }
         let criticScore = (details["metacritic"] as? [String: Any])?["score"] as? Int
         var rating = reviewRating
         if rating == nil, criticScore != nil { rating = StoreRating(criticScore: criticScore) }
@@ -337,6 +390,10 @@ actor SteamLibraryService: SteamLibraryLoading {
         return StoreMetadata(
             name: details["name"] as? String,
             developer: developers?.first ?? publishers?.first,
+            publisher: publishers?.first,
+            releaseDate: releaseDate,
+            genres: genres,
+            features: categories,
             summary: cleanDescription(details["short_description"] as? String),
             portraitImageURL: "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/\(appID)/library_600x900_2x.jpg",
             headerImageURL: details["header_image"] as? String,
@@ -353,8 +410,40 @@ actor SteamLibraryService: SteamLibraryLoading {
                     platform: preferredPlatform,
                     executableArchitecture: requirementArchitecture
                 )
-                : nil
+                : nil,
+            websiteURL: details["website"] as? String,
+            supportURL: supportURL,
+            minimumSystemRequirements: cleanDescription(requirements?["minimum"] as? String),
+            recommendedSystemRequirements: cleanDescription(requirements?["recommended"] as? String),
+            achievements: highlightedAchievements,
+            achievementCount: achievementPayload?["total"] as? Int,
+            patchNotes: patchNotes
         )
+    }
+
+    private static func fetchPatchNotes(appID: String, session: URLSession) async -> [StorePatchNote]? {
+        guard var components = URLComponents(string: "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "appid", value: appID),
+            URLQueryItem(name: "count", value: "5"),
+            URLQueryItem(name: "maxlength", value: "0"),
+            URLQueryItem(name: "format", value: "json")
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let appNews = root["appnews"] as? [String: Any],
+              let items = appNews["newsitems"] as? [[String: Any]] else { return nil }
+        let values = items.compactMap { item -> StorePatchNote? in
+            guard let id = item["gid"], let title = item["title"] as? String,
+                  let timestamp = item["date"] as? TimeInterval else { return nil }
+            return StorePatchNote(
+                id: String(describing: id), title: title,
+                publishedAt: Date(timeIntervalSince1970: timestamp), url: item["url"] as? String
+            )
+        }
+        return values.isEmpty ? nil : values
     }
 
     static func storeRequirementBytes(from value: Any?) -> Int64? {
