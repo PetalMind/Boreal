@@ -243,6 +243,11 @@ struct BorealTests {
         for name in ["wine", "wineserver", "wineboot"] {
             try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: bin.appending(path: name))
         }
+        // Standard Wine ships its own d3d12.dll. Its presence does not mean
+        // the app contains Apple's D3DMetal / Game Porting Toolkit runtime.
+        let wineD3D12 = contents.appending(path: "Resources/wine/lib/wine/x86_64-windows", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: wineD3D12, withIntermediateDirectories: true)
+        try Data().write(to: wineD3D12.appending(path: "d3d12.dll"))
         let info: [String: Any] = [
             "CFBundleName": "Wine Discovery",
             "CFBundleShortVersionString": "11.16",
@@ -264,6 +269,7 @@ struct BorealTests {
         #expect(candidate.displayName == "Wine Discovery")
         #expect(candidate.wineVersion == "11.16")
         #expect(candidate.architecture == .arm64)
+        #expect(candidate.engine == .wine)
         #expect(candidate.appURL.resolvingSymlinksInPath() == app.resolvingSymlinksInPath())
     }
 

@@ -631,8 +631,7 @@ actor RuntimeManager: RuntimeManaging {
         let resources = app.appending(path: "Contents/Resources")
         let markers = [
             "wine/lib/external/libD3DMetal.dylib",
-            "wine/lib/external/D3DMetal.framework/Versions/A/D3DMetal",
-            "wine/lib/wine/x86_64-windows/d3d12.dll"
+            "wine/lib/external/D3DMetal.framework/Versions/A/D3DMetal"
         ]
         return markers.contains(where: { fileManager.fileExists(atPath: resources.appending(path: $0).path) }) ? .gamePortingToolkit : .wine
     }

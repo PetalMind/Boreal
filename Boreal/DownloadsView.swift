@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import AppKit
 
 struct DownloadsView: View {
     @Environment(BorealStore.self) private var store
@@ -8,19 +9,156 @@ struct DownloadsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Downloads").font(.largeTitle.bold())
-                    Text("Manage game transfers, installations, and the shared components Boreal uses to run them.")
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 20) {
+                downloadsHeader
+                if let operation = focusedOperation {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 18) {
+                            downloadWorkspace(operation)
+                            downloadInspector(operation)
+                                .frame(width: 286)
+                        }
+                        VStack(alignment: .leading, spacing: 18) {
+                            downloadWorkspace(operation)
+                            downloadInspector(operation)
+                        }
+                    }
+                } else {
+                    gameOperations
+                    componentsSection
                 }
-                gameOperations
-                componentsSection
             }
-            .padding(32)
+            .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task { await store.refreshRuntimeStatuses() }
+    }
+
+    private var downloadsHeader: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 48, height: 48)
+                .background(Color.accentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Downloads").font(.largeTitle.bold())
+                Text(downloadQueueSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if store.hasPausableStoreGameOperations {
+                Button("Pause All", systemImage: "pause.fill") { store.pauseAllStoreGameOperations() }
+                    .buttonStyle(.bordered)
+            }
+            if store.hasResumableStoreGameOperations {
+                Button("Resume All", systemImage: "play.fill") { store.resumeAllStoreGameOperations() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func downloadWorkspace(_ operation: (game: StoreLibraryGame, state: StoreGameOperationState)) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            DownloadOperationCard(
+                game: operation.game,
+                state: operation.state,
+                record: store.storeDownloadRecord(for: operation.game),
+                presentation: .active,
+                onPause: { store.cancelStoreGameOperation(operation.game) },
+                onResume: { store.resumeStoreGameOperation(operation.game) },
+                onRemove: { store.clearStoreGameOperation(for: operation.game) }
+            )
+            queuePanel(excluding: operation.game.id)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func queuePanel(excluding focusedID: UUID) -> some View {
+        let remaining = sortedGameOperations.filter { $0.game.id != focusedID }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Download Queue").font(.headline)
+                if !remaining.isEmpty {
+                    Text("\(remaining.count)")
+                        .font(.caption.bold().monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(.white.opacity(0.07), in: Capsule())
+                }
+                Spacer()
+            }
+            .padding(16)
+            if remaining.isEmpty {
+                Text("No other games are waiting.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+            } else {
+                Divider().opacity(0.7)
+                ForEach(Array(remaining.enumerated()), id: \.element.game.id) { index, item in
+                    DownloadQueueRow(
+                        game: item.game,
+                        state: item.state,
+                        record: store.storeDownloadRecord(for: item.game),
+                        onPause: { store.cancelStoreGameOperation(item.game) },
+                        onResume: { store.resumeStoreGameOperation(item.game) },
+                        onRemove: { store.clearStoreGameOperation(for: item.game) }
+                    )
+                    if index < remaining.count - 1 { Divider().padding(.leading, 70).opacity(0.7) }
+                }
+            }
+        }
+        .downloadPanel()
+    }
+
+    private func downloadInspector(_ operation: (game: StoreLibraryGame, state: StoreGameOperationState)) -> some View {
+        let record = store.storeDownloadRecord(for: operation.game)
+        return VStack(alignment: .leading, spacing: 12) {
+            DownloadInspectorCard(title: "Installation Details") {
+                InspectorRow(title: "Provider", value: operation.game.provider.rawValue)
+                if let platform = record?.platform {
+                    InspectorRow(title: "Platform", value: platform == .nativeMacOS ? "Native macOS" : "Windows")
+                }
+                if let path = record?.destinationRootPath {
+                    InspectorRow(title: "Location", value: path)
+                    Button("Open Downloads Folder", systemImage: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path, isDirectory: true)])
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                }
+                if let progress = operation.state.progress ?? record?.lastProgress {
+                    if let total = progress.totalBytes {
+                        InspectorRow(title: "Download Size", value: StoreGameOperationProgress.byteCountString(total))
+                    }
+                    if let remaining = progress.remainingBytes {
+                        InspectorRow(title: "Remaining", value: StoreGameOperationProgress.byteCountString(remaining))
+                    }
+                }
+            }
+
+            DownloadInspectorCard(title: "Actions") {
+                if operation.state.isCancellable {
+                    InspectorAction(title: "Pause Download", symbol: "pause", action: { store.cancelStoreGameOperation(operation.game) })
+                }
+                if operation.state.isResumable || store.canResumeStoreGameOperation(operation.game) {
+                    InspectorAction(title: "Resume Download", symbol: "play", action: { store.resumeStoreGameOperation(operation.game) })
+                }
+                if !operation.state.isCancellable {
+                    InspectorAction(title: "Remove from Queue", symbol: "xmark", role: .destructive, action: { store.clearStoreGameOperation(for: operation.game) })
+                }
+            }
+
+            componentsSection
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var focusedOperation: (game: StoreLibraryGame, state: StoreGameOperationState)? {
+        activeGameOperations.first ?? sortedGameOperations.first
     }
 
     private var componentsSection: some View {
@@ -746,6 +884,116 @@ private struct DownloadMetric: View {
     }
 }
 
+private struct DownloadQueueRow: View {
+    let game: StoreLibraryGame
+    let state: StoreGameOperationState
+    let record: StoreDownloadRecord?
+    let onPause: () -> Void
+    let onResume: () -> Void
+    let onRemove: () -> Void
+
+    private var progress: StoreGameOperationProgress? { state.progress ?? record?.lastProgress }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            GameArtworkView(game: game, width: 42, height: 56)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(game.name).font(.callout.weight(.semibold)).lineLimit(1)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            if let fraction = progress?.clampedFraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(BorealDownloadProgressStyle())
+                    .frame(width: 150)
+                Text("\(Int((fraction * 100).rounded()))%")
+                    .font(.callout.weight(.semibold).monospacedDigit())
+                    .frame(width: 38, alignment: .trailing)
+            } else {
+                Text(statusTitle).font(.caption).foregroundStyle(.secondary)
+            }
+            if state.isCancellable {
+                Button("Pause", systemImage: "pause", action: onPause).labelStyle(.iconOnly).buttonStyle(.plain)
+            } else if state.isResumable || record != nil {
+                Button("Resume", systemImage: "play", action: onResume).labelStyle(.iconOnly).buttonStyle(.plain)
+            }
+            Button("Remove", systemImage: "xmark", action: onRemove).labelStyle(.iconOnly).buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private var subtitle: String {
+        if let transferred = progress?.transferredBytes, let total = progress?.totalBytes {
+            return "\(StoreGameOperationProgress.byteCountString(transferred)) / \(StoreGameOperationProgress.byteCountString(total))"
+        }
+        return game.provider.rawValue
+    }
+
+    private var statusTitle: String {
+        switch state {
+        case .installing(let progress), .preparingEnvironment(let progress): progress.phase.title
+        case .paused: "Paused"
+        case .awaitingProvider: "Queued"
+        case .failed: "Needs Attention"
+        }
+    }
+}
+
+private struct DownloadInspectorCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            content
+        }
+        .padding(16)
+        .downloadPanel()
+    }
+}
+
+private struct InspectorRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+        .font(.caption)
+    }
+}
+
+private struct InspectorAction: View {
+    let title: String
+    let symbol: String
+    var role: ButtonRole? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .font(.callout)
+        .padding(.vertical, 2)
+    }
+}
+
 private struct TransferChartPoint: Identifiable {
     let timestamp: Date
     let bytesPerSecond: Double
@@ -754,6 +1002,14 @@ private struct TransferChartPoint: Identifiable {
 }
 
 private extension View {
+    func downloadPanel() -> some View {
+        background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(.white.opacity(0.11), lineWidth: 1)
+            }
+    }
+
     func downloadStatusBadge() -> some View {
         font(.caption.weight(.semibold))
             .padding(.horizontal, 10)
