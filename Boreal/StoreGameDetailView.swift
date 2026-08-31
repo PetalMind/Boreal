@@ -12,23 +12,27 @@ struct StoreGameDetailView: View {
     @State private var selectedScreenshot: StoreScreenshotSelection?
     @State private var selectedVideo: StoreVideo?
     @State private var showsUninstallConfirmation = false
-    @State private var selectedSection = "Overview"
 
     private var currentGame: StoreLibraryGame { store.storeGame(id: game.id) ?? game }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 26) {
                 hero
-                detailNavigation
                 operationStatus
+                mediaSection
                 HStack(alignment: .top, spacing: 28) {
                     VStack(alignment: .leading, spacing: 26) {
-                        detailContent
+                        if let summary = game.summary, !summary.isEmpty {
+                            section("About this game") {
+                                Text(summary).font(.body).foregroundStyle(.secondary).lineSpacing(4)
+                            }
+                        }
+                        if currentGame.supportsNativeMacOS != true { compatibilitySection }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     detailsSidebar
-                        .frame(width: 310)
+                        .frame(width: 300)
                 }
             }
             .padding(36)
@@ -114,196 +118,9 @@ struct StoreGameDetailView: View {
             }
             .padding(24)
         }
-        .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 360, alignment: .bottomLeading)
+        .frame(maxWidth: .infinity, minHeight: 360, maxHeight: 420, alignment: .bottomLeading)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.white.opacity(0.16)) }
-    }
-
-    private var detailNavigation: some View {
-        HStack(spacing: 28) {
-            ForEach(["Overview", "Requirements", "Updates", "Achievements", "Media", "Community"], id: \.self) { item in
-                Button(item) { selectedSection = item }
-                    .buttonStyle(.plain)
-                    .font(.callout.weight(selectedSection == item ? .semibold : .regular))
-                    .foregroundStyle(selectedSection == item ? Color.accentColor : .secondary)
-                    .padding(.vertical, 9)
-                    .overlay(alignment: .bottom) {
-                        if selectedSection == item { Capsule().fill(Color.accentColor).frame(height: 2) }
-                    }
-            }
-            Spacer()
-        }
-        .overlay(alignment: .bottom) { Divider() }
-    }
-
-    private var overviewDashboard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 14)], spacing: 14) {
-                dashboardCard("Hardware & Storage", symbol: "gauge.with.dots.needle.50percent") {
-                    metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
-                    metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
-                    metric("Architecture", value: architectureLabel, symbol: "cpu")
-                    metric("Compatibility", value: platformCompatibilityLabel, symbol: "checkmark.shield")
-                    metric("Graphics backend", value: graphicsBackendLabel, symbol: "square.3.layers.3d")
-                    metric("Expected result", value: performanceEstimate, symbol: "speedometer")
-                }
-                dashboardCard("Playtime", symbol: "clock") {
-                    dashboardValue(playtime)
-                    metric("Last played", value: currentGame.lastPlayed?.formatted(date: .abbreviated, time: .shortened) ?? "Never", symbol: "calendar")
-                    metric("Library status", value: libraryStatus, symbol: "books.vertical")
-                }
-                dashboardCard("Live on Steam", symbol: "person.2.fill") {
-                    dashboardValue(currentGame.currentPlayerCount?.formatted() ?? "Unavailable")
-                    Text("players currently online")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Steam does not include players who are offline.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            if let summary = currentGame.summary, !summary.isEmpty {
-                dashboardCard("About this game", symbol: "text.alignleft") {
-                    Text(summary).font(.body).foregroundStyle(.secondary).lineSpacing(4)
-                }
-            }
-            if currentGame.supportsNativeMacOS != true { compatibilitySection }
-            requirementsSection
-            updatesSection
-            achievementsSection
-            sourcesCard
-        }
-    }
-
-    @ViewBuilder private var detailContent: some View {
-        switch selectedSection {
-        case "Requirements": requirementsSection
-        case "Updates": updatesSection
-        case "Achievements": achievementsSection
-        case "Media":
-            mediaSection
-        case "Community":
-            if currentGame.supportsNativeMacOS != true { compatibilitySection }
-            sourcesCard
-        default:
-            overviewDashboard
-            mediaSection
-        }
-    }
-
-    private var requirementsSection: some View {
-        section("Requirements & Expected Performance") {
-            VStack(alignment: .leading, spacing: 14) {
-                Label(performanceEstimate, systemImage: "speedometer").font(.headline)
-                Text(performanceExplanation).font(.callout).foregroundStyle(.secondary)
-                requirementBlock("Minimum", value: currentGame.minimumSystemRequirements)
-                requirementBlock("Recommended", value: currentGame.recommendedSystemRequirements)
-            }
-            .padding(18)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-    }
-
-    @ViewBuilder private func requirementBlock(_ title: String, value: String?) -> some View {
-        if let value, !value.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(value).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-        } else if title == "Minimum" {
-            Text("The store did not provide detailed hardware requirements.").font(.callout).foregroundStyle(.secondary)
-        }
-    }
-
-    private var updatesSection: some View {
-        section("Version & Patch Notes") {
-            VStack(alignment: .leading, spacing: 12) {
-                metric("Installed build", value: currentGame.currentBuildID.map { "Build \($0)" } ?? "Not available", symbol: "shippingbox")
-                if let notes = currentGame.patchNotes, !notes.isEmpty {
-                    ForEach(notes.prefix(5)) { note in
-                        Button {
-                            if let value = note.url, let url = URL(string: value) { NSWorkspace.shared.open(url) }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(note.title).font(.callout.weight(.medium)).lineLimit(2)
-                                    Text(note.publishedAt.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if note.url != nil { Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary) }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else {
-                    Text("No publisher updates are available from this store.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            .padding(18)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-    }
-
-    private var achievementsSection: some View {
-        section("Achievements") {
-            VStack(alignment: .leading, spacing: 12) {
-                if let count = currentGame.achievementCount { Text("\(count.formatted()) achievements available").font(.headline) }
-                if let achievements = currentGame.achievements, !achievements.isEmpty {
-                    ForEach(achievements.prefix(10)) { achievement in
-                        HStack(spacing: 12) {
-                            if let value = achievement.iconURL, let url = URL(string: value) {
-                                AsyncImage(url: url) { image in image.resizable().scaledToFit() } placeholder: { Color.secondary.opacity(0.12) }
-                                    .frame(width: 42, height: 42).clipShape(RoundedRectangle(cornerRadius: 8))
-                            } else { Image(systemName: "trophy").frame(width: 42, height: 42) }
-                            Text(achievement.name).font(.callout.weight(.medium))
-                        }
-                    }
-                } else {
-                    Text("The store does not expose an achievement catalog for this game.").font(.callout).foregroundStyle(.secondary)
-                }
-                Text("Unlock status remains managed by the store account.").font(.caption).foregroundStyle(.tertiary)
-            }
-            .padding(18)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-    }
-
-    private func dashboardCard<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 13) {
-            Label(title, systemImage: symbol).font(.headline)
-            content()
-            Spacer(minLength: 0)
-        }
-        .padding(17)
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12)) }
-    }
-
-    private func dashboardValue(_ value: String) -> some View {
-        Text(value).font(.system(.title2, design: .rounded, weight: .bold)).monospacedDigit()
-    }
-
-    private var sourcesCard: some View {
-        dashboardCard("Data sources", symbol: "externaldrive.connected.to.line.below") {
-            HStack(alignment: .top, spacing: 24) {
-                sourceLabel("Steam Store", detail: "metadata, media and reviews")
-                sourceLabel("Steam Web API", detail: "live player count")
-                if currentGame.supportsNativeMacOS != true {
-                    sourceLabel(currentGame.compatibility?.source.rawValue ?? "Compatibility reports", detail: "community compatibility")
-                }
-                sourceLabel("Local library", detail: "playtime and installation")
-            }
-        }
-    }
-
-    private func sourceLabel(_ title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.callout.weight(.medium))
-            Text(detail).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private var heroBackground: some View {
@@ -493,9 +310,9 @@ struct StoreGameDetailView: View {
     }
 
     private var playtime: String {
-        guard currentGame.playtimeMinutes > 0 else { return "Not played" }
-        if currentGame.playtimeMinutes < 60 { return "\(currentGame.playtimeMinutes) min" }
-        return String(format: "%.1f hours", Double(currentGame.playtimeMinutes) / 60)
+        guard game.playtimeMinutes > 0 else { return "Not played" }
+        if game.playtimeMinutes < 60 { return "\(game.playtimeMinutes) min" }
+        return String(format: "%.1f hours", Double(game.playtimeMinutes) / 60)
     }
 
     private var formattedDownloadSize: String {
@@ -709,122 +526,33 @@ struct StoreGameDetailView: View {
 
     private var detailsSidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
-            detailCard("Game Info", symbol: "info.circle") {
-                sidebarRow("Released", value: currentGame.releaseDate ?? "Unavailable")
-                sidebarRow("Developer", value: currentGame.developer ?? "Unavailable")
-                sidebarRow("Publisher", value: currentGame.publisher ?? "Unavailable")
-                if let genres = currentGame.genres, !genres.isEmpty {
-                    sidebarRow("Genres", value: genres.prefix(3).joined(separator: ", "))
-                }
-                sidebarRow("Source", value: currentGame.provider.rawValue)
-            }
-            detailCard("Compatibility", symbol: "checkmark.shield") {
-                sidebarRow("macOS (Native)", value: currentGame.supportsNativeMacOS == true ? "Yes" : "No")
-                if currentGame.supportsNativeMacOS != true {
-                    sidebarRow("macOS (Wine)", value: currentGame.compatibility?.tier.title ?? "Unknown")
-                }
-                sidebarRow("Windows", value: currentGame.supportsWindows == true ? "Yes" : "Unknown")
-            }
-            detailCard("Links", symbol: "link") {
-                externalLink("Store Page", url: storePageURL)
-                externalLink("Community Hub", url: communityURL)
-                externalLink("Discussions", url: discussionsURL)
-                externalLink("Guides", url: guidesURL)
-                externalLink("Official Website", url: currentGame.websiteURL.flatMap(URL.init(string:)))
-                externalLink("Support", url: currentGame.supportURL.flatMap(URL.init(string:)))
+            detailCard("Your game", symbol: "person.crop.circle") {
+                metric("Status", value: libraryStatus, symbol: currentGame.isInstalled ? "checkmark.circle.fill" : "cloud.fill")
+                metric("Playtime", value: playtime, symbol: "clock")
+                metric("Last played", value: game.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never", symbol: "calendar")
             }
             detailCard("Installation", symbol: "internaldrive") {
-                sidebarRow("Status", value: libraryStatus)
-                sidebarRow(requiredStorageTitle, value: formattedRequiredStorage)
-                sidebarRow("Location", value: installationLocation)
-                sidebarRow("Size source", value: sizeSource)
+                metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
+                metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
+                metric("Location", value: installationLocation, symbol: "folder")
+                metric("Size source", value: sizeSource, symbol: "doc.text.magnifyingglass")
                 if currentGame.installPath != nil {
-                    Button("Show Game Files", systemImage: "folder") { showGameFiles() }.buttonStyle(.link)
+                    Button("Show Game Files", systemImage: "folder") { showGameFiles() }
+                        .buttonStyle(.link)
+                }
+            }
+            detailCard("Store details", symbol: "storefront") {
+                metric("Source", value: game.provider.rawValue, symbol: game.provider.symbol)
+                metric("Game ID", value: game.externalID, symbol: "number")
+                if game.provider == .steam {
+                    metric(
+                        "Players online",
+                        value: currentGame.currentPlayerCount?.formatted() ?? "Unavailable",
+                        symbol: "person.2.fill"
+                    )
                 }
             }
         }
-    }
-
-    private func sidebarRow(_ title: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Text(value).font(.callout.weight(.medium)).multilineTextAlignment(.trailing)
-        }
-    }
-
-    @ViewBuilder private func externalLink(_ title: String, url: URL?) -> some View {
-        if let url {
-            Button { NSWorkspace.shared.open(url) } label: {
-                HStack { Text(title); Spacer(); Image(systemName: "arrow.up.right.square") }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private var storePageURL: URL? {
-        switch currentGame.provider {
-        case .steam: URL(string: "https://store.steampowered.com/app/\(currentGame.externalID)")
-        case .gog: URL(string: "https://www.gog.com/game/\(currentGame.externalID)")
-        case .epic: nil
-        }
-    }
-
-    private var communityURL: URL? {
-        currentGame.provider == .steam ? URL(string: "https://steamcommunity.com/app/\(currentGame.externalID)") : nil
-    }
-
-    private var discussionsURL: URL? {
-        currentGame.provider == .steam ? URL(string: "https://steamcommunity.com/app/\(currentGame.externalID)/discussions/") : nil
-    }
-
-    private var guidesURL: URL? {
-        currentGame.provider == .steam ? URL(string: "https://steamcommunity.com/app/\(currentGame.externalID)/guides/") : nil
-    }
-
-    private var architectureLabel: String {
-        switch currentGame.sizeEstimate?.executableArchitecture {
-        case .x86: "32-bit Windows"
-        case .x86_64: "64-bit Windows"
-        case nil: currentGame.supportsNativeMacOS == true ? "Native macOS" : "Unknown"
-        }
-    }
-
-    private var platformCompatibilityLabel: String {
-        if currentGame.supportsNativeMacOS == true { return "Native macOS" }
-        return currentGame.compatibility?.tier.title ?? "Not rated"
-    }
-
-    private var graphicsBackendLabel: String {
-        if currentGame.supportsNativeMacOS == true { return "Metal (native)" }
-        if let graphics = linkedApplication.flatMap({ store.environment(id: $0.environmentID)?.graphics }) {
-            return graphics
-        }
-        switch currentGame.sizeEstimate?.executableArchitecture {
-        case .x86: return "WineD3D / DXMT when available"
-        case .x86_64, nil: return "D3DMetal (GPTK) or DXMT"
-        }
-    }
-
-    private var performanceEstimate: String {
-        if currentGame.supportsNativeMacOS == true { return "Expected to run natively" }
-        switch currentGame.compatibility?.tier.rating {
-        case .excellent: return "Expected to run very well"
-        case .good: return "Expected to run well"
-        case .limited: return "Playable with possible issues"
-        case .unsupported: return "Unlikely to run"
-        case .unknown, nil: return "Performance is unknown"
-        }
-    }
-
-    private var performanceExplanation: String {
-        let memoryGB = ProcessInfo.processInfo.physicalMemory / 1_073_741_824
-        if currentGame.supportsNativeMacOS == true {
-            return "Native macOS build on this Mac (\(memoryGB) GB memory). Store requirements still apply."
-        }
-        let evidence = currentGame.compatibility.map { "\($0.source.rawValue): \($0.tier.title)" } ?? "no community compatibility result"
-        return "Estimate based on \(evidence), \(architectureLabel), the selected \(graphicsBackendLabel) path, and this Mac's \(memoryGB) GB memory. It is not a benchmark or a guarantee."
     }
 
     private var libraryStatus: String {

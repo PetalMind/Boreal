@@ -149,30 +149,12 @@ nonisolated struct StoreVideo: Codable, Hashable, Sendable, Identifiable {
     var videoURL: String
 }
 
-nonisolated struct StoreAchievement: Codable, Hashable, Sendable, Identifiable {
-    var id: String
-    var name: String
-    var description: String?
-    var iconURL: String?
-}
-
-nonisolated struct StorePatchNote: Codable, Hashable, Sendable, Identifiable {
-    var id: String
-    var title: String
-    var publishedAt: Date
-    var url: String?
-}
-
 nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var provider: GameLibraryProvider
     var externalID: String
     var name: String
     var developer: String?
-    var publisher: String?
-    var releaseDate: String?
-    var genres: [String]?
-    var features: [String]?
     var summary: String?
     var artworkPath: String?
     var portraitImageURL: String?
@@ -192,14 +174,6 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var sizeEstimate: StoreGameSizeEstimate?
     var compatibility: CommunityCompatibility?
     var currentPlayerCount: Int?
-    var websiteURL: String?
-    var supportURL: String?
-    var minimumSystemRequirements: String?
-    var recommendedSystemRequirements: String?
-    var currentBuildID: String?
-    var achievements: [StoreAchievement]?
-    var achievementCount: Int?
-    var patchNotes: [StorePatchNote]?
 
     var displayedStorageBytes: Int64? {
         if let storageBytes, storageBytes > 0 { return storageBytes }

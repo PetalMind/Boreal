@@ -204,11 +204,7 @@ actor RuntimeManager: RuntimeManaging {
                 .write(to: staging.appending(path: "runtime.json"), options: .atomic)
             try validateExtractedTree(staging)
             let provisional = try resolveRuntime(manifest: localManifest, root: staging)
-            // Requirements were checked immediately before the snapshot copy.
-            // Do not launch a second Rosetta probe inside the same transaction:
-            // a transient `arch -x86_64` failure must not invalidate an otherwise
-            // complete local runtime after the expensive copy has finished.
-            let validation = try await validate(provisional, checkingRequirements: false)
+            let validation = try await validate(provisional)
             guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
             try await smokeTest(provisional)
 
@@ -317,10 +313,6 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation {
-        try await validate(runtime, checkingRequirements: true)
-    }
-
-    private func validate(_ runtime: InstalledRuntime, checkingRequirements: Bool) async throws -> RuntimeValidation {
         let executables = [runtime.wineExecutable, runtime.wineServerExecutable, runtime.wineBootExecutable]
         var missing = executables.filter { !fileManager.isExecutableFile(atPath: $0.path) }.map(\.path)
         let metadata = runtime.rootURL.appending(path: "runtime.json")
@@ -333,13 +325,11 @@ actor RuntimeManager: RuntimeManaging {
             missing.append(metadata.path)
         }
         var unmet: Set<RuntimeRequirement> = []
-        if checkingRequirements {
-            for requirement in runtime.requirements {
-                if requirement == .gStreamerFramework {
-                    unmet.insert(requirement)
-                } else if !(await requirementChecker.isSatisfied(requirement)) {
-                    unmet.insert(requirement)
-                }
+        for requirement in runtime.requirements {
+            if requirement == .gStreamerFramework {
+                unmet.insert(requirement)
+            } else if !(await requirementChecker.isSatisfied(requirement)) {
+                unmet.insert(requirement)
             }
         }
         var detectedVersion: String?
@@ -480,28 +470,20 @@ actor RuntimeManager: RuntimeManaging {
         )
         let receipt = try await processExecutor.launch(request)
         let result = try await processExecutor.waitForExit(receipt.id)
-        guard result.exitCode == 0 else {
-            await stopWineServer(runtime, environment: environment, prefix: prefix)
-            throw RuntimeManagerError.validationFailed(RuntimeValidation(detectedWineVersion: runtime.wineVersion, versionMatchesManifest: true, missingPaths: ["wineboot smoke test exited with \(result.exitCode)"], unmetRequirements: [], executablePaths: []))
-        }
+        guard result.exitCode == 0 else { throw RuntimeManagerError.validationFailed(RuntimeValidation(detectedWineVersion: runtime.wineVersion, versionMatchesManifest: true, missingPaths: ["wineboot smoke test exited with \(result.exitCode)"], unmetRequirements: [], executablePaths: [])) }
         let expectedPrefixPaths = [
             prefix.appending(path: "drive_c", directoryHint: .isDirectory),
             prefix.appending(path: "dosdevices", directoryHint: .isDirectory),
             prefix.appending(path: "system.reg"),
             prefix.appending(path: "user.reg")
         ]
-        // A cold WineHQ prefix can finish wineboot before wineserver has flushed
-        // its registry files. This is especially visible on the first launch
-        // after installing a new Wine build. Keep the smoke test bounded, but
-        // allow up to two minutes for that asynchronous initialization.
-        for _ in 0..<480 {
+        for _ in 0..<120 {
             try Task.checkCancellation()
             if expectedPrefixPaths.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) { break }
             try await Task.sleep(for: .milliseconds(250))
         }
         let missing = expectedPrefixPaths.filter { !fileManager.fileExists(atPath: $0.path) }.map(\.path)
         guard missing.isEmpty else {
-            await stopWineServer(runtime, environment: environment, prefix: prefix)
             throw RuntimeManagerError.validationFailed(RuntimeValidation(
                 detectedWineVersion: runtime.wineVersion,
                 versionMatchesManifest: true,
@@ -510,10 +492,6 @@ actor RuntimeManager: RuntimeManaging {
                 executablePaths: [runtime.wineBootExecutable.path]
             ))
         }
-        await stopWineServer(runtime, environment: environment, prefix: prefix)
-    }
-
-    private func stopWineServer(_ runtime: InstalledRuntime, environment: [String: String], prefix: URL) async {
         let serverRequest = ProcessLaunchRequest(
             executable: runtime.wineServerExecutable,
             arguments: ["-k"],

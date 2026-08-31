@@ -92,116 +92,95 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        List {
-            Section("Discover") {
-                SidebarNavigationRow(
-                    title: "Library Home",
-                    symbol: "rectangle.grid.2x2.fill",
-                    tint: .cyan,
-                    isSelected: isLibraryHomeSelected
-                ) {
-                    showLibraryHome()
+        List(selection: sidebarSelection) {
+            Section {
+                Button {
+                    showLibrary()
+                    librarySourceFilters = ""
+                    libraryAvailabilityFilters = ""
+                    libraryProducerFilter = ""
+                } label: {
+                    Label("Home", systemImage: "house.fill")
                 }
-                SidebarNavigationRow(
-                    title: "Installed",
-                    symbol: "arrow.down.to.line.compact",
-                    tint: .green,
-                    count: installedCount,
-                    isSelected: isInstalledSelected,
-                    isEnabled: installedCount > 0
-                ) {
+                .buttonStyle(.plain)
+                .tag(SidebarDestination.library)
+                Button {
                     showInstalledLibrary()
-                }
-                SidebarNavigationRow(
-                    title: "Favorites",
-                    symbol: "heart.fill",
-                    tint: .pink,
-                    count: favoriteCount,
-                    isSelected: isFavoritesSelected
-                ) {
-                    showFavoritesLibrary()
-                }
-            }
-
-            Section("Platforms") {
-                ForEach(LibrarySourceFilter.allCases, id: \.self) { source in
-                    SidebarNavigationRow(
-                        title: source.title,
-                        symbol: source.symbol,
-                        assetName: source.sidebarAssetName,
-                        tint: source.sidebarTint,
-                        count: sourceCount(source),
-                        isSelected: isSelected(source),
-                        isEnabled: sourceCount(source) > 0
-                    ) {
-                        showLibrary(source: source)
+                } label: {
+                    HStack {
+                        Label("Zainstalowane", systemImage: "checkmark.circle.fill")
+                        Spacer()
+                        Text(installedCount.formatted())
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(isInstalledSelected ? Color.accentColor : Color.primary)
+                .disabled(installedCount == 0)
+                .accessibilityAddTraits(isInstalledSelected ? .isSelected : [])
+                Button {
+                    showFavoritesLibrary()
+                } label: {
+                    HStack {
+                        Label("Favorites", systemImage: "heart.fill")
+                        Spacer()
+                        Text(favoriteCount.formatted())
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isFavoritesSelected ? Color.accentColor : Color.primary)
+                .tag(SidebarDestination.favorites)
+                .accessibilityAddTraits(isFavoritesSelected ? .isSelected : [])
+                ForEach(LibrarySourceFilter.allCases, id: \.self) { source in
+                    Button {
+                        showLibrary(source: source)
+                    } label: {
+                        HStack {
+                            Label(source.title, systemImage: source.symbol)
+                            Spacer()
+                            Text(sourceCount(source).formatted())
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(isSelected(source) ? Color.accentColor : Color.primary)
+                    .disabled(sourceCount(source) == 0)
+                    .accessibilityAddTraits(isSelected(source) ? .isSelected : [])
+                }
+            } header: {
+                Text("Library")
             }
-
-            Section("Manage") {
-                SidebarNavigationRow(
-                    title: "Accounts",
-                    symbol: "person.crop.circle.badge.checkmark",
-                    tint: .indigo,
-                    isSelected: selection == .accounts
-                ) {
-                    showDestination(.accounts)
-                }
-                SidebarNavigationRow(
-                    title: "Downloads",
-                    symbol: "arrow.down.circle.fill",
-                    tint: .blue,
-                    isSelected: selection == .downloads
-                ) {
-                    showDestination(.downloads)
-                }
+            Section("Services") {
+                Label("Accounts", systemImage: "person.crop.circle.badge.checkmark").tag(SidebarDestination.accounts)
+                Label("Downloads", systemImage: "arrow.down.circle").tag(SidebarDestination.downloads)
             }
-
             if developerMode {
                 Section("Developer") {
-                    SidebarNavigationRow(
-                        title: "Environments",
-                        symbol: "externaldrive.fill",
-                        tint: .orange,
-                        isSelected: selection == .environments
-                    ) {
-                        showDestination(.environments)
-                    }
+                    Label("Environments", systemImage: "externaldrive").tag(SidebarDestination.environments)
                 }
             }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top) {
-            HStack(spacing: 11) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [.cyan, .blue.opacity(0.85), .indigo],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Image(systemName: "sparkles.rectangle.stack.fill")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 36, height: 36)
-                .shadow(color: .cyan.opacity(0.22), radius: 8, y: 3)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Boreal")
-                        .font(.system(.headline, design: .rounded, weight: .bold))
-                    Text("All your games")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles.rectangle.stack.fill")
+                    .font(.title2)
+                    .foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Boreal").font(.headline)
+                    Text("Your games, one place").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
         .safeAreaInset(edge: .bottom) {
             Button {
@@ -228,8 +207,7 @@ struct ContentView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .help(runtimeFooter.help)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding()
         }
     }
 
@@ -343,9 +321,14 @@ struct ContentView: View {
         return ("Runtime Setup Needed", "shippingbox", .orange, "Open runtime setup")
     }
 
-    private func showDestination(_ destination: SidebarDestination) {
-        libraryPath.removeAll()
-        selection = destination
+    private var sidebarSelection: Binding<SidebarDestination?> {
+        Binding(
+            get: { selection },
+            set: { destination in
+                libraryPath.removeAll()
+                selection = destination
+            }
+        )
     }
 
     private func showLibrary(style: LibraryStyle? = nil, route: LibraryRoute? = nil) {
@@ -360,15 +343,6 @@ struct ContentView: View {
         searchText = ""
         librarySourceFilters = source.rawValue
         libraryAvailabilityFilters = ""
-        libraryProducerFilter = ""
-    }
-
-    private func showLibraryHome() {
-        showLibrary()
-        searchText = ""
-        librarySourceFilters = ""
-        libraryAvailabilityFilters = ""
-        libraryCompatibilityFilters = ""
         libraryProducerFilter = ""
     }
 
@@ -413,109 +387,11 @@ struct ContentView: View {
             && libraryAvailabilityFilters == LibraryAvailabilityFilter.installed.rawValue
     }
 
-    private var isLibraryHomeSelected: Bool {
-        selection == .library
-            && libraryPath.isEmpty
-            && librarySourceFilters.isEmpty
-            && libraryAvailabilityFilters.isEmpty
-            && libraryCompatibilityFilters.isEmpty
-            && libraryProducerFilter.isEmpty
-    }
-
     private var isFavoritesSelected: Bool { selection == .favorites }
 
     private var favoriteCount: Int {
         let items = LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames)
         return items.lazy.filter { store.favoriteKeys.contains($0.favoriteKey) }.count
-    }
-}
-
-private struct SidebarNavigationRow: View {
-    let title: String
-    let symbol: String
-    var assetName: String? = nil
-    let tint: Color
-    var count: Int? = nil
-    let isSelected: Bool
-    var isEnabled = true
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(isSelected ? tint : tint.opacity(0.14))
-                    if let assetName {
-                        Image(assetName)
-                            .resizable()
-                            .renderingMode(.template)
-                            .scaledToFit()
-                            .foregroundStyle(isSelected ? .white : tint)
-                            .padding(5)
-                    } else {
-                        Image(systemName: symbol)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(isSelected ? .white : tint)
-                    }
-                }
-                .frame(width: 27, height: 27)
-
-                Text(title)
-                    .font(.callout.weight(isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.9))
-                    .lineLimit(1)
-
-                Spacer(minLength: 4)
-
-                if let count {
-                    Text(count.formatted())
-                        .font(.caption2.monospacedDigit().weight(.medium))
-                        .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.62))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(isSelected ? tint.opacity(0.14) : Color.primary.opacity(0.055))
-                        )
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
-            .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(isSelected ? tint.opacity(0.16) : .clear)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(isSelected ? tint.opacity(0.24) : .clear, lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.45)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-}
-
-private extension LibrarySourceFilter {
-    var sidebarAssetName: String {
-        switch self {
-        case .boreal: "BrandWindows"
-        case .steam: "BrandSteam"
-        case .epic: "BrandEpicGames"
-        case .gog: "BrandGOG"
-        }
-    }
-
-    var sidebarTint: Color {
-        switch self {
-        case .boreal: .cyan
-        case .steam: Color(red: 0.12, green: 0.45, blue: 0.68)
-        case .epic: Color(white: 0.32)
-        case .gog: Color(red: 0.54, green: 0.27, blue: 0.78)
-        }
     }
 }
 
