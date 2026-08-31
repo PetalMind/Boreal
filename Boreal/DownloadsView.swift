@@ -498,7 +498,7 @@ private struct DownloadOperationCard: View {
             HStack {
                 Text(amountSummary(progress))
                 Spacer()
-                Text(progress.estimatedTimeRemaining.map { "About \($0) remaining" } ?? "Time remaining unavailable")
+                Text(timeRemaining(progress))
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
@@ -664,12 +664,40 @@ private struct DownloadOperationCard: View {
     }
 
     private func amountSummary(_ progress: StoreGameOperationProgress) -> String {
-        switch (progress.transferred, progress.total) {
+        if let transferredBytes = progress.transferredBytes,
+           let totalBytes = progress.totalBytes {
+            let transferred = StoreGameOperationProgress.byteCountString(transferredBytes)
+            let total = StoreGameOperationProgress.byteCountString(totalBytes)
+            let remaining = StoreGameOperationProgress.byteCountString(max(0, totalBytes - transferredBytes))
+            return "\(transferred) of \(total) · \(remaining) left"
+        }
+        return switch (progress.transferred, progress.total) {
         case let (.some(completed), .some(total)): "\(completed) of \(total)"
         case let (.some(completed), nil): completed
         case (nil, .some(let total)): "Total: \(total)"
         case (nil, nil): "Size information unavailable"
         }
+    }
+
+    private func timeRemaining(_ progress: StoreGameOperationProgress) -> String {
+        if let estimated = progress.estimatedTimeRemaining {
+            return "About \(estimated) remaining"
+        }
+        guard progress.phase == .downloading,
+              let remaining = progress.remainingBytes,
+              remaining > 0,
+              let speed = progress.networkBytesPerSecond,
+              speed > 0 else {
+            return "Time remaining unavailable"
+        }
+        return "About \(duration(seconds: Double(remaining) / speed)) remaining"
+    }
+
+    private func duration(seconds: Double) -> String {
+        let wholeSeconds = max(1, Int(seconds.rounded()))
+        if wholeSeconds >= 3_600 { return "\(wholeSeconds / 3_600)h \((wholeSeconds % 3_600) / 60)m" }
+        if wholeSeconds >= 60 { return "\(wholeSeconds / 60)m \(wholeSeconds % 60)s" }
+        return "\(wholeSeconds)s"
     }
 
     private func speed(_ bytes: Double?) -> String {

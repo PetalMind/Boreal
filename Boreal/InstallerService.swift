@@ -77,7 +77,12 @@ actor InstallerService: Installing {
         let preferredEngine: RuntimeEngine = installerArchitecture == .x86_64
             ? .gamePortingToolkit
             : .wine
-        let environmentArchitecture = installerArchitecture == .x86 ? "win32" : "win64"
+        // Steam's setup bootstrapper is commonly a 32-bit PE, but the resulting
+        // bottle must also host 64-bit Steam games. Keep the shared Steam bottle
+        // WoW64-capable instead of deriving its architecture from SteamSetup.exe.
+        let environmentArchitecture = name == "Steam for Windows"
+            ? "win64"
+            : (installerArchitecture == .x86 ? "win32" : "win64")
         let runtime = try await readyRuntime(preferredEngine: preferredEngine)
         await progress(.creatingEnvironment)
         let environment = try await environmentManager.create(

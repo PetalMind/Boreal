@@ -47,6 +47,8 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var storeProvider: GameLibraryProvider?
     var storeExternalID: String?
     var communityCompatibility: CommunityCompatibility?
+
+    var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
 }
 
 nonisolated enum GameLibraryProvider: String, Codable, Hashable, CaseIterable, Sendable {
@@ -293,13 +295,31 @@ nonisolated struct StoreGameOperationProgress: Codable, Equatable, Sendable {
     var transferRate: String? = nil
     var transferred: String? = nil
     var total: String? = nil
+    // Keep numeric values alongside the helper's display strings. Providers do not
+    // consistently use the same units, and the numeric values let the UI calculate
+    // a reliable remainder and percentage when only one of those values is logged.
+    var transferredBytes: Int64? = nil
+    var totalBytes: Int64? = nil
     var estimatedTimeRemaining: String? = nil
     var rawDetail: String? = nil
     var networkBytesPerSecond: Double? = nil
     var diskBytesPerSecond: Double? = nil
 
     var clampedFraction: Double? {
-        fractionCompleted.map { min(max($0, 0), 1) }
+        if let fractionCompleted {
+            return min(max(fractionCompleted, 0), 1)
+        }
+        guard let transferredBytes, let totalBytes, totalBytes > 0 else { return nil }
+        return min(max(Double(transferredBytes) / Double(totalBytes), 0), 1)
+    }
+
+    var remainingBytes: Int64? {
+        guard let transferredBytes, let totalBytes, totalBytes >= transferredBytes else { return nil }
+        return totalBytes - transferredBytes
+    }
+
+    static func byteCountString(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
 

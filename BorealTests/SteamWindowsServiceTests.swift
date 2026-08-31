@@ -4,25 +4,37 @@ import Testing
 
 @Suite(.serialized)
 struct SteamWindowsServiceTests {
-    @Test func rejectsMissingCredentialsBeforeStartingSteamCMD() async {
-        let root = FileManager.default.temporaryDirectory.appending(path: "BorealSteamCMDTests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let service = SteamWindowsService(applicationSupportURL: root, processExecutor: UnusedProcessExecutor())
-        do {
-            _ = try await service.downloadWindowsGame(appID: "730", destination: root.appending(path: "Game"), credentials: SteamCMDCredentials(username: "", password: "", guardCode: "")) { _ in }
-            Issue.record("Expected missing credentials error")
-        } catch let error as SteamWindowsError {
-            #expect(error.localizedDescription.contains("username"))
-        } catch {
-            Issue.record("Unexpected error: \(error)")
-        }
-    }
-}
+    @Test func buildsSteamClientLaunchPlans() {
+        let steam = URL(fileURLWithPath: "/tmp/Steam/steam.exe")
+        let play = SteamWindowsService.playPlan(appID: "606880", steamExecutable: steam)
+        #expect(play.executable == steam)
+        #expect(play.arguments == ["-applaunch", "606880"])
+        #expect(play.workingDirectory == steam.deletingLastPathComponent())
 
-private struct UnusedProcessExecutor: ProcessExecuting {
-    func launch(_ request: ProcessLaunchRequest) async throws -> ProcessLaunchReceipt { throw CocoaError(.featureUnsupported) }
-    func waitForExit(_ id: UUID) async throws -> ProcessExecutionResult { throw CocoaError(.featureUnsupported) }
-    func state(of id: UUID) async throws -> ProcessExecutionState { throw CocoaError(.featureUnsupported) }
-    func terminate(_ id: UUID) async throws { }
-    func forceTerminate(_ id: UUID) async throws { }
+        let bootstrap = SteamWindowsService.bootstrapPlan(steamExecutable: steam)
+        #expect(bootstrap.arguments == ["-silent"])
+    }
+
+    @Test func findsInstalledWindowsSteamGameFromManifest() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "BorealSteamClientTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefix = root.appending(path: "prefix", directoryHint: .isDirectory)
+        let steamRoot = prefix.appending(path: "drive_c/Program Files (x86)/Steam", directoryHint: .isDirectory)
+        let game = steamRoot.appending(path: "steamapps/common/Example Game", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
+        let manifest = steamRoot.appending(path: "steamapps/appmanifest_606880.acf")
+        try Data("\"AppState\" { \"appid\" \"606880\" \"installdir\" \"Example Game\" }".utf8).write(to: manifest)
+
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "Steam for Windows"),
+            runtimeID: "runtime",
+            rootURL: root,
+            prefixURL: prefix,
+            logsURL: root.appending(path: "Logs"),
+            state: .ready
+        )
+        #expect(SteamWindowsService.installedGameDirectory(appID: "606880", in: environment) == game)
+        #expect(SteamWindowsService.installedGameDirectory(appID: "not-an-app", in: environment) == nil)
+    }
 }

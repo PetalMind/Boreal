@@ -417,6 +417,8 @@ actor LegendaryEpicService: EpicLibraryProviding {
             let stderr = Pipe()
             let outputBuffer = LegendaryOutputBuffer()
             let errorBuffer = LegendaryOutputBuffer()
+            let stdoutProgressBuffer = StoreProgressAccumulator(provider: "Epic Games")
+            let stderrProgressBuffer = StoreProgressAccumulator(provider: "Epic Games")
             process.executableURL = executable
             process.arguments = arguments
             process.standardOutput = stdout
@@ -426,7 +428,7 @@ actor LegendaryEpicService: EpicLibraryProviding {
                 let data = handle.availableData
                 if !data.isEmpty {
                     outputBuffer.append(data)
-                    if let progress, let update = StoreProgressParser.update(from: data, provider: "Epic Games") {
+                    if let progress, let update = stdoutProgressBuffer.update(from: data) {
                         Task { await progress(update) }
                     }
                 }
@@ -435,7 +437,7 @@ actor LegendaryEpicService: EpicLibraryProviding {
                 let data = handle.availableData
                 if !data.isEmpty {
                     errorBuffer.append(data)
-                    if let progress, let update = StoreProgressParser.update(from: data, provider: "Epic Games") {
+                    if let progress, let update = stderrProgressBuffer.update(from: data) {
                         Task { await progress(update) }
                     }
                 }

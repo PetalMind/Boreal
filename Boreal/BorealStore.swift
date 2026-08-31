@@ -78,13 +78,29 @@ final class BorealStore {
         var didNormalizeApplicationState = false
         for index in applications.indices {
             let application = applications[index]
-            if application.installerPath == "steam-windows-client" {
-                applications[index].status = .unavailable
-                applications[index].lastResult = "Legacy Steam client entry disabled"
-                applications[index].lastFailureStage = "Migrating Steam installation"
-                applications[index].lastErrorDetail = "This legacy entry launched Steam for Windows. Re-download the game with native SteamCMD."
+            if application.isSteamRuntimeHost, application.storeProvider == .steam {
+                // Older builds used the host record as a fake game record. Keep
+                // the installed bottle, but detach the host from any AppID so it
+                // cannot make a game look installed or become its launch target.
+                applications[index].name = "Steam for Windows"
+                applications[index].publisher = "Valve"
+                applications[index].storeProvider = nil
+                applications[index].storeExternalID = nil
+                applications[index].lastResult = "Steam for Windows manages downloads and launch"
                 didNormalizeApplicationState = true
-                continue
+            }
+            if application.storeProvider == .steam,
+               application.installerPath == "steamcmd-windows-game",
+               let environmentRecord = environments.first(where: { $0.id == application.environmentID }),
+               let managed = managedEnvironment(from: environmentRecord),
+               let steamExecutable = SteamWindowsService.steamExecutable(
+                   in: managed,
+                   discovered: URL(fileURLWithPath: application.executablePath)
+               ) {
+                applications[index].executablePath = steamExecutable.path
+                applications[index].installerPath = "steam-windows-game"
+                applications[index].lastResult = "Ready to launch through Windows Steam"
+                didNormalizeApplicationState = true
             }
             let hasExecutable = FileManager.default.fileExists(atPath: application.executablePath)
             let hasRefreshableStoreInstallation: Bool = {
@@ -351,7 +367,7 @@ final class BorealStore {
         }
     }
 
-    func installSteamWindowsGame(_ game: StoreLibraryGame, credentials: SteamCMDCredentials) {
+    func installSteamWindowsGame(_ game: StoreLibraryGame) {
         let key = storeOperationKey(for: game)
         guard game.provider == .steam,
               game.supportsWindows != false,
@@ -359,65 +375,155 @@ final class BorealStore {
               storeGameOperations[key] == nil else { return }
         let token = UUID()
         storeOperationTokens[key] = token
-        let folderName = game.name
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: "\\", with: "-")
-            .replacingOccurrences(of: "..", with: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let destination = defaultGameInstallationRoot(for: .steam).appending(path: folderName.isEmpty ? game.externalID : folderName, directoryHint: .isDirectory)
         storeGameOperations[key] = .installing(StoreGameOperationProgress(
-            message: "Downloading Windows game with SteamCMD…",
+            message: "Preparing Steam for Windows…",
             fractionCompleted: nil
         ))
         let task = Task { [weak self] in
             guard let self else { return }
-            var createdEnvironment: ManagedBorealEnvironment?
             do {
-                let download = try await services.steamWindows.downloadWindowsGame(appID: game.externalID, destination: destination, credentials: credentials) { [weak self] stage in
-                    await self?.updateSteamPreparation(stage, key: key, token: token)
-                }
-                let snapshot = ExecutableDiscovery.snapshot(at: download.destination)
-                guard let candidate = ExecutableDiscovery.rankedCandidates(
-                    before: ExecutableFilesystemSnapshot(rootURL: download.destination, entries: []),
-                    after: snapshot,
-                    applicationName: game.name
-                ).first else { throw SteamWindowsError.gameExecutableMissing }
-                let executableArchitecture = WindowsExecutableArchitecture.inspect(candidate.url)
-                let preferredEngine: RuntimeEngine? = executableArchitecture == .x86_64 ? .gamePortingToolkit : .wine
-                let environmentArchitecture = executableArchitecture == .x86 ? "win32" : "win64"
-                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: preferredEngine)
-                let environment = try await services.environmentManager.create(configuration: EnvironmentConfiguration(name: game.name, architecture: environmentArchitecture), runtime: runtime)
-                createdEnvironment = environment
-                await updateSteamPreparation(.creatingEnvironment, key: key, token: token)
-                try await services.environmentManager.initialize(environment, runtime: runtime)
-                let managed = environment
-                let windowsEnvironment = WindowsEnvironment(id: managed.id, name: game.name, runtime: runtime.runtimeDescription, graphics: runtime.graphicsName, runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path)
-                let app = steamWindowsApplication(game: game, executable: candidate.url, environmentID: managed.id, status: .ready, graphics: runtime.graphicsName)
-                environments.append(windowsEnvironment)
-                applications.append(app)
-                if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
-                    storeGames[index].isInstalled = true
-                    storeGames[index].installPath = destination.path
-                    storeGames[index].installedPlatform = .windows
+                if let host = steamRuntimeHost() {
+                    try await launchSteamInstall(game, using: host)
+                } else {
+                    let prepared = try await services.steamWindows.prepareClient { [weak self] stage in
+                        await self?.updateSteamPreparation(stage, key: key, token: token)
+                    }
+                    try await registerSteamRuntimeHost(prepared)
+                    try await launchSteamInstall(game, steamExecutable: prepared.steamExecutable, environment: prepared.installation.environment, runtime: prepared.installation.runtime)
                 }
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
-                storeGameOperations[key] = nil
+                storeGameOperations[key] = .awaitingProvider("Steam for Windows is open. Sign in and install the game there, then refresh this status.")
                 storeOperationTasks[key] = nil
-                storeOperationTokens[key] = nil
                 save()
             } catch is CancellationError {
-                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
                 finishCancelledStoreOperation(key: key, token: token)
             } catch {
-                if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
                 guard storeOperationTokens[key] == token else { return }
                 storeGameOperations[key] = .failed(error.localizedDescription)
                 storeOperationTasks[key] = nil
-                present(error, title: "\(game.name) couldn’t be downloaded", stage: "Downloading the Windows build with SteamCMD")
+                present(error, title: "\(game.name) couldn’t be prepared", stage: "Installing Valve’s Windows Steam client in Boreal")
             }
         }
         storeOperationTasks[key] = task
+    }
+
+    func refreshSteamWindowsGame(_ game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard game.provider == .steam,
+              let host = steamRuntimeHost(),
+              let environmentRecord = environment(id: host.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let appIndex = applications.firstIndex(where: {
+                  $0.storeProvider == .steam && $0.storeExternalID == game.externalID && !$0.isSteamRuntimeHost
+              }) else {
+            refreshSteamWindowsGameWithoutApplication(game, key: key)
+            return
+        }
+        guard let installation = SteamWindowsService.installedGameDirectory(appID: game.externalID, in: managed) else {
+            storeGameOperations[key] = .awaitingProvider("Steam has not finished installing this game in the Windows Steam bottle yet.")
+            return
+        }
+        applications[appIndex].executablePath = host.executablePath
+        applications[appIndex].installerPath = "steam-windows-game"
+        applications[appIndex].status = .ready
+        applications[appIndex].storageBytes = GameStorage.allocatedSize(of: installation) ?? 0
+        markSteamGameInstalled(game, installationPath: installation.path)
+        storeGameOperations[key] = nil
+        storeOperationTasks[key] = nil
+        storeOperationTokens[key] = nil
+        save()
+    }
+
+    private func refreshSteamWindowsGameWithoutApplication(_ game: StoreLibraryGame, key: String) {
+        guard game.provider == .steam, let host = steamRuntimeHost(),
+              let environmentRecord = environment(id: host.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let installation = SteamWindowsService.installedGameDirectory(appID: game.externalID, in: managed) else {
+            storeGameOperations[key] = .awaitingProvider("Steam has not finished installing this game in the Windows Steam bottle yet.")
+            return
+        }
+        let app = steamWindowsApplication(game: game, executable: URL(fileURLWithPath: host.executablePath), environmentID: host.environmentID, status: .ready, graphics: environmentRecord.graphics)
+        applications.append(app)
+        if let index = applications.firstIndex(where: { $0.id == app.id }) {
+            applications[index].storageBytes = GameStorage.allocatedSize(of: installation) ?? 0
+        }
+        markSteamGameInstalled(game, installationPath: installation.path)
+        storeGameOperations[key] = nil
+        storeOperationTasks[key] = nil
+        storeOperationTokens[key] = nil
+        save()
+    }
+
+    private func markSteamGameInstalled(_ game: StoreLibraryGame, installationPath: String) {
+        guard let index = storeGames.firstIndex(where: { $0.id == game.id }) else { return }
+        storeGames[index].isInstalled = true
+        storeGames[index].installPath = installationPath
+        storeGames[index].installedPlatform = .windows
+        storeGames[index].storageBytes = GameStorage.allocatedSize(of: URL(fileURLWithPath: installationPath))
+    }
+
+    private func steamRuntimeHost() -> WindowsApplication? {
+        applications.first {
+            $0.isSteamRuntimeHost
+                && FileManager.default.fileExists(atPath: $0.executablePath)
+        }
+    }
+
+    private func registerSteamRuntimeHost(_ prepared: SteamWindowsClientCommit) async throws {
+        let managed = prepared.installation.environment
+        let environment = WindowsEnvironment(
+            id: managed.id,
+            name: "Steam for Windows",
+            runtime: prepared.installation.runtime.runtimeDescription,
+            graphics: prepared.installation.runtime.graphicsName,
+            runtimeID: prepared.installation.runtime.id,
+            rootPath: managed.rootURL.path,
+            prefixPath: managed.prefixURL.path,
+            logsPath: managed.logsURL.path
+        )
+        let host = WindowsApplication(
+            name: "Steam for Windows",
+            publisher: "Valve",
+            executablePath: prepared.steamExecutable.path,
+            installerPath: "steam-windows-client",
+            environmentID: managed.id,
+            status: .running,
+            graphics: prepared.installation.runtime.graphicsName,
+            lastOpened: .now,
+            iconSymbol: "gamecontroller.fill",
+            lastResult: "Steam for Windows manages downloads and launch"
+        )
+        environments.append(environment)
+        applications.append(host)
+        activeSessions[host.id] = prepared.installation.firstLaunch
+        activeEnvironments[host.id] = managed
+        activeRuntimes[host.id] = prepared.installation.runtime
+        save()
+        monitorLauncher(session: prepared.installation.firstLaunch, appID: host.id)
+        monitorEnvironmentSession(environment: managed, runtime: prepared.installation.runtime, appID: host.id)
+    }
+
+    private func launchSteamInstall(_ game: StoreLibraryGame, using host: WindowsApplication) async throws {
+        guard let environmentRecord = environment(id: host.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let runtime = try await runtime(for: environmentRecord) else {
+            throw InstallerServiceError.noRuntimeAvailable
+        }
+        try await launchSteamInstall(game, steamExecutable: URL(fileURLWithPath: host.executablePath), environment: managed, runtime: runtime)
+    }
+
+    private func launchSteamInstall(_ game: StoreLibraryGame, steamExecutable: URL, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        let bootstrap = try await services.processRunner.run(
+            plan: SteamWindowsService.bootstrapPlan(steamExecutable: steamExecutable),
+            environment: environment,
+            runtime: runtime
+        )
+        Task { _ = try? await services.processRunner.waitForExit(bootstrap) }
+        try await Task.sleep(for: .milliseconds(400))
+        let plan = SteamWindowsService.protocolPlan("steam://install/\(game.externalID)", steamExecutable: steamExecutable)
+        let session = try await services.processRunner.run(plan: plan, environment: environment, runtime: runtime)
+        Task { _ = try? await services.processRunner.waitForExit(session) }
     }
 
     func refreshEpicConnection() {
@@ -830,9 +936,9 @@ final class BorealStore {
         guard [.epic, .gog].contains(game.provider), storeGameOperations[key] == nil else { return }
         let token = UUID()
         let previousRecord = storeDownloadRecords[key]
-        var initialProgress = StoreGameOperationProgress(
+        var initialProgress = initialDownloadProgress(
             message: "Preparing \(game.provider.rawValue) download…",
-            fractionCompleted: nil
+            game: game
         )
         if let startedAt = previousRecord?.lastProgress?.startedAt {
             initialProgress.startedAt = startedAt
@@ -1315,14 +1421,14 @@ final class BorealStore {
             name: game.name,
             publisher: game.developer ?? "Steam",
             executablePath: executable.path,
-            installerPath: "steamcmd-windows-game",
+            installerPath: "steam-windows-game",
             environmentID: environmentID,
             status: status,
             compatibility: game.compatibility?.tier.rating ?? .unknown,
             graphics: graphics,
             lastOpened: status == .running ? .now : nil,
             iconSymbol: "gamecontroller.fill",
-            lastResult: "Downloaded with SteamCMD; launched with Boreal’s Windows runtime",
+            lastResult: "Installed by Windows Steam; launched through steam.exe -applaunch",
             storeProvider: .steam,
             storeExternalID: game.externalID,
             communityCompatibility: game.compatibility
@@ -1491,12 +1597,17 @@ final class BorealStore {
                 switch provider {
                 case .steam:
                     let executable = URL(fileURLWithPath: applications[index].executablePath)
-                    plan = WindowsLaunchPlan(
-                        executable: executable,
-                        arguments: [],
-                        environment: [:],
-                        workingDirectory: executable.deletingLastPathComponent()
+                    guard SteamWindowsService.installedGameDirectory(appID: appID, in: managed) != nil else {
+                        throw SteamWindowsError.gameNotInstalled(appID)
+                    }
+                    let bootstrap = try await services.processRunner.run(
+                        plan: SteamWindowsService.bootstrapPlan(steamExecutable: executable),
+                        environment: managed,
+                        runtime: runtime
                     )
+                    Task { _ = try? await services.processRunner.waitForExit(bootstrap) }
+                    try await Task.sleep(for: .milliseconds(400))
+                    plan = SteamWindowsService.playPlan(appID: appID, steamExecutable: executable)
                 case .epic: plan = try await services.epicLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
                 case .gog: plan = try await services.gogLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
                 }
@@ -1829,6 +1940,28 @@ final class BorealStore {
     private func updateStoreDownload(_ progress: StoreGameOperationProgress, key: String, token: UUID) {
         guard storeOperationTokens[key] == token else { return }
         var progress = progress
+        let previousProgress = storeGameOperations[key]?.progress ?? storeDownloadRecords[key]?.lastProgress
+        let knownTotal = storeGames.first(where: { storeOperationKey(for: $0) == key })?.sizeEstimate?.downloadBytes
+        if progress.totalBytes == nil {
+            progress.totalBytes = previousProgress?.totalBytes ?? knownTotal
+        }
+        if progress.total == nil, let totalBytes = progress.totalBytes {
+            progress.total = StoreGameOperationProgress.byteCountString(totalBytes)
+        }
+        if progress.fractionCompleted == nil {
+            progress.fractionCompleted = previousProgress?.fractionCompleted
+        }
+        if progress.transferredBytes == nil,
+           let fraction = progress.fractionCompleted,
+           let totalBytes = progress.totalBytes {
+            progress.transferredBytes = Int64((Double(totalBytes) * min(max(fraction, 0), 1)).rounded())
+        }
+        if progress.transferredBytes == nil {
+            progress.transferredBytes = previousProgress?.transferredBytes
+        }
+        if progress.transferred == nil, let transferredBytes = progress.transferredBytes {
+            progress.transferred = StoreGameOperationProgress.byteCountString(transferredBytes)
+        }
         if var record = storeDownloadRecords[key] {
             if let startedAt = record.lastProgress?.startedAt { progress.startedAt = startedAt }
             record.status = .downloading
@@ -1858,15 +1991,25 @@ final class BorealStore {
         storeGameOperations[key] = .installing(progress)
     }
 
+    private func initialDownloadProgress(message: String, game: StoreLibraryGame) -> StoreGameOperationProgress {
+        var progress = StoreGameOperationProgress(message: message, fractionCompleted: nil)
+        if let totalBytes = game.sizeEstimate?.downloadBytes {
+            progress.totalBytes = totalBytes
+            progress.total = StoreGameOperationProgress.byteCountString(totalBytes)
+        }
+        return progress
+    }
+
     private func updateSteamPreparation(_ stage: InstallationStage, key: String, token: UUID) {
         guard storeOperationTokens[key] == token else { return }
         let stages = InstallationStage.allCases
         let index = stages.firstIndex(of: stage) ?? 0
         let fraction = Double(index) / Double(max(stages.count, 1))
-        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+        updateStoreDownload(StoreGameOperationProgress(
             message: stage.userMessage,
-            fractionCompleted: fraction
-        ))
+            fractionCompleted: fraction,
+            phase: .installing
+        ), key: key, token: token)
     }
 
     private func updateEnvironmentPreparation(_ message: String, fraction: Double, key: String, token: UUID) {

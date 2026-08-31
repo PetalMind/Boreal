@@ -96,9 +96,7 @@ struct StorePlatformBadge: View {
 
     var body: some View {
         if game.supportsNativeMacOS == true {
-            Label("Native macOS", systemImage: "apple.logo")
-                .foregroundStyle(.green)
-                .accessibilityLabel("Native macOS version available")
+            NativeMacOSBadge()
         } else if game.supportsWindows == true {
             Label("Windows via Boreal", systemImage: "wineglass")
                 .foregroundStyle(game.compatibility?.tier.rating == .unsupported ? .red : .cyan)
@@ -107,6 +105,22 @@ struct StorePlatformBadge: View {
             Label("Platform unknown", systemImage: "questionmark.circle")
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+struct NativeMacOSBadge: View {
+    var compact = false
+
+    var body: some View {
+        Label("Natywna", systemImage: "apple.logo")
+            .font(compact ? .caption2.weight(.semibold) : .callout.weight(.semibold))
+            .foregroundStyle(.green)
+            .padding(.horizontal, compact ? 7 : 9)
+            .padding(.vertical, compact ? 4 : 5)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay { Capsule().stroke(Color.green.opacity(0.45), lineWidth: 1) }
+            .shadow(color: .black.opacity(compact ? 0.25 : 0), radius: 5, y: 2)
+            .accessibilityLabel("Natywna wersja macOS")
     }
 }
 
@@ -160,38 +174,6 @@ struct MacCompatibilityBadge: View {
         case .limited: .orange
         case .unknown: .secondary
         case .unsupported: .red
-        }
-    }
-}
-
-struct CommunityCompatibilityBadge: View {
-    let profile: CommunityCompatibility?
-    var compact = false
-
-    var body: some View {
-        if let profile {
-            Label(profile.tier.title, systemImage: profile.tier.rating.symbol)
-                .font(compact ? .caption : .callout)
-                .fontWeight(.medium)
-                .foregroundStyle(color(profile.tier))
-                .padding(.horizontal, compact ? 7 : 9)
-                .padding(.vertical, compact ? 3 : 5)
-                .background(color(profile.tier).opacity(0.12), in: Capsule())
-                .accessibilityLabel("\(profile.source.rawValue) compatibility: \(profile.tier.title)")
-        } else {
-            Label("Not rated", systemImage: "questionmark.circle")
-                .font(compact ? .caption : .callout)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func color(_ tier: CompatibilityTier) -> Color {
-        switch tier.rating {
-        case .excellent: .green
-        case .good: .teal
-        case .limited: .orange
-        case .unsupported: .red
-        case .unknown: .secondary
         }
     }
 }

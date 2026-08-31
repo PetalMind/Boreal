@@ -42,9 +42,9 @@ struct StoreGameDetailView: View {
             StoreGameInstallationSheet(
                 game: currentGame,
                 defaultDestination: store.defaultGameInstallationRoot(for: game.provider)
-            ) { destination, credentials in
-                if game.provider == .steam, let credentials { store.installSteamWindowsGame(game, credentials: credentials) }
-                else { store.installStoreGame(game, destinationRoot: destination) }
+            ) { destination in
+                if game.provider == .steam { store.installSteamWindowsGame(currentGame) }
+                else { store.installStoreGame(currentGame, destinationRoot: destination) }
             }
         }
         .task(id: game.id) {
@@ -264,6 +264,12 @@ struct StoreGameDetailView: View {
         } else if case .awaitingProvider(let message) = storeOperation {
             statusCard(symbol: "info.circle.fill", tint: .secondary) {
                 Text(message)
+                if game.provider == .steam {
+                    Button("Refresh Windows Steam Status", systemImage: "arrow.clockwise") {
+                        store.refreshSteamWindowsGame(currentGame)
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Button("Dismiss Status") { store.clearStoreGameOperation(for: game) }.buttonStyle(.plain)
             }
         } else if case .failed(let message) = storeOperation {
@@ -434,11 +440,28 @@ struct StoreGameDetailView: View {
 
     private func progressSummary(_ progress: StoreGameOperationProgress) -> String {
         var values: [String] = []
-        if let transferred = progress.transferred, let total = progress.total {
+        if let transferredBytes = progress.transferredBytes,
+           let totalBytes = progress.totalBytes {
+            values.append("\(StoreGameOperationProgress.byteCountString(transferredBytes)) of \(StoreGameOperationProgress.byteCountString(totalBytes))")
+            values.append("\(StoreGameOperationProgress.byteCountString(max(0, totalBytes - transferredBytes))) left")
+        } else if let transferred = progress.transferred, let total = progress.total {
             values.append("\(transferred) of \(total)")
+        } else if let total = progress.total {
+            values.append("Total: \(total)")
         }
         if let rate = progress.transferRate { values.append(rate) }
-        if let remaining = progress.estimatedTimeRemaining { values.append("About \(remaining) remaining") }
+        if let remaining = progress.estimatedTimeRemaining {
+            values.append("About \(remaining) remaining")
+        } else if let remainingBytes = progress.remainingBytes,
+                  remainingBytes > 0,
+                  let speed = progress.networkBytesPerSecond,
+                  speed > 0 {
+            let seconds = max(1, Int((Double(remainingBytes) / speed).rounded()))
+            let eta = seconds >= 3_600
+                ? "\(seconds / 3_600)h \((seconds % 3_600) / 60)m"
+                : seconds >= 60 ? "\(seconds / 60)m \(seconds % 60)s" : "\(seconds)s"
+            values.append("About \(eta) remaining")
+        }
         return values.joined(separator: "  •  ")
     }
 
@@ -569,16 +592,16 @@ struct StoreGameDetailView: View {
 
     private var compatibilitySection: some View {
         VStack(alignment: .leading, spacing: 13) {
-            Text("Windows Compatibility").font(.title2).fontWeight(.semibold)
+            Text("Wine Compatibility").font(.title2).fontWeight(.semibold)
             if let profile = currentGame.compatibility {
                 HStack(alignment: .top, spacing: 18) {
-                    CommunityCompatibilityBadge(profile: profile)
+                    MacCompatibilityBadge(rating: profile.tier.rating)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("macOS compatibility from \(profile.source.rawValue)")
+                        Text("Wine compatibility")
                             .fontWeight(.medium)
                         Text(compatibilitySummary(profile))
                             .font(.callout).foregroundStyle(.secondary)
-                        Text("This is community or CrossOver evidence, not a guarantee for Boreal's Wine configuration.")
+                        Text("This compatibility estimate is not a guarantee for Boreal's Wine configuration.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -590,19 +613,6 @@ struct StoreGameDetailView: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             }
-            HStack {
-                if game.provider == .steam {
-                    Button("Open ProtonDB", systemImage: "safari") { openProtonDB() }
-                }
-                if currentGame.compatibility?.source == .codeWeavers,
-                   let value = currentGame.compatibility?.sourceURL,
-                   let url = URL(string: value) {
-                    Button("Open CodeWeavers", systemImage: "safari") { NSWorkspace.shared.open(url) }
-                } else {
-                    Button("Search CodeWeavers", systemImage: "magnifyingglass") { openCodeWeaversSearch() }
-                }
-                Button("Browse WineHQ AppDB", systemImage: "magnifyingglass") { openWineAppDB() }
-            }
         }
         .padding(18)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -610,15 +620,16 @@ struct StoreGameDetailView: View {
     }
 
     private func compatibilitySummary(_ profile: CommunityCompatibility) -> String {
-        if profile.source == .codeWeavers {
-            var parts = [profile.tier.title]
-            if let score = profile.score { parts.append("\(Int(score))/5 stars") }
-            if let date = profile.sourceUpdatedAt { parts.append("Updated \(date.formatted(date: .abbreviated, time: .omitted))") }
-            return parts.joined(separator: " · ")
+        var parts = [profile.tier.title]
+        if let score = profile.score { parts.append("\(Int(score))/5 stars") }
+        if profile.reportCount > 0 { parts.append("\(profile.reportCount.formatted()) reports") }
+        if let confidence = profile.confidence, profile.score == nil {
+            parts.append("\(confidence.capitalized) confidence")
         }
-        var parts = ["\(profile.reportCount.formatted()) reports"]
-        if let confidence = profile.confidence { parts.append("\(confidence.capitalized) confidence") }
         if let trending = profile.trendingTier, trending != profile.tier { parts.append("Trending: \(trending.title)") }
+        if let date = profile.sourceUpdatedAt, profile.score != nil {
+            parts.append("Updated \(date.formatted(date: .abbreviated, time: .omitted))")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -711,28 +722,6 @@ struct StoreGameDetailView: View {
         }
     }
 
-    private func openProtonDB() {
-        if let url = URL(string: "https://www.protondb.com/app/\(game.externalID)") { NSWorkspace.shared.open(url) }
-    }
-
-    private func openCodeWeaversSearch() {
-        var components = URLComponents(string: "https://www.codeweavers.com/compatibility")
-        components?.queryItems = [
-            URLQueryItem(name: "name", value: game.name),
-            URLQueryItem(name: "search", value: "app")
-        ]
-        if let url = components?.url { NSWorkspace.shared.open(url) }
-    }
-
-    private func openWineAppDB() {
-        var components = URLComponents(string: "https://appdb.winehq.org/objectManager.php")
-        components?.queryItems = [
-            URLQueryItem(name: "sClass", value: "application"),
-            URLQueryItem(name: "iAction", value: "browse"),
-            URLQueryItem(name: "iItemsPerPage", value: "25")
-        ]
-        if let url = components?.url { NSWorkspace.shared.open(url) }
-    }
 }
 
 struct BorealDownloadProgressStyle: ProgressViewStyle {
@@ -762,13 +751,10 @@ struct BorealDownloadProgressStyle: ProgressViewStyle {
 private struct StoreGameInstallationSheet: View {
     @Environment(\.dismiss) private var dismiss
     let game: StoreLibraryGame
-    let completion: (URL?, SteamCMDCredentials?) -> Void
+    let completion: (URL?) -> Void
     @State private var destination: URL
-    @State private var steamUsername = ""
-    @State private var steamPassword = ""
-    @State private var steamGuardCode = ""
 
-    init(game: StoreLibraryGame, defaultDestination: URL, completion: @escaping (URL?, SteamCMDCredentials?) -> Void) {
+    init(game: StoreLibraryGame, defaultDestination: URL, completion: @escaping (URL?) -> Void) {
         self.game = game
         self.completion = completion
         _destination = State(initialValue: defaultDestination)
@@ -792,23 +778,11 @@ private struct StoreGameInstallationSheet: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if game.provider == .steam {
-                Label("Steam chooses the game library", systemImage: "shippingbox.and.arrow.backward")
+                Label("Steam for Windows manages this installation", systemImage: "gamecontroller.fill")
                     .font(.headline)
-                Text("Boreal will download the Windows depots with native SteamCMD. Your credentials are used only for this download and are never saved.")
+                Text("Boreal will install Valve’s Windows Steam client in its own Wine prefix. Sign in and choose the game’s library in Steam; Boreal will launch the game through that client.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                TextField("Steam username", text: $steamUsername)
-                SecureField("Steam password", text: $steamPassword)
-                TextField("Steam Guard code (if requested)", text: $steamGuardCode)
-                HStack(spacing: 10) {
-                    Button("Open Steam Guard Mobile help", systemImage: "iphone.and.arrow.forward") {
-                        openSteamGuardHelp()
-                    }
-                    .buttonStyle(.bordered)
-                    Text("Use the current code from Steam Mobile; it changes every 30 seconds.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Installation location").font(.headline)
@@ -839,16 +813,13 @@ private struct StoreGameInstallationSheet: View {
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Spacer()
-                Button(game.supportsNativeMacOS == true ? "Download Native Version" : (game.provider == .steam ? "Download Windows Version" : "Download and Install")) {
-                    let credentials = game.provider == .steam
-                        ? SteamCMDCredentials(username: steamUsername, password: steamPassword, guardCode: steamGuardCode)
-                        : nil
-                    completion(game.provider == .steam ? nil : destination, credentials)
+                Button(game.supportsNativeMacOS == true ? "Download Native Version" : (game.provider == .steam ? "Open Windows Steam Installer" : "Download and Install")) {
+                    completion(game.provider == .steam ? nil : destination)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(game.provider != .steam && !destinationIsUsable || (game.provider == .steam && (steamUsername.isEmpty || steamPassword.isEmpty)))
+                .disabled(game.provider != .steam && !destinationIsUsable)
             }
         }
         .padding(28)
@@ -860,11 +831,6 @@ private struct StoreGameInstallationSheet: View {
         let exists = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory)
         if exists { return isDirectory.boolValue && FileManager.default.isWritableFile(atPath: destination.path) }
         return FileManager.default.isWritableFile(atPath: capacityProbeURL.path)
-    }
-
-    private func openSteamGuardHelp() {
-        guard let url = URL(string: "https://help.steampowered.com/en/faqs/view/7EFD-3CAE-64D3-1C31") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private var formattedDownloadSize: String {

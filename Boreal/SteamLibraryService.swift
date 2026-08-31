@@ -422,7 +422,7 @@ actor SteamLibraryService: SteamLibraryLoading {
     private func numericAppID(_ value: String) -> Int64 { Int64(value) ?? .max }
 }
 
-private nonisolated enum ValveKeyValue: Sendable {
+nonisolated enum ValveKeyValue: Sendable {
     case string(String)
     case object([String: ValveKeyValue])
 
@@ -440,7 +440,7 @@ private nonisolated enum ValveKeyValue: Sendable {
     }
 }
 
-private nonisolated enum ValveKeyValueDecoder {
+nonisolated enum ValveKeyValueDecoder {
     private enum Token { case value(String), open, close }
 
     static func decode(url: URL) throws -> ValveKeyValue {
@@ -520,7 +520,7 @@ private nonisolated enum ValveKeyValueDecoder {
     }
 }
 
-private nonisolated extension Dictionary where Key == String, Value == ValveKeyValue {
+nonisolated extension Dictionary where Key == String, Value == ValveKeyValue {
     func string(_ key: String) -> String? {
         guard case .string(let value) = self[key] else { return nil }
         return value

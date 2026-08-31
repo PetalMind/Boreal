@@ -14,8 +14,8 @@ The importer reads Valve KeyValues data already maintained by Steam:
 
 Names, descriptions, developers, and header art are enriched with Steam's public Store app-details response. Failure to reach that endpoint does not discard the local library; Boreal keeps local metadata and a stable App ID fallback.
 
-Imported entries are persisted in Boreal's `library.json`, retain stable Boreal IDs across refreshes, participate in search and grid/list layouts, and have a dedicated detail view. Installed entries can be launched through Steam's registered `steam://rungameid/<app-id>` URL. Non-installed entries open in Steam or on the Store page.
+Imported entries are persisted in Boreal's `library.json`, retain stable Boreal IDs across refreshes, participate in search and grid/list layouts, and have a dedicated detail view. Native macOS installations can be opened through the registered `steam://rungameid/<app-id>` URL. Windows installations managed by Boreal are launched by the Windows Steam client with `steam.exe -applaunch <app-id>` inside the game's shared Steam bottle.
 
 ## Current boundary
 
-The library importer remains read-only for the existing macOS Steam installation. Windows-only Steam games can be downloaded separately through native SteamCMD from the game detail flow; credentials are entered for that operation only and are not inferred from or copied out of the macOS Steam session.
+The library importer remains read-only for the existing macOS Steam installation. Windows-only Steam games are installed by the Windows Steam client in Boreal's managed Steam bottle. Credentials and Steam Guard remain inside that Windows Steam UI; they are not inferred from or copied out of the macOS Steam session.

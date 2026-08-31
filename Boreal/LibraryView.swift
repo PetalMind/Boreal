@@ -130,6 +130,7 @@ nonisolated enum LibraryProjector {
             uniquingKeysWith: { first, _ in first }
         )
         let apps = applications.filter { app in
+            guard !app.isSteamRuntimeHost else { return false }
             guard let provider = app.storeProvider, let externalID = app.storeExternalID else { return true }
             return storeGamesByLink[storeLink(provider: provider, externalID: externalID)] == nil
         }.map { app in
@@ -814,7 +815,10 @@ struct LibraryView: View {
                 Button { select(item) } label: { itemIcon(item, compact: false) }
                     .buttonStyle(.plain)
                     .overlay(alignment: .topLeading) {
-                        if item.compatibility != .unknown {
+                        if case .storeGame(let game) = item.kind, game.supportsNativeMacOS == true {
+                            NativeMacOSBadge(compact: true)
+                                .padding(8)
+                        } else if item.compatibility != .unknown {
                             MacCompatibilityBadge(rating: item.compatibility, compact: true)
                                 .padding(8)
                         }

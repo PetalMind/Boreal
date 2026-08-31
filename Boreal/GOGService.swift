@@ -654,6 +654,8 @@ actor GOGService: GOGLibraryProviding {
             let stderr = Pipe()
             let output = GOGOutputBuffer()
             let errorOutput = GOGOutputBuffer()
+            let stdoutProgressBuffer = StoreProgressAccumulator(provider: "GOG")
+            let stderrProgressBuffer = StoreProgressAccumulator(provider: "GOG")
             process.executableURL = executable
             process.arguments = arguments
             process.standardOutput = stdout
@@ -663,7 +665,7 @@ actor GOGService: GOGLibraryProviding {
                 let data = handle.availableData
                 if !data.isEmpty {
                     output.append(data)
-                    if let progress, let update = StoreProgressParser.update(from: data, provider: "GOG") {
+                    if let progress, let update = stdoutProgressBuffer.update(from: data) {
                         Task { await progress(update) }
                     }
                 }
@@ -671,7 +673,7 @@ actor GOGService: GOGLibraryProviding {
             stderr.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 if !data.isEmpty { errorOutput.append(data) }
-                if !data.isEmpty, let progress, let update = StoreProgressParser.update(from: data, provider: "GOG") {
+                if !data.isEmpty, let progress, let update = stderrProgressBuffer.update(from: data) {
                     Task { await progress(update) }
                 }
             }

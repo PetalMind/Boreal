@@ -48,24 +48,12 @@ struct AppDetailView: View {
                         infoGroup("Compatibility") {
                             CompatibilityLabel(rating: app.compatibility)
                             if let profile = app.communityCompatibility {
-                                Text("\(profile.source.rawValue) · \(profile.tier.title)")
+                                Text("Wine · \(profile.tier.title)")
                                     .font(.caption).foregroundStyle(.secondary)
                             } else {
                                 Text(app.compatibility == .unknown ? "No unambiguous compatibility result found." : "Configuration verified by Boreal.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
-                            HStack(spacing: 8) {
-                                if let value = app.communityCompatibility?.sourceURL, let url = URL(string: value) {
-                                    Button("Open source") { NSWorkspace.shared.open(url) }
-                                        .buttonStyle(.link)
-                                } else {
-                                    Button("Search CodeWeavers") { openCodeWeaversSearch() }
-                                        .buttonStyle(.link)
-                                }
-                                Button("WineHQ AppDB") { openWineAppDB() }
-                                    .buttonStyle(.link)
-                            }
-                            .font(.caption)
                         }
                         infoGroup("Environment") {
                             Text(app.windowsVersion)
@@ -209,19 +197,6 @@ struct AppDetailView: View {
 
     private func revealExecutable() {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.executablePath)])
-    }
-
-    private func openCodeWeaversSearch() {
-        var components = URLComponents(string: "https://www.codeweavers.com/compatibility")
-        components?.queryItems = [
-            URLQueryItem(name: "name", value: app.name),
-            URLQueryItem(name: "search", value: "app")
-        ]
-        if let url = components?.url { NSWorkspace.shared.open(url) }
-    }
-
-    private func openWineAppDB() {
-        if let url = URL(string: "https://appdb.winehq.org/") { NSWorkspace.shared.open(url) }
     }
 
     private func openCDrive(_ environment: WindowsEnvironment) {

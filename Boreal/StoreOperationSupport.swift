@@ -41,13 +41,23 @@ nonisolated final class CancellableStoreProcess: @unchecked Sendable {
 nonisolated enum StoreProgressParser {
     static func update(from data: Data, provider: String) -> StoreGameOperationProgress? {
         guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
-        let line = text
+        let lines = text
             .split(whereSeparator: \.isNewline)
-            .last
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let line, !line.isEmpty else { return nil }
-        let fraction = percentage(in: line).map { Double($0) / 100 }
+            .map(String.init)
+        let updates = lines.compactMap { parse(line: $0, provider: provider) }
+        return updates.last(where: {
+            $0.fractionCompleted != nil
+                || $0.transferredBytes != nil
+                || $0.transferRate != nil
+                || $0.estimatedTimeRemaining != nil
+                || $0.phase != .preparing
+        }) ?? updates.last
+    }
+
+    private static func parse(line rawLine: String, provider: String) -> StoreGameOperationProgress? {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return nil }
+        let fraction = percentage(in: line, provider: provider).map { $0 / 100 }
         let phase = phase(in: line)
         let amount = byteProgress(in: line)
         let rates = byteRates(in: line, phase: phase)
@@ -58,6 +68,8 @@ nonisolated enum StoreProgressParser {
             transferRate: transferRate(in: line, phase: phase),
             transferred: amount?.completed,
             total: amount?.total,
+            transferredBytes: amount?.completedBytes,
+            totalBytes: amount?.totalBytes,
             estimatedTimeRemaining: estimatedTime(in: line),
             rawDetail: concise(line),
             networkBytesPerSecond: rates.network,
@@ -65,12 +77,20 @@ nonisolated enum StoreProgressParser {
         )
     }
 
-    private static func percentage(in text: String) -> Int? {
-        let pattern = #"(?:^|\s|\[)(\d{1,3})(?:\.\d+)?%"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
+    private static func percentage(in text: String, provider: String) -> Double? {
+        let pattern = #"(?:^|\s|\[)(\d{1,3}(?:\.\d+)?)%"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
+           let range = Range(match.range(at: 1), in: text),
+           let value = Double(text[range]), value <= 100 {
+            return value
+        }
+        guard provider.localizedCaseInsensitiveContains("steam") else { return nil }
+        let steamPattern = #"progress:\s*(\d{1,3}(?:\.\d+)?)"#
+        guard let regex = try? NSRegularExpression(pattern: steamPattern, options: [.caseInsensitive]),
               let match = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
               let range = Range(match.range(at: 1), in: text),
-              let value = Int(text[range]), value <= 100 else { return nil }
+              let value = Double(text[range]), value <= 100 else { return nil }
         return value
     }
 
@@ -144,15 +164,75 @@ nonisolated enum StoreProgressParser {
         }
     }
 
-    private static func byteProgress(in text: String) -> (completed: String, total: String)? {
-        let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)\s*(?:/|of)\s*(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+    private static func byteProgress(in text: String) -> (completed: String, total: String, completedBytes: Int64, totalBytes: Int64)? {
+        let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)\s*(?:/|of)\s*(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)?"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let completedValue = Range(match.range(at: 1), in: text),
+           let completedUnit = Range(match.range(at: 2), in: text),
+           let totalValue = Range(match.range(at: 3), in: text) {
+            let totalUnit = Range(match.range(at: 4), in: text) ?? completedUnit
+            return makeByteProgress(
+                completedValue: completedValue,
+                completedUnit: completedUnit,
+                totalValue: totalValue,
+                totalUnit: totalUnit,
+                text: text
+            )
+        }
+
+        // Steam-compatible providers sometimes print the unit only after the total value:
+        // "1234 / 5678 KB".
+        let steamPattern = #"(\d+(?:\.\d+)?)\s*(?:/|of)\s*(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)"#
+        guard let regex = try? NSRegularExpression(pattern: steamPattern, options: [.caseInsensitive]),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let completedValue = Range(match.range(at: 1), in: text),
-              let completedUnit = Range(match.range(at: 2), in: text),
-              let totalValue = Range(match.range(at: 3), in: text),
-              let totalUnit = Range(match.range(at: 4), in: text) else { return nil }
-        return ("\(text[completedValue]) \(text[completedUnit])", "\(text[totalValue]) \(text[totalUnit])")
+              let totalValue = Range(match.range(at: 2), in: text),
+              let unit = Range(match.range(at: 3), in: text) else { return nil }
+        return makeByteProgress(
+            completedValue: completedValue,
+            completedUnit: unit,
+            totalValue: totalValue,
+            totalUnit: unit,
+            text: text
+        )
+    }
+
+    private static func makeByteProgress(
+        completedValue: Range<String.Index>,
+        completedUnit: Range<String.Index>,
+        totalValue: Range<String.Index>,
+        totalUnit: Range<String.Index>,
+        text: String
+    ) -> (completed: String, total: String, completedBytes: Int64, totalBytes: Int64) {
+        let completedNumber = Double(text[completedValue]) ?? 0
+        let totalNumber = Double(text[totalValue]) ?? 0
+        let completedUnitText = String(text[completedUnit])
+        let totalUnitText = String(text[totalUnit])
+        let completedBytes = byteCount(value: completedNumber, unit: completedUnitText)
+        let totalBytes = byteCount(value: totalNumber, unit: totalUnitText)
+        return (
+            "\(text[completedValue]) \(completedUnitText)",
+            "\(text[totalValue]) \(totalUnitText)",
+            completedBytes,
+            totalBytes
+        )
+    }
+
+    private static func byteCount(value: Double, unit: String) -> Int64 {
+        let multiplier: Double
+        switch unit.lowercased() {
+        case "kb": multiplier = 1_000
+        case "kib": multiplier = 1_024
+        case "mb": multiplier = 1_000_000
+        case "mib": multiplier = 1_048_576
+        case "gb": multiplier = 1_000_000_000
+        case "gib": multiplier = 1_073_741_824
+        case "tb": multiplier = 1_000_000_000_000
+        case "tib": multiplier = 1_099_511_627_776
+        default: multiplier = 1
+        }
+        return Int64(max(0, (value * multiplier).rounded()))
     }
 
     private static func estimatedTime(in text: String) -> String? {
@@ -174,5 +254,33 @@ nonisolated enum StoreProgressParser {
         let sanitized = text.replacingOccurrences(of: "\r", with: " ")
         guard !sanitized.isEmpty else { return nil }
         return String(sanitized.prefix(500))
+    }
+}
+
+/// Buffers helper output because readability callbacks are allowed to split a
+/// progress line at any byte boundary. Without this, a percentage or byte pair
+/// can disappear simply because `%` arrived in the next callback.
+nonisolated final class StoreProgressAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending = ""
+    private let provider: String
+
+    init(provider: String) {
+        self.provider = provider
+    }
+
+    func update(from data: Data) -> StoreGameOperationProgress? {
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
+        lock.lock()
+        let combined = pending + text
+        let hasTrailingNewline = combined.last?.isNewline == true
+        let lines = combined.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline).map(String.init)
+        let completeLines = hasTrailingNewline ? lines : Array(lines.dropLast())
+        pending = hasTrailingNewline ? "" : (lines.last ?? combined)
+        lock.unlock()
+
+        return completeLines.reversed()
+            .compactMap { StoreProgressParser.update(from: Data($0.utf8), provider: provider) }
+            .first
     }
 }

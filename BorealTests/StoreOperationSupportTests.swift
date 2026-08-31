@@ -9,7 +9,7 @@ struct StoreOperationSupportTests {
             provider: "GOG"
         ))
 
-        #expect(update.fractionCompleted == 0.42)
+        #expect(update.fractionCompleted == 0.425)
         #expect(update.message == "Downloading game files")
         #expect(update.phase == .downloading)
         #expect(update.transferRate == "18.2 MiB/s")
@@ -17,6 +17,7 @@ struct StoreOperationSupportTests {
         #expect(update.diskBytesPerSecond == nil)
         #expect(update.rawDetail == "Downloading chunk [42.5%] at 18.2 MiB/s")
         #expect(StoreGameOperationProgress(message: "test", fractionCompleted: 1.4).clampedFraction == 1)
+        #expect(update.transferredBytes == nil)
     }
 
     @Test func turnsDiskTelemetryIntoAnInstallingStageAndKeepsRawLogInDetails() throws {
@@ -44,6 +45,44 @@ struct StoreOperationSupportTests {
         #expect(update.total == "5.4 GiB")
         #expect(update.transferRate == "23.6 MiB/s")
         #expect(update.estimatedTimeRemaining == "1 min 24 sec")
+        #expect(update.transferredBytes == 2_254_857_830)
+        #expect(update.totalBytes == 5_798_205_850)
+    }
+
+    @Test func parsesSteamProgressAndAHelperLineSplitAcrossCallbacks() throws {
+        let steam = try #require(StoreProgressParser.update(
+            from: Data("Update state 0x61, downloading, progress: 37.5\n".utf8),
+            provider: "Steam"
+        ))
+        #expect(steam.fractionCompleted == 0.375)
+        #expect(steam.phase == .downloading)
+
+        let accumulator = StoreProgressAccumulator(provider: "GOG")
+        #expect(accumulator.update(from: Data("Downloading 38% 2.1 Gi".utf8)) == nil)
+        let update = try #require(accumulator.update(from: Data("B / 5.4 GiB ETA: 1 min\n".utf8)))
+        #expect(update.fractionCompleted == 0.38)
+        #expect(update.transferredBytes == 2_254_857_830)
+        #expect(update.totalBytes == 5_798_205_850)
+    }
+
+    @Test func derivesPercentageFromNumericAmountsWhenHelperOmitsIt() {
+        let progress = StoreGameOperationProgress(
+            message: "Downloading",
+            fractionCompleted: nil,
+            transferredBytes: 25,
+            totalBytes: 100
+        )
+        #expect(progress.clampedFraction == 0.25)
+        #expect(progress.remainingBytes == 75)
+    }
+
+    @Test func parsesSteamBytesWhenTheUnitAppearsOnlyOnce() throws {
+        let update = try #require(StoreProgressParser.update(
+            from: Data("Update state downloading, progress: 37.5 (1234 / 5678 KB)\n".utf8),
+            provider: "Steam"
+        ))
+        #expect(update.transferredBytes == 1_234_000)
+        #expect(update.totalBytes == 5_678_000)
     }
 
     @Test func cancellationTerminatesAttachedHelperProcess() async throws {
