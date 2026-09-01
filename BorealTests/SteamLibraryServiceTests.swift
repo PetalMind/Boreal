@@ -80,6 +80,47 @@ struct SteamLibraryServiceTests {
         ]) == nil)
     }
 
+    @Test func importsNewUninstalledGameFoundOnlyInPerUserLibraryCache() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "BorealSteamCacheTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try makeDirectory(root.appending(path: "config"))
+        try makeDirectory(root.appending(path: "userdata/1234/config/librarycache"))
+        try makeDirectory(root.appending(path: "appcache/librarycache/342940"))
+
+        try write("""
+        "users" { "76561197960266962" { "AccountName" "not-read-by-boreal" } }
+        """, to: root.appending(path: "config/loginusers.vdf"))
+        try write("""
+        "UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { } } } } }
+        """, to: root.appending(path: "userdata/1234/config/localconfig.vdf"))
+        try write("""
+        [["descriptions", {"data": {"strSnippet": "Cached summary"}}],
+         ["associations", {"data": {"rgDevelopers": [{"strName": "Elder Game"}]}}]]
+        """, to: root.appending(path: "userdata/1234/config/librarycache/342940.json"))
+        try Data([0xFF, 0xD8, 0xFF]).write(
+            to: root.appending(path: "appcache/librarycache/342940/library_600x900.jpg")
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SteamMetadataURLProtocol.self]
+        SteamMetadataURLProtocol.responseData = Data("""
+        {"342940":{"success":true,"data":{"name":"Project: Gorgon","developers":["Elder Game"],"short_description":"Store summary","platforms":{"windows":true,"mac":false}}}}
+        """.utf8)
+        let service = SteamLibraryService(steamRoot: root, session: URLSession(configuration: configuration))
+
+        let games = try await service.loadLibrary()
+
+        #expect(games.count == 1)
+        let game = try #require(games.first)
+        #expect(game.externalID == "342940")
+        #expect(game.name == "Project: Gorgon")
+        #expect(game.developer == "Elder Game")
+        #expect(game.summary == "Store summary")
+        #expect(game.isInstalled == false)
+        #expect(game.playtimeMinutes == 0)
+        #expect(game.artworkPath?.hasSuffix("342940/library_600x900.jpg") == true)
+    }
+
     @Test func loadsCurrentSteamPlayerCount() async {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SteamMetadataURLProtocol.self]

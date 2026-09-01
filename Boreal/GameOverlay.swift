@@ -51,6 +51,8 @@ final class GameOverlayController {
     private var expectedNativeGame: (id: UUID, name: String, installationURL: URL)?
     private var nativeGameProcessID: pid_t?
     private var isTemporarilyHidden = false
+    private var preferredGameScreen: NSScreen?
+    private var gameUsesFullScreenFrame = false
     private var activeSpaceObserver: NSObjectProtocol?
     private var applicationActivationObserver: NSObjectProtocol?
     private var applicationLaunchObserver: NSObjectProtocol?
@@ -64,7 +66,13 @@ final class GameOverlayController {
         ) { [weak self] _ in MainActor.assumeIsolated { self?.restoreOverlayVisibility(preferPointerScreen: true) } }
         applicationActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleFullscreenVisibilityRefresh() } }
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                self?.updatePreferredGameScreen(for: application)
+                self?.scheduleFullscreenVisibilityRefresh()
+            }
+        }
         applicationLaunchObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
         ) { [weak self] notification in
@@ -83,7 +91,11 @@ final class GameOverlayController {
     func synchronize(games: [OverlayGame]) {
         managedGames = games
         activeGames = (games + [nativeGame].compactMap { $0 }).sorted { $0.launchedAt > $1.launchedAt }
-        if activeGames.isEmpty { isTemporarilyHidden = false }
+        if activeGames.isEmpty {
+            isTemporarilyHidden = false
+            preferredGameScreen = nil
+            gameUsesFullScreenFrame = false
+        }
         guard UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
               let game = activeGames.first, !isTemporarilyHidden else { hide(); return }
         model.detailLevel = configuredDetailLevel
@@ -159,6 +171,7 @@ final class GameOverlayController {
             graphics: "Native macOS"
         )
         expectedNativeGame = nil
+        updatePreferredGameScreen(for: application)
         synchronize(games: managedGames)
         scheduleFullscreenVisibilityRefresh()
     }
@@ -175,13 +188,17 @@ final class GameOverlayController {
         guard !activeGames.isEmpty, !isTemporarilyHidden,
               UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
               let panel else { return }
+        if let application = NSWorkspace.shared.frontmostApplication,
+           application.bundleIdentifier != Bundle.main.bundleIdentifier {
+            updatePreferredGameScreen(for: application)
+        }
         position(panel, preferPointerScreen: preferPointerScreen)
         panel.orderFrontRegardless()
     }
 
     private func scheduleFullscreenVisibilityRefresh() {
         visibilityRefreshTasks.forEach { $0.cancel() }
-        visibilityRefreshTasks = [0.0, 0.25, 0.75, 1.5].map { delay in
+        visibilityRefreshTasks = [0.0, 0.2, 0.6, 1.2, 2.5, 4.0].map { delay in
             Task { [weak self] in
                 if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
                 guard !Task.isCancelled else { return }
@@ -196,6 +213,11 @@ final class GameOverlayController {
         panel.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) + 1)
         panel.isOpaque = false; panel.backgroundColor = .clear
         panel.hasShadow = true; panel.ignoresMouseEvents = true; panel.hidesOnDeactivate = false
+        panel.isMovable = false
+        panel.animationBehavior = .none
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.worksWhenModal = true
+        panel.sharingType = .none
         panel.canBecomeVisibleWithoutLogin = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -211,9 +233,14 @@ final class GameOverlayController {
         }
         panel.setContentSize(size)
         let pointer = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-        guard let screen = (preferPointerScreen ? pointer : nil) ?? NSScreen.main ?? pointer ?? NSScreen.screens.first else { return }
+        guard let screen = preferredGameScreen
+                ?? (preferPointerScreen ? pointer : nil)
+                ?? NSScreen.main
+                ?? pointer
+                ?? NSScreen.screens.first else { return }
         model.displayResolution = "\(Int(screen.frame.width * screen.backingScaleFactor))×\(Int(screen.frame.height * screen.backingScaleFactor))"
-        let frame = screen.visibleFrame, margin: CGFloat = 18
+        let frame = gameUsesFullScreenFrame ? screen.frame : screen.visibleFrame
+        let margin: CGFloat = 18
         let origin: NSPoint = switch UserDefaults.standard.string(forKey: "gameOverlayPosition") ?? "topRight" {
         case "topLeft": .init(x: frame.minX + margin, y: frame.maxY - size.height - margin)
         case "bottomLeft": .init(x: frame.minX + margin, y: frame.minY + margin)
@@ -221,6 +248,44 @@ final class GameOverlayController {
         default: .init(x: frame.maxX - size.width - margin, y: frame.maxY - size.height - margin)
         }
         panel.setFrameOrigin(origin)
+    }
+
+    /// Finds the display occupied by the active game's largest layer-0 window.
+    /// Quartz window bounds and display bounds use the same top-left coordinate
+    /// system, so this also works for borderless and exclusive fullscreen windows.
+    private func updatePreferredGameScreen(for application: NSRunningApplication?) {
+        guard let application,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return }
+
+        let candidates = windows.compactMap { info -> CGRect? in
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == application.processIdentifier,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rect.width >= 320, rect.height >= 240 else { return nil }
+            return rect
+        }
+        guard let gameWindow = candidates.max(by: { $0.width * $0.height < $1.width * $1.height }) else { return }
+
+        let displayIDs = NSScreen.screens.compactMap { screen -> (NSScreen, CGDirectDisplayID)? in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return (screen, CGDirectDisplayID(number.uint32Value))
+        }
+        guard let match = displayIDs.max(by: {
+            intersectionArea(gameWindow, CGDisplayBounds($0.1)) < intersectionArea(gameWindow, CGDisplayBounds($1.1))
+        }), intersectionArea(gameWindow, CGDisplayBounds(match.1)) > 0 else { return }
+
+        preferredGameScreen = match.0
+        let displayBounds = CGDisplayBounds(match.1)
+        let coverage = intersectionArea(gameWindow, displayBounds) / max(1, displayBounds.width * displayBounds.height)
+        gameUsesFullScreenFrame = coverage >= 0.90
+    }
+
+    private func intersectionArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        return intersection.isNull ? 0 : intersection.width * intersection.height
     }
 
     private var configuredDetailLevel: GameOverlayDetailLevel {
@@ -246,6 +311,7 @@ final class GameOverlayController {
                     frameRateLogURL: activeGames.first?.performanceLogURL,
                     gameID: activeGames.first?.id
                 )
+                restoreOverlayVisibility()
                 try? await Task.sleep(for: .seconds(max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.5)))
             }
         }

@@ -214,10 +214,8 @@ actor SteamLibraryService: SteamLibraryLoading {
 
     private func mergeUserLibrary(at userDirectory: URL, into games: inout [String: LocalGame]) throws {
         let localConfigURL = userDirectory.appending(path: "config/localconfig.vdf")
-        guard let root = try? ValveKeyValueDecoder.decode(url: localConfigURL),
-              let apps = root.object(path: ["UserLocalConfigStore", "Software", "Valve", "Steam", "apps"]) else {
-            return
-        }
+        let apps = (try? ValveKeyValueDecoder.decode(url: localConfigURL))?
+            .object(path: ["UserLocalConfigStore", "Software", "Valve", "Steam", "apps"]) ?? [:]
         for (appID, value) in apps where appID.allSatisfy(\.isNumber) {
             var game = games[appID] ?? LocalGame(appID: appID)
             if let object = value.objectValue {
@@ -226,11 +224,33 @@ actor SteamLibraryService: SteamLibraryLoading {
                     game.lastPlayed = max(game.lastPlayed ?? .distantPast, Date(timeIntervalSince1970: seconds))
                 }
             }
-            mergeCachedDetails(appID: appID, userDirectory: userDirectory, into: &game)
-            let cover = steamRoot.appending(path: "appcache/librarycache/\(appID)/library_600x900.jpg")
-            if fileManager.fileExists(atPath: cover.path) { game.artworkPath = cover.path }
+            mergeCachedLibraryData(appID: appID, userDirectory: userDirectory, into: &game)
             games[appID] = game
         }
+
+        // Steam does not add a newly acquired, uninstalled title to the
+        // localconfig `apps` object until the title has runtime state such as
+        // playtime. Its per-user library cache is updated immediately, so use
+        // the numeric cache filenames as additional owned-library candidates.
+        let libraryCache = userDirectory.appending(path: "config/librarycache", directoryHint: .isDirectory)
+        let cachedEntries = (try? fileManager.contentsOfDirectory(
+            at: libraryCache,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for entry in cachedEntries where entry.pathExtension.lowercased() == "json" {
+            let appID = entry.deletingPathExtension().lastPathComponent
+            guard !appID.isEmpty, appID.allSatisfy(\.isNumber) else { continue }
+            var game = games[appID] ?? LocalGame(appID: appID)
+            mergeCachedLibraryData(appID: appID, userDirectory: userDirectory, into: &game)
+            games[appID] = game
+        }
+    }
+
+    private func mergeCachedLibraryData(appID: String, userDirectory: URL, into game: inout LocalGame) {
+        mergeCachedDetails(appID: appID, userDirectory: userDirectory, into: &game)
+        let cover = steamRoot.appending(path: "appcache/librarycache/\(appID)/library_600x900.jpg")
+        if fileManager.fileExists(atPath: cover.path) { game.artworkPath = cover.path }
     }
 
     private func mergeCachedDetails(appID: String, userDirectory: URL, into game: inout LocalGame) {
