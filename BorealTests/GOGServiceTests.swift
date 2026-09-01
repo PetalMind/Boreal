@@ -4,6 +4,24 @@ import Testing
 
 @Suite(.serialized)
 struct GOGServiceTests {
+    @Test func usesTitanQuestOfficialDirectX9FallbackWithWine() {
+        let wine = GOGService.compatibilityLaunchConfiguration(
+            appID: "1196955511",
+            runtimeEngine: .wine,
+            arguments: ["/dx11", "-windowed"]
+        )
+        #expect(wine.arguments == ["-windowed", "/dx9"])
+        #expect(wine.environment["WINED3D_RENDERER"] == "vulkan")
+
+        let gptk = GOGService.compatibilityLaunchConfiguration(
+            appID: "1196955511",
+            runtimeEngine: .gamePortingToolkit,
+            arguments: ["/dx11"]
+        )
+        #expect(gptk.arguments == ["/dx11"])
+        #expect(gptk.environment.isEmpty)
+    }
+
     @Test func appliesEngineSpecificBioShockLaunchProfiles() {
         let gptk = GOGService.compatibilityLaunchConfiguration(
             appID: "2022341186",

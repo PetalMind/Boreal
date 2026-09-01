@@ -69,6 +69,7 @@ actor RuntimeManager: RuntimeManaging {
                 #endif
                 let id = localRuntimeID(name: name, version: version, architecture: architecture)
                 guard seen.insert(id).inserted else { continue }
+                let supportsWoW64 = detectsWoW64(in: app)
                 candidates.append(LocalRuntimeCandidate(
                     id: id,
                     displayName: name,
@@ -79,7 +80,7 @@ actor RuntimeManager: RuntimeManaging {
                     minimumMacOS: minimumMacOS,
                     estimatedSize: nil,
                     engine: engine,
-                    features: RuntimeFeatures(wow64: engine == .gamePortingToolkit, wineMono: false, wineGecko: false, d3dmetal: engine == .gamePortingToolkit, dxmt: false),
+                    features: RuntimeFeatures(wow64: supportsWoW64, wineMono: false, wineGecko: false, d3dmetal: engine == .gamePortingToolkit, dxmt: false),
                     layout: RuntimeLayout(
                         wineExecutable: "Runtime/Wine.app/\(relativeWine)",
                         wineServerExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineserver",
@@ -107,7 +108,7 @@ actor RuntimeManager: RuntimeManaging {
             if runtime.rootURL != root {
                 runtime = relocated(runtime, from: runtime.rootURL, to: root)
             }
-            return runtime
+            return refreshingDetectedFeatures(of: runtime)
         }
     }
 
@@ -130,6 +131,8 @@ actor RuntimeManager: RuntimeManaging {
         guard fileManager.isExecutableFile(atPath: sourceWine.path) else {
             throw RuntimeManagerError.localRuntimeInvalid("The Wine executable is missing.")
         }
+        var detectedFeatures = candidate.features
+        detectedFeatures.wow64 = detectsWoW64(in: source)
         for requirement in candidate.requirements where !(await requirementChecker.isSatisfied(requirement)) {
             throw RuntimeManagerError.requirementMissing(requirement)
         }
@@ -196,7 +199,7 @@ actor RuntimeManager: RuntimeManaging {
                 minimumMacOS: candidate.minimumMacOS,
                 channel: .preview,
                 requirements: candidate.requirements,
-                features: candidate.features,
+                features: detectedFeatures,
                 layout: candidate.layout,
                 artifact: RuntimeArtifact(url: source, sha256: String(repeating: "0", count: 64), compressedSize: 0)
             )
@@ -224,7 +227,7 @@ actor RuntimeManager: RuntimeManaging {
                 requirements: candidate.requirements,
                 origin: .localImport,
                 engine: candidate.engine,
-                features: candidate.features
+                features: detectedFeatures
             )
             try makeEncoder().encode(installed)
                 .write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
@@ -634,6 +637,56 @@ actor RuntimeManager: RuntimeManaging {
             "wine/lib/external/D3DMetal.framework/Versions/A/D3DMetal"
         ]
         return markers.contains(where: { fileManager.fileExists(atPath: resources.appending(path: $0).path) }) ? .gamePortingToolkit : .wine
+    }
+
+    /// Local Wine bundles are not backed by Boreal's signed catalog, so their
+    /// 32-bit support must come from the copied runtime itself. Current WineHQ
+    /// builds use the new WoW64 layout, while older combined builds expose a
+    /// separate wine64 launcher alongside the 32-bit Windows modules.
+    private func detectsWoW64(in app: URL) -> Bool {
+        let wineRoot = app.appending(path: "Contents/Resources/wine", directoryHint: .isDirectory)
+        let has32BitWindowsNTDLL = fileManager.fileExists(
+            atPath: wineRoot.appending(path: "lib/wine/i386-windows/ntdll.dll").path
+        )
+        guard has32BitWindowsNTDLL else { return false }
+
+        let hasNewWoW64CPU = fileManager.fileExists(
+            atPath: wineRoot.appending(path: "lib/wine/x86_64-windows/wow64cpu.dll").path
+        )
+        let hasLegacyWine64 = fileManager.isExecutableFile(
+            atPath: wineRoot.appending(path: "bin/wine64").path
+        )
+        return hasNewWoW64CPU || hasLegacyWine64
+    }
+
+    /// Runtime snapshots imported by older Boreal builds can contain a stale
+    /// `wow64: false` descriptor. Keep the immutable snapshot intact and
+    /// refresh only the in-memory capability from its copied payload.
+    private func refreshingDetectedFeatures(of runtime: InstalledRuntime) -> InstalledRuntime {
+        guard runtime.origin == .localImport else { return runtime }
+        let copiedApp = runtime.rootURL.appending(path: "Runtime/Wine.app", directoryHint: .isDirectory)
+        var features = runtime.features ?? RuntimeFeatures(
+            wow64: false,
+            wineMono: false,
+            wineGecko: false,
+            d3dmetal: runtime.resolvedEngine == .gamePortingToolkit,
+            dxmt: false
+        )
+        features.wow64 = detectsWoW64(in: copiedApp)
+        return InstalledRuntime(
+            id: runtime.id,
+            displayName: runtime.displayName,
+            wineVersion: runtime.wineVersion,
+            rootURL: runtime.rootURL,
+            wineExecutable: runtime.wineExecutable,
+            wineServerExecutable: runtime.wineServerExecutable,
+            wineBootExecutable: runtime.wineBootExecutable,
+            architecture: runtime.architecture,
+            requirements: runtime.requirements,
+            origin: runtime.origin,
+            engine: runtime.engine,
+            features: features
+        )
     }
 
     private func localRuntimeID(name: String, version: String, architecture: RuntimeArchitecture) -> String {

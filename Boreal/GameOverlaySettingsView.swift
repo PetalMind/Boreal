@@ -29,7 +29,7 @@ struct GameOverlaySettingsView: View {
                 }
             }
             Section {
-                Text("Switch while playing with ⌘⌥I, or select Minimal, Standard and Diagnostic directly with ⌘⌥1, ⌘⌥2 and ⌘⌥3. Values stay unavailable when macOS or the active runtime does not expose them.")
+                Text("Hide or show the overlay with ⌘⌥O. Switch while playing with ⌘⌥I, or select Minimal, Standard and Diagnostic directly with ⌘⌥1, ⌘⌥2 and ⌘⌥3. Diagnostic view charts keep the latest 60 live samples. Values stay unavailable when macOS or the active runtime does not expose them.")
                     .foregroundStyle(.secondary)
             }
         }

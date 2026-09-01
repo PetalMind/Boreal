@@ -1370,6 +1370,7 @@ final class BorealStore {
         guard storeGameOperations[key] == nil else { return }
         let token = UUID()
         let oldEnvironmentID = applications[appIndex].environmentID
+        let currentExecutable = URL(fileURLWithPath: applications[appIndex].executablePath)
         let previousStatus = applications[appIndex].status
         storeOperationTokens[key] = token
         applications[appIndex].status = .preparing
@@ -1387,6 +1388,10 @@ final class BorealStore {
             do {
                 updateEnvironmentPreparation("Validating \(engine.displayName)…", fraction: 0.1, key: key, token: token)
                 let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
+                if WindowsExecutableArchitecture.inspect(currentExecutable) == .x86,
+                   runtime.features?.wow64 != true {
+                    throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
+                }
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Creating a new isolated prefix…", fraction: 0.3, key: key, token: token)
                 var managed = try await services.environmentManager.create(

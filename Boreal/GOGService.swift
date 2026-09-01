@@ -481,6 +481,20 @@ actor GOGService: GOGLibraryProviding {
     ) -> (arguments: [String], environment: [String: String]) {
         var arguments = arguments
         var environment: [String: String] = [:]
+
+        if appID == "1196955511", runtimeEngine == .wine {
+            // GOG marks Titan Quest's DirectX 11 task as primary, but the same
+            // installation includes an official DirectX 9 launch mode. The
+            // 32-bit game reaches WineD3D successfully and then rejects its
+            // DX11 device, so use the publisher-provided fallback with Wine.
+            arguments.removeAll {
+                ["/dx11", "-dx11", "/dx9", "-dx9"].contains($0.lowercased())
+            }
+            arguments.append("/dx9")
+            environment["WINED3D_RENDERER"] = "vulkan"
+            return (arguments, environment)
+        }
+
         guard appID == "2022341186" else { return (arguments, environment) }
 
         switch runtimeEngine {

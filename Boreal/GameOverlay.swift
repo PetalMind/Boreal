@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import Observation
 import SwiftUI
 
@@ -29,13 +30,60 @@ nonisolated struct GamePerformanceSnapshot: Equatable, Sendable {
     static let unavailable = GamePerformanceSnapshot()
 }
 
+nonisolated struct GamePerformanceSample: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let timestamp: Date
+    let snapshot: GamePerformanceSnapshot
+}
+
+nonisolated struct GamePerformanceChartPoint: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let timestamp: Date
+    let value: Double
+    let series: String
+}
+
 @MainActor @Observable
 private final class GameOverlayViewModel {
     var snapshot = GamePerformanceSnapshot.unavailable
+    var samples: [GamePerformanceSample] = []
     var detailLevel = GameOverlayDetailLevel.standard
     var displayResolution = "—"
     var translationLayer = "—"
     var processorName = "Apple Silicon"
+    private var sampledGameID: UUID?
+
+    func prepare(for gameID: UUID) {
+        guard sampledGameID != gameID else { return }
+        sampledGameID = gameID
+        snapshot = .unavailable
+        samples.removeAll(keepingCapacity: true)
+    }
+
+    func record(_ snapshot: GamePerformanceSnapshot, at timestamp: Date = .now) {
+        self.snapshot = snapshot
+        samples.append(GamePerformanceSample(timestamp: timestamp, snapshot: snapshot))
+        samples = Array(samples.suffix(60))
+    }
+
+    func chartPoints(
+        for keyPath: KeyPath<GamePerformanceSnapshot, Double?>,
+        series: String
+    ) -> [GamePerformanceChartPoint] {
+        var segment = 0
+        return samples.compactMap { sample in
+            guard let value = sample.snapshot[keyPath: keyPath] else {
+                segment += 1
+                return nil
+            }
+            return GamePerformanceChartPoint(
+                id: sample.id,
+                timestamp: sample.timestamp,
+                value: value,
+                series: "\(series)-\(segment)"
+            )
+        }
+    }
 }
 
 @MainActor
@@ -98,6 +146,7 @@ final class GameOverlayController {
         }
         guard UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
               let game = activeGames.first, !isTemporarilyHidden else { hide(); return }
+        model.prepare(for: game.id)
         model.detailLevel = configuredDetailLevel
         model.translationLayer = game.graphics
         model.processorName = Self.processorName
@@ -227,9 +276,9 @@ final class GameOverlayController {
 
     private func position(_ panel: NSPanel, preferPointerScreen: Bool = false) {
         let size: NSSize = switch configuredDetailLevel {
-        case .minimal: .init(width: 228, height: 116)
-        case .standard: .init(width: 286, height: 286)
-        case .diagnostic: .init(width: 430, height: 474)
+        case .minimal: .init(width: 228, height: 142)
+        case .standard: .init(width: 286, height: 316)
+        case .diagnostic: .init(width: 520, height: 660)
         }
         panel.setContentSize(size)
         let pointer = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
@@ -307,10 +356,11 @@ final class GameOverlayController {
         samplingTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                model.snapshot = await sampler.sample(
+                let snapshot = await sampler.sample(
                     frameRateLogURL: activeGames.first?.performanceLogURL,
                     gameID: activeGames.first?.id
                 )
+                model.record(snapshot)
                 restoreOverlayVisibility()
                 try? await Task.sleep(for: .seconds(max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.5)))
             }
@@ -322,7 +372,10 @@ private struct GameOverlayView: View {
     let model: GameOverlayViewModel
     var body: some View {
         switch model.detailLevel {
-        case .minimal: performance.padding(16).card()
+        case .minimal:
+            VStack(spacing: 8) { performance; hideShortcut }
+                .padding(16)
+                .card()
         case .standard: standard
         case .diagnostic: diagnostic
         }
@@ -335,6 +388,7 @@ private struct GameOverlayView: View {
             row("CPU", percent(model.snapshot.cpuUsage), .cyan)
             row("Memory", memory, .green)
             divider; info("display", model.displayResolution); info("square.3.layers.3d", "Metal")
+            divider; hideShortcut
         }.padding(16).card()
     }
 
@@ -352,10 +406,133 @@ private struct GameOverlayView: View {
                 divider
                 column("THERMAL", "thermometer.medium", .orange, [("State", model.snapshot.thermalState ?? "—")])
             }
+            divider
+            title("waveform.path.ecg", "LIVE HISTORY", .cyan)
+            liveChart(
+                title: "FPS",
+                color: .green,
+                points: model.chartPoints(for: \.framesPerSecond, series: "FPS"),
+                domain: nil
+            )
+            liveUtilizationChart
             divider; title("gearshape", "SYSTEM", .cyan)
             info("display", model.displayResolution); info("square.3.layers.3d", "API", "Metal")
             info("arrow.left.arrow.right", "Translation", model.translationLayer); info("apple.logo", model.processorName)
+            divider; hideShortcut
         }.padding(16).card()
+    }
+
+    private var liveUtilizationChart: some View {
+        let cpu = model.chartPoints(for: \.cpuUsage, series: "CPU")
+        let gpu = model.chartPoints(for: \.gpuUsage, series: "GPU")
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                chartLegend("CPU", color: .cyan)
+                chartLegend("GPU", color: .green)
+            }
+            Chart {
+                ForEach(cpu) { point in
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("CPU", point.value),
+                        series: .value("CPU segment", point.series)
+                    )
+                    .foregroundStyle(.cyan)
+                    .lineStyle(.init(lineWidth: 1.5))
+                    .interpolationMethod(.catmullRom)
+                }
+                ForEach(gpu) { point in
+                    LineMark(
+                        x: .value("Time", point.timestamp),
+                        y: .value("GPU", point.value),
+                        series: .value("GPU segment", point.series)
+                    )
+                    .foregroundStyle(.green)
+                    .lineStyle(.init(lineWidth: 1.5))
+                    .interpolationMethod(.catmullRom)
+                }
+            }
+            .chartXScale(domain: chartTimeDomain)
+            .chartYScale(domain: 0...100)
+            .chartXAxis(.hidden)
+            .chartYAxis { compactYAxis(suffix: "%") }
+            .chartLegend(.hidden)
+            .frame(height: 72)
+        }
+    }
+
+    private func liveChart(
+        title: String,
+        color: Color,
+        points: [GamePerformanceChartPoint],
+        domain: ClosedRange<Double>?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            chartLegend(title, color: color)
+            Chart(points) { point in
+                LineMark(
+                    x: .value("Time", point.timestamp),
+                    y: .value(title, point.value),
+                    series: .value("Segment", point.series)
+                )
+                .foregroundStyle(color)
+                .lineStyle(.init(lineWidth: 1.5))
+                .interpolationMethod(.catmullRom)
+            }
+            .chartXScale(domain: chartTimeDomain)
+            .chartYScale(domain: domain ?? automaticFPSDomain(points))
+            .chartXAxis(.hidden)
+            .chartYAxis { compactYAxis(suffix: "") }
+            .chartLegend(.hidden)
+            .frame(height: 72)
+        }
+    }
+
+    private var chartTimeDomain: ClosedRange<Date> {
+        let end = model.samples.last?.timestamp ?? .now
+        let interval = max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.5)
+        return end.addingTimeInterval(-interval * 59)...end
+    }
+
+    private func automaticFPSDomain(_ points: [GamePerformanceChartPoint]) -> ClosedRange<Double> {
+        let maximum = points.map(\.value).max() ?? 60
+        return 0...max(30, ceil(maximum / 30) * 30)
+    }
+
+    @AxisContentBuilder
+    private func compactYAxis(suffix: String) -> some AxisContent {
+        AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+            AxisGridLine().foregroundStyle(.white.opacity(0.12))
+            AxisValueLabel {
+                if let number = value.as(Double.self) {
+                    Text("\(Int(number.rounded()))\(suffix)")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func chartLegend(_ text: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(text)
+        }
+        .font(.system(size: 10, weight: .bold, design: .monospaced))
+        .foregroundStyle(.secondary)
+    }
+
+    private var hideShortcut: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "eye.slash")
+            Text("Hide overlay")
+            Spacer()
+            Text("⌘⌥O")
+                .foregroundStyle(.white)
+        }
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Hide overlay with Command Option O")
     }
 
     private var performance: some View {

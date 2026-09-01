@@ -246,8 +246,12 @@ struct BorealTests {
         // Standard Wine ships its own d3d12.dll. Its presence does not mean
         // the app contains Apple's D3DMetal / Game Porting Toolkit runtime.
         let wineD3D12 = contents.appending(path: "Resources/wine/lib/wine/x86_64-windows", directoryHint: .isDirectory)
+        let wineI386 = contents.appending(path: "Resources/wine/lib/wine/i386-windows", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: wineD3D12, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: wineI386, withIntermediateDirectories: true)
         try Data().write(to: wineD3D12.appending(path: "d3d12.dll"))
+        try Data().write(to: wineD3D12.appending(path: "wow64cpu.dll"))
+        try Data().write(to: wineI386.appending(path: "ntdll.dll"))
         let info: [String: Any] = [
             "CFBundleName": "Wine Discovery",
             "CFBundleShortVersionString": "11.16",
@@ -270,6 +274,7 @@ struct BorealTests {
         #expect(candidate.wineVersion == "11.16")
         #expect(candidate.architecture == .arm64)
         #expect(candidate.engine == .wine)
+        #expect(candidate.features.wow64)
         #expect(candidate.appURL.resolvingSymlinksInPath() == app.resolvingSymlinksInPath())
     }
 
@@ -306,8 +311,49 @@ struct BorealTests {
         #expect(candidate.wineVersion == "3.0-2")
         #expect(candidate.engine == .gamePortingToolkit)
         #expect(candidate.features.d3dmetal)
+        #expect(!candidate.features.wow64)
         #expect(candidate.layout.wineExecutable.hasSuffix("/wine64"))
         #expect(candidate.layout.wineBootExecutable == "Support/wineboot")
+    }
+
+    @Test func installedLocalRuntimeRefreshesStaleWoW64MetadataFromSnapshot() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-local-runtime-refresh-\(UUID().uuidString)")
+        let support = root.appending(path: "support", directoryHint: .isDirectory)
+        let runtimeRoot = support.appending(path: "Runtimes/local-wine", directoryHint: .isDirectory)
+        let copiedWineRoot = runtimeRoot.appending(path: "Runtime/Wine.app/Contents/Resources/wine", directoryHint: .isDirectory)
+        let i386Windows = copiedWineRoot.appending(path: "lib/wine/i386-windows", directoryHint: .isDirectory)
+        let x64Windows = copiedWineRoot.appending(path: "lib/wine/x86_64-windows", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: i386Windows, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: x64Windows, withIntermediateDirectories: true)
+        try Data().write(to: i386Windows.appending(path: "ntdll.dll"))
+        try Data().write(to: x64Windows.appending(path: "wow64cpu.dll"))
+
+        let stale = InstalledRuntime(
+            id: "local-wine",
+            displayName: "Wine Devel (Local Snapshot)",
+            wineVersion: "11.16",
+            rootURL: runtimeRoot,
+            wineExecutable: copiedWineRoot.appending(path: "bin/wine"),
+            wineServerExecutable: copiedWineRoot.appending(path: "bin/wineserver"),
+            wineBootExecutable: copiedWineRoot.appending(path: "bin/wineboot"),
+            architecture: .x86_64,
+            requirements: [],
+            origin: .localImport,
+            engine: .wine,
+            features: RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
+        )
+        try JSONEncoder().encode(stale).write(to: runtimeRoot.appending(path: "installed-runtime.json"))
+
+        let manager = RuntimeManager(
+            applicationSupportURL: support,
+            catalog: StaticCatalog(runtimes: []),
+            processExecutor: SystemProcessExecutor(),
+            requirementChecker: SatisfiedRequirements(),
+            localApplicationRoots: []
+        )
+
+        let installed = try #require(try await manager.installedRuntimes().first)
+        #expect(installed.features?.wow64 == true)
     }
 
     @Test func providerLaunchPlanCannotOverrideManagedPrefixOrRuntimePath() async throws {
