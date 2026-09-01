@@ -62,11 +62,21 @@ actor InstallerService: Installing {
     private let runtimeManager: any RuntimeManaging
     private let environmentManager: any EnvironmentManaging
     private let processRunner: any WindowsProcessRunning
+    private let discoveryAttempts: Int
+    private let discoveryInterval: Duration
 
-    init(runtimeManager: any RuntimeManaging, environmentManager: any EnvironmentManaging, processRunner: any WindowsProcessRunning) {
+    init(
+        runtimeManager: any RuntimeManaging,
+        environmentManager: any EnvironmentManaging,
+        processRunner: any WindowsProcessRunning,
+        discoveryAttempts: Int = 30,
+        discoveryInterval: Duration = .milliseconds(500)
+    ) {
         self.runtimeManager = runtimeManager
         self.environmentManager = environmentManager
         self.processRunner = processRunner
+        self.discoveryAttempts = max(1, discoveryAttempts)
+        self.discoveryInterval = discoveryInterval
     }
 
     func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit {
@@ -102,12 +112,11 @@ actor InstallerService: Installing {
             }
             try Task.checkCancellation()
             await progress(.detectingApplication)
-            let snapshotAfterInstallation = ExecutableDiscovery.snapshot(at: driveC)
-            let discoveredExecutable = ExecutableDiscovery.rankedCandidates(
+            let discoveredExecutable = try await discoverInstalledExecutable(
+                in: driveC,
                 before: snapshotBeforeInstallation,
-                after: snapshotAfterInstallation,
                 applicationName: name
-            ).first?.url
+            )
             guard let executable = discoveredExecutable ?? portableExecutable(installer) else {
                 throw InstallerServiceError.executableNotDiscovered
             }
@@ -135,6 +144,32 @@ actor InstallerService: Installing {
 
     private func portableExecutable(_ installer: URL) -> URL? {
         ExecutableDiscovery.isEligibleExecutablePath(installer.lastPathComponent) ? installer : nil
+    }
+
+    /// Some bootstrap installers exit their launcher process before a child has
+    /// finished moving the application into its final directory. Polling the
+    /// pure snapshot diff for a short, bounded window avoids treating that
+    /// normal hand-off as a failed installation.
+    private func discoverInstalledExecutable(
+        in driveC: URL,
+        before: ExecutableFilesystemSnapshot,
+        applicationName: String
+    ) async throws -> URL? {
+        for attempt in 0..<discoveryAttempts {
+            try Task.checkCancellation()
+            let snapshot = ExecutableDiscovery.snapshot(at: driveC)
+            if let candidate = ExecutableDiscovery.rankedCandidates(
+                before: before,
+                after: snapshot,
+                applicationName: applicationName
+            ).first(where: { $0.score >= ExecutableDiscovery.minimumLaunchCandidateScore }) {
+                return candidate.url
+            }
+            if attempt + 1 < discoveryAttempts {
+                try await Task.sleep(for: discoveryInterval)
+            }
+        }
+        return nil
     }
 
 }

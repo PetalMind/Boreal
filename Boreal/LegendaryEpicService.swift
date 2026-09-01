@@ -28,12 +28,26 @@ nonisolated protocol EpicLibraryProviding: Sendable {
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func update(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func verify(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func uninstall(appID: String) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
 
 extension EpicLibraryProviding {
+    func update(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = appID
+        _ = progress
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func verify(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = appID
+        _ = progress
+        throw CocoaError(.featureUnsupported)
+    }
+
     func uninstall(appID: String) async throws {
         _ = appID
         throw CocoaError(.featureUnsupported)
@@ -295,6 +309,30 @@ actor LegendaryEpicService: EpicLibraryProviding {
         guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
         guard Self.isSafeAppID(appID) else { throw LegendaryEpicError.invalidLibraryResponse }
         _ = try await run(["-y", "uninstall", appID])
+    }
+
+    func update(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
+        guard Self.isSafeAppID(appID) else { throw LegendaryEpicError.invalidLibraryResponse }
+        await progress(StoreGameOperationProgress(
+            message: "Checking Epic Games for updates…",
+            fractionCompleted: nil,
+            phase: .preparing
+        ))
+        _ = try await run(["-y", "install", appID, "--update-only", "--skip-dlcs"], progress: progress)
+        try Task.checkCancellation()
+    }
+
+    func verify(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
+        guard Self.isSafeAppID(appID) else { throw LegendaryEpicError.invalidLibraryResponse }
+        await progress(StoreGameOperationProgress(
+            message: "Verifying Epic Games files…",
+            fractionCompleted: nil,
+            phase: .verifying
+        ))
+        _ = try await run(["verify", appID], progress: progress)
+        try Task.checkCancellation()
     }
 
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan {

@@ -64,6 +64,14 @@ struct LegendaryEpicServiceTests {
         let uninstallArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
         #expect(uninstallArguments.contains("uninstall BorealEpicApp"))
 
+        try await service.update(appID: "BorealEpicApp") { _ in }
+        let updateArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
+        #expect(updateArguments.contains("install BorealEpicApp --update-only --skip-dlcs"))
+
+        try await service.verify(appID: "BorealEpicApp") { _ in }
+        let verifyArguments = try String(contentsOf: accountDirectory.appending(path: "install-args.txt"), encoding: .utf8)
+        #expect(verifyArguments == "verify BorealEpicApp\n")
+
         let runtime = InstalledRuntime(
             id: "test-runtime",
             displayName: "Test Runtime",
@@ -107,6 +115,10 @@ struct LegendaryEpicServiceTests {
     private static func helperScript(gameDirectory: URL) -> String { #"""
     #!/bin/sh
     if [ "$1" = "-y" ]; then
+      printf '%s\n' "$*" > "$LEGENDARY_CONFIG_PATH/install-args.txt"
+      exit 0
+    fi
+    if [ "$1" = "verify" ]; then
       printf '%s\n' "$*" > "$LEGENDARY_CONFIG_PATH/install-args.txt"
       exit 0
     fi

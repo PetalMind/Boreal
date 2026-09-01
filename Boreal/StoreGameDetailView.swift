@@ -370,6 +370,18 @@ struct StoreGameDetailView: View {
             if currentGame.provider == .steam {
                 Button("View Steam Store Page", systemImage: "arrow.up.right.square") { openStorePage() }
             }
+            if currentGame.isInstalled, store.supportsStoreGameUpdate(currentGame) {
+                Button("Check for Updates", systemImage: "arrow.triangle.2.circlepath") {
+                    store.updateStoreGame(currentGame)
+                }
+                .disabled(storeOperation != nil)
+            }
+            if currentGame.isInstalled, store.supportsStoreGameVerification(currentGame) {
+                Button("Verify Game Files", systemImage: "checkmark.shield") {
+                    store.verifyStoreGame(currentGame)
+                }
+                .disabled(storeOperation != nil)
+            }
             if currentGame.isInstalled || linkedApplication != nil {
                 Divider()
                 Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
@@ -860,6 +872,20 @@ struct StoreGameDetailView: View {
                 if currentGame.provider == .steam {
                     Button("View Steam store page", systemImage: "arrow.up.right.square") { openStorePage() }
                         .buttonStyle(BorealRailActionButtonStyle())
+                }
+                if currentGame.isInstalled, store.supportsStoreGameUpdate(currentGame) {
+                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
+                        store.updateStoreGame(currentGame)
+                    }
+                    .buttonStyle(BorealRailActionButtonStyle())
+                    .disabled(storeOperation != nil)
+                }
+                if currentGame.isInstalled, store.supportsStoreGameVerification(currentGame) {
+                    Button("Verify game files", systemImage: "checkmark.shield") {
+                        store.verifyStoreGame(currentGame)
+                    }
+                    .buttonStyle(BorealRailActionButtonStyle())
+                    .disabled(storeOperation != nil)
                 }
                 if currentGame.isInstalled || linkedApplication != nil {
                     Divider()

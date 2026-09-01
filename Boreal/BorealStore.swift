@@ -197,14 +197,8 @@ final class BorealStore {
 
         let estimate: StoreGameSizeEstimate?
         do {
-            switch game.provider {
-            case .gog:
-                estimate = try await services.gogLibrary.loadSizeEstimate(appID: game.externalID, platform: platform)
-            case .epic:
-                estimate = try await services.epicLibrary.loadSizeEstimate(appID: game.externalID, platform: platform)
-            case .steam:
-                estimate = await services.steamLibrary.loadDetails(for: game).sizeEstimate
-            }
+            let provider = try services.storeProviders.provider(for: game.provider)
+            estimate = try await provider.sizeEstimate(for: game, platform: platform)
         } catch {
             await storeSizeEstimateGate.release()
             return
@@ -976,17 +970,14 @@ final class BorealStore {
                     await self?.updateStoreDownload(progress, key: key, token: token)
                 }
                 let root = destinationRoot
-                switch game.provider {
-                case .epic: try await services.epicLibrary.install(appID: game.externalID, destinationRoot: root, platform: platform, progress: update)
-                case .gog: try await services.gogLibrary.install(appID: game.externalID, destinationRoot: root, platform: platform, progress: update)
-                case .steam: return
-                }
+                let provider = try services.storeProviders.provider(for: game.provider)
+                try await provider.install(game, destinationRoot: root, platform: platform, progress: update)
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
                 if game.provider == .gog,
                    let index = storeGames.firstIndex(where: { $0.id == game.id }) {
-                    guard let installationURL = await services.gogLibrary.installationURL(
-                        appID: game.externalID,
+                    guard let installationURL = await provider.installationURL(
+                        for: game,
                         destinationRoot: root,
                         platform: platform
                     ) else {
@@ -1153,6 +1144,83 @@ final class BorealStore {
         prepareStoreGame(game)
     }
 
+    func supportsStoreGameUpdate(_ game: StoreLibraryGame) -> Bool {
+        services.storeProviders.capabilities(for: game.provider).contains(.update)
+    }
+
+    func supportsStoreGameVerification(_ game: StoreLibraryGame) -> Bool {
+        services.storeProviders.capabilities(for: game.provider).contains(.verify)
+    }
+
+    func updateStoreGame(_ game: StoreLibraryGame) {
+        startStoreGameMaintenance(game, action: .update)
+    }
+
+    func verifyStoreGame(_ game: StoreLibraryGame) {
+        startStoreGameMaintenance(game, action: .verify)
+    }
+
+    private enum StoreGameMaintenanceAction: Equatable {
+        case update
+        case verify
+
+        var capability: GameStoreProviderCapabilities { self == .update ? .update : .verify }
+        var initialMessage: String { self == .update ? "Checking for updates…" : "Preparing file verification…" }
+        var title: String { self == .update ? "updated" : "verified" }
+        var phase: StoreGameOperationPhase { self == .update ? .preparing : .verifying }
+    }
+
+    private func startStoreGameMaintenance(_ game: StoreLibraryGame, action: StoreGameMaintenanceAction) {
+        let key = storeOperationKey(for: game)
+        let capabilities = services.storeProviders.capabilities(for: game.provider)
+        guard game.isInstalled,
+              capabilities.contains(action.capability),
+              storeGameOperations[key] == nil else { return }
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+            message: action.initialMessage,
+            fractionCompleted: nil,
+            phase: action.phase
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let provider = try services.storeProviders.provider(for: game.provider)
+                let update: @Sendable (StoreGameOperationProgress) async -> Void = { [weak self] progress in
+                    await self?.updateMaintenanceProgress(progress, key: key, token: token)
+                }
+                switch action {
+                case .update:
+                    try await provider.update(game, progress: update)
+                case .verify:
+                    try await provider.verify(game, progress: update)
+                }
+                try Task.checkCancellation()
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                save()
+                syncLibrary(game.provider)
+            } catch is CancellationError {
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(error.localizedDescription)
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                present(error, title: "\(game.name) couldn’t be \(action.title)", stage: action.initialMessage)
+            }
+        }
+        storeOperationTasks[key] = task
+    }
+
+    private func updateMaintenanceProgress(_ progress: StoreGameOperationProgress, key: String, token: UUID) {
+        guard storeOperationTokens[key] == token else { return }
+        storeGameOperations[key] = .installing(progress)
+    }
+
     func uninstallStoreGame(_ game: StoreLibraryGame) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider),
@@ -1174,19 +1242,8 @@ final class BorealStore {
                     }
                 }
                 try Task.checkCancellation()
-                switch game.provider {
-                case .epic:
-                    try await services.epicLibrary.uninstall(appID: game.externalID)
-                case .gog:
-                    guard let path = game.installPath else { throw CocoaError(.fileNoSuchFile) }
-                    let installationURL = URL(fileURLWithPath: path).standardizedFileURL
-                    guard FileManager.default.fileExists(atPath: installationURL.path) else {
-                        throw CocoaError(.fileNoSuchFile)
-                    }
-                    _ = try FileManager.default.trashItem(at: installationURL, resultingItemURL: nil)
-                case .steam:
-                    return
-                }
+                let provider = try services.storeProviders.provider(for: game.provider)
+                try await provider.uninstall(game)
                 guard storeOperationTokens[key] == token else { return }
                 if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
                     storeGames[index].isInstalled = false
@@ -1245,20 +1302,8 @@ final class BorealStore {
                 managed.state = .ready
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Validating the game launch task…", fraction: 0.75, key: key, token: token)
-                let plan: WindowsLaunchPlan
-                switch game.provider {
-                case .epic: plan = try await services.epicLibrary.launchPlan(appID: game.externalID, runtime: runtime, environment: managed)
-                case .gog:
-                    let installationURL = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
-                        ?? defaultGameInstallationRoot(for: .gog).appending(path: game.externalID, directoryHint: .isDirectory)
-                    plan = try await services.gogLibrary.launchPlan(
-                        appID: game.externalID,
-                        installationURL: installationURL,
-                        runtime: runtime,
-                        environment: managed
-                    )
-                case .steam: return
-                }
+                let provider = try services.storeProviders.provider(for: game.provider)
+                let plan = try await provider.launchPlan(for: game, runtime: runtime, environment: managed)
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
@@ -1354,22 +1399,8 @@ final class BorealStore {
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Validating the game launch plan…", fraction: 0.75, key: key, token: token)
 
-                let plan: WindowsLaunchPlan
-                switch provider {
-                case .epic:
-                    plan = try await services.epicLibrary.launchPlan(appID: externalID, runtime: runtime, environment: managed)
-                case .gog:
-                    let installationURL = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
-                        ?? defaultGameInstallationRoot(for: .gog).appending(path: externalID, directoryHint: .isDirectory)
-                    plan = try await services.gogLibrary.launchPlan(
-                        appID: externalID,
-                        installationURL: installationURL,
-                        runtime: runtime,
-                        environment: managed
-                    )
-                case .steam:
-                    return
-                }
+                let storeProvider = try services.storeProviders.provider(for: provider)
+                let plan = try await storeProvider.launchPlan(for: game, runtime: runtime, environment: managed)
                 guard FileManager.default.fileExists(atPath: plan.executable.path) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
@@ -1672,8 +1703,12 @@ final class BorealStore {
                     Task { _ = try? await services.processRunner.waitForExit(bootstrap) }
                     try await Task.sleep(for: .milliseconds(400))
                     plan = SteamWindowsService.playPlan(appID: appID, steamExecutable: executable)
-                case .epic: plan = try await services.epicLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
-                case .gog: plan = try await services.gogLibrary.launchPlan(appID: appID, runtime: runtime, environment: managed)
+                case .epic, .gog:
+                    guard let game = storeGames.first(where: { $0.provider == provider && $0.externalID == appID }) else {
+                        throw GameStoreProviderError.installationMissing(provider)
+                    }
+                    let storeProvider = try services.storeProviders.provider(for: provider)
+                    plan = try await storeProvider.launchPlan(for: game, runtime: runtime, environment: managed)
                 }
                 applications[index].executablePath = plan.executable.path
                 session = try await services.processRunner.run(plan: plan, environment: managed, runtime: runtime)

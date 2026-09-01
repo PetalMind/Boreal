@@ -29,12 +29,30 @@ nonisolated protocol GOGLibraryProviding: Sendable {
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL?
+    func update(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func verify(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func launchPlan(appID: String, installationURL: URL, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
 
 extension GOGLibraryProviding {
+    func update(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = appID
+        _ = installationURL
+        _ = platform
+        _ = progress
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func verify(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        _ = appID
+        _ = installationURL
+        _ = platform
+        _ = progress
+        throw CocoaError(.featureUnsupported)
+    }
+
     func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL? {
         _ = platform
         let candidate = destinationRoot.appending(path: appID, directoryHint: .isDirectory)
@@ -63,7 +81,7 @@ extension GOGLibraryProviding {
     }
 }
 
-enum GOGServiceError: LocalizedError, Sendable {
+enum GOGServiceError: LocalizedError, Sendable, Equatable {
     case unsupportedArchitecture
     case invalidAuthorizationCode
     case downloadFailed
@@ -309,6 +327,43 @@ actor GOGService: GOGLibraryProviding {
         guard Self.isSafeAppID(appID) else { return nil }
         let container = destinationRoot.appending(path: appID, directoryHint: .isDirectory)
         return Self.findInstallation(appID: appID, containerURL: container, platform: platform, fileManager: fileManager)?.url
+    }
+
+    func update(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        try await maintain(command: "update", appID: appID, installationURL: installationURL, platform: platform, progress: progress)
+    }
+
+    func verify(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
+        try await maintain(command: "repair", appID: appID, installationURL: installationURL, platform: platform, progress: progress)
+    }
+
+    private func maintain(
+        command: String,
+        appID: String,
+        installationURL: URL,
+        platform: StoreGameInstallationPlatform,
+        progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void
+    ) async throws {
+        _ = try await credentials()
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
+        let path = installationURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame
+            ? installationURL.deletingLastPathComponent()
+            : installationURL
+        guard fileManager.fileExists(atPath: path.path) else {
+            throw GOGServiceError.installationIncomplete(platform)
+        }
+        await progress(StoreGameOperationProgress(
+            message: command == "repair" ? "Verifying GOG game files…" : "Checking GOG for updates…",
+            fractionCompleted: nil,
+            phase: command == "repair" ? .verifying : .preparing
+        ))
+        _ = try await run([
+            command, appID,
+            "--path", path.path,
+            "--platform", platform == .nativeMacOS ? "osx" : "windows",
+            "--skip-dlcs",
+        ], progress: progress)
+        try Task.checkCancellation()
     }
 
     private static func findInstallation(

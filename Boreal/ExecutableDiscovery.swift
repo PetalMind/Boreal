@@ -50,6 +50,8 @@ nonisolated struct ExecutableCandidate: Hashable, Sendable {
 /// values back. `snapshot(at:)` is only a convenience adapter for filesystem
 /// metadata and PE headers; it neither writes files nor launches processes.
 nonisolated enum ExecutableDiscovery {
+    static let minimumLaunchCandidateScore = 40
+
     static func rankedCandidates(
         before: ExecutableFilesystemSnapshot,
         after: ExecutableFilesystemSnapshot,
@@ -60,22 +62,15 @@ nonisolated enum ExecutableDiscovery {
             previous[pathKey(entry.relativePath)] = entry
         }
         let eligible = after.entries.filter { entry in
-            guard isEligibleExecutablePath(entry.relativePath) else { return false }
+            guard isDiscoverableExecutablePath(entry.relativePath) else { return false }
             guard let oldEntry = previous[pathKey(entry.relativePath)] else { return true }
             return fingerprint(of: oldEntry) != fingerprint(of: entry)
         }
 
-        let creationDates = eligible.compactMap(\.creationDate)
-        let oldestCreationDate = creationDates.min()
-        let newestCreationDate = creationDates.max()
-
         return eligible.map { entry in
             let score = score(
                 entry,
-                applicationName: applicationName,
-                before: before,
-                oldestCreationDate: oldestCreationDate,
-                newestCreationDate: newestCreationDate
+                applicationName: applicationName
             )
             return ExecutableCandidate(
                 url: after.rootURL.appending(path: entry.relativePath),
@@ -123,10 +118,7 @@ nonisolated enum ExecutableDiscovery {
 
     private static func score(
         _ entry: ExecutableSnapshotEntry,
-        applicationName: String,
-        before: ExecutableFilesystemSnapshot,
-        oldestCreationDate: Date?,
-        newestCreationDate: Date?
+        applicationName: String
     ) -> Int {
         let lowerPath = "/" + entry.relativePath.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var result = 0
@@ -134,34 +126,59 @@ nonisolated enum ExecutableDiscovery {
         if entry.isGUIExecutable == true { result += 45 }
         if entry.isGUIExecutable == false { result -= 15 }
         if lowerPath.hasPrefix("/program files/") || lowerPath.hasPrefix("/program files (x86)/") { result += 35 }
+        if lowerPath.hasPrefix("/programdata/") { result += 30 }
+        if lowerPath.contains("/appdata/local/programs/") { result += 30 }
+        if lowerPath.contains("/appdata/local/temp/") || lowerPath.hasPrefix("/temp/") { result -= 45 }
 
         let executableName = entry.relativePath.lastPathComponent.deletingPathExtension
         result += Int((nameSimilarity(executableName, applicationName) * 50).rounded())
 
-        if let creationDate = entry.creationDate {
-            if creationDate >= before.capturedAt { result += 6 }
-            if let oldestCreationDate, let newestCreationDate, newestCreationDate > oldestCreationDate {
-                let position = creationDate.timeIntervalSince(oldestCreationDate) / newestCreationDate.timeIntervalSince(oldestCreationDate)
-                result += Int((position * 9).rounded())
-            } else {
-                result += 4
-            }
-        }
+        // Maintenance executables are valid evidence that an installation is
+        // still being written, but they are poor launch targets. Keep them in
+        // the ranked result with visible score penalties instead of discarding
+        // the whole installation when a vendor uses one of these words in its
+        // product layout.
+        let normalized = normalizedWords(entry.relativePath)
+        let words = Set(normalized)
+        let joined = normalized.joined()
+        let hasSignal: (String) -> Bool = { words.contains($0) || joined.contains($0) }
+        if hasSignal("setup") || hasSignal("installer") || hasSignal("install") { result -= 90 }
+        if hasSignal("uninstall") || hasSignal("uninstaller") || hasSignal("unins") { result -= 100 }
+        if hasSignal("updater") || hasSignal("update") { result -= 75 }
+        if hasSignal("helper") { result -= 75 }
+        if hasSignal("renderer") { result -= 65 }
+        if hasSignal("overlay") { result -= 55 }
+        if hasSignal("api") { result -= 60 }
+        if hasSignal("monitor") || hasSignal("error") || hasSignal("crashreport") || hasSignal("crashhandler") { result -= 80 }
+
+        // Creation time is intentionally not part of the score. Archive tools
+        // frequently preserve it, so it is only used by the deterministic
+        // tie-breaker in `rankedCandidates`.
         return result
     }
 
     static func isEligibleExecutablePath(_ path: String) -> Bool {
+        guard isDiscoverableExecutablePath(path) else { return false }
+        let components = normalizedWords(path)
+        let joined = components.joined()
+        let forbiddenWords: Set<String> = [
+            "updater", "update", "helper", "setup", "installer", "install",
+            "crashreporter", "crashhandler"
+        ]
+        if !Set(components).isDisjoint(with: forbiddenWords) { return false }
+        return !["updater", "update", "helper", "setup", "installer", "crashreporter", "crashhandler"]
+            .contains { joined.contains($0) }
+    }
+
+    private static func isDiscoverableExecutablePath(_ path: String) -> Bool {
         guard path.pathExtension.caseInsensitiveCompare("exe") == .orderedSame else { return false }
         let lowerPath = "/" + path.replacingOccurrences(of: "\\", with: "/").lowercased()
         if lowerPath.hasPrefix("/windows/") { return false }
         let components = normalizedWords(path)
         let joined = components.joined()
-        let forbiddenWords: Set<String> = [
-            "uninstall", "uninstaller", "unins", "updater", "update", "helper",
-            "setup", "installer", "install", "crashreporter", "crashhandler"
-        ]
+        let forbiddenWords: Set<String> = ["uninstall", "uninstaller", "unins"]
         if !Set(components).isDisjoint(with: forbiddenWords) { return false }
-        return !["uninstall", "unins", "updater", "update", "helper", "setup", "installer", "crashreporter", "crashhandler"]
+        return !["uninstall", "unins"]
             .contains { joined.contains($0) }
     }
 

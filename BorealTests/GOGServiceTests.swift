@@ -137,6 +137,15 @@ struct GOGServiceTests {
         #expect(installed.isInstalled)
         #expect(installed.installPath?.hasSuffix("Games/GOG/12345") == true)
 
+        let installedURL = try #require(installed.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) })
+        try await service.update(appID: game.externalID, installationURL: installedURL, platform: .windows) { _ in }
+        let updateArguments = try String(contentsOf: account.appending(path: "maintenance-args.txt"), encoding: .utf8)
+        #expect(updateArguments.contains("update 12345 --path \(installedURL.path) --platform windows --skip-dlcs"))
+
+        try await service.verify(appID: game.externalID, installationURL: installedURL, platform: .windows) { _ in }
+        let repairArguments = try String(contentsOf: account.appending(path: "maintenance-args.txt"), encoding: .utf8)
+        #expect(repairArguments.contains("repair 12345 --path \(installedURL.path) --platform windows --skip-dlcs"))
+
         let runtime = InstalledRuntime(
             id: "test-runtime",
             displayName: "Test Runtime",
@@ -288,6 +297,10 @@ struct GOGServiceTests {
       mkdir -p "$destination/bin"
       : > "$destination/bin/BorealGame.exe"
       printf '%s\n' '{"playTasks":[{"isPrimary":true,"type":"FileTask","path":"bin\\BorealGame.exe","workingDir":"bin","arguments":"-windowed \"player one\""}]}' > "$destination/goggame-$4.info"
+      exit 0
+    fi
+    if [ "$command" = "update" ] || [ "$command" = "repair" ]; then
+      printf '%s\n' "$*" > "$(dirname "$auth_path")/maintenance-args.txt"
       exit 0
     fi
     if [ "$command" = "info" ]; then

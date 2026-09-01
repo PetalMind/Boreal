@@ -9,6 +9,7 @@ nonisolated struct BorealServices: Sendable {
     let steamWindows: any SteamWindowsProviding
     let epicLibrary: any EpicLibraryProviding
     let gogLibrary: any GOGLibraryProviding
+    let storeProviders: GameStoreProviderRegistry
     let communityCompatibility: any CommunityCompatibilityLoading
 
     init(
@@ -20,6 +21,7 @@ nonisolated struct BorealServices: Sendable {
         steamWindows: any SteamWindowsProviding,
         epicLibrary: any EpicLibraryProviding,
         gogLibrary: any GOGLibraryProviding,
+        storeProviders: GameStoreProviderRegistry? = nil,
         communityCompatibility: any CommunityCompatibilityLoading = ProtonStoreCompatibilityService()
     ) {
         self.runtimeManager = runtimeManager
@@ -30,6 +32,11 @@ nonisolated struct BorealServices: Sendable {
         self.steamWindows = steamWindows
         self.epicLibrary = epicLibrary
         self.gogLibrary = gogLibrary
+        self.storeProviders = storeProviders ?? GameStoreProviderRegistry([
+            SteamGameStoreProvider(libraryService: steamLibrary),
+            EpicGameStoreProvider(service: epicLibrary),
+            GOGGameStoreProvider(service: gogLibrary),
+        ])
         self.communityCompatibility = communityCompatibility
     }
 

@@ -6,7 +6,7 @@ struct ExecutableDiscoveryTests {
     private let root = URL(fileURLWithPath: "/synthetic/drive_c", isDirectory: true)
     private let installStart = Date(timeIntervalSince1970: 1_000)
 
-    @Test func rejectsInstallerMaintenanceAndSupportExecutables() {
+    @Test func ranksMainExecutableAheadOfMaintenanceAndSupportExecutables() {
         let before = snapshot([])
         let after = snapshot([
             entry("Program Files/Aurora/Aurora.exe", gui: true),
@@ -20,7 +20,12 @@ struct ExecutableDiscoveryTests {
 
         let candidates = ExecutableDiscovery.rankedCandidates(before: before, after: after, applicationName: "Aurora")
 
-        #expect(candidates.map(\.relativePath) == ["Program Files/Aurora/Aurora.exe"])
+        #expect(candidates.first?.relativePath == "Program Files/Aurora/Aurora.exe")
+        #expect(!candidates.map(\.relativePath).contains("Program Files/Aurora/uninstall.exe"))
+        #expect(!candidates.map(\.relativePath).contains("Windows/System32/system-tool.exe"))
+        #expect(candidates.map(\.relativePath).contains("Program Files/Aurora/Aurora Updater.exe"))
+        #expect(candidates.first!.score > candidates.last!.score)
+        #expect(candidates.dropFirst().allSatisfy { $0.score < ExecutableDiscovery.minimumLaunchCandidateScore })
     }
 
     @Test func ranksMatchingGUIInProgramFilesAheadOfOtherExecutables() {
@@ -61,6 +66,24 @@ struct ExecutableDiscoveryTests {
         let candidates = ExecutableDiscovery.rankedCandidates(before: before, after: after, applicationName: "Client")
 
         #expect(candidates.first?.relativePath == "Program Files/South/South Client.exe")
+    }
+
+    @Test func prefersProgramDataLauncherOverVendorSupportProcesses() {
+        let before = snapshot([])
+        let after = snapshot([
+            entry("ProgramData/Lesta/GameCenter/lgc.exe", gui: true, created: 1_005),
+            entry("ProgramData/Lesta/GameCenter/LestaErrorMonitor.exe", gui: true, created: 1_010),
+            entry("ProgramData/Lesta/GameCenter/dlls/helper_process.exe", gui: true, created: 1_015),
+            entry("ProgramData/Lesta/GameCenter/dlls/lgc_renderer_host.exe", gui: true, created: 1_020)
+        ], capturedAt: installStart.addingTimeInterval(20))
+
+        let candidates = ExecutableDiscovery.rankedCandidates(
+            before: before,
+            after: after,
+            applicationName: "BASE.Installer.s-rq"
+        )
+
+        #expect(candidates.first?.relativePath == "ProgramData/Lesta/GameCenter/lgc.exe")
     }
 
     private func snapshot(
