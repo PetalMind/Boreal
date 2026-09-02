@@ -7,6 +7,7 @@ struct AppDetailView: View {
     let didRemove: () -> Void
     @State private var showsRemoveConfirmation = false
     @State private var showsAdvanced = false
+    @State private var showsCompatibilityConfigurator = false
     @AppStorage("developerMode") private var developerMode = false
 
     var body: some View {
@@ -22,6 +23,8 @@ struct AppDetailView: View {
                             primaryAction
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             Menu {
+                                Button("Compatibility Settings…", systemImage: "slider.horizontal.3") { showsCompatibilityConfigurator = true }
+                                Divider()
                                 Button("Show in Finder", systemImage: "folder") { revealExecutable() }
                                 if app.status == .running {
                                     Button("Force Quit", systemImage: "xmark.octagon", role: .destructive) { store.forceQuit(app.id) }
@@ -65,7 +68,7 @@ struct AppDetailView: View {
                     GridRow {
                         infoGroup("Graphics") {
                             Text(app.graphics)
-                            Text("Boreal chooses the recommended renderer.").font(.caption).foregroundStyle(.secondary)
+                            Text(graphicsSummary).font(.caption).foregroundStyle(.secondary)
                         }
                         infoGroup("Storage") {
                             Text(store.formattedBytes(app.storageBytes))
@@ -83,6 +86,12 @@ struct AppDetailView: View {
                     }.padding(.top, 10)
                 }
 
+                Button("Configure Wine…", systemImage: "slider.horizontal.3") {
+                    showsCompatibilityConfigurator = true
+                }
+                .buttonStyle(.bordered)
+                .disabled(app.status == .running || app.status.isBusy)
+
                 activitySection
 
                 if let environment = store.environment(id: app.environmentID) {
@@ -96,6 +105,9 @@ struct AppDetailView: View {
             Button("Remove App and Environment", role: .destructive) { store.removeApplication(app.id); didRemove() }
             Button("Cancel", role: .cancel) { }
         } message: { Text("This removes the app from Boreal. The original setup file is not deleted.") }
+        .sheet(isPresented: $showsCompatibilityConfigurator) {
+            WineCompatibilityConfigurator(application: store.application(id: app.id) ?? app)
+        }
     }
 
     @ViewBuilder private var primaryAction: some View {
@@ -189,6 +201,12 @@ struct AppDetailView: View {
             && store.environment(id: app.environmentID)?.graphics != RuntimeEngine.gamePortingToolkit.graphicsName
             && app.status != .running
             && !app.status.isBusy
+    }
+
+    private var graphicsSummary: String {
+        let profile = store.compatibilityProfile(for: app)
+        let api = profile.graphicsAPI ?? GameGraphicsProfiles.profile(for: app)?.defaultAPI ?? .automatic
+        return "\(api.displayName) · \(profile.graphicsBackend.displayName) translation"
     }
 
     private func infoGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

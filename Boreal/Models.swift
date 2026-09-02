@@ -26,6 +26,147 @@ nonisolated enum ApplicationStatus: String, Codable, Sendable {
     var isBusy: Bool { self == .preparing || self == .starting || self == .installing }
 }
 
+nonisolated enum WineWindowsVersion: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case windows11 = "win11"
+    case windows10 = "win10"
+    case windows81 = "win81"
+    case windows8 = "win8"
+    case windows7 = "win7"
+    case windowsXP = "winxp"
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .windows11: "Windows 11"
+        case .windows10: "Windows 10"
+        case .windows81: "Windows 8.1"
+        case .windows8: "Windows 8"
+        case .windows7: "Windows 7"
+        case .windowsXP: "Windows XP"
+        }
+    }
+}
+
+nonisolated enum WinePrefixArchitecture: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case win64
+    case win32
+
+    var id: String { rawValue }
+    var displayName: String { self == .win64 ? "64-bit (Win64)" : "32-bit (Win32)" }
+}
+
+nonisolated enum WineGraphicsBackend: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case wineD3D
+    case d3dMetal
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .wineD3D: "WineD3D"
+        case .d3dMetal: "D3DMetal"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .automatic: "Uses the renderer recommended by the selected runtime."
+        case .wineD3D: "OpenGL-based Wine renderer for broad DirectX compatibility."
+        case .d3dMetal: "Apple Game Porting Toolkit renderer, optimized for DirectX 11 and 12."
+        }
+    }
+    var requiredEngine: RuntimeEngine? {
+        switch self {
+        case .automatic: nil
+        case .wineD3D: .wine
+        case .d3dMetal: .gamePortingToolkit
+        }
+    }
+}
+
+nonisolated enum GraphicsAPI: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case directX9
+    case directX10
+    case directX11
+    case directX12
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .directX9: "DirectX 9"
+        case .directX10: "DirectX 10"
+        case .directX11: "DirectX 11"
+        case .directX12: "DirectX 12"
+        }
+    }
+}
+
+nonisolated struct GraphicsAPILaunchOption: Codable, Hashable, Sendable {
+    var api: GraphicsAPI
+    var arguments: [String] = []
+    var executable: String? = nil
+}
+
+nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
+    var provider: GameLibraryProvider
+    var externalID: String
+    var availableAPIs: [GraphicsAPI]
+    var defaultAPI: GraphicsAPI
+    var launchOptions: [GraphicsAPILaunchOption]
+
+    func launchOption(for api: GraphicsAPI) -> GraphicsAPILaunchOption? {
+        launchOptions.first { $0.api == api }
+    }
+}
+
+nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
+    var windowsVersion: WineWindowsVersion = .windows11
+    var architecture: WinePrefixArchitecture = .win64
+    var graphicsBackend: WineGraphicsBackend = .automatic
+    var graphicsAPI: GraphicsAPI? = nil
+    var esyncEnabled = true
+    var msyncEnabled = true
+    var retinaModeEnabled = true
+    var fullscreenFSREnabled = false
+    var debugLoggingEnabled = false
+    var launchArguments = ""
+
+    static let `default` = WineCompatibilityProfile()
+
+    var parsedLaunchArguments: [String] {
+        var result: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaped = false
+        for character in launchArguments {
+            if escaped {
+                if character == "\\" || character == "\"" || character == "'" || character.isWhitespace {
+                    current.append(character)
+                } else {
+                    current.append("\\")
+                    current.append(character)
+                }
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if let activeQuote = quote {
+                if character == activeQuote { quote = nil } else { current.append(character) }
+            } else if character == "\"" || character == "'" {
+                quote = character
+            } else if character.isWhitespace {
+                if !current.isEmpty { result.append(current); current = "" }
+            } else {
+                current.append(character)
+            }
+        }
+        if escaped { current.append("\\") }
+        if !current.isEmpty { result.append(current) }
+        return result
+    }
+}
+
 nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var name: String
@@ -47,8 +188,16 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var storeProvider: GameLibraryProvider?
     var storeExternalID: String?
     var communityCompatibility: CommunityCompatibility?
+    var compatibilityProfile: WineCompatibilityProfile?
 
     var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
+    var resolvedCompatibilityProfile: WineCompatibilityProfile {
+        compatibilityProfile ?? WineCompatibilityProfile(
+            windowsVersion: WineWindowsVersion.allCases.first(where: { $0.displayName == windowsVersion }) ?? .windows11,
+            architecture: .win64,
+            graphicsBackend: graphics == RuntimeEngine.gamePortingToolkit.graphicsName ? .d3dMetal : (graphics == RuntimeEngine.wine.graphicsName ? .wineD3D : .automatic)
+        )
+    }
 }
 
 nonisolated enum GameLibraryProvider: String, Codable, Hashable, CaseIterable, Sendable {

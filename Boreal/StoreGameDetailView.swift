@@ -20,6 +20,7 @@ struct StoreGameDetailView: View {
     @State private var selectedVideo: StoreVideo?
     @State private var showsUninstallConfirmation = false
     @State private var selectedTab: DetailTab = .overview
+    @State private var compatibilityApplication: WindowsApplication?
 
     private var currentGame: StoreLibraryGame { store.storeGame(id: game.id) ?? game }
 
@@ -72,6 +73,9 @@ struct StoreGameDetailView: View {
         }
         .sheet(item: $selectedScreenshot) { screenshot in
             StoreScreenshotViewer(screenshot: screenshot, gameName: game.name)
+        }
+        .sheet(item: $compatibilityApplication) { application in
+            WineCompatibilityConfigurator(application: store.application(id: application.id) ?? application)
         }
         .task(id: game.id) {
             store.refreshSteamMetadataIfNeeded(for: game)
@@ -343,6 +347,12 @@ struct StoreGameDetailView: View {
 
     private var gameSettingsMenu: some View {
         Menu {
+            if let app = linkedApplication {
+                Button("Compatibility Settings…", systemImage: "slider.horizontal.3") {
+                    compatibilityApplication = app
+                }
+                Divider()
+            }
             if let app = linkedApplication, canChooseRuntime(for: app) {
                 Section("Runtime") {
                     runtimeSettingsButton(.gamePortingToolkit, for: app)

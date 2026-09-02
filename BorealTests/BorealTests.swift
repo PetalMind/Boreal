@@ -159,6 +159,106 @@ struct BorealTests {
         #expect(!FileManager.default.fileExists(atPath: installed.rootURL.path))
     }
 
+    @Test func environmentInitializationTrustsACompleteValidatedPrefixOverWinebootExitCode() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-complete-prefix-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try testRuntime(at: root, wineboot: """
+        #!/bin/sh
+        mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+        touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg"
+        echo "configuration updated despite status" >&2
+        exit 1
+        """)
+        let manager = EnvironmentManager(
+            applicationSupportURL: root.appending(path: "support"),
+            processExecutor: SystemProcessExecutor(),
+            prefixInitializationAttempts: 2,
+            prefixInitializationInterval: .milliseconds(1)
+        )
+        let environment = try await manager.create(
+            configuration: EnvironmentConfiguration(name: "Complete Prefix"),
+            runtime: runtime
+        )
+
+        try await manager.initialize(environment, runtime: runtime)
+        let validation = try await manager.validate(environment)
+
+        #expect(validation.isReady)
+        #expect(validation.missingPaths.isEmpty)
+    }
+
+    @Test func modernWoW64RuntimeUsesWin64PrefixForARequestedWin32Environment() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-wow64-prefix-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try testRuntime(at: root, supportsWoW64: true, wineboot: """
+        #!/bin/sh
+        if [ "$WINEARCH" != "win64" ]; then
+            echo "WINEARCH must be win64 in wow64 mode" >&2
+            exit 1
+        fi
+        mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+        touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg"
+        """)
+        let manager = EnvironmentManager(
+            applicationSupportURL: root.appending(path: "support"),
+            processExecutor: SystemProcessExecutor(),
+            prefixInitializationAttempts: 2,
+            prefixInitializationInterval: .milliseconds(1)
+        )
+        let environment = try await manager.create(
+            configuration: EnvironmentConfiguration(name: "PE32 Game", architecture: "win32"),
+            runtime: runtime
+        )
+
+        #expect(environment.configuration.architecture == "win64")
+        try await manager.initialize(environment, runtime: runtime)
+        #expect(try await manager.validate(environment).isReady)
+    }
+
+    @Test func failedEnvironmentPreservesDiagnosticLogBeforeTransactionalRemoval() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-failed-prefix-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try testRuntime(at: root, wineboot: """
+        #!/bin/sh
+        echo "BOREAL_WINEBOOT_FAILURE_DETAIL" >&2
+        exit 1
+        """)
+        let manager = EnvironmentManager(
+            applicationSupportURL: root.appending(path: "support"),
+            processExecutor: SystemProcessExecutor(),
+            prefixInitializationAttempts: 1,
+            prefixInitializationInterval: .zero
+        )
+        let environment = try await manager.create(
+            configuration: EnvironmentConfiguration(name: "Failed Prefix"),
+            runtime: runtime
+        )
+        var initializationError: Error?
+        do {
+            try await manager.initialize(environment, runtime: runtime)
+            Issue.record("An incomplete prefix should not pass validation")
+        } catch {
+            initializationError = error
+            if case .initializationFailed(let exitCode, _) = error as? EnvironmentManagerError {
+                #expect(exitCode == 1)
+            } else {
+                Issue.record("Expected EnvironmentManagerError.initializationFailed")
+            }
+        }
+
+        let diagnostics = await manager.preserveFailureDiagnostics(environment)
+        try await manager.remove(environment)
+
+        #expect(!FileManager.default.fileExists(atPath: environment.rootURL.path))
+        #expect(diagnostics?.logURL.map { FileManager.default.fileExists(atPath: $0.path) } == true)
+        #expect(diagnostics?.logExcerpt?.contains("BOREAL_WINEBOOT_FAILURE_DETAIL") == true)
+        if let initializationError, let diagnostics {
+            let details = diagnostics.technicalDetails(for: initializationError)
+            #expect(details.contains("Diagnostics saved at:"))
+            #expect(details.contains("BOREAL_WINEBOOT_FAILURE_DETAIL"))
+        }
+    }
+
     @Test func legacyRuntimeChannelsDecodeIntoVersionedChannels() throws {
         let developer = try JSONDecoder().decode(RuntimeChannel.self, from: Data("\"devel\"".utf8))
         let preview = try JSONDecoder().decode(RuntimeChannel.self, from: Data("\"staging\"".utf8))
@@ -594,6 +694,35 @@ struct BorealTests {
     private func executable(_ contents: String, at url: URL) throws {
         try Data(contents.utf8).write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func testRuntime(at root: URL, supportsWoW64: Bool = false, wineboot: String) throws -> InstalledRuntime {
+        let bin = root.appending(path: "runtime/bin", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let wine = bin.appending(path: "wine")
+        let wineserver = bin.appending(path: "wineserver")
+        let boot = bin.appending(path: "wineboot")
+        try executable("#!/bin/sh\nexit 0\n", at: wine)
+        try executable("#!/bin/sh\nexit 0\n", at: wineserver)
+        try executable(wineboot, at: boot)
+        return InstalledRuntime(
+            id: "test-runtime-\(UUID().uuidString)",
+            displayName: "Test Runtime",
+            wineVersion: "test",
+            rootURL: root.appending(path: "runtime"),
+            wineExecutable: wine,
+            wineServerExecutable: wineserver,
+            wineBootExecutable: boot,
+            architecture: .x86_64,
+            requirements: [],
+            features: RuntimeFeatures(
+                wow64: supportsWoW64,
+                wineMono: false,
+                wineGecko: false,
+                d3dmetal: false,
+                dxmt: false
+            )
+        )
     }
 
     private func syntheticPE(optionalHeaderMagic: UInt16) -> Data {

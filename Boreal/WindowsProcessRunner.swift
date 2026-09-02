@@ -155,10 +155,14 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
         values["WINEARCH"] = environment.configuration.architecture
+        values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
+        values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
+        values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
+        values["WINE_RETINA_MODE"] = environment.configuration.retinaModeEnabled ? "1" : "0"
         // FPS telemetry is high-frequency. Keeping Wine's broad warning channels
         // enabled can produce hundreds of megabytes per session and push the most
         // recent FPS record out of the sampler's bounded read window.
-        let debugChannels = values["WINEDEBUG"] ?? "-all"
+        let debugChannels = environment.configuration.debugLoggingEnabled ? "+all" : (values["WINEDEBUG"] ?? "-all")
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
         if runtime.resolvedEngine == .gamePortingToolkit {
             // D3DMetal does not pass its presents through Wine's +fps channel.

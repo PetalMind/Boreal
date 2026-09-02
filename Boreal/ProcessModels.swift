@@ -20,7 +20,7 @@ nonisolated struct WindowsProcessSession: Identifiable, Sendable, Hashable {
 }
 
 nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
-    let executable: URL
+    var executable: URL
     var arguments: [String]
     var environment: [String: String]
     var workingDirectory: URL
