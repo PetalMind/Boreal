@@ -127,6 +127,7 @@ struct WineCompatibilityProfileTests {
         let application = try JSONDecoder().decode(WindowsApplication.self, from: Data(json.utf8))
 
         #expect(application.compatibilityProfile == nil)
+        #expect(application.resolvedAuxiliaryExecutables.isEmpty)
         #expect(application.resolvedCompatibilityProfile.windowsVersion == .windows10)
         #expect(application.resolvedCompatibilityProfile.graphicsBackend == .wineD3D)
     }

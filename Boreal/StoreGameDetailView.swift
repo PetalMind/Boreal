@@ -351,6 +351,17 @@ struct StoreGameDetailView: View {
                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") {
                     compatibilityApplication = app
                 }
+                let gameActions = store.auxiliaryExecutables(for: app)
+                if !gameActions.isEmpty {
+                    Section("Game Actions") {
+                        ForEach(gameActions) { action in
+                            Button(action.displayName, systemImage: action.role.symbol) {
+                                store.runAuxiliaryExecutable(action, for: app.id)
+                            }
+                            .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
+                        }
+                    }
+                }
                 Divider()
             }
             if let app = linkedApplication, canChooseRuntime(for: app) {

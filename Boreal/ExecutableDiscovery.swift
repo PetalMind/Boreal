@@ -116,6 +116,89 @@ nonisolated enum ExecutableDiscovery {
         return ExecutableFilesystemSnapshot(rootURL: root, entries: entries)
     }
 
+    /// Finds useful secondary entry points without allowing maintenance tools
+    /// to compete with the primary executable.
+    static func auxiliaryExecutables(
+        for primaryExecutable: URL,
+        searchRoot: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> [AuxiliaryExecutable] {
+        let primary = primaryExecutable.standardizedFileURL
+        let root = (searchRoot ?? primary.deletingLastPathComponent()).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue,
+              let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+              ) else { return [] }
+
+        let primaryStem = primary.deletingPathExtension().lastPathComponent
+        var results: [AuxiliaryExecutable] = []
+        for case let url as URL in enumerator {
+            let candidate = url.standardizedFileURL
+            guard candidate != primary,
+                  candidate.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+                  (try? candidate.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let role = auxiliaryRole(for: candidate, primaryStem: primaryStem) else { continue }
+            results.append(AuxiliaryExecutable(
+                executablePath: candidate.path,
+                role: role,
+                displayName: auxiliaryDisplayName(for: candidate, role: role)
+            ))
+        }
+        return results.sorted {
+            if auxiliaryPriority($0.role) != auxiliaryPriority($1.role) {
+                return auxiliaryPriority($0.role) < auxiliaryPriority($1.role)
+            }
+            return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private static func auxiliaryRole(for url: URL, primaryStem: String) -> AuxiliaryExecutableRole? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        let words = Set(normalizedWords(stem))
+        let joined = normalizedWords(stem).joined()
+        let has: (String) -> Bool = { words.contains($0) || joined.contains($0) }
+
+        if has("uninstall") || has("uninstaller") || has("unins") || has("updater") || has("update")
+            || has("installer") || has("helper") || has("crashreport") || has("crashhandler") {
+            return nil
+        }
+        if has("config") || has("configuration") || has("settings") || has("options")
+            || has("gamesetup") {
+            return .configuration
+        }
+        // A bare setup.exe is usually an installer. Only a product-qualified
+        // GameSetup-style name above is treated as a configuration tool.
+        if has("setup") || has("install") { return nil }
+        if has("launcher") || has("launch") { return .launcher }
+        if has("benchmark") || has("bench") { return .benchmark }
+        if has("editor") || has("tool") || has("diagnostic") { return .tool }
+        if nameSimilarity(stem, primaryStem) >= 0.55 { return .alternate }
+        return nil
+    }
+
+    private static func auxiliaryDisplayName(for url: URL, role: AuxiliaryExecutableRole) -> String {
+        switch role {
+        case .configuration: return "Configure (\(url.lastPathComponent))"
+        case .launcher: return "Run Launcher (\(url.lastPathComponent))"
+        case .benchmark: return "Run Benchmark (\(url.lastPathComponent))"
+        case .alternate: return "Run \(url.lastPathComponent)"
+        case .tool: return "Run Tool (\(url.lastPathComponent))"
+        }
+    }
+
+    private static func auxiliaryPriority(_ role: AuxiliaryExecutableRole) -> Int {
+        switch role {
+        case .configuration: 0
+        case .launcher: 1
+        case .benchmark: 2
+        case .alternate: 3
+        case .tool: 4
+        }
+    }
+
     private static func score(
         _ entry: ExecutableSnapshotEntry,
         applicationName: String
@@ -150,6 +233,14 @@ nonisolated enum ExecutableDiscovery {
         if hasSignal("overlay") { result -= 55 }
         if hasSignal("api") { result -= 60 }
         if hasSignal("monitor") || hasSignal("error") || hasSignal("crashreport") || hasSignal("crashhandler") { result -= 80 }
+
+        // Useful game-owned entry points remain discoverable as auxiliary
+        // actions, but should not outrank the actual game. Launchers receive a
+        // smaller penalty because some titles legitimately have no direct
+        // launch target and must still remain installable.
+        if hasSignal("config") || hasSignal("configuration") || hasSignal("settings") || hasSignal("options") { result -= 70 }
+        if hasSignal("benchmark") || hasSignal("bench") { result -= 55 }
+        if hasSignal("launcher") || hasSignal("launch") { result -= 40 }
 
         // Creation time is intentionally not part of the score. Archive tools
         // frequently preserve it, so it is only used by the deterministic

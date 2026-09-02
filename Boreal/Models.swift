@@ -127,6 +127,44 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     }
 }
 
+nonisolated enum AuxiliaryExecutableRole: String, Codable, Hashable, Sendable {
+    case configuration
+    case launcher
+    case benchmark
+    case alternate
+    case tool
+
+    var displayName: String {
+        switch self {
+        case .configuration: "Configure"
+        case .launcher: "Run Launcher"
+        case .benchmark: "Run Benchmark"
+        case .alternate: "Run Alternate Executable"
+        case .tool: "Run Tool"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .configuration: "gearshape"
+        case .launcher: "play.rectangle"
+        case .benchmark: "gauge.with.dots.needle.67percent"
+        case .alternate: "arrow.triangle.branch"
+        case .tool: "wrench.and.screwdriver"
+        }
+    }
+}
+
+/// A secondary entry point that belongs to the same installed game and must
+/// run in that game's managed Windows environment.
+nonisolated struct AuxiliaryExecutable: Codable, Hashable, Sendable, Identifiable {
+    var executablePath: String
+    var role: AuxiliaryExecutableRole
+    var displayName: String
+
+    var id: String { executablePath.lowercased() }
+}
+
 nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var windowsVersion: WineWindowsVersion = .windows11
     var architecture: WinePrefixArchitecture = .win64
@@ -195,8 +233,11 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var storeExternalID: String?
     var communityCompatibility: CommunityCompatibility?
     var compatibilityProfile: WineCompatibilityProfile?
+    /// Optional keeps library files written by older Boreal builds decodable.
+    var auxiliaryExecutables: [AuxiliaryExecutable]?
 
     var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
+    var resolvedAuxiliaryExecutables: [AuxiliaryExecutable] { auxiliaryExecutables ?? [] }
     var resolvedCompatibilityProfile: WineCompatibilityProfile {
         compatibilityProfile ?? WineCompatibilityProfile(
             windowsVersion: WineWindowsVersion.allCases.first(where: { $0.displayName == windowsVersion }) ?? .windows11,

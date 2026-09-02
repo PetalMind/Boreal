@@ -10,6 +10,9 @@ struct ExecutableDiscoveryTests {
         let before = snapshot([])
         let after = snapshot([
             entry("Program Files/Aurora/Aurora.exe", gui: true),
+            entry("Program Files/Aurora/Config.exe", gui: true),
+            entry("Program Files/Aurora/AuroraLauncher.exe", gui: true),
+            entry("Program Files/Aurora/Benchmark.exe", gui: true),
             entry("Program Files/Aurora/uninstall.exe", gui: true),
             entry("Program Files/Aurora/Aurora Updater.exe", gui: true),
             entry("Program Files/Aurora/AuroraHelper.exe", gui: true),
@@ -25,7 +28,10 @@ struct ExecutableDiscoveryTests {
         #expect(!candidates.map(\.relativePath).contains("Windows/System32/system-tool.exe"))
         #expect(candidates.map(\.relativePath).contains("Program Files/Aurora/Aurora Updater.exe"))
         #expect(candidates.first!.score > candidates.last!.score)
-        #expect(candidates.dropFirst().allSatisfy { $0.score < ExecutableDiscovery.minimumLaunchCandidateScore })
+        #expect(candidates.firstIndex { $0.relativePath.hasSuffix("Config.exe") } != nil)
+        #expect(candidates.first!.score > candidates.first { $0.relativePath.hasSuffix("Config.exe") }!.score)
+        #expect(candidates.first!.score > candidates.first { $0.relativePath.hasSuffix("AuroraLauncher.exe") }!.score)
+        #expect(candidates.first!.score > candidates.first { $0.relativePath.hasSuffix("Benchmark.exe") }!.score)
     }
 
     @Test func ranksMatchingGUIInProgramFilesAheadOfOtherExecutables() {
@@ -84,6 +90,29 @@ struct ExecutableDiscoveryTests {
         )
 
         #expect(candidates.first?.relativePath == "ProgramData/Lesta/GameCenter/lgc.exe")
+    }
+
+    @Test func classifiesGameActionsWithoutPromotingInstallersOrHelpers() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory.appending(path: "boreal-actions-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: directory) }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let primary = directory.appending(path: "Aurora_DX11.exe")
+        for name in [
+            "Aurora_DX11.exe", "Config.exe", "AuroraLauncher.exe", "Benchmark.exe",
+            "Aurora_DX9.exe", "MapEditor.exe", "setup.exe", "AuroraUpdater.exe", "helper.exe"
+        ] {
+            try Data([0x4d, 0x5a]).write(to: directory.appending(path: name))
+        }
+
+        let actions = ExecutableDiscovery.auxiliaryExecutables(for: primary)
+
+        #expect(actions.map(\.role) == [.configuration, .launcher, .benchmark, .alternate, .tool])
+        #expect(actions.map { URL(fileURLWithPath: $0.executablePath).lastPathComponent } == [
+            "Config.exe", "AuroraLauncher.exe", "Benchmark.exe", "Aurora_DX9.exe", "MapEditor.exe"
+        ])
+        #expect(!actions.map(\.executablePath).contains { $0.hasSuffix("setup.exe") })
+        #expect(!actions.map(\.executablePath).contains { $0.hasSuffix("helper.exe") })
     }
 
     private func snapshot(

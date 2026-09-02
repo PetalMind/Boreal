@@ -127,12 +127,25 @@ final class BorealStore {
             }
         }
         if !recoveryAppIDs.isEmpty { Task { [weak self] in await self?.recoverPersistedSessions(appIDs: recoveryAppIDs) } }
-        Task { await refreshRuntimeStatuses() }
+        Task {
+            await refreshRuntimeStatuses()
+            await refreshMissingAuxiliaryExecutables()
+        }
     }
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
     func isFavorite(key: String) -> Bool { favoriteKeys.contains(key) }
+
+    func auxiliaryExecutables(for application: WindowsApplication) -> [AuxiliaryExecutable] {
+        application.resolvedAuxiliaryExecutables.filter {
+            FileManager.default.fileExists(atPath: $0.executablePath)
+        }
+    }
+
+    func runAuxiliaryExecutable(_ action: AuxiliaryExecutable, for applicationID: UUID) {
+        Task { await runAuxiliaryExecutableAsync(action, for: applicationID) }
+    }
 
     func toggleFavorite(key: String) {
         if favoriteKeys.contains(key) { favoriteKeys.remove(key) }
@@ -482,6 +495,7 @@ final class BorealStore {
             )
             environments.append(environment)
             applications.append(app)
+            await refreshAuxiliaryExecutables(for: app.id)
             activeSessions[app.id] = commit.firstLaunch
             performanceLogURLs[app.id] = commit.firstLaunch.stderrLog
             activeEnvironments[app.id] = managed
@@ -645,6 +659,10 @@ final class BorealStore {
         }
         let app = steamWindowsApplication(game: game, executable: URL(fileURLWithPath: host.executablePath), environmentID: host.environmentID, status: .ready, graphics: environmentRecord.graphics)
         applications.append(app)
+        Task {
+            await refreshAuxiliaryExecutables(for: app.id, searchRoot: installation)
+            save()
+        }
         if let index = applications.firstIndex(where: { $0.id == app.id }) {
             applications[index].storageBytes = GameStorage.allocatedSize(of: installation) ?? 0
         }
@@ -1000,6 +1018,7 @@ final class BorealStore {
                 )
                 environments.append(environment)
                 applications.append(app)
+                await refreshAuxiliaryExecutables(for: app.id)
                 await updateInstallation(.committing)
                 save()
                 installation.completedStages = Set(InstallationStage.allCases)
@@ -1115,6 +1134,7 @@ final class BorealStore {
                 )
                 environments.append(environment)
                 applications.append(app)
+                await refreshAuxiliaryExecutables(for: app.id)
                 if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
                     storeGames[index].isInstalled = true
                     storeGames[index].installPath = selected.deletingLastPathComponent().path
@@ -1544,6 +1564,7 @@ final class BorealStore {
                 )
                 environments.append(environment)
                 applications.append(app)
+                await refreshAuxiliaryExecutables(for: app.id)
                 if let resolvedCompatibility,
                    let gameIndex = storeGames.firstIndex(where: { $0.id == game.id }),
                    storeGames[gameIndex].compatibility == nil {
@@ -1894,6 +1915,124 @@ final class BorealStore {
                 markEnvironmentEnded(appID: id)
             }
             catch { present(error, title: "The application couldn’t be force quit", stage: "Stopping the Windows environment") }
+        }
+    }
+
+    private func auxiliarySearchRoot(for application: WindowsApplication) -> URL {
+        if let provider = application.storeProvider,
+           let externalID = application.storeExternalID,
+           let path = storeGames.first(where: {
+               $0.provider == provider && $0.externalID == externalID
+           })?.installPath {
+            let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return url
+            }
+        }
+        let installerURL = URL(fileURLWithPath: application.installerPath, isDirectory: true).standardizedFileURL
+        var installerIsDirectory: ObjCBool = false
+        if application.installerPath.hasPrefix("/"),
+           FileManager.default.fileExists(atPath: installerURL.path, isDirectory: &installerIsDirectory),
+           installerIsDirectory.boolValue {
+            return installerURL
+        }
+        return URL(fileURLWithPath: application.executablePath).deletingLastPathComponent()
+    }
+
+    private func refreshAuxiliaryExecutables(for applicationID: UUID, searchRoot: URL? = nil) async {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }),
+              !applications[index].isSteamRuntimeHost else { return }
+        let primary = URL(fileURLWithPath: applications[index].executablePath)
+        let root = searchRoot ?? auxiliarySearchRoot(for: applications[index])
+        let actions = await Task.detached {
+            ExecutableDiscovery.auxiliaryExecutables(for: primary, searchRoot: root)
+        }.value
+        guard let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        applications[currentIndex].auxiliaryExecutables = actions
+    }
+
+    private func refreshMissingAuxiliaryExecutables() async {
+        let applicationIDs = applications.filter {
+            $0.auxiliaryExecutables == nil && !$0.isSteamRuntimeHost
+        }.map(\.id)
+        guard !applicationIDs.isEmpty else { return }
+        for applicationID in applicationIDs {
+            await refreshAuxiliaryExecutables(for: applicationID)
+        }
+        save()
+    }
+
+    private func runAuxiliaryExecutableAsync(_ requestedAction: AuxiliaryExecutable, for applicationID: UUID) async {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        let application = applications[index]
+        guard application.status != .running, !application.status.isBusy else { return }
+        guard let action = auxiliaryExecutables(for: application).first(where: { $0.id == requestedAction.id }) else {
+            presentedIssue = BorealIssue(
+                title: "This game action is no longer available",
+                stage: "Validating the selected auxiliary executable.",
+                recovery: "Reopen the game details so Boreal can scan the installation again.",
+                technicalDetails: requestedAction.executablePath
+            )
+            return
+        }
+        let executable = URL(fileURLWithPath: action.executablePath).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: executable.path) else {
+            presentedIssue = BorealIssue(
+                title: "\(action.displayName) couldn’t open",
+                stage: "Finding the selected executable.",
+                recovery: "Verify or reinstall the game files, then try again.",
+                technicalDetails: executable.path
+            )
+            return
+        }
+
+        do {
+            guard let environmentRecord = environment(id: application.environmentID),
+                  var managed = managedEnvironment(from: environmentRecord),
+                  let runtime = try await runtime(for: environmentRecord) else {
+                throw InstallerServiceError.noRuntimeAvailable
+            }
+            managed.configuration = EnvironmentConfiguration(
+                name: environmentRecord.name,
+                profile: application.resolvedCompatibilityProfile
+            )
+            try await services.environmentManager.configure(managed, runtime: runtime)
+            let session = try await services.processRunner.run(
+                plan: WindowsLaunchPlan(
+                    executable: executable,
+                    arguments: [],
+                    environment: [:],
+                    workingDirectory: executable.deletingLastPathComponent()
+                ),
+                environment: managed,
+                runtime: runtime
+            )
+            if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[currentIndex].lastResult = "Opened \(action.displayName)"
+                applications[currentIndex].lastErrorDetail = nil
+                save()
+            }
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let result = try await services.processRunner.waitForExit(session)
+                    guard let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+                    applications[currentIndex].lastResult = result.exitCode == 0
+                        ? "\(action.displayName) closed"
+                        : "\(action.displayName) exited with code \(result.exitCode)"
+                    save()
+                } catch {
+                    // Losing the bookkeeping receipt does not make the game
+                    // installation unavailable, so keep this out of app status.
+                }
+            }
+        } catch {
+            present(
+                error,
+                title: "\(action.displayName) couldn’t open",
+                stage: "Starting the tool in \(application.name)’s Windows environment"
+            )
         }
     }
 

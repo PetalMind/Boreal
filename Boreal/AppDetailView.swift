@@ -24,6 +24,18 @@ struct AppDetailView: View {
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             Menu {
                                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") { showsCompatibilityConfigurator = true }
+                                let gameActions = store.auxiliaryExecutables(for: app)
+                                if !gameActions.isEmpty {
+                                    Divider()
+                                    Section("Game Actions") {
+                                        ForEach(gameActions) { action in
+                                            Button(action.displayName, systemImage: action.role.symbol) {
+                                                store.runAuxiliaryExecutable(action, for: app.id)
+                                            }
+                                            .disabled(app.status == .running || app.status.isBusy)
+                                        }
+                                    }
+                                }
                                 Divider()
                                 Button("Show in Finder", systemImage: "folder") { revealExecutable() }
                                 if app.status == .running {
@@ -83,6 +95,13 @@ struct AppDetailView: View {
                         DetailRow(title: "Graphics", value: app.graphics, symbol: "display")
                         DetailRow(title: "Environment", value: store.environment(id: app.environmentID)?.name ?? "Unavailable", symbol: "externaldrive")
                         DetailRow(title: "Executable", value: URL(fileURLWithPath: app.executablePath).lastPathComponent, symbol: "doc.badge.gearshape")
+                        ForEach(store.auxiliaryExecutables(for: app)) { action in
+                            DetailRow(
+                                title: action.role.displayName,
+                                value: URL(fileURLWithPath: action.executablePath).lastPathComponent,
+                                symbol: action.role.symbol
+                            )
+                        }
                     }.padding(.top, 10)
                 }
 
