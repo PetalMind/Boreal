@@ -4,6 +4,7 @@ actor EnvironmentManager: EnvironmentManaging {
     private let environmentsURL: URL
     private let processExecutor: any ProcessExecuting
     private let fileManager = FileManager.default
+    private let graphicsBackendManager = GraphicsBackendManager()
     private let prefixInitializationAttempts: Int
     private let prefixInitializationInterval: Duration
 
@@ -22,23 +23,15 @@ actor EnvironmentManager: EnvironmentManaging {
     func create(configuration: EnvironmentConfiguration, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
         let id = UUID()
         let root = environmentsURL.appending(path: id.uuidString, directoryHint: .isDirectory)
-        var resolvedConfiguration = configuration
-        if resolvedConfiguration.architecture == WinePrefixArchitecture.win32.rawValue,
-           runtime.features?.wow64 == true {
-            // Current Wine WoW64 builds host both PE32 and PE32+ processes in a
-            // 64-bit prefix and explicitly reject WINEARCH=win32.
-            resolvedConfiguration.architecture = WinePrefixArchitecture.win64.rawValue
-        }
         let environment = ManagedBorealEnvironment(
             id: id,
-            configuration: resolvedConfiguration,
+            configuration: configuration,
             runtimeID: runtime.id,
             rootURL: root,
             prefixURL: root.appending(path: "prefix", directoryHint: .isDirectory),
             logsURL: root.appending(path: "Logs", directoryHint: .isDirectory),
             state: .created
         )
-        try fileManager.createDirectory(at: environment.prefixURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: environment.logsURL, withIntermediateDirectories: true)
         try write(environment)
         return environment
@@ -50,69 +43,163 @@ actor EnvironmentManager: EnvironmentManaging {
         initializing.state = .initializing
         try write(initializing)
 
-        let request = ProcessLaunchRequest(
-            executable: runtime.wineBootExecutable,
-            arguments: ["--init"],
-            environment: wineEnvironment(for: environment, runtime: runtime),
-            currentDirectory: environment.rootURL,
-            stdoutLog: environment.logsURL.appending(path: "wineboot.stdout.log"),
-            stderrLog: environment.logsURL.appending(path: "wineboot.stderr.log")
+        let stagingPrefix = environment.rootURL.appending(path: ".prefix-installing", directoryHint: .isDirectory)
+        try removePrefixIfPresent(stagingPrefix)
+        try removePrefixIfPresent(environment.prefixURL)
+        try fileManager.createDirectory(at: stagingPrefix, withIntermediateDirectories: true)
+        let stagingEnvironment = ManagedBorealEnvironment(
+            id: environment.id,
+            configuration: environment.configuration,
+            runtimeID: environment.runtimeID,
+            rootURL: environment.rootURL,
+            prefixURL: stagingPrefix,
+            logsURL: environment.logsURL,
+            state: .initializing
         )
-        let receipt = try await processExecutor.launch(request)
-        let result = try await processExecutor.waitForExit(receipt.id)
-        let prefixIsComplete = try await waitForPrefixInitialization(environment.prefixURL)
-        guard prefixIsComplete else {
-            var invalid = environment
-            invalid.state = .invalid
-            try? write(invalid)
-            let validation = try await validate(invalid)
-            if result.exitCode != 0 {
-                throw EnvironmentManagerError.initializationFailed(exitCode: result.exitCode, stderrLog: result.stderrLog)
-            }
-            throw EnvironmentManagerError.validationFailed(validation)
-        }
 
-        // Some Wine and GPTK builds can return a non-zero status after they have
-        // already committed a usable prefix. The prefix contents and the final
-        // validation are the source of truth; the process status remains useful
-        // only when the prefix is incomplete.
-        var ready = environment
-        ready.state = .ready
-        try write(ready)
-        let validation = try await validate(ready)
-        guard validation.isReady else {
+        do {
+            let request = ProcessLaunchRequest(
+                executable: runtime.wineBootExecutable,
+                arguments: ["-u"],
+                environment: wineEnvironment(for: stagingEnvironment, runtime: runtime),
+                currentDirectory: environment.rootURL,
+                stdoutLog: environment.logsURL.appending(path: "wineboot.stdout.log"),
+                stderrLog: environment.logsURL.appending(path: "wineboot.stderr.log")
+            )
+            let receipt = try await processExecutor.launch(request)
+            let result = try await processExecutor.waitForExit(receipt.id)
+            let prefixIsComplete = try await waitForPrefixInitialization(stagingPrefix)
+            guard prefixIsComplete else {
+                let validation = EnvironmentValidation(
+                    missingPaths: missingPrefixPaths(at: stagingPrefix),
+                    state: .invalid
+                )
+                if result.exitCode != 0 {
+                    throw EnvironmentManagerError.initializationFailed(exitCode: result.exitCode, stderrLog: result.stderrLog)
+                }
+                throw EnvironmentManagerError.validationFailed(validation)
+            }
+
+            // Some Wine and GPTK builds can return a non-zero status after they
+            // have committed a usable prefix. Completeness remains the truth.
+            try await applyConfiguration(stagingEnvironment, runtime: runtime)
+            let missing = missingPrefixPaths(at: stagingPrefix)
+            guard missing.isEmpty else {
+                throw EnvironmentManagerError.validationFailed(
+                    EnvironmentValidation(missingPaths: missing, state: .invalid)
+                )
+            }
+
+            // Publish only a fully initialized and configured prefix. A retry
+            // always starts from a new staging directory.
+            try fileManager.moveItem(at: stagingPrefix, to: environment.prefixURL)
+            try graphicsBackendManager.prefixDidMove(in: environment, from: stagingPrefix)
+            var ready = environment
+            ready.state = .ready
+            try write(ready)
+        } catch {
+            try? removePrefixIfPresent(stagingPrefix)
+            try? removePrefixIfPresent(environment.prefixURL)
             var invalid = environment
             invalid.state = .invalid
             try? write(invalid)
-            throw EnvironmentManagerError.validationFailed(validation)
+            throw error
         }
     }
 
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
-        let request = ProcessLaunchRequest(
+        try await applyConfiguration(environment, runtime: runtime)
+        try write(environment)
+    }
+
+    private func applyConfiguration(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        let winecfg = runtime.wineExecutable.deletingLastPathComponent().appending(path: "winecfg")
+        let hasWinecfgLauncher = fileManager.isExecutableFile(atPath: winecfg.path)
+        try await runConfigurationCommand(
+            executable: hasWinecfgLauncher ? winecfg : runtime.wineExecutable,
+            arguments: (hasWinecfgLauncher ? [] : ["winecfg"]) + ["/v", environment.configuration.windowsVersion],
+            logName: "winecfg",
+            environment: environment,
+            runtime: runtime
+        )
+
+        // Wine's macOS Retina switch is a persistent Mac Driver registry value.
+        // WINE_RETINA_MODE is not part of Wine's public prefix contract, so using
+        // only that environment variable left newly-created prefixes unchanged.
+        try await runConfigurationCommand(
             executable: runtime.wineExecutable,
-            arguments: ["winecfg", "-v", environment.configuration.windowsVersion],
+            arguments: [
+                "reg", "add", #"HKCU\Software\Wine\Mac Driver"#,
+                "/v", "RetinaMode", "/t", "REG_SZ", "/d",
+                environment.configuration.retinaModeEnabled ? "Y" : "N", "/f"
+            ],
+            logName: "wine-registry",
+            environment: environment,
+            runtime: runtime
+        )
+
+        try await applyGraphicsBackend(environment, runtime: runtime)
+    }
+
+    private func applyGraphicsBackend(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        let overrideNames = ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "dxgi"]
+        for name in overrideNames {
+            try await runConfigurationCommand(
+                executable: runtime.wineExecutable,
+                arguments: ["reg", "delete", #"HKCU\Software\Wine\DllOverrides"#, "/v", name, "/f"],
+                logName: "graphics-reset-\(name)",
+                environment: environment,
+                runtime: runtime,
+                allowsFailure: true
+            )
+        }
+        do {
+            let activation = try graphicsBackendManager.activate(
+                environment.configuration.graphicsBackend,
+                in: environment,
+                runtime: runtime
+            )
+            for name in activation.dllOverrides {
+                try await runConfigurationCommand(
+                    executable: runtime.wineExecutable,
+                    arguments: ["reg", "add", #"HKCU\Software\Wine\DllOverrides"#, "/v", name, "/t", "REG_SZ", "/d", "native,builtin", "/f"],
+                    logName: "graphics-\(name)",
+                    environment: environment,
+                    runtime: runtime
+                )
+            }
+        } catch {
+            try? graphicsBackendManager.reset(environment)
+            throw error
+        }
+    }
+
+    private func runConfigurationCommand(
+        executable: URL,
+        arguments: [String],
+        logName: String,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        allowsFailure: Bool = false
+    ) async throws {
+        let request = ProcessLaunchRequest(
+            executable: executable,
+            arguments: arguments,
             environment: wineEnvironment(for: environment, runtime: runtime),
             currentDirectory: environment.rootURL,
-            stdoutLog: environment.logsURL.appending(path: "winecfg.stdout.log"),
-            stderrLog: environment.logsURL.appending(path: "winecfg.stderr.log")
+            stdoutLog: environment.logsURL.appending(path: "\(logName).stdout.log"),
+            stderrLog: environment.logsURL.appending(path: "\(logName).stderr.log")
         )
         let receipt = try await processExecutor.launch(request)
         let result = try await processExecutor.waitForExit(receipt.id)
-        guard result.exitCode == 0 else {
+        guard result.exitCode == 0 || allowsFailure else {
             throw EnvironmentManagerError.configurationFailed(exitCode: result.exitCode, stderrLog: result.stderrLog)
         }
     }
 
     func validate(_ environment: ManagedBorealEnvironment) async throws -> EnvironmentValidation {
-        let expected = [
-            environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory),
-            environment.prefixURL.appending(path: "dosdevices", directoryHint: .isDirectory),
-            environment.prefixURL.appending(path: "system.reg"),
-            environment.prefixURL.appending(path: "user.reg")
-        ]
-        let missing = expected.filter { !fileManager.fileExists(atPath: $0.path) }.map(\.path)
+        let missing = missingPrefixPaths(at: environment.prefixURL)
         let stored = try? load(at: environment.rootURL)
         return EnvironmentValidation(missingPaths: missing, state: stored?.state ?? environment.state)
     }
@@ -133,7 +220,7 @@ actor EnvironmentManager: EnvironmentManaging {
                 try fileManager.copyItem(at: descriptor, to: destination.appending(path: "environment.json"))
             }
 
-            let preferredNames = ["wineboot.stderr.log", "winecfg.stderr.log"]
+            let preferredNames = ["wineboot.stderr.log", "winecfg.stderr.log", "wine-registry.stderr.log"]
             var diagnosticLog = preferredNames
                 .map { copiedLogs.appending(path: $0) }
                 .first { fileManager.fileExists(atPath: $0.path) }
@@ -182,29 +269,54 @@ actor EnvironmentManager: EnvironmentManaging {
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
-        values["WINEARCH"] = environment.configuration.architecture
+        let prefixMode = WinePrefixMode.resolve(
+            requestedArchitecture: environment.configuration.architecture,
+            runtimeSupportsWoW64: runtime.features?.wow64 == true
+        )
+        if let architecture = prefixMode.explicitWineArchitecture {
+            values["WINEARCH"] = architecture
+        } else {
+            // Modern WoW64 runtimes create a combined prefix automatically and
+            // reject a forced 32-bit prefix. Remove an inherited value as well.
+            values.removeValue(forKey: "WINEARCH")
+        }
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
         values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
-        values["WINE_RETINA_MODE"] = environment.configuration.retinaModeEnabled ? "1" : "0"
+        values.removeValue(forKey: "WINEDLLOVERRIDES")
         values["WINEDEBUG"] = values["WINEDEBUG"] ?? "-all"
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")
         return values
     }
 
     private func waitForPrefixInitialization(_ prefix: URL) async throws -> Bool {
-        let expected = [
+        for _ in 0..<prefixInitializationAttempts {
+            try Task.checkCancellation()
+            if missingPrefixPaths(at: prefix).isEmpty { return true }
+            try await Task.sleep(for: prefixInitializationInterval)
+        }
+        return false
+    }
+
+    private func missingPrefixPaths(at prefix: URL) -> [String] {
+        [
             prefix.appending(path: "drive_c", directoryHint: .isDirectory),
             prefix.appending(path: "dosdevices", directoryHint: .isDirectory),
             prefix.appending(path: "system.reg"),
             prefix.appending(path: "user.reg")
         ]
-        for _ in 0..<prefixInitializationAttempts {
-            try Task.checkCancellation()
-            if expected.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) { return true }
-            try await Task.sleep(for: prefixInitializationInterval)
+        .filter { !fileManager.fileExists(atPath: $0.path) }
+        .map(\.path)
+    }
+
+    private func removePrefixIfPresent(_ prefix: URL) throws {
+        let environmentRoot = prefix.deletingLastPathComponent().standardizedFileURL
+        guard environmentRoot.deletingLastPathComponent() == environmentsURL.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
         }
-        return false
+        if fileManager.fileExists(atPath: prefix.path) {
+            try fileManager.removeItem(at: prefix)
+        }
     }
 
     private func logExcerpt(from url: URL) -> String? {

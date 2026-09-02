@@ -65,13 +65,16 @@ struct WineCompatibilityConfigurator: View {
 
                     Picker("Translation backend", selection: $profile.graphicsBackend) {
                         ForEach(WineGraphicsBackend.allCases) { backend in
-                            Text(backend.displayName).tag(backend)
+                            Text(backendLabel(backend)).tag(backend)
                         }
                     }
                     .disabled(usesSharedSteamEnvironment)
                     Text(profile.graphicsBackend.detail)
                         .font(.caption).foregroundStyle(.secondary)
-                    if profile.graphicsBackend == .d3dMetal {
+                    if let issue = graphicsBackendIssue {
+                        Label(issue, systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                    } else if profile.graphicsBackend == .d3dMetal {
                         Label("Requires a Game Porting Toolkit runtime.", systemImage: "info.circle")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -108,7 +111,7 @@ struct WineCompatibilityConfigurator: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(application.status == .running || application.status.isBusy)
+                .disabled(application.status == .running || application.status.isBusy || graphicsBackendIssue != nil)
             }
             .padding(18)
         }
@@ -156,6 +159,16 @@ struct WineCompatibilityConfigurator: View {
 
     private var graphicsProfile: GameGraphicsProfile? {
         GameGraphicsProfiles.profile(for: application)
+    }
+
+    private var graphicsBackendIssue: String? {
+        store.graphicsBackendIssue(profile.graphicsBackend, for: application)
+    }
+
+    private func backendLabel(_ backend: WineGraphicsBackend) -> String {
+        store.graphicsBackendIssue(backend, for: application) == nil
+            ? backend.displayName
+            : backend.displayName + " · unavailable"
     }
 
     private var graphicsAPIBinding: Binding<GraphicsAPI> {

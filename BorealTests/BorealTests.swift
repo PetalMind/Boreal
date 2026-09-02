@@ -187,13 +187,17 @@ struct BorealTests {
         #expect(validation.missingPaths.isEmpty)
     }
 
-    @Test func modernWoW64RuntimeUsesWin64PrefixForARequestedWin32Environment() async throws {
+    @Test func modernWoW64RuntimeDoesNotForceWineArchitectureForARequestedWin32Environment() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-wow64-prefix-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let runtime = try testRuntime(at: root, supportsWoW64: true, wineboot: """
         #!/bin/sh
-        if [ "$WINEARCH" != "win64" ]; then
-            echo "WINEARCH must be win64 in wow64 mode" >&2
+        if [ -n "${WINEARCH+x}" ]; then
+            echo "WINEARCH must be unset in wow64 mode" >&2
+            exit 1
+        fi
+        if [ "$1" != "-u" ]; then
+            echo "wineboot must update or create the automatic prefix" >&2
             exit 1
         fi
         mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
@@ -210,9 +214,102 @@ struct BorealTests {
             runtime: runtime
         )
 
-        #expect(environment.configuration.architecture == "win64")
+        #expect(environment.configuration.architecture == "win32")
         try await manager.initialize(environment, runtime: runtime)
         #expect(try await manager.validate(environment).isReady)
+    }
+
+    @Test func environmentInitializationAppliesAndPersistsSelectedCompatibilityOptions() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-configured-prefix-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let capture = root.appending(path: "wine-configuration.txt")
+        let runtime = try testRuntime(at: root, wineboot: """
+        #!/bin/sh
+        mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+        touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg"
+        """)
+        try executable("""
+        #!/bin/sh
+        printf 'ARGS:%s\\n' "$*" >> "\(capture.path)"
+        printf 'ENV:%s|%s|%s|%s\\n' "$WINEARCH" "$WINEESYNC" "$WINEMSYNC" "$WINE_FULLSCREEN_FSR" >> "\(capture.path)"
+        exit 0
+        """, at: runtime.wineExecutable)
+        let profile = WineCompatibilityProfile(
+            windowsVersion: .windows7,
+            architecture: .win32,
+            graphicsBackend: .wineD3D,
+            esyncEnabled: false,
+            msyncEnabled: false,
+            retinaModeEnabled: false,
+            fullscreenFSREnabled: true
+        )
+        let manager = EnvironmentManager(
+            applicationSupportURL: root.appending(path: "support"),
+            processExecutor: SystemProcessExecutor(),
+            prefixInitializationAttempts: 2,
+            prefixInitializationInterval: .milliseconds(1)
+        )
+        let environment = try await manager.create(
+            configuration: EnvironmentConfiguration(name: "Configured", profile: profile),
+            runtime: runtime
+        )
+
+        try await manager.initialize(environment, runtime: runtime)
+
+        let captured = try String(contentsOf: capture, encoding: .utf8)
+        #expect(captured.contains("ARGS:winecfg /v win7"))
+        #expect(captured.contains(#"ARGS:reg add HKCU\Software\Wine\Mac Driver /v RetinaMode /t REG_SZ /d N /f"#))
+        let environmentLines = captured.split(separator: "\n").filter { $0.hasPrefix("ENV:") }
+        #expect(!environmentLines.isEmpty)
+        #expect(environmentLines.allSatisfy { $0 == "ENV:win32|0|0|1" })
+        let stored = try await manager.load(at: environment.rootURL)
+        #expect(stored.state == .ready)
+        #expect(stored.configuration == EnvironmentConfiguration(name: "Configured", profile: profile))
+    }
+
+    @Test func failedWinebootRetryStartsWithAFreshStagingPrefix() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-prefix-retry-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let attemptMarker = root.appending(path: "first-attempt-failed")
+        let runtime = try testRuntime(at: root, supportsWoW64: true, wineboot: """
+        #!/bin/sh
+        if [ ! -e "\(attemptMarker.path)" ]; then
+            touch "\(attemptMarker.path)"
+            mkdir -p "$WINEPREFIX/drive_c"
+            touch "$WINEPREFIX/stale-from-failed-attempt"
+            exit 1
+        fi
+        if [ -e "$WINEPREFIX/stale-from-failed-attempt" ]; then
+            echo "retry reused a partial prefix" >&2
+            exit 2
+        fi
+        mkdir -p "$WINEPREFIX/drive_c" "$WINEPREFIX/dosdevices"
+        touch "$WINEPREFIX/system.reg" "$WINEPREFIX/user.reg"
+        """)
+        let manager = EnvironmentManager(
+            applicationSupportURL: root.appending(path: "support"),
+            processExecutor: SystemProcessExecutor(),
+            prefixInitializationAttempts: 1,
+            prefixInitializationInterval: .zero
+        )
+        let environment = try await manager.create(
+            configuration: EnvironmentConfiguration(name: "Retry"),
+            runtime: runtime
+        )
+
+        do {
+            try await manager.initialize(environment, runtime: runtime)
+            Issue.record("The partial first prefix should fail initialization")
+        } catch { }
+
+        #expect(!FileManager.default.fileExists(atPath: environment.prefixURL.path))
+        #expect(!FileManager.default.fileExists(atPath: environment.rootURL.appending(path: ".prefix-installing").path))
+
+        try await manager.initialize(environment, runtime: runtime)
+
+        #expect(try await manager.validate(environment).isReady)
+        #expect(!FileManager.default.fileExists(atPath: environment.prefixURL.appending(path: "stale-from-failed-attempt").path))
+        #expect(!FileManager.default.fileExists(atPath: environment.rootURL.appending(path: ".prefix-installing").path))
     }
 
     @Test func failedEnvironmentPreservesDiagnosticLogBeforeTransactionalRemoval() async throws {
@@ -468,7 +565,7 @@ struct BorealTests {
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
         let wine = runtimeBin.appending(path: "wine")
-        try executable("#!/bin/sh\nprintf '%s\\n' \"$WINEPREFIX\" \"$PATH\" \"$EPIC_ENV\" \"$PWD\" \"$@\" > \"\(capture.path)\"\n", at: wine)
+        try executable("#!/bin/sh\nprintf '%s\\n' \"$WINEPREFIX\" \"$PATH\" \"$EPIC_ENV\" \"${WINEARCH-unset}\" \"$PWD\" \"$@\" > \"\(capture.path)\"\n", at: wine)
         let game = workingDirectory.appending(path: "Game.exe")
         try Data().write(to: game)
         let runtime = InstalledRuntime(
@@ -480,7 +577,8 @@ struct BorealTests {
             wineServerExecutable: runtimeBin.appending(path: "wineserver"),
             wineBootExecutable: runtimeBin.appending(path: "wineboot"),
             architecture: .arm64,
-            requirements: []
+            requirements: [],
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
         )
         let environment = ManagedBorealEnvironment(
             id: UUID(),
@@ -494,7 +592,7 @@ struct BorealTests {
         let plan = WindowsLaunchPlan(
             executable: game,
             arguments: ["-windowed"],
-            environment: ["WINEPREFIX": "/unsafe", "PATH": "/unsafe", "EPIC_ENV": "preserved"],
+            environment: ["WINEPREFIX": "/unsafe", "PATH": "/unsafe", "WINEARCH": "win32", "EPIC_ENV": "preserved"],
             workingDirectory: workingDirectory
         )
         let runner = WindowsProcessRunner(processExecutor: SystemProcessExecutor())
@@ -505,9 +603,10 @@ struct BorealTests {
         #expect(lines[0] == prefix.path)
         #expect(lines[1].hasPrefix(runtimeBin.path + ":"))
         #expect(lines[2] == "preserved")
-        #expect(URL(fileURLWithPath: lines[3]).resolvingSymlinksInPath() == workingDirectory.resolvingSymlinksInPath())
-        #expect(lines[4] == game.path)
-        #expect(lines[5] == "-windowed")
+        #expect(lines[3] == "unset")
+        #expect(URL(fileURLWithPath: lines[4]).resolvingSymlinksInPath() == workingDirectory.resolvingSymlinksInPath())
+        #expect(lines[5] == game.path)
+        #expect(lines[6] == "-windowed")
     }
 
     @Test func libraryProjectionSearchesMetadataAndCombinesFilterCategories() {

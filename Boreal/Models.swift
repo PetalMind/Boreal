@@ -57,29 +57,35 @@ nonisolated enum WinePrefixArchitecture: String, Codable, CaseIterable, Sendable
 
 nonisolated enum WineGraphicsBackend: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case automatic
-    case wineD3D
     case d3dMetal
+    case dxmt
+    case dxvk
+    case wineD3D
 
     var id: String { rawValue }
     var displayName: String {
         switch self {
         case .automatic: "Automatic"
-        case .wineD3D: "WineD3D"
         case .d3dMetal: "D3DMetal"
+        case .dxmt: "DXMT"
+        case .dxvk: "DXVK"
+        case .wineD3D: "Wine (WineD3D)"
         }
     }
     var detail: String {
         switch self {
-        case .automatic: "Uses the renderer recommended by the selected runtime."
-        case .wineD3D: "OpenGL-based Wine renderer for broad DirectX compatibility."
+        case .automatic: "Chooses the best renderer actually supplied by the selected runtime."
         case .d3dMetal: "Apple Game Porting Toolkit renderer, optimized for DirectX 11 and 12."
+        case .dxmt: "Metal-based Direct3D 11 translation. Requires a runtime package containing DXMT."
+        case .dxvk: "Vulkan-based Direct3D 9–11 translation. Requires a runtime package containing DXVK and a Vulkan driver."
+        case .wineD3D: "Wine's built-in OpenGL renderer and the safest fallback."
         }
     }
     var requiredEngine: RuntimeEngine? {
         switch self {
         case .automatic: nil
-        case .wineD3D: .wine
         case .d3dMetal: .gamePortingToolkit
+        case .dxmt, .dxvk, .wineD3D: .wine
         }
     }
 }

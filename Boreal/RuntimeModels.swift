@@ -36,6 +36,30 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wineGecko: Bool
     var d3dmetal: Bool
     var dxmt: Bool
+    var dxvk: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk
+    }
+
+    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false) {
+        self.wow64 = wow64
+        self.wineMono = wineMono
+        self.wineGecko = wineGecko
+        self.d3dmetal = d3dmetal
+        self.dxmt = dxmt
+        self.dxvk = dxvk
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        wow64 = try values.decodeIfPresent(Bool.self, forKey: .wow64) ?? false
+        wineMono = try values.decodeIfPresent(Bool.self, forKey: .wineMono) ?? false
+        wineGecko = try values.decodeIfPresent(Bool.self, forKey: .wineGecko) ?? false
+        d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
+        dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
+        dxvk = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
+    }
 }
 
 nonisolated enum WindowsExecutableArchitecture: Equatable, Sendable {

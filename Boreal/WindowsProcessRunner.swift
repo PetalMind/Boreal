@@ -35,6 +35,15 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // cannot redirect a launch into another prefix or runtime search path.
         processEnvironment["WINEPREFIX"] = environment.prefixURL.path
         processEnvironment["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")
+        let prefixMode = WinePrefixMode.resolve(
+            requestedArchitecture: environment.configuration.architecture,
+            runtimeSupportsWoW64: runtime.features?.wow64 == true
+        )
+        if let architecture = prefixMode.explicitWineArchitecture {
+            processEnvironment["WINEARCH"] = architecture
+        } else {
+            processEnvironment.removeValue(forKey: "WINEARCH")
+        }
         let request = ProcessLaunchRequest(
             executable: runtime.wineExecutable,
             arguments: wineArguments,
@@ -154,11 +163,23 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
-        values["WINEARCH"] = environment.configuration.architecture
+        let prefixMode = WinePrefixMode.resolve(
+            requestedArchitecture: environment.configuration.architecture,
+            runtimeSupportsWoW64: runtime.features?.wow64 == true
+        )
+        if let architecture = prefixMode.explicitWineArchitecture {
+            values["WINEARCH"] = architecture
+        } else {
+            // A current WoW64 runtime owns the prefix architecture. Also clear
+            // any value inherited from Boreal's parent process.
+            values.removeValue(forKey: "WINEARCH")
+        }
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
         values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
-        values["WINE_RETINA_MODE"] = environment.configuration.retinaModeEnabled ? "1" : "0"
+        // Prefix registry state is the single graphics-backend source of truth.
+        // Do not let Boreal's parent process inject stale DLL overrides.
+        values.removeValue(forKey: "WINEDLLOVERRIDES")
         // FPS telemetry is high-frequency. Keeping Wine's broad warning channels
         // enabled can produce hundreds of megabytes per session and push the most
         // recent FPS record out of the sampler's bounded read window.

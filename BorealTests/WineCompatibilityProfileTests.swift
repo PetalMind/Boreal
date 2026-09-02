@@ -3,6 +3,83 @@ import Testing
 @testable import Boreal
 
 struct WineCompatibilityProfileTests {
+    @Test func graphicsBackendChoicesIncludeEverySupportedRenderer() {
+        #expect(WineGraphicsBackend.allCases == [
+            .automatic,
+            .d3dMetal,
+            .dxmt,
+            .dxvk,
+            .wineD3D
+        ])
+    }
+
+    @Test func legacyRuntimeFeaturesDecodeWithoutDXVKCapability() throws {
+        let data = Data(#"{"wow64":true,"wineMono":false,"wineGecko":false,"d3dmetal":false,"dxmt":true}"#.utf8)
+        let features = try JSONDecoder().decode(RuntimeFeatures.self, from: data)
+
+        #expect(features.dxmt)
+        #expect(!features.dxvk)
+    }
+
+    @Test func dxvkActivationRestoresOriginalPrefixLibrariesWhenReset() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-graphics-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let components = root.appending(path: "runtime/GraphicsComponents/DXVK/x64", directoryHint: .isDirectory)
+        let system32 = root.appending(path: "environment/.prefix-installing/drive_c/windows/system32", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: components, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: system32, withIntermediateDirectories: true)
+        try Data("dxvk".utf8).write(to: components.appending(path: "dxgi.dll"))
+        try Data("wine".utf8).write(to: system32.appending(path: "dxgi.dll"))
+        let runtimeRoot = root.appending(path: "runtime", directoryHint: .isDirectory)
+        let runtime = InstalledRuntime(
+            id: "test-dxvk",
+            displayName: "Test DXVK",
+            wineVersion: "test",
+            rootURL: runtimeRoot,
+            wineExecutable: runtimeRoot.appending(path: "wine"),
+            wineServerExecutable: runtimeRoot.appending(path: "wineserver"),
+            wineBootExecutable: runtimeRoot.appending(path: "wineboot"),
+            architecture: .arm64,
+            requirements: [],
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false, dxvk: true)
+        )
+        let environmentRoot = root.appending(path: "environment", directoryHint: .isDirectory)
+        let stagingEnvironment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "DXVK"),
+            runtimeID: runtime.id,
+            rootURL: environmentRoot,
+            prefixURL: environmentRoot.appending(path: ".prefix-installing", directoryHint: .isDirectory),
+            logsURL: environmentRoot.appending(path: "Logs", directoryHint: .isDirectory),
+            state: .ready
+        )
+        let manager = GraphicsBackendManager()
+
+        let activation = try manager.activate(.dxvk, in: stagingEnvironment, runtime: runtime)
+
+        #expect(activation.backend == .dxvk)
+        #expect(activation.dllOverrides == ["dxgi"])
+        #expect(try String(contentsOf: system32.appending(path: "dxgi.dll"), encoding: .utf8) == "dxvk")
+
+        let publishedPrefix = environmentRoot.appending(path: "prefix", directoryHint: .isDirectory)
+        try fileManager.moveItem(at: stagingEnvironment.prefixURL, to: publishedPrefix)
+        let publishedEnvironment = ManagedBorealEnvironment(
+            id: stagingEnvironment.id,
+            configuration: stagingEnvironment.configuration,
+            runtimeID: stagingEnvironment.runtimeID,
+            rootURL: environmentRoot,
+            prefixURL: publishedPrefix,
+            logsURL: stagingEnvironment.logsURL,
+            state: .ready
+        )
+        try manager.prefixDidMove(in: publishedEnvironment, from: stagingEnvironment.prefixURL)
+        try manager.reset(publishedEnvironment)
+
+        #expect(try String(contentsOf: publishedPrefix.appending(path: "drive_c/windows/system32/dxgi.dll"), encoding: .utf8) == "wine")
+        #expect(!fileManager.fileExists(atPath: environmentRoot.appending(path: ".graphics-backend.json").path))
+    }
+
     @Test func everyWindowsApplicationCanPersistAnyGraphicsAPIChoice() throws {
         #expect(GraphicsAPI.allCases == [
             .automatic,

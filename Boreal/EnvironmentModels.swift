@@ -2,6 +2,25 @@ import Foundation
 
 nonisolated enum ManagedEnvironmentState: String, Codable, Sendable { case created, initializing, ready, invalid }
 
+nonisolated enum WinePrefixMode: String, Codable, Sendable, Equatable {
+    case wow64
+    case legacyWin32
+    case legacyWin64
+
+    static func resolve(requestedArchitecture: String, runtimeSupportsWoW64: Bool) -> Self {
+        if runtimeSupportsWoW64 { return .wow64 }
+        return requestedArchitecture == WinePrefixArchitecture.win32.rawValue ? .legacyWin32 : .legacyWin64
+    }
+
+    var explicitWineArchitecture: String? {
+        switch self {
+        case .wow64: nil
+        case .legacyWin32: WinePrefixArchitecture.win32.rawValue
+        case .legacyWin64: WinePrefixArchitecture.win64.rawValue
+        }
+    }
+}
+
 nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var name: String
     var windowsVersion: String = "win11"

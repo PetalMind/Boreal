@@ -249,36 +249,123 @@ final class BorealStore {
         return profile
     }
 
+    func graphicsBackendIssue(_ backend: WineGraphicsBackend, for application: WindowsApplication) -> String? {
+        guard backend != .automatic, backend != .wineD3D else { return nil }
+        let requiredEngine = backend.requiredEngine ?? .wine
+        let compatibleRuntimes = runtimeStatuses.filter {
+            $0.source == .installed && $0.state == .installed && $0.engine == requiredEngine
+        }
+        guard !compatibleRuntimes.isEmpty else {
+            return backend == .d3dMetal
+                ? "Install or import a Game Porting Toolkit runtime to use D3DMetal."
+                : "Install or import a Wine runtime that supplies \(backend.displayName)."
+        }
+        switch backend {
+        case .d3dMetal:
+            return compatibleRuntimes.contains { $0.features?.d3dmetal == true } ? nil : "The installed GPTK runtime does not contain D3DMetal."
+        case .dxmt:
+            return compatibleRuntimes.contains { $0.features?.dxmt == true } ? nil : "No installed Wine runtime contains the DXMT component package."
+        case .dxvk:
+            return compatibleRuntimes.contains { $0.features?.dxvk == true } ? nil : "No installed Wine runtime contains the DXVK component package."
+        case .automatic, .wineD3D:
+            return nil
+        }
+    }
+
     func updateCompatibilityProfile(for applicationID: UUID, profile: WineCompatibilityProfile) {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }),
               applications[index].status != .running,
               !applications[index].status.isBusy else { return }
         let previousProfile = applications[index].resolvedCompatibilityProfile
+        let previousWindowsVersion = applications[index].windowsVersion
+        let previousGraphics = applications[index].graphics
         let currentEngine: RuntimeEngine = environment(id: applications[index].environmentID)?.graphics == RuntimeEngine.gamePortingToolkit.graphicsName
             ? .gamePortingToolkit : .wine
+        let currentRuntimeID = environment(id: applications[index].environmentID)?.runtimeID
+        let currentRuntimeFeatures = runtimeStatuses.first { $0.id == currentRuntimeID }?.features
         applications[index].compatibilityProfile = profile
         applications[index].windowsVersion = profile.windowsVersion.displayName
-        applications[index].graphics = profile.graphicsBackend.displayName
         let requestedEngine = profile.graphicsBackend.requiredEngine ?? currentEngine
-        let requiresRecreation = previousProfile.architecture != profile.architecture || requestedEngine != currentEngine
-        if !requiresRecreation,
-           let environmentIndex = environments.firstIndex(where: { $0.id == applications[index].environmentID }) {
-            environments[environmentIndex].windowsVersion = profile.windowsVersion.displayName
-            environments[environmentIndex].graphics = profile.graphicsBackend.displayName
+        let currentRuntimeSupportsBackend: Bool
+        switch profile.graphicsBackend {
+        case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.d3dmetal == true
+        case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true
+        case .dxvk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxvk == true
+        case .automatic, .wineD3D: currentRuntimeSupportsBackend = true
         }
-        applications[index].lastResult = requiresRecreation ? "Rebuilding environment for compatibility changes" : "Compatibility profile updated"
+        let requiresRecreation = previousProfile.architecture != profile.architecture
+            || requestedEngine != currentEngine
+            || !currentRuntimeSupportsBackend
+        let usesSharedSteamEnvironment = applications[index].storeProvider == .steam || applications[index].isSteamRuntimeHost
+        applications[index].lastResult = requiresRecreation
+            ? "Rebuilding environment for compatibility changes"
+            : (usesSharedSteamEnvironment ? "Compatibility profile saved for the next launch" : "Applying compatibility profile")
         save()
-        guard requiresRecreation else { return }
+        guard requiresRecreation else {
+            guard !usesSharedSteamEnvironment else { return }
+            applyCompatibilityProfileToExistingEnvironment(
+                applicationID,
+                profile: profile,
+                previousProfile: previousProfile,
+                previousWindowsVersion: previousWindowsVersion,
+                previousGraphics: previousGraphics
+            )
+            return
+        }
         if let provider = applications[index].storeProvider, [.epic, .gog].contains(provider) {
             recreateEnvironment(applicationID, with: requestedEngine, rollbackProfile: previousProfile)
-        } else if applications[index].storeProvider == .steam || applications[index].isSteamRuntimeHost {
+        } else if usesSharedSteamEnvironment {
             applications[index].compatibilityProfile?.architecture = previousProfile.architecture
             applications[index].compatibilityProfile?.graphicsBackend = previousProfile.graphicsBackend
-            applications[index].graphics = previousProfile.graphicsBackend.displayName
             applications[index].lastResult = "Steam keeps architecture and renderer in its shared environment"
             save()
         } else {
             recreateStandaloneEnvironment(applicationID, profile: profile, previousProfile: previousProfile, engine: requestedEngine)
+        }
+    }
+
+    private func applyCompatibilityProfileToExistingEnvironment(
+        _ applicationID: UUID,
+        profile: WineCompatibilityProfile,
+        previousProfile: WineCompatibilityProfile,
+        previousWindowsVersion: String,
+        previousGraphics: String
+    ) {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        applications[index].status = .preparing
+        save()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let currentIndex = applications.firstIndex(where: { $0.id == applicationID }),
+                      let environmentRecord = environment(id: applications[currentIndex].environmentID),
+                      var managed = managedEnvironment(from: environmentRecord),
+                      let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }) else {
+                    throw InstallerServiceError.noRuntimeAvailable
+                }
+                managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: profile)
+                try await services.environmentManager.configure(managed, runtime: runtime)
+                guard let updatedIndex = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+                if let environmentIndex = environments.firstIndex(where: { $0.id == managed.id }) {
+                    environments[environmentIndex].windowsVersion = profile.windowsVersion.displayName
+                }
+                applications[updatedIndex].status = .ready
+                applications[updatedIndex].lastResult = "Compatibility profile applied"
+                applications[updatedIndex].lastErrorDetail = nil
+                save()
+            } catch {
+                if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                    applications[currentIndex].compatibilityProfile = previousProfile
+                    applications[currentIndex].windowsVersion = previousWindowsVersion
+                    applications[currentIndex].graphics = previousGraphics
+                    applications[currentIndex].status = .ready
+                    applications[currentIndex].lastResult = "Compatibility profile couldn’t be applied"
+                    applications[currentIndex].lastFailureStage = "Configuring the Wine environment"
+                    applications[currentIndex].lastErrorDetail = error.localizedDescription
+                    save()
+                    present(error, title: "\(applications[currentIndex].name) couldn’t be configured", stage: "Applying the Wine compatibility profile")
+                }
+            }
         }
     }
 
@@ -293,7 +380,10 @@ final class BorealStore {
             guard let self else { return }
             var replacement: ManagedBorealEnvironment?
             do {
-                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
+                let runtime = try await prepareRuntime(
+                    supporting: profile.graphicsBackend,
+                    preferredEngine: engine
+                )
                 let executableArchitecture = WindowsExecutableArchitecture.inspect(executable)
                 if executableArchitecture == .x86_64, profile.architecture == .win32 {
                     throw RuntimeManagerError.incompatible64BitExecutable
@@ -308,7 +398,6 @@ final class BorealStore {
                 replacement = managed
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 managed.state = .ready
-                try await services.environmentManager.configure(managed, runtime: runtime)
                 guard let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) else { throw CancellationError() }
                 environments.append(WindowsEnvironment(
                     id: managed.id,
@@ -1514,8 +1603,13 @@ final class BorealStore {
             var replacement: ManagedBorealEnvironment?
             do {
                 updateEnvironmentPreparation("Validating \(engine.displayName)…", fraction: 0.1, key: key, token: token)
-                let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
                 let compatibilityProfile = applications[appIndex].resolvedCompatibilityProfile
+                let runtime = rollbackProfile == nil
+                    ? try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
+                    : try await prepareRuntime(
+                        supporting: compatibilityProfile.graphicsBackend,
+                        preferredEngine: engine
+                    )
                 let currentArchitecture = WindowsExecutableArchitecture.inspect(currentExecutable)
                 if currentArchitecture == .x86_64, compatibilityProfile.architecture == .win32 {
                     throw RuntimeManagerError.incompatible64BitExecutable
@@ -1571,7 +1665,9 @@ final class BorealStore {
                 applications[currentIndex].environmentID = managed.id
                 applications[currentIndex].compatibilityProfile?.architecture = managed.configuration.architecture == WinePrefixArchitecture.win64.rawValue ? .win64 : .win32
                 applications[currentIndex].executablePath = plan.executable.path
-                applications[currentIndex].graphics = runtime.graphicsName
+                applications[currentIndex].graphics = compatibilityProfile.graphicsBackend == .automatic
+                    ? runtime.graphicsName
+                    : compatibilityProfile.graphicsBackend.displayName
                 applications[currentIndex].status = .ready
                 applications[currentIndex].lastResult = "Environment recreated with \(engine.displayName)"
                 applications[currentIndex].lastExitCode = nil
@@ -1636,6 +1732,28 @@ final class BorealStore {
             }
         }
         storeOperationTasks[key] = task
+    }
+
+    private func prepareRuntime(
+        supporting backend: WineGraphicsBackend,
+        preferredEngine: RuntimeEngine
+    ) async throws -> InstalledRuntime {
+        let installed = try await services.runtimeManager.installedRuntimes()
+        if let runtime = installed.first(where: {
+            guard $0.resolvedEngine == preferredEngine else { return false }
+            switch backend {
+            case .d3dMetal: return $0.features?.d3dmetal == true
+            case .dxmt: return $0.features?.dxmt == true
+            case .dxvk: return $0.features?.dxvk == true
+            case .automatic, .wineD3D: return true
+            }
+        }) {
+            return runtime
+        }
+        guard backend == .automatic || backend == .wineD3D else {
+            throw InstallerServiceError.noRuntimeAvailable
+        }
+        return try await services.runtimeManager.prepareReadyRuntime(preferredEngine: preferredEngine)
     }
 
     private func steamWindowsApplication(
