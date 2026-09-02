@@ -22,7 +22,7 @@ struct StoreOperationSupportTests {
 
     @Test func turnsDiskTelemetryIntoAnInstallingStageAndKeepsRawLogInDetails() throws {
         let update = try #require(StoreProgressParser.update(
-            from: Data("[PROGRESS] INFO: + Disk - 23.57 MiB/s (write) / 0.00 MiB/s (receive)\n".utf8),
+            from: Data("[PROGRESS] INFO: + Disk - 23.57 MiB/s (write) / 0.00 MiB/s (read)\n".utf8),
             provider: "GOG"
         ))
 
@@ -30,8 +30,56 @@ struct StoreOperationSupportTests {
         #expect(update.message == "Writing game files")
         #expect(update.transferRate == "23.6 MiB/s")
         #expect(update.diskBytesPerSecond == 23.57 * 1_048_576)
-        #expect(update.networkBytesPerSecond == 0)
+        #expect(update.networkBytesPerSecond == nil)
         #expect(update.rawDetail?.hasPrefix("[PROGRESS] INFO:") == true)
+    }
+
+    @Test func parsesAndMergesNativeGOGDLProgressBlock() throws {
+        let update = try #require(StoreProgressParser.update(
+            from: Data("""
+            INFO [PROGRESS]: = Progress: 25.00 536870912/2147483648, Running for: 00:00:32, ETA: 00:01:36
+            INFO [PROGRESS]: = Downloaded: 512.00 MiB, Written: 512.00 MiB
+            INFO [PROGRESS]: + Download - 5.30 MiB/s (raw) / 12.00 MiB/s (decompressed)
+            INFO [PROGRESS]: + Disk - 8.10 MiB/s (write) / 0.00 MiB/s (read)
+            """.utf8),
+            provider: "GOG"
+        ))
+
+        #expect(update.fractionCompleted == 0.25)
+        #expect(update.transferredBytes == 536_870_912)
+        #expect(update.totalBytes == 2_147_483_648)
+        #expect(update.estimatedTimeRemaining == "00:01:36")
+        #expect(update.networkBytesPerSecond == 5.30 * 1_048_576)
+        #expect(update.diskBytesPerSecond == 8.10 * 1_048_576)
+        #expect(update.phase == .downloading)
+        #expect(update.rawDetail?.contains("Progress: 25.00") == true)
+        #expect(update.rawDetail?.contains("Disk - 8.10 MiB/s") == true)
+    }
+
+    @Test func keepsGOGDLProgressWhenOneSampleIsSplitAcrossCallbacks() throws {
+        let accumulator = StoreProgressAccumulator(provider: "GOG")
+        let progress = try #require(accumulator.update(from: Data(
+            "INFO [PROGRESS]: = Progress: 25.00 536870912/2147483648, ETA: 00:01:36\n".utf8
+        )))
+        #expect(progress.fractionCompleted == 0.25)
+        #expect(progress.estimatedTimeRemaining == "00:01:36")
+
+        let download = try #require(accumulator.update(from: Data(
+            "INFO [PROGRESS]: + Download - 5.30 MiB/s (raw) / 12.00 MiB/s (decompressed)\n".utf8
+        )))
+        #expect(download.fractionCompleted == 0.25)
+        #expect(download.networkBytesPerSecond == 5.30 * 1_048_576)
+        #expect(download.estimatedTimeRemaining == "00:01:36")
+
+        #expect(accumulator.update(from: Data(
+            "INFO [PROGRESS]: + Disk - 8.10 MiB/s (wr".utf8
+        )) == nil)
+        let disk = try #require(accumulator.update(from: Data("ite) / 0.00 MiB/s (read)\n".utf8)))
+        #expect(disk.fractionCompleted == 0.25)
+        #expect(disk.networkBytesPerSecond == 5.30 * 1_048_576)
+        #expect(disk.diskBytesPerSecond == 8.10 * 1_048_576)
+        #expect(disk.estimatedTimeRemaining == "00:01:36")
+        #expect(disk.phase == .downloading)
     }
 
     @Test func extractsAmountsAndEstimatedTimeForTheCompactSummary() throws {

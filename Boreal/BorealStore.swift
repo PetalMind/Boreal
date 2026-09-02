@@ -2352,6 +2352,18 @@ final class BorealStore {
         if progress.fractionCompleted == nil {
             progress.fractionCompleted = previousProgress?.fractionCompleted
         }
+        if progress.estimatedTimeRemaining == nil,
+           progress.phase == previousProgress?.phase {
+            progress.estimatedTimeRemaining = previousProgress?.estimatedTimeRemaining
+        }
+        if progress.networkBytesPerSecond == nil,
+           progress.phase == previousProgress?.phase {
+            progress.networkBytesPerSecond = previousProgress?.networkBytesPerSecond
+        }
+        if progress.diskBytesPerSecond == nil,
+           progress.phase == previousProgress?.phase {
+            progress.diskBytesPerSecond = previousProgress?.diskBytesPerSecond
+        }
         if progress.transferredBytes == nil,
            let fraction = progress.fractionCompleted,
            let totalBytes = progress.totalBytes {

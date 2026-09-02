@@ -45,13 +45,46 @@ nonisolated enum StoreProgressParser {
             .split(whereSeparator: \.isNewline)
             .map(String.init)
         let updates = lines.compactMap { parse(line: $0, provider: provider) }
-        return updates.last(where: {
-            $0.fractionCompleted != nil
-                || $0.transferredBytes != nil
-                || $0.transferRate != nil
-                || $0.estimatedTimeRemaining != nil
-                || $0.phase != .preparing
-        }) ?? updates.last
+        guard var result = updates.reduce(nil, { merging($0, $1, provider: provider) }) else { return nil }
+        result.rawDetail = concise(lines.joined(separator: "\n"))
+        return result
+    }
+
+    static func merging(
+        _ previous: StoreGameOperationProgress?,
+        _ update: StoreGameOperationProgress,
+        provider: String
+    ) -> StoreGameOperationProgress? {
+        guard let previous else { return update }
+        var result = update
+        result.startedAt = previous.startedAt
+        result.fractionCompleted = update.fractionCompleted ?? previous.fractionCompleted
+        result.transferred = update.transferred ?? previous.transferred
+        result.total = update.total ?? previous.total
+        result.transferredBytes = update.transferredBytes ?? previous.transferredBytes
+        result.totalBytes = update.totalBytes ?? previous.totalBytes
+        result.estimatedTimeRemaining = update.estimatedTimeRemaining ?? previous.estimatedTimeRemaining
+        result.networkBytesPerSecond = update.networkBytesPerSecond ?? previous.networkBytesPerSecond
+        result.diskBytesPerSecond = update.diskBytesPerSecond ?? previous.diskBytesPerSecond
+
+        // gogdl reports one sample as separate Progress, Download and Disk lines.
+        // Disk activity is part of the download/decompression pipeline, not a
+        // transition to a distinct installation stage.
+        let isGOGDiskTelemetry = provider.localizedCaseInsensitiveContains("gog")
+            && update.rawDetail?.localizedCaseInsensitiveContains("disk") == true
+            && update.diskBytesPerSecond != nil
+        if (update.phase == .preparing && previous.phase != .preparing) ||
+            (isGOGDiskTelemetry && previous.phase == .downloading) {
+            result.phase = previous.phase
+            result.message = previous.message
+        }
+
+        if update.networkBytesPerSecond == nil, previous.networkBytesPerSecond != nil {
+            result.transferRate = previous.transferRate
+        } else {
+            result.transferRate = update.transferRate ?? previous.transferRate
+        }
+        return result
     }
 
     private static func parse(line rawLine: String, provider: String) -> StoreGameOperationProgress? {
@@ -85,9 +118,9 @@ nonisolated enum StoreProgressParser {
            let value = Double(text[range]), value <= 100 {
             return value
         }
-        guard provider.localizedCaseInsensitiveContains("steam") else { return nil }
-        let steamPattern = #"progress:\s*(\d{1,3}(?:\.\d+)?)"#
-        guard let regex = try? NSRegularExpression(pattern: steamPattern, options: [.caseInsensitive]),
+        // Steam and gogdl both use `progress: 37.5`; gogdl does not append `%`.
+        let progressPattern = #"progress:\s*(\d{1,3}(?:\.\d+)?)"#
+        guard let regex = try? NSRegularExpression(pattern: progressPattern, options: [.caseInsensitive]),
               let match = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).last,
               let range = Range(match.range(at: 1), in: text),
               let value = Double(text[range]), value <= 100 else { return nil }
@@ -107,7 +140,7 @@ nonisolated enum StoreProgressParser {
     }
 
     private static func transferRate(in text: String, phase: StoreGameOperationPhase) -> String? {
-        let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G)i?B/s)(?:\s*\((write|read|receive|download)\))?"#
+        let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G)i?B/s)(?:\s*\((write|read|receive|download|raw|decompressed)\))?"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
         let range = NSRange(text.startIndex..., in: text)
         let matches = regex.matches(in: text, range: range)
@@ -115,7 +148,7 @@ nonisolated enum StoreProgressParser {
             guard match.numberOfRanges > 3,
                   let labelRange = Range(match.range(at: 3), in: text) else { return false }
             let label = text[labelRange].lowercased()
-            return phase == .installing ? label == "write" : label == "receive" || label == "download"
+            return phase == .installing ? label == "write" : ["receive", "download", "raw"].contains(label)
         } ?? matches.first
         guard let preferred,
               let valueRange = Range(preferred.range(at: 1), in: text),
@@ -125,7 +158,7 @@ nonisolated enum StoreProgressParser {
     }
 
     private static func byteRates(in text: String, phase: StoreGameOperationPhase) -> (network: Double?, disk: Double?) {
-        let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G)i?B/s)(?:\s*\((write|read|receive|download)\))?"#
+        let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G)i?B/s)(?:\s*\((write|read|receive|download|raw|decompressed)\))?"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return (nil, nil)
         }
@@ -139,14 +172,18 @@ nonisolated enum StoreProgressParser {
             let label = match.numberOfRanges > 3
                 ? Range(match.range(at: 3), in: text).map { text[$0].lowercased() }
                 : nil
-            if label == "write" || label == "read" {
+            if label == "write" {
                 disk = bytes
-            } else if label == "receive" || label == "download" {
-                network = bytes
+            } else if label == "read" {
+                disk = disk ?? bytes
+            } else if label == "receive" || label == "download" || label == "raw" {
+                network = network ?? bytes
+            } else if label == "decompressed" {
+                continue
             } else if phase == .installing {
-                disk = bytes
+                disk = disk ?? bytes
             } else {
-                network = bytes
+                network = network ?? bytes
             }
         }
         return (network, disk)
@@ -165,6 +202,23 @@ nonisolated enum StoreProgressParser {
     }
 
     private static func byteProgress(in text: String) -> (completed: String, total: String, completedBytes: Int64, totalBytes: Int64)? {
+        // gogdl 1.3 emits raw written/total byte counts after the percentage:
+        // `Progress: 25.00 536870912/2147483648`.
+        let gogPattern = #"progress:\s*\d{1,3}(?:\.\d+)?\s+(\d+)\s*/\s*(\d+)"#
+        if let regex = try? NSRegularExpression(pattern: gogPattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let completedRange = Range(match.range(at: 1), in: text),
+           let totalRange = Range(match.range(at: 2), in: text),
+           let completedBytes = Int64(text[completedRange]),
+           let totalBytes = Int64(text[totalRange]) {
+            return (
+                StoreGameOperationProgress.byteCountString(completedBytes),
+                StoreGameOperationProgress.byteCountString(totalBytes),
+                completedBytes,
+                totalBytes
+            )
+        }
+
         let pattern = #"(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)\s*(?:/|of)\s*(\d+(?:\.\d+)?)\s*((?:K|M|G|T)i?B)?"#
         if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
@@ -263,6 +317,7 @@ nonisolated enum StoreProgressParser {
 nonisolated final class StoreProgressAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = ""
+    private var latest: StoreGameOperationProgress?
     private let provider: String
 
     init(provider: String) {
@@ -277,10 +332,17 @@ nonisolated final class StoreProgressAccumulator: @unchecked Sendable {
         let lines = combined.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline).map(String.init)
         let completeLines = hasTrailingNewline ? lines : Array(lines.dropLast())
         pending = hasTrailingNewline ? "" : (lines.last ?? combined)
+        guard !completeLines.isEmpty,
+              let update = StoreProgressParser.update(
+                from: Data(completeLines.joined(separator: "\n").utf8),
+                provider: provider
+              ) else {
+            lock.unlock()
+            return nil
+        }
+        latest = StoreProgressParser.merging(latest, update, provider: provider)
+        let result = latest
         lock.unlock()
-
-        return completeLines.reversed()
-            .compactMap { StoreProgressParser.update(from: Data($0.utf8), provider: provider) }
-            .first
+        return result
     }
 }
