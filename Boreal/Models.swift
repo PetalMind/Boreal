@@ -77,7 +77,7 @@ nonisolated enum WineGraphicsBackend: String, Codable, CaseIterable, Sendable, H
         case .automatic: "Chooses the best renderer actually supplied by the selected runtime."
         case .d3dMetal: "Apple Game Porting Toolkit renderer, optimized for DirectX 11 and 12."
         case .dxmt: "Metal-based Direct3D 11 translation. Requires a runtime package containing DXMT."
-        case .dxvk: "Vulkan-based Direct3D 9–11 translation. Requires a runtime package containing DXVK and a Vulkan driver."
+        case .dxvk: "Vulkan-based Direct3D 10–11 translation using the managed macOS package. Direct3D 9 uses WineD3D."
         case .wineD3D: "Wine's built-in OpenGL renderer and the safest fallback."
         }
     }
@@ -174,6 +174,7 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     var availableAPIs: [GraphicsAPI]
     var defaultAPI: GraphicsAPI
     var launchOptions: [GraphicsAPILaunchOption]
+    var preferredBackend: WineGraphicsBackend? = nil
 
     func launchOption(for api: GraphicsAPI) -> GraphicsAPILaunchOption? {
         launchOptions.first { $0.api == api }

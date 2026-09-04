@@ -26,6 +26,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var windowsVersion: String = "win11"
     var architecture: String = "win64"
     var graphicsBackend: WineGraphicsBackend = .automatic
+    var graphicsAPI: GraphicsAPI = .automatic
     var esyncEnabled: Bool = true
     var msyncEnabled: Bool = true
     var retinaModeEnabled: Bool = true
@@ -37,6 +38,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.windowsVersion = profile?.windowsVersion.rawValue ?? windowsVersion
         self.architecture = profile?.architecture.rawValue ?? architecture
         self.graphicsBackend = profile?.graphicsBackend ?? .automatic
+        self.graphicsAPI = profile?.graphicsAPI ?? .automatic
         self.esyncEnabled = profile?.esyncEnabled ?? true
         self.msyncEnabled = profile?.msyncEnabled ?? true
         self.retinaModeEnabled = profile?.retinaModeEnabled ?? true
@@ -45,7 +47,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, windowsVersion, architecture, graphicsBackend, esyncEnabled, msyncEnabled
+        case name, windowsVersion, architecture, graphicsBackend, graphicsAPI, esyncEnabled, msyncEnabled
         case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled
     }
 
@@ -55,6 +57,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         windowsVersion = try values.decodeIfPresent(String.self, forKey: .windowsVersion) ?? "win11"
         architecture = try values.decodeIfPresent(String.self, forKey: .architecture) ?? "win64"
         graphicsBackend = try values.decodeIfPresent(WineGraphicsBackend.self, forKey: .graphicsBackend) ?? .automatic
+        graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI) ?? .automatic
         esyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? true
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
         retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true

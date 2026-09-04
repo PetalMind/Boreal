@@ -1,6 +1,7 @@
 import SwiftUI
 import Charts
 import AppKit
+import UniformTypeIdentifiers
 
 struct DownloadsView: View {
     @Environment(BorealStore.self) private var store
@@ -341,6 +342,21 @@ struct DownloadsView: View {
                     }
                     Spacer()
                     runtimeAction(runtime)
+                    if runtime.source == .installed, runtime.engine == .wine {
+                        Menu {
+                            Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
+                            Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
+                            Divider()
+                            Menu("Advanced") {
+                                Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
+                                Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .help("Manage graphics translation components")
+                    }
                 }.padding(16)
                 if index < store.runtimeStatuses.count - 1 { Divider().padding(.leading, 66) }
             }
@@ -352,6 +368,21 @@ struct DownloadsView: View {
                 localRuntimeRow(candidate)
             }
         }
+    }
+
+    private func selectGraphicsPackage(_ backend: WineGraphicsBackend, for runtime: RuntimeStatus) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Extracted \(backend.displayName) Package"
+        panel.message = backend == .dxmt
+            ? "Choose an extracted folder or ZIP containing the official DXMT 64-bit DLLs."
+            : "Choose an extracted folder or ZIP containing a macOS-compatible DXVK package and its DLLs."
+        panel.prompt = "Install"
+        panel.allowedContentTypes = [.zip]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        store.installGraphicsComponent(backend, from: source, into: runtime.id)
     }
 
     private func localRuntimeRow(_ candidate: LocalRuntimeCandidate) -> some View {

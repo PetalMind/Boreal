@@ -1,6 +1,31 @@
 import Foundation
 
 actor RuntimeManager: RuntimeManaging {
+    private struct GraphicsLibrary {
+        let url: URL
+        let architecture: WindowsExecutableArchitecture
+    }
+
+    private struct GitHubRelease: Decodable {
+        struct Asset: Decodable {
+            let name: String
+            let size: Int64
+            let digest: String?
+            let browserDownloadURL: URL
+
+            private enum CodingKeys: String, CodingKey {
+                case name, size, digest
+                case browserDownloadURL = "browser_download_url"
+            }
+        }
+        let tagName: String
+        let assets: [Asset]
+
+        private enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case assets
+        }
+    }
     private let runtimesURL: URL
     private let catalog: any RuntimeCatalogLoading
     private let processExecutor: any ProcessExecuting
@@ -109,6 +134,186 @@ actor RuntimeManager: RuntimeManaging {
                 runtime = relocated(runtime, from: runtime.rootURL, to: root)
             }
             return refreshingDetectedFeatures(of: runtime)
+        }
+    }
+
+    func downloadAndInstallGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        let repository: String
+        switch backend {
+        case .dxvk: repository = "Gcenx/DXVK-macOS"
+        case .dxmt: repository = "3Shain/dxmt"
+        default:
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT and DXVK can be installed as optional components.")
+        }
+        guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
+            throw RuntimeManagerError.invalidManifest
+        }
+        var request = URLRequest(url: releaseURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Boreal", forHTTPHeaderField: "User-Agent")
+        let (releaseData, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw RuntimeManagerError.downloadFailed("The official release service is currently unavailable.")
+        }
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
+        let asset = release.assets.first {
+            let name = $0.name.lowercased()
+            return name.hasSuffix(".tar.gz") && name.contains("builtin") && !name.contains("debug")
+        } ?? release.assets.first {
+            let name = $0.name.lowercased()
+            return name.hasSuffix(".zip") && !name.contains("debug")
+        }
+        guard let asset,
+              asset.browserDownloadURL.scheme == "https",
+              asset.browserDownloadURL.host == "github.com",
+              asset.size > 0,
+              asset.size <= 250 * 1_024 * 1_024 else {
+            throw RuntimeManagerError.downloadFailed("No compatible binary artifact was found in the official \(release.tagName) release.")
+        }
+
+        try prepareDirectories()
+        let transactionRoot = runtimesURL.appending(path: ".component-downloads/\(UUID().uuidString)", directoryHint: .isDirectory)
+        let archive = transactionRoot.appending(path: asset.name)
+        let extracted = transactionRoot.appending(path: "package", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: extracted, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: transactionRoot) }
+        let artifact = RuntimeArtifact(
+            url: asset.browserDownloadURL,
+            sha256: asset.digest?.replacingOccurrences(of: "sha256:", with: "") ?? String(repeating: "0", count: 64),
+            compressedSize: asset.size
+        )
+        try await download(artifact, to: archive)
+        if let digest = asset.digest?.replacingOccurrences(of: "sha256:", with: "") {
+            let actual = try RuntimeSecurity.sha256(of: archive)
+            guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
+                throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
+            }
+        }
+        try await extractGraphicsArchive(archive, to: extracted)
+        return try await installGraphicsComponent(backend, from: extracted, into: runtimeID)
+    }
+
+    func installGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        from source: URL,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        try prepareDirectories()
+        guard backend == .dxmt || backend == .dxvk else {
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT and DXVK component packages can be imported.")
+        }
+        guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains("..") else {
+            throw RuntimeManagerError.localRuntimeInvalid("The target runtime identifier is unsafe.")
+        }
+        guard var runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
+        }
+        guard runtime.resolvedEngine == .wine else {
+            throw RuntimeManagerError.localRuntimeInvalid("DXMT and DXVK packages require a Wine runtime. D3DMetal is supplied by Game Porting Toolkit.")
+        }
+        if backend == .dxmt {
+            #if !arch(arm64)
+            throw RuntimeManagerError.localRuntimeInvalid("DXMT currently requires an Apple silicon Mac.")
+            #endif
+            guard ProcessInfo.processInfo.isOperatingSystemAtLeast(
+                OperatingSystemVersion(majorVersion: 14, minorVersion: 0, patchVersion: 0)
+            ) else {
+                throw RuntimeManagerError.localRuntimeInvalid("DXMT requires macOS 14 or later.")
+            }
+        }
+
+        let source = source.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected graphics package no longer exists.")
+        }
+        let extractionRoot: URL?
+        let packageRoot: URL
+        if isDirectory.boolValue {
+            extractionRoot = nil
+            packageRoot = source
+        } else if source.pathExtension.lowercased() == "zip" {
+            let root = runtimesURL.appending(path: ".component-imports/\(UUID().uuidString)", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            extractionRoot = root
+            packageRoot = root.appending(path: "package", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+            let request = ProcessLaunchRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+                arguments: ["-x", "-k", source.path, packageRoot.path],
+                environment: ProcessInfo.processInfo.environment,
+                currentDirectory: root,
+                stdoutLog: root.appending(path: "extract.stdout.log"),
+                stderrLog: root.appending(path: "extract.stderr.log")
+            )
+            let receipt = try await processExecutor.launch(request)
+            let result = try await processExecutor.waitForExit(receipt.id)
+            guard result.exitCode == 0 else {
+                try? fileManager.removeItem(at: root)
+                throw RuntimeManagerError.localRuntimeInvalid("The ZIP archive could not be extracted safely.")
+            }
+        } else {
+            throw RuntimeManagerError.localRuntimeInvalid("Choose an extracted package folder or a ZIP archive.")
+        }
+        defer { if let extractionRoot { try? fileManager.removeItem(at: extractionRoot) } }
+        let discovered = try discoverGraphicsLibraries(in: packageRoot, backend: backend)
+        guard !discovered.isEmpty else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The selected package does not contain compiled \(backend.displayName) DLLs. Choose a release/build artifact, not the project source folder."
+            )
+        }
+        let required = backend == .dxmt
+            ? Set(["dxgi.dll", "d3d11.dll"])
+            : Set(["d3d10core.dll", "d3d11.dll"])
+        let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
+        guard required.isSubset(of: names) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
+        }
+
+        let componentName = backend == .dxmt ? "DXMT" : "DXVK"
+        let destination = runtime.rootURL.appending(path: "GraphicsComponents/\(componentName)", directoryHint: .isDirectory)
+        let staging = runtime.rootURL.appending(path: ".graphics-installing-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let backup = runtime.rootURL.appending(path: ".graphics-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let previousDescriptor = try Data(contentsOf: runtime.rootURL.appending(path: "installed-runtime.json"))
+        do {
+            try makeWritable(runtime.rootURL)
+            try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+            for library in discovered {
+                let architectureFolder = library.architecture == .x86 ? "x32" : "x64"
+                let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
+                try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+                try fileManager.copyItem(at: library.url, to: folder.appending(path: library.url.lastPathComponent.lowercased()))
+            }
+            if fileManager.fileExists(atPath: destination.path) { try fileManager.moveItem(at: destination, to: backup) }
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: staging, to: destination)
+
+            var features = runtime.features ?? RuntimeFeatures(
+                wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false
+            )
+            if backend == .dxmt { features.dxmt = true } else { features.dxvk = true }
+            runtime = InstalledRuntime(
+                id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion,
+                rootURL: runtime.rootURL, wineExecutable: runtime.wineExecutable,
+                wineServerExecutable: runtime.wineServerExecutable, wineBootExecutable: runtime.wineBootExecutable,
+                architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin,
+                engine: runtime.engine, features: features
+            )
+            try makeEncoder().encode(runtime)
+                .write(to: runtime.rootURL.appending(path: "installed-runtime.json"), options: .atomic)
+            try? fileManager.removeItem(at: backup)
+            try makeImmutable(runtime.rootURL)
+            return runtime
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            try? fileManager.removeItem(at: destination)
+            if fileManager.fileExists(atPath: backup.path) { try? fileManager.moveItem(at: backup, to: destination) }
+            try? previousDescriptor.write(to: runtime.rootURL.appending(path: "installed-runtime.json"), options: .atomic)
+            try? makeImmutable(runtime.rootURL)
+            throw error
         }
     }
 
@@ -453,6 +658,57 @@ actor RuntimeManager: RuntimeManaging {
         guard result.exitCode == 0 else { throw RuntimeManagerError.unsupportedArchive }
     }
 
+    private func extractGraphicsArchive(_ archive: URL, to destination: URL) async throws {
+        if archive.lastPathComponent.lowercased().hasSuffix(".zip") {
+            let request = ProcessLaunchRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+                arguments: ["-x", "-k", archive.path, destination.path],
+                environment: ProcessInfo.processInfo.environment,
+                currentDirectory: destination,
+                stdoutLog: destination.appending(path: "extract.stdout.log"),
+                stderrLog: destination.appending(path: "extract.stderr.log")
+            )
+            let receipt = try await processExecutor.launch(request)
+            let result = try await processExecutor.waitForExit(receipt.id)
+            guard result.exitCode == 0 else { throw RuntimeManagerError.unsupportedArchive }
+            return
+        }
+        guard archive.lastPathComponent.lowercased().hasSuffix(".tar.gz") else {
+            throw RuntimeManagerError.unsupportedArchive
+        }
+        let listingRequest = ProcessLaunchRequest(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"),
+            arguments: ["-tzf", archive.path],
+            environment: ProcessInfo.processInfo.environment,
+            currentDirectory: destination,
+            stdoutLog: destination.appending(path: "listing.stdout.log"),
+            stderrLog: destination.appending(path: "listing.stderr.log")
+        )
+        let listingReceipt = try await processExecutor.launch(listingRequest)
+        let listingResult = try await processExecutor.waitForExit(listingReceipt.id)
+        guard listingResult.exitCode == 0,
+              let listing = try? String(contentsOf: listingResult.stdoutLog, encoding: .utf8) else {
+            throw RuntimeManagerError.unsupportedArchive
+        }
+        for entry in listing.split(whereSeparator: \.isNewline).map(String.init) {
+            let normalized = entry.hasPrefix("./") ? String(entry.dropFirst(2)) : entry
+            guard !normalized.hasPrefix("/"), !normalized.split(separator: "/").contains("..") else {
+                throw RuntimeManagerError.unsafeArchive(entry)
+            }
+        }
+        let request = ProcessLaunchRequest(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"),
+            arguments: ["-xzf", archive.path, "-C", destination.path],
+            environment: ProcessInfo.processInfo.environment,
+            currentDirectory: destination,
+            stdoutLog: destination.appending(path: "extract.stdout.log"),
+            stderrLog: destination.appending(path: "extract.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 else { throw RuntimeManagerError.unsupportedArchive }
+    }
+
     private func resolveRuntime(manifest: BorealRuntime, root: URL) throws -> InstalledRuntime {
         let wine = try containedURL(manifest.layout.wineExecutable, root: root)
         let server = try containedURL(manifest.layout.wineServerExecutable, root: root)
@@ -628,6 +884,35 @@ actor RuntimeManager: RuntimeManaging {
         candidates.first { fileManager.isExecutableFile(atPath: app.appending(path: $0).path) }
     }
 
+    private func discoverGraphicsLibraries(
+        in root: URL,
+        backend: WineGraphicsBackend
+    ) throws -> [GraphicsLibrary] {
+        let supported: Set<String> = backend == .dxmt
+            ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+            : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+        var selected: [String: GraphicsLibrary] = [:]
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            let name = url.lastPathComponent.lowercased()
+            guard supported.contains(name) else { continue }
+            let architecture = WindowsExecutableArchitecture.inspect(url)
+            guard architecture == .x86 || architecture == .x86_64 else { continue }
+            let key = "\(architecture)-\(name)"
+            selected[key] = selected[key] ?? GraphicsLibrary(url: url, architecture: architecture)
+        }
+        return selected.values.sorted {
+            if $0.architecture != $1.architecture { return String(describing: $0.architecture) < String(describing: $1.architecture) }
+            return $0.url.lastPathComponent < $1.url.lastPathComponent
+        }
+    }
+
     private func detectEngine(app: URL, name: String) -> RuntimeEngine {
         let normalizedName = name.lowercased()
         if normalizedName.contains("game porting toolkit") || normalizedName.contains("gptk") { return .gamePortingToolkit }
@@ -659,11 +944,10 @@ actor RuntimeManager: RuntimeManaging {
         return hasNewWoW64CPU || hasLegacyWine64
     }
 
-    /// Runtime snapshots imported by older Boreal builds can contain a stale
-    /// `wow64: false` descriptor. Keep the immutable snapshot intact and
-    /// refresh only the in-memory capability from its copied payload.
+    /// Runtime snapshots imported by older Boreal builds can contain stale
+    /// capability flags. Keep the immutable snapshot intact and refresh the
+    /// in-memory values from its copied payload and managed graphics packages.
     private func refreshingDetectedFeatures(of runtime: InstalledRuntime) -> InstalledRuntime {
-        guard runtime.origin == .localImport else { return runtime }
         let copiedApp = runtime.rootURL.appending(path: "Runtime/Wine.app", directoryHint: .isDirectory)
         var features = runtime.features ?? RuntimeFeatures(
             wow64: false,
@@ -672,7 +956,9 @@ actor RuntimeManager: RuntimeManaging {
             d3dmetal: runtime.resolvedEngine == .gamePortingToolkit,
             dxmt: false
         )
-        features.wow64 = detectsWoW64(in: copiedApp)
+        if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
+        features.dxmt = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT").path)
+        features.dxvk = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXVK").path)
         return InstalledRuntime(
             id: runtime.id,
             displayName: runtime.displayName,

@@ -37,7 +37,11 @@ nonisolated struct GraphicsCompatibilityManager: Sendable {
         )
         return GraphicsLayerPlan(
             legacyWrapper: wrapper.wrapper,
-            backend: backendManager.resolve(configuration.graphicsBackend, runtime: runtime),
+            backend: backendManager.resolve(
+                configuration.graphicsBackend,
+                graphicsAPI: configuration.graphicsAPI ?? .automatic,
+                runtime: runtime
+            ),
             dllOverrides: wrapper.dllOverrides,
             files: wrapper.files
         )

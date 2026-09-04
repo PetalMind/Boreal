@@ -11,6 +11,14 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX11, arguments: ["/dx11"]),
                 GraphicsAPILaunchOption(api: .directX9, arguments: ["/dx9"])
             ]
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
+            externalID: "388410",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [],
+            preferredBackend: .wineD3D
         )
     ]
 
@@ -39,5 +47,63 @@ nonisolated enum GameGraphicsProfiles {
             }
         }
         return configured
+    }
+}
+
+nonisolated enum RendererPolicy {
+    static func preferredBackend(for api: GraphicsAPI, runtime: InstalledRuntime) -> WineGraphicsBackend {
+        let features = runtime.features
+        let candidates: [WineGraphicsBackend]
+        switch api {
+        case .directX9:
+            // The maintained macOS DXVK package supports D3D10/11. Do not
+            // advertise historical D9VK behavior that the package omits.
+            candidates = [.wineD3D]
+        case .directX10, .directX11:
+            candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
+        case .directX12:
+            candidates = [.d3dMetal, .wineD3D]
+        case .automatic:
+            candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
+        }
+        return candidates.first { backend in
+            switch backend {
+            case .dxvk: features?.dxvk == true
+            case .d3dMetal: features?.d3dmetal == true
+            case .dxmt: features?.dxmt == true
+            case .wineD3D: true
+            case .automatic: false
+            }
+        } ?? .wineD3D
+    }
+}
+
+nonisolated enum GraphicsAPIDetector {
+    static func detect(
+        executable: URL,
+        fileManager: FileManager = .default
+    ) -> GraphicsAPI? {
+        var candidates = [executable]
+        if let files = try? fileManager.contentsOfDirectory(
+            at: executable.deletingLastPathComponent(),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            candidates.append(contentsOf: files.filter {
+                ["dll", "exe"].contains($0.pathExtension.lowercased())
+            }.prefix(64))
+        }
+        var detected = Set<GraphicsAPI>()
+        for candidate in candidates {
+            guard let handle = try? FileHandle(forReadingFrom: candidate) else { continue }
+            defer { try? handle.close() }
+            guard let data = try? handle.read(upToCount: 64 * 1_024 * 1_024) else { continue }
+            let text = String(decoding: data, as: UTF8.self).lowercased()
+            if text.contains("d3d12.dll") { detected.insert(.directX12) }
+            if text.contains("d3d11.dll") { detected.insert(.directX11) }
+            if text.contains("d3d10.dll") || text.contains("d3d10core.dll") { detected.insert(.directX10) }
+            if text.contains("d3d9.dll") { detected.insert(.directX9) }
+        }
+        return [.directX12, .directX11, .directX10, .directX9].first { detected.contains($0) }
     }
 }

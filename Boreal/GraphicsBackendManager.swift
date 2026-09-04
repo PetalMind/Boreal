@@ -36,12 +36,13 @@ nonisolated struct GraphicsBackendManager: Sendable {
     private var fileManager: FileManager { .default }
     private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"])
 
-    func resolve(_ requested: WineGraphicsBackend, runtime: InstalledRuntime) -> WineGraphicsBackend {
+    func resolve(
+        _ requested: WineGraphicsBackend,
+        graphicsAPI: GraphicsAPI = .automatic,
+        runtime: InstalledRuntime
+    ) -> WineGraphicsBackend {
         guard requested == .automatic else { return requested }
-        if runtime.features?.d3dmetal == true { return .d3dMetal }
-        if runtime.features?.dxmt == true { return .dxmt }
-        if runtime.features?.dxvk == true { return .dxvk }
-        return .wineD3D
+        return RendererPolicy.preferredBackend(for: graphicsAPI, runtime: runtime)
     }
 
     func activate(
@@ -50,7 +51,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         runtime: InstalledRuntime
     ) throws -> GraphicsBackendActivation {
         try reset(environment)
-        let backend = resolve(requested, runtime: runtime)
+        let backend = resolve(requested, graphicsAPI: environment.configuration.graphicsAPI, runtime: runtime)
         guard backend == .dxmt || backend == .dxvk else {
             return GraphicsBackendActivation(backend: backend, dllOverrides: [])
         }

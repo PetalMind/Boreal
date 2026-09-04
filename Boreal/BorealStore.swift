@@ -264,6 +264,16 @@ final class BorealStore {
     func compatibilityProfile(for application: WindowsApplication) -> WineCompatibilityProfile {
         if let saved = application.compatibilityProfile { return saved }
         var profile = application.resolvedCompatibilityProfile
+        if let builtIn = GameGraphicsProfiles.profile(for: application) {
+            profile.graphicsAPI = builtIn.defaultAPI
+            if let preferredBackend = builtIn.preferredBackend {
+                profile.graphicsBackend = preferredBackend
+            }
+        } else if FileManager.default.fileExists(atPath: application.executablePath) {
+            profile.graphicsAPI = GraphicsAPIDetector.detect(
+                executable: URL(fileURLWithPath: application.executablePath)
+            )
+        }
         if environment(id: application.environmentID)?.architecture == "32-bit" {
             profile.architecture = .win32
         }
@@ -272,6 +282,9 @@ final class BorealStore {
 
     func graphicsBackendIssue(_ backend: WineGraphicsBackend, for application: WindowsApplication) -> String? {
         guard backend != .automatic, backend != .wineD3D else { return nil }
+        if backend == .dxmt, compatibilityProfile(for: application).architecture == .win32 {
+            return "DXMT currently supports only 64-bit Windows games. Choose Win64 or another renderer."
+        }
         let requiredEngine = backend.requiredEngine ?? .wine
         let compatibleRuntimes = runtimeStatuses.filter {
             $0.source == .installed && $0.state == .installed && $0.engine == requiredEngine
@@ -2231,7 +2244,7 @@ final class BorealStore {
                   let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }) else {
                 throw InstallerServiceError.noRuntimeAvailable
             }
-            let profile = applications[index].resolvedCompatibilityProfile
+            let profile = compatibilityProfile(for: applications[index])
             let graphicsProfile = GameGraphicsProfiles.profile(for: applications[index])
             let selectedGraphicsAPI = profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic
             let graphicsLaunchOption = selectedGraphicsAPI == .automatic ? nil : graphicsProfile?.launchOption(for: selectedGraphicsAPI)
@@ -2605,6 +2618,58 @@ final class BorealStore {
                 runtimeOperationDetail = nil
                 runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
                 present(error, title: "Installed Wine couldn’t be imported", stage: "Copying, validating, and smoke-testing the local runtime")
+            }
+        }
+    }
+
+    func installGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        from source: URL,
+        into runtimeID: String
+    ) {
+        guard runtimeOperationDetail == nil else { return }
+        runtimeOperationDetail = "Validating and installing \(backend.displayName)…"
+        Task {
+            let hasSecurityScope = source.startAccessingSecurityScopedResource()
+            defer { if hasSecurityScope { source.stopAccessingSecurityScopedResource() } }
+            do {
+                _ = try await services.runtimeManager.installGraphicsComponent(
+                    backend, from: source, into: runtimeID
+                )
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: "\(backend.displayName) couldn’t be installed",
+                    stage: "Validating and adding the graphics component to the selected runtime"
+                )
+            }
+        }
+    }
+
+    func downloadGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        into runtimeID: String
+    ) {
+        guard runtimeOperationDetail == nil else { return }
+        runtimeOperationDetail = "Finding the latest official \(backend.displayName) release…"
+        Task {
+            do {
+                runtimeOperationDetail = "Downloading, verifying, and installing \(backend.displayName)…"
+                _ = try await services.runtimeManager.downloadAndInstallGraphicsComponent(
+                    backend, into: runtimeID
+                )
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: "\(backend.displayName) couldn’t be installed",
+                    stage: "Finding and installing the latest official graphics component"
+                )
             }
         }
     }

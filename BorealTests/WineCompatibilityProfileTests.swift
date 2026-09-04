@@ -3,6 +3,44 @@ import Testing
 @testable import Boreal
 
 struct WineCompatibilityProfileTests {
+    @Test func automaticRendererPolicyUsesDXVKForDirectX11WhenAvailable() {
+        let runtime = makeRuntime(
+            root: FileManager.default.temporaryDirectory,
+            features: RuntimeFeatures(
+                wow64: true, wineMono: false, wineGecko: false,
+                d3dmetal: false, dxmt: true, dxvk: true
+            )
+        )
+
+        #expect(RendererPolicy.preferredBackend(for: .directX11, runtime: runtime) == .dxvk)
+        #expect(RendererPolicy.preferredBackend(for: .directX12, runtime: runtime) == .wineD3D)
+        #expect(RendererPolicy.preferredBackend(for: .directX9, runtime: runtime) == .wineD3D)
+    }
+
+    @Test func directXDetectorChoosesNewestImportedAPI() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-api-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appending(path: "game.exe")
+        try Data("prefix d3d9.dll middle d3d11.dll suffix".utf8).write(to: executable)
+
+        #expect(GraphicsAPIDetector.detect(executable: executable) == .directX11)
+    }
+
+    @Test func darksidersDeathinitiveProfileUsesWineD3DFallback() {
+        let application = WindowsApplication(
+            name: "Darksiders II Deathinitive Edition",
+            publisher: "THQ Nordic",
+            executablePath: "/tmp/Darksiders2.exe",
+            installerPath: "existing-installation",
+            environmentID: UUID(),
+            storeProvider: .steam,
+            storeExternalID: "388410"
+        )
+
+        #expect(GameGraphicsProfiles.profile(for: application)?.preferredBackend == .wineD3D)
+    }
+
     @Test func graphicsBackendChoicesIncludeEverySupportedRenderer() {
         #expect(WineGraphicsBackend.allCases == [
             .automatic,
@@ -272,7 +310,13 @@ struct WineCompatibilityProfileTests {
         #expect(configured.arguments == ["-applaunch", "475150", "/dx9"])
     }
 
-    private func makeRuntime(root: URL) -> InstalledRuntime {
+    private func makeRuntime(
+        root: URL,
+        features: RuntimeFeatures = RuntimeFeatures(
+            wow64: true, wineMono: false, wineGecko: false,
+            d3dmetal: false, dxmt: false
+        )
+    ) -> InstalledRuntime {
         InstalledRuntime(
             id: "test-runtime",
             displayName: "Test Runtime",
@@ -283,7 +327,7 @@ struct WineCompatibilityProfileTests {
             wineBootExecutable: root.appending(path: "wineboot"),
             architecture: .arm64,
             requirements: [],
-            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
+            features: features
         )
     }
 

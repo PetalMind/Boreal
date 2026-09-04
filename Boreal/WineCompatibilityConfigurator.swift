@@ -148,9 +148,6 @@ struct WineCompatibilityConfigurator: View {
         .frame(width: 620, height: 820)
         .onAppear {
             profile = store.compatibilityProfile(for: application)
-            if profile.graphicsAPI == nil, let graphicsProfile {
-                profile.graphicsAPI = graphicsProfile.defaultAPI
-            }
         }
     }
 
@@ -209,18 +206,23 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private func graphicsAPILabel(for api: GraphicsAPI) -> String {
-        guard let graphicsProfile else { return api.displayName }
-        if api == graphicsProfile.defaultAPI { return api.displayName + " · Recommended" }
-        if api != .automatic, !graphicsProfile.availableAPIs.contains(api) {
+        if let graphicsProfile, api == graphicsProfile.defaultAPI { return api.displayName + " · Recommended" }
+        if graphicsProfile == nil, api == detectedGraphicsAPI { return api.displayName + " · Detected" }
+        if let graphicsProfile, api != .automatic, !graphicsProfile.availableAPIs.contains(api) {
             return api.displayName + " · Manual"
         }
         return api.displayName
     }
 
+    private var detectedGraphicsAPI: GraphicsAPI? {
+        guard FileManager.default.fileExists(atPath: application.executablePath) else { return nil }
+        return GraphicsAPIDetector.detect(executable: URL(fileURLWithPath: application.executablePath))
+    }
+
     private var graphicsAPIExplanation: String {
         let selectedAPI = graphicsAPIBinding.wrappedValue
         guard selectedAPI != .automatic else {
-            return "The game chooses its graphics API. Translation through WineD3D or D3DMetal is configured separately below."
+            return "Boreal detects the DirectX imports and selects the best available renderer for this game. You can override both choices here."
         }
         if graphicsProfile?.launchOption(for: selectedAPI) != nil {
             return "Boreal has a verified launch rule for this game and will request \(selectedAPI.displayName) when it starts."

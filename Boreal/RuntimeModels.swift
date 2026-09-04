@@ -358,4 +358,30 @@ nonisolated protocol RuntimeManaging: Sendable {
     func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation
     func remove(_ runtime: InstalledRuntime) async throws
+    func installGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        from source: URL,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime
+    func downloadAndInstallGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime
+}
+
+nonisolated extension RuntimeManaging {
+    func installGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        from source: URL,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func downloadAndInstallGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        throw CocoaError(.featureUnsupported)
+    }
 }
