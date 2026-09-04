@@ -60,6 +60,7 @@ struct BorealApp: App {
                 Tab("General", systemImage: "gearshape") { GeneralSettingsView() }
                 Tab("Runtime", systemImage: "gearshape.2") { RuntimeSettingsView() }
                 Tab("Controllers", systemImage: "gamecontroller") { ControllerSettingsView() }
+                Tab("Fullscreen", systemImage: "rectangle.inset.filled") { ConsoleModeSettingsView() }
                 Tab("Overlay", systemImage: "gauge.with.dots.needle.67percent") { GameOverlaySettingsView() }
                 Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettingsView() }
             }
@@ -71,4 +72,7 @@ extension Notification.Name {
     static let installWindowsApp = Notification.Name("Boreal.installWindowsApp")
     static let showLibraryGrid = Notification.Name("Boreal.showLibraryGrid")
     static let showLibraryList = Notification.Name("Boreal.showLibraryList")
+    static let borealControllerConnected = Notification.Name("Boreal.controllerConnected")
+    static let borealControllerInputPressed = Notification.Name("Boreal.controllerInputPressed")
+    static let borealControllerQuickMenu = Notification.Name("Boreal.controllerQuickMenu")
 }

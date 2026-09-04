@@ -48,14 +48,19 @@ private final class GameOverlayViewModel {
     var snapshot = GamePerformanceSnapshot.unavailable
     var samples: [GamePerformanceSample] = []
     var detailLevel = GameOverlayDetailLevel.standard
+    var gameName = "—"
+    var sessionStartedAt: Date?
     var displayResolution = "—"
     var translationLayer = "—"
     var processorName = "Apple Silicon"
     private var sampledGameID: UUID?
 
-    func prepare(for gameID: UUID) {
-        guard sampledGameID != gameID else { return }
-        sampledGameID = gameID
+    func prepare(for game: OverlayGame) {
+        let isSameSession = sampledGameID == game.id && sessionStartedAt == game.launchedAt
+        gameName = game.name
+        sessionStartedAt = game.launchedAt
+        guard !isSameSession else { return }
+        sampledGameID = game.id
         snapshot = .unavailable
         samples.removeAll(keepingCapacity: true)
     }
@@ -146,7 +151,7 @@ final class GameOverlayController {
         }
         guard UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
               let game = activeGames.first, !isTemporarilyHidden else { hide(); return }
-        model.prepare(for: game.id)
+        model.prepare(for: game)
         model.detailLevel = configuredDetailLevel
         model.translationLayer = game.graphics
         model.processorName = Self.processorName
@@ -282,9 +287,9 @@ final class GameOverlayController {
 
     private func position(_ panel: NSPanel, preferPointerScreen: Bool = false) {
         let size: NSSize = switch configuredDetailLevel {
-        case .minimal: .init(width: 228, height: 142)
-        case .standard: .init(width: 286, height: 316)
-        case .diagnostic: .init(width: 520, height: 660)
+        case .minimal: .init(width: 248, height: 190)
+        case .standard: .init(width: 300, height: 366)
+        case .diagnostic: .init(width: 520, height: 720)
         }
         panel.setContentSize(size)
         let pointer = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
@@ -382,7 +387,7 @@ private struct GameOverlayView: View {
     var body: some View {
         switch model.detailLevel {
         case .minimal:
-            VStack(spacing: 8) { performance; hideShortcut }
+            VStack(spacing: 8) { sessionInfo; performance; hideShortcut }
                 .padding(16)
                 .card()
         case .standard: standard
@@ -392,7 +397,7 @@ private struct GameOverlayView: View {
 
     private var standard: some View {
         VStack(spacing: 12) {
-            performance; divider
+            sessionInfo; divider; performance; divider
             row("GPU", percent(model.snapshot.gpuUsage), .green)
             row("CPU", percent(model.snapshot.cpuUsage), .cyan)
             row("Memory", memory, .green)
@@ -403,6 +408,7 @@ private struct GameOverlayView: View {
 
     private var diagnostic: some View {
         VStack(spacing: 14) {
+            sessionInfo; divider
             title("chart.xyaxis.line", "PERFORMANCE", .cyan); performance; divider
             HStack(alignment: .top, spacing: 16) {
                 column("GPU", "display", .green, [("GPU", percent(model.snapshot.gpuUsage)), ("Temperature", temperature(model.snapshot.gpuTemperatureCelsius))])
@@ -550,6 +556,44 @@ private struct GameOverlayView: View {
             row("Frametime", milliseconds(model.snapshot.frameTimeMilliseconds), .green)
             row("1% Low", fps(model.snapshot.onePercentLowFPS), .green)
         }
+    }
+    private var sessionInfo: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Image(systemName: "gamecontroller.fill")
+                    .foregroundStyle(.cyan)
+                Text(model.gameName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+            }
+            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+
+            HStack(spacing: 7) {
+                Image(systemName: "clock")
+                    .frame(width: 16)
+                    .foregroundStyle(.orange)
+                Text("Session")
+                Spacer()
+                Text(sessionDuration)
+                    .foregroundStyle(.orange)
+                    .contentTransition(.numericText())
+            }
+            .font(.system(size: 12, weight: .medium, design: .monospaced))
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Game \(model.gameName), session duration \(sessionDuration)")
+    }
+    private var sessionDuration: String {
+        guard let startedAt = model.sessionStartedAt else { return "—" }
+        let elapsed = max(0, Int(Date.now.timeIntervalSince(startedAt)))
+        let hours = elapsed / 3600
+        let minutes = (elapsed % 3600) / 60
+        let seconds = elapsed % 60
+        return hours > 0
+            ? String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%02d:%02d", minutes, seconds)
     }
     private var divider: some View { Divider().overlay(.white.opacity(0.16)) }
     private func row(_ label: String, _ value: String, _ color: Color) -> some View {

@@ -10,6 +10,7 @@ final class ControllerManager {
 
     private(set) var controllers: [DetectedController] = []
     private(set) var lastInput: ControllerInput?
+    private(set) var liveState = ControllerLiveState.idle
     private(set) var accessibilityGranted = AXIsProcessTrusted()
     var isMappingEnabled: Bool {
         didSet {
@@ -51,6 +52,7 @@ final class ControllerManager {
                 Task { @MainActor in
                     ControllerManager.shared.configure(controller)
                     ControllerManager.shared.refreshControllers()
+                    NotificationCenter.default.post(name: .borealControllerConnected, object: nil)
                 }
             },
             center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { notification in
@@ -64,6 +66,9 @@ final class ControllerManager {
         GCController.shouldMonitorBackgroundEvents = true
         GCController.controllers().forEach(configure)
         refreshControllers()
+        if !controllers.isEmpty {
+            NotificationCenter.default.post(name: .borealControllerConnected, object: nil)
+        }
         GCController.startWirelessControllerDiscovery {
             Task { @MainActor in ControllerManager.shared.refreshControllers() }
         }
@@ -79,6 +84,8 @@ final class ControllerManager {
     }
 
     func resetMapping() { mapping = .standard }
+
+    func applyMapping() { saveMapping() }
 
     func shutdown() {
         activeApplications.removeAll()
@@ -126,12 +133,29 @@ final class ControllerManager {
             (gamepad.rightThumbstick.xAxis.value > deadZone, .rightStickRight)
         ]
         let current = Set(states.compactMap { isPressed, input in isPressed ? input : nil })
+        liveState = ControllerLiveState(
+            pressedInputs: current,
+            leftStickX: gamepad.leftThumbstick.xAxis.value,
+            leftStickY: gamepad.leftThumbstick.yAxis.value,
+            rightStickX: gamepad.rightThumbstick.xAxis.value,
+            rightStickY: gamepad.rightThumbstick.yAxis.value,
+            leftTrigger: gamepad.leftTrigger.value,
+            rightTrigger: gamepad.rightTrigger.value
+        )
 
         let identifier = ObjectIdentifier(controller)
         let previous = pressedInputs[identifier] ?? []
         let pressed = current.subtracting(previous)
         let released = previous.subtracting(current)
-        if let newest = pressed.first { lastInput = newest }
+        if current.contains(.menu), pressed.contains(.buttonB) {
+            NotificationCenter.default.post(name: .borealControllerQuickMenu, object: nil)
+        }
+        if let newest = pressed.first {
+            lastInput = newest
+            pressed.forEach { input in
+                NotificationCenter.default.post(name: .borealControllerInputPressed, object: input)
+            }
+        }
         guard isMappingEnabled, activeApplications.values.contains(true) else {
             pressedInputs[identifier] = current
             return
@@ -168,6 +192,7 @@ final class ControllerManager {
                 supportsExtendedProfile: controller.extendedGamepad != nil
             )
         }
+        if controllers.isEmpty { liveState = .idle }
     }
 
     private func saveMapping() {

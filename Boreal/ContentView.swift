@@ -26,11 +26,37 @@ struct ContentView: View {
     @State private var newEnvironmentName = ""
     @State private var controllerManager = ControllerManager.shared
     @AppStorage("developerMode") private var developerMode = false
+    @AppStorage("consoleModeEnabled") private var consoleModeEnabled = false
+    @AppStorage("consoleModeAutoEnter") private var consoleModeAutoEnter = true
+    @AppStorage("consoleModeReturnAfterGame") private var consoleModeReturnAfterGame = true
+    @State private var hadRunningGame = false
 
     enum LibraryStyle: String, CaseIterable { case grid, list }
 
     var body: some View {
-        @Bindable var store = store
+        Group {
+            if consoleModeEnabled {
+                ConsoleModeView(exit: { consoleModeEnabled = false })
+            } else {
+                desktopBody
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .borealControllerConnected)) { _ in
+            guard consoleModeAutoEnter else { return }
+            consoleModeEnabled = true
+        }
+        .onChange(of: consoleModeEnabled) { _, enabled in
+            synchronizeFullscreen(enabled: enabled)
+        }
+        .onChange(of: runningOverlayGames) { _, games in
+            if !games.isEmpty { hadRunningGame = true }
+            if games.isEmpty, hadRunningGame, consoleModeReturnAfterGame {
+                consoleModeEnabled = true
+            }
+        }
+    }
+
+    private var desktopBody: some View {
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } detail: {
@@ -70,12 +96,26 @@ struct ContentView: View {
                 selection = .environments
             }
         } message: { Text("Create an empty, isolated Windows environment.") }
-        .sheet(item: $store.presentedIssue) { issue in
+        .sheet(item: Binding(
+            get: { store.presentedIssue },
+            set: { store.presentedIssue = $0 }
+        )) { issue in
             BorealErrorSheet(
                 issue: issue,
                 retry: issue.retryApplicationID.map { id in { store.retry(id) } },
                 dismiss: { store.presentedIssue = nil }
             )
+        }
+    }
+
+    private func synchronizeFullscreen(enabled: Bool) {
+        // WindowGroup can publish the AppStorage change before its NSWindow is
+        // key. Resolve it on the next run-loop turn and use the visible Boreal
+        // window as a fallback for controller-driven startup.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible }) else { return }
+            let isFullscreen = window.styleMask.contains(.fullScreen)
+            if enabled != isFullscreen { window.toggleFullScreen(nil) }
         }
     }
 
@@ -168,6 +208,7 @@ struct ContentView: View {
             Section {
                 Label("Accounts", systemImage: "person.crop.circle.badge.checkmark").tag(SidebarDestination.accounts)
                 Label("Downloads", systemImage: "arrow.down.circle").tag(SidebarDestination.downloads)
+                Label("Controller Settings", systemImage: "gamecontroller.fill").tag(SidebarDestination.controllers)
             } header: {
                 BorealSidebarSectionHeader("Services")
             }
@@ -259,6 +300,7 @@ struct ContentView: View {
         case .accounts: AccountsView()
         case .environments: EnvironmentsView { showsNewEnvironment = true }
         case .downloads: DownloadsView()
+        case .controllers: ControllerSettingsView()
         }
     }
 
@@ -327,6 +369,7 @@ struct ContentView: View {
         case .accounts: "Accounts"
         case .environments: "Environments"
         case .downloads: "Downloads"
+        case .controllers: "Controller Settings"
         }
     }
 

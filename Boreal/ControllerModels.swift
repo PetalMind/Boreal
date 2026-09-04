@@ -131,6 +131,35 @@ nonisolated struct DetectedController: Identifiable, Hashable, Sendable {
     let name: String
     let category: String
     let supportsExtendedProfile: Bool
+
+    var family: ControllerFamily {
+        let descriptor = "\(name) \(category)".lowercased()
+        if descriptor.contains("dualsense") || descriptor.contains("dualshock") || descriptor.contains("playstation") || descriptor.contains("sony") { return .playStation }
+        if descriptor.contains("xbox") || descriptor.contains("microsoft") { return .xbox }
+        if descriptor.contains("joy-con") || descriptor.contains("nintendo") || descriptor.contains("switch") { return .nintendo }
+        return .generic
+    }
+}
+
+nonisolated enum ControllerFamily: String, Sendable {
+    case playStation = "PlayStation"
+    case xbox = "Xbox"
+    case nintendo = "Nintendo"
+    case generic = "Generic"
+}
+
+nonisolated struct ControllerLiveState: Equatable, Sendable {
+    var pressedInputs: Set<ControllerInput> = []
+    var leftStickX: Float = 0
+    var leftStickY: Float = 0
+    var rightStickX: Float = 0
+    var rightStickY: Float = 0
+    var leftTrigger: Float = 0
+    var rightTrigger: Float = 0
+
+    static let idle = ControllerLiveState()
+
+    func isPressed(_ input: ControllerInput) -> Bool { pressedInputs.contains(input) }
 }
 
 nonisolated enum ControllerDetectionState: Sendable {

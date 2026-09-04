@@ -917,7 +917,7 @@ nonisolated enum GameStorage {
 }
 
 enum SidebarDestination: Hashable {
-    case library, favorites, accounts, environments, downloads
+    case library, favorites, accounts, environments, downloads, controllers
 }
 
 enum LibraryRoute: Hashable {

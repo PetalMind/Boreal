@@ -36,6 +36,32 @@ struct RuntimeSettingsView: View {
     }
 }
 
+struct ConsoleModeSettingsView: View {
+    @AppStorage("consoleModeEnabled") private var consoleModeEnabled = false
+    @AppStorage("consoleModeAutoEnter") private var consoleModeAutoEnter = true
+    @AppStorage("consoleModeReturnAfterGame") private var returnAfterGame = true
+
+    var body: some View {
+        Form {
+            Section("Controller-first interface") {
+                Toggle("Use Boreal Fullscreen / TV mode", isOn: $consoleModeEnabled)
+                Toggle("Enter fullscreen when a controller connects", isOn: $consoleModeAutoEnter)
+                Toggle("Return to fullscreen after a game exits", isOn: $returnAfterGame)
+            }
+            Section("Controls") {
+                LabeledContent("Navigate", value: "D-pad / left stick")
+                LabeledContent("Select / Back", value: "A / B")
+                LabeledContent("Game menu", value: "Y")
+                Text("The TV interface keeps the desktop layout available through Exit, so macOS remains recoverable at all times.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 360)
+        .navigationTitle("Fullscreen")
+    }
+}
+
 struct AdvancedSettingsView: View {
     @AppStorage("developerMode") private var developerMode = false
     var body: some View {
