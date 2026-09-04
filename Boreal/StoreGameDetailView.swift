@@ -1114,7 +1114,9 @@ struct StoreGameDetailView: View {
     }
 
     private func uninstallGame() {
-        if game.provider == .steam {
+        if let application = linkedApplication, application.usesStoreMetadataOnly {
+            store.removeApplication(application.id)
+        } else if game.provider == .steam {
             if let url = URL(string: "steam://uninstall/\(game.externalID)") { NSWorkspace.shared.open(url) }
         } else {
             store.uninstallStoreGame(currentGame)

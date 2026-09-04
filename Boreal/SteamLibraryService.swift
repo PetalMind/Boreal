@@ -4,6 +4,11 @@ nonisolated protocol SteamLibraryLoading: Sendable {
     func loadLibrary() async throws -> [StoreLibraryGame]
     func loadDetails(for game: StoreLibraryGame) async -> StoreLibraryGame
     func loadCurrentPlayerCount(appID: String) async -> Int?
+    func searchStoreGame(named name: String) async -> StoreLibraryGame?
+}
+
+extension SteamLibraryLoading {
+    func searchStoreGame(named name: String) async -> StoreLibraryGame? { nil }
 }
 
 enum SteamLibraryError: LocalizedError {
@@ -24,6 +29,10 @@ enum SteamLibraryError: LocalizedError {
 }
 
 actor SteamLibraryService: SteamLibraryLoading {
+    private struct StoreSearchResponse: Decodable {
+        struct Item: Decodable { let id: Int; let name: String }
+        let items: [Item]
+    }
     private struct CurrentPlayersResponse: Decodable {
         struct Response: Decodable {
             let playerCount: Int?
@@ -170,6 +179,74 @@ actor SteamLibraryService: SteamLibraryLoading {
         value.sizeEstimate = metadata.sizeEstimate ?? value.sizeEstimate
         value.compatibility = compatibility ?? value.compatibility
         return value
+    }
+
+    func searchStoreGame(named name: String) async -> StoreLibraryGame? {
+        guard !Self.normalizedStoreTitle(name).isEmpty,
+              var components = URLComponents(string: "https://store.steampowered.com/api/storesearch/") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "term", value: name),
+            URLQueryItem(name: "l", value: "english"),
+            URLQueryItem(name: "cc", value: "US")
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let search = try? JSONDecoder().decode(StoreSearchResponse.self, from: data) else { return nil }
+        guard let match = Self.bestStoreSearchMatch(
+            query: name,
+            items: search.items.map { (id: $0.id, name: $0.name) }
+        ) else { return nil }
+        return await loadDetails(for: StoreLibraryGame(provider: .steam, externalID: String(match.id), name: match.name))
+    }
+
+    static func bestStoreSearchMatch(query: String, items: [(id: Int, name: String)]) -> (id: Int, name: String)? {
+        let queryTokens = storeTitleTokens(query)
+        guard !queryTokens.isEmpty else { return nil }
+        let addOnWords: Set<String> = ["soundtrack", "dlc", "demo", "server", "tool"]
+        let queryRequestsAddOn = !addOnWords.isDisjoint(with: queryTokens)
+        let ranked = items.compactMap { item -> (item: (id: Int, name: String), score: Int)? in
+            let tokens = storeTitleTokens(item.name)
+            guard queryRequestsAddOn || addOnWords.isDisjoint(with: tokens),
+                  queryTokens.allSatisfy(tokens.contains) else { return nil }
+            let exactBonus = tokens == queryTokens ? 100 : 0
+            return (item, exactBonus - max(0, tokens.count - queryTokens.count))
+        }.sorted { lhs, rhs in
+            lhs.score == rhs.score ? lhs.item.name.count < rhs.item.name.count : lhs.score > rhs.score
+        }
+        guard let best = ranked.first,
+              ranked.count == 1 || best.score > ranked[1].score else { return nil }
+        return best.item
+    }
+
+    private static func storeTitleTokens(_ value: String) -> [String] {
+        var separated = ""
+        var previousWasLetter: Bool?
+        for scalar in value.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current).unicodeScalars {
+            let isLetter = CharacterSet.letters.contains(scalar)
+            let isDigit = CharacterSet.decimalDigits.contains(scalar)
+            guard isLetter || isDigit else {
+                separated.append(" ")
+                previousWasLetter = nil
+                continue
+            }
+            if let previousWasLetter, previousWasLetter != isLetter { separated.append(" ") }
+            separated.append(Character(String(scalar)))
+            previousWasLetter = isLetter
+        }
+        let romanNumbers = ["ii": "2", "iii": "3", "iv": "4", "v": "5"]
+        return separated.split(whereSeparator: \.isWhitespace).map { token in
+            romanNumbers[String(token)] ?? String(token)
+        }
+    }
+
+    static func normalizedStoreTitle(_ value: String) -> String {
+        let folded = value.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+        return folded.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? Character(String($0)) : " " }
+            .reduce(into: "") { result, character in
+                if character != " " || result.last != " " { result.append(character) }
+            }
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func loadCurrentPlayerCount(appID: String) async -> Int? {

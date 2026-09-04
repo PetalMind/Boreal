@@ -34,6 +34,7 @@ final class BorealStore {
         var storeGames: [StoreLibraryGame]?
         var storeDownloads: [String: StoreDownloadRecord]?
         var favoriteKeys: [String]?
+        var lastAutomaticLibraryRefreshAt: Date?
     }
 
     var applications: [WindowsApplication] = []
@@ -70,6 +71,11 @@ final class BorealStore {
     private let storeSizeEstimateGate = StoreSizeEstimateGate(limit: 3)
     private var installationTask: Task<UUID?, Never>?
     private var installationToken: UUID?
+    private var lastAutomaticLibraryRefreshAt: Date?
+    private var isRunningAutomaticLibraryRefresh = false
+    private var isEnrichingInstalledApplicationMetadata = false
+
+    nonisolated static let automaticLibraryRefreshInterval: TimeInterval = 8 * 60 * 60
 
     init(storageURL: URL? = nil, services: BorealServices? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -131,6 +137,7 @@ final class BorealStore {
         Task {
             await refreshRuntimeStatuses()
             await refreshMissingAuxiliaryExecutables()
+            await enrichInstalledApplicationMetadata()
         }
     }
 
@@ -310,7 +317,8 @@ final class BorealStore {
         let requiresRecreation = previousProfile.architecture != profile.architecture
             || requestedEngine != currentEngine
             || !currentRuntimeSupportsBackend
-        let usesSharedSteamEnvironment = applications[index].storeProvider == .steam || applications[index].isSteamRuntimeHost
+        let usesSharedSteamEnvironment = (applications[index].storeProvider == .steam && !applications[index].usesStoreMetadataOnly)
+            || applications[index].isSteamRuntimeHost
         applications[index].lastResult = requiresRecreation
             ? "Rebuilding environment for compatibility changes"
             : (usesSharedSteamEnvironment ? "Compatibility profile saved for the next launch" : "Applying compatibility profile")
@@ -480,9 +488,14 @@ final class BorealStore {
                 prefixPath: managed.prefixURL.path,
                 logsPath: managed.logsURL.path
             )
+            let metadata = await matchStoreMetadata(for: [
+                candidate.name,
+                commit.executable.deletingPathExtension().lastPathComponent,
+                commit.executable.deletingLastPathComponent().lastPathComponent,
+            ])
             let app = WindowsApplication(
-                name: candidate.name,
-                publisher: "Windows application",
+                name: metadata?.name ?? candidate.name,
+                publisher: metadata?.developer ?? "Windows application",
                 executablePath: commit.executable.path,
                 installerPath: candidate.url.path,
                 environmentID: environment.id,
@@ -492,10 +505,21 @@ final class BorealStore {
                 lastOpened: .now,
                 iconSymbol: symbol(for: candidate.name),
                 lastResult: "First launch verified",
+                storeProvider: metadata?.provider,
+                storeExternalID: metadata?.externalID,
+                storeMetadataOnly: metadata == nil ? nil : true,
                 communityCompatibility: communityProfile
             )
             environments.append(environment)
             applications.append(app)
+            if var metadata {
+                metadata.isInstalled = false
+                metadata.installPath = nil
+                metadata.installedPlatform = nil
+                if !storeGames.contains(where: { $0.provider == metadata.provider && $0.externalID == metadata.externalID }) {
+                    storeGames.append(metadata)
+                }
+            }
             await refreshAuxiliaryExecutables(for: app.id)
             activeSessions[app.id] = commit.firstLaunch
             performanceLogURLs[app.id] = commit.firstLaunch.stderrLog
@@ -517,6 +541,55 @@ final class BorealStore {
             installation.rollbackCompleted = installation.stage != .preparingRuntime
             return nil
         }
+    }
+
+    private func matchStoreMetadata(for rawNames: [String]) async -> StoreLibraryGame? {
+        for name in rawNames.map(Self.storeSearchTitle).filter({ !$0.isEmpty }) {
+            let normalized = SteamLibraryService.normalizedStoreTitle(name)
+            let localMatches = storeGames.filter { SteamLibraryService.normalizedStoreTitle($0.name) == normalized }
+            if localMatches.count == 1 { return localMatches[0] }
+            if localMatches.count > 1 { continue }
+            if let match = await services.steamLibrary.searchStoreGame(named: name) { return match }
+        }
+        return nil
+    }
+
+    private func enrichInstalledApplicationMetadata() async {
+        guard !isEnrichingInstalledApplicationMetadata else { return }
+        isEnrichingInstalledApplicationMetadata = true
+        defer { isEnrichingInstalledApplicationMetadata = false }
+        let candidates = applications.filter {
+            !$0.isSteamRuntimeHost && $0.storeProvider == nil && $0.storeExternalID == nil
+        }
+        var changed = false
+        for candidate in candidates {
+            let executable = URL(fileURLWithPath: candidate.executablePath)
+            guard let metadata = await matchStoreMetadata(for: [
+                candidate.name,
+                executable.deletingPathExtension().lastPathComponent,
+                executable.deletingLastPathComponent().lastPathComponent,
+            ]),
+            let index = applications.firstIndex(where: { $0.id == candidate.id }) else { continue }
+            applications[index].name = metadata.name
+            applications[index].publisher = metadata.developer ?? applications[index].publisher
+            applications[index].storeProvider = metadata.provider
+            applications[index].storeExternalID = metadata.externalID
+            applications[index].storeMetadataOnly = true
+            if !storeGames.contains(where: { $0.provider == metadata.provider && $0.externalID == metadata.externalID }) {
+                storeGames.append(metadata)
+            }
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    nonisolated static func storeSearchTitle(from installerName: String) -> String {
+        var value = installerName.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: ".", with: " ")
+        if value.lowercased().hasPrefix("setup ") { value.removeFirst("setup ".count) }
+        for suffix in [" setup", " installer", " install"] where value.lowercased().hasSuffix(suffix) {
+            value.removeLast(suffix.count)
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func beginInstallation(_ candidate: InstallCandidate) {
@@ -941,6 +1014,63 @@ final class BorealStore {
         case .steam: syncSteamLibrary()
         case .epic: syncEpicLibrary()
         case .gog: syncGOGLibrary()
+        }
+    }
+
+    /// Keeps connected libraries current three times per day while Boreal is running.
+    /// The persisted deadline also makes an overdue refresh run after the next launch.
+    func runAutomaticLibraryRefreshLoop() async {
+        guard !isRunningAutomaticLibraryRefresh else { return }
+        isRunningAutomaticLibraryRefresh = true
+        defer { isRunningAutomaticLibraryRefresh = false }
+
+        while !Task.isCancelled {
+            let now = Date.now
+            if Self.automaticLibraryRefreshIsDue(lastRefresh: lastAutomaticLibraryRefreshAt, now: now) {
+                lastAutomaticLibraryRefreshAt = now
+                save()
+                await refreshConnectedLibrariesInBackground()
+            }
+
+            let elapsed = Date.now.timeIntervalSince(lastAutomaticLibraryRefreshAt ?? .distantPast)
+            let remaining = max(1, Self.automaticLibraryRefreshInterval - elapsed)
+            do {
+                try await Task.sleep(for: .seconds(remaining))
+            } catch {
+                return
+            }
+        }
+    }
+
+    nonisolated static func automaticLibraryRefreshIsDue(lastRefresh: Date?, now: Date) -> Bool {
+        guard let lastRefresh else { return true }
+        return now.timeIntervalSince(lastRefresh) >= automaticLibraryRefreshInterval
+    }
+
+    private func refreshConnectedLibrariesInBackground() async {
+        var providers: [GameLibraryProvider] = []
+        if storeGames.contains(where: { $0.provider == .steam }) {
+            providers.append(.steam)
+        }
+
+        epicConnectionState = await services.epicLibrary.connectionState()
+        if case .connected = epicConnectionState { providers.append(.epic) }
+
+        gogConnectionState = await services.gogLibrary.connectionState()
+        if case .connected = gogConnectionState { providers.append(.gog) }
+
+        for provider in providers {
+            await waitForLibrarySyncToFinish()
+            guard !Task.isCancelled else { return }
+            syncLibrary(provider)
+            await waitForLibrarySyncToFinish()
+        }
+    }
+
+    private func waitForLibrarySyncToFinish() async {
+        while case .syncing = librarySyncState {
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .milliseconds(100))
         }
     }
 
@@ -1859,6 +1989,7 @@ final class BorealStore {
             + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
         storeDownloadRecords = state.storeDownloads ?? [:]
         favoriteKeys = Set(state.favoriteKeys ?? [])
+        lastAutomaticLibraryRefreshAt = state.lastAutomaticLibraryRefreshAt
         for (key, record) in Array(storeDownloadRecords) {
             var recovered = record
             if recovered.status == .downloading { recovered.status = .paused }
@@ -2075,6 +2206,7 @@ final class BorealStore {
         }
         guard !applications[index].status.isBusy else { return }
         let usesExistingExecutable = applications[index].installerPath == "existing-installation"
+            || applications[index].usesStoreMetadataOnly
         let refreshesExecutableAtLaunch = !usesExistingExecutable && [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
         guard refreshesExecutableAtLaunch || FileManager.default.fileExists(atPath: applications[index].executablePath) else {
             applications[index].status = .unavailable
@@ -2350,7 +2482,8 @@ final class BorealStore {
                 environments: environments,
                 storeGames: storeGames,
                 storeDownloads: storeDownloadRecords,
-                favoriteKeys: Array(favoriteKeys).sorted()
+                favoriteKeys: Array(favoriteKeys).sorted(),
+                lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt
             ))
             try data.write(to: storageURL, options: .atomic)
         } catch {

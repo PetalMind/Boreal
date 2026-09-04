@@ -16,6 +16,9 @@ struct BorealApp: App {
         WindowGroup {
             ContentView()
                 .environment(store)
+                .task {
+                    await store.runAutomaticLibraryRefreshLoop()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     store.pauseAllStoreGameOperations()
                 }

@@ -132,6 +132,43 @@ struct SteamLibraryServiceTests {
         #expect(await service.loadCurrentPlayerCount(appID: "730") == 12_345)
     }
 
+    @Test func searchesExactStoreTitleAndLoadsRichMetadata() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SteamMetadataURLProtocol.self]
+        SteamMetadataURLProtocol.searchResponse = Data("""
+        {"total":1,"items":[{"type":"app","name":"Cyberpunk 2077","id":1091500}]}
+        """.utf8)
+        SteamMetadataURLProtocol.responseData = Data("""
+        {"1091500":{"success":true,"data":{"name":"Cyberpunk 2077","developers":["CD PROJEKT RED"],"short_description":"An open-world RPG.","header_image":"https://example.com/cyberpunk.jpg","platforms":{"windows":true,"mac":false},"screenshots":[{"path_full":"https://example.com/cyberpunk-shot.jpg"}]}}}
+        """.utf8)
+        let service = SteamLibraryService(session: URLSession(configuration: configuration))
+
+        let game = try #require(await service.searchStoreGame(named: "Cyberpunk 2077"))
+
+        #expect(game.externalID == "1091500")
+        #expect(game.developer == "CD PROJEKT RED")
+        #expect(game.summary == "An open-world RPG.")
+        #expect(game.headerImageURL == "https://example.com/cyberpunk.jpg")
+        #expect(game.screenshotURLs == ["https://example.com/cyberpunk-shot.jpg"])
+    }
+
+    @Test func normalizesInstallerNameForStoreSearch() {
+        #expect(BorealStore.storeSearchTitle(from: "Cyberpunk_2077_Setup") == "Cyberpunk 2077")
+        #expect(SteamLibraryService.normalizedStoreTitle("Pokémon™") == "pokemon")
+    }
+
+    @Test func matchesCompactNumberedGameButRejectsItsSoundtrack() throws {
+        let match = try #require(SteamLibraryService.bestStoreSearchMatch(
+            query: "Darksiders2",
+            items: [
+                (388410, "Darksiders II Deathinitive Edition"),
+                (417380, "Darksiders II Deathinitive Edition Soundtrack"),
+            ]
+        ))
+
+        #expect(match.id == 388410)
+    }
+
     private func makeDirectory(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     }
@@ -143,13 +180,16 @@ struct SteamLibraryServiceTests {
 
 private nonisolated final class SteamMetadataURLProtocol: URLProtocol {
     nonisolated(unsafe) static var responseData = Data()
+    nonisolated(unsafe) static var searchResponse = Data()
     nonisolated(unsafe) static var currentPlayersResponse = Data()
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let data: Data
-        if request.url?.path.contains("/ISteamUserStats/GetNumberOfCurrentPlayers/") == true {
+        if request.url?.path.contains("/api/storesearch") == true {
+            data = Self.searchResponse
+        } else if request.url?.path.contains("/ISteamUserStats/GetNumberOfCurrentPlayers/") == true {
             data = Self.currentPlayersResponse
         } else if request.url?.path.contains("/reports/summaries/") == true {
             data = Data("""

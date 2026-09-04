@@ -309,12 +309,16 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var lastErrorDetail: String?
     var storeProvider: GameLibraryProvider?
     var storeExternalID: String?
+    /// True when the linked store record supplies presentation metadata only.
+    /// Boreal still launches the imported executable directly.
+    var storeMetadataOnly: Bool? = nil
     var communityCompatibility: CommunityCompatibility?
     var compatibilityProfile: WineCompatibilityProfile?
     /// Optional keeps library files written by older Boreal builds decodable.
     var auxiliaryExecutables: [AuxiliaryExecutable]?
 
     var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
+    var usesStoreMetadataOnly: Bool { storeMetadataOnly == true }
     var resolvedAuxiliaryExecutables: [AuxiliaryExecutable] { auxiliaryExecutables ?? [] }
     var resolvedCompatibilityProfile: WineCompatibilityProfile {
         compatibilityProfile ?? WineCompatibilityProfile(

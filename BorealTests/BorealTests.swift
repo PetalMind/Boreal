@@ -10,6 +10,21 @@ import Testing
 @testable import Boreal
 
 struct BorealTests {
+
+    @Test func automaticLibraryRefreshRunsAtMostThreeTimesPerDay() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        #expect(BorealStore.automaticLibraryRefreshInterval == 8 * 60 * 60)
+        #expect(BorealStore.automaticLibraryRefreshIsDue(lastRefresh: nil, now: now))
+        #expect(!BorealStore.automaticLibraryRefreshIsDue(
+            lastRefresh: now.addingTimeInterval(-(8 * 60 * 60) + 1),
+            now: now
+        ))
+        #expect(BorealStore.automaticLibraryRefreshIsDue(
+            lastRefresh: now.addingTimeInterval(-(8 * 60 * 60)),
+            now: now
+        ))
+    }
     @Test func gameMetricsParsesWineAndMetalHUDFrameRates() {
         #expect(GameMetricsSampler.frameRate(inLogText: "trace:fps:wglSwapBuffers @ approx 25.28fps") == 25.28)
 
