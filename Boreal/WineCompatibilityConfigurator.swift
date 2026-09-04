@@ -84,6 +84,36 @@ struct WineCompatibilityConfigurator: View {
                     }
                 }
 
+                Section("Legacy graphics compatibility") {
+                    Picker("Legacy wrapper", selection: $profile.legacyWrapper) {
+                        ForEach(LegacyGraphicsWrapper.allCases) { wrapper in
+                            Text(wrapper.displayName).tag(wrapper)
+                        }
+                    }
+                    .disabled(usesSharedSteamEnvironment)
+                    if profile.legacyWrapper == .dgVoodoo2 {
+                        Picker("Legacy API", selection: $profile.legacyGraphicsAPI) {
+                            ForEach(LegacyGraphicsAPI.allCases) { api in
+                                Text(api.displayName).tag(api)
+                            }
+                        }
+                        Text("Boreal installs only the selected wrapper DLL beside the game executable. The runtime must supply a managed dgVoodoo2 component.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Enable this only for games that use DirectDraw or an early Direct3D renderer.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if usesSharedSteamEnvironment {
+                        Label("Per-game wrappers are not available for games launched through the shared Windows Steam client in this first version.", systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Reset graphics configuration", systemImage: "arrow.counterclockwise") {
+                        profile.graphicsBackend = .automatic
+                        profile.legacyWrapper = .none
+                        profile.legacyGraphicsAPI = .directDraw
+                    }
+                }
+
                 Section("Performance") {
                     Toggle("ESync synchronization", isOn: $profile.esyncEnabled)
                     Toggle("MSync synchronization", isOn: $profile.msyncEnabled)
@@ -115,7 +145,7 @@ struct WineCompatibilityConfigurator: View {
             }
             .padding(18)
         }
-        .frame(width: 620, height: 720)
+        .frame(width: 620, height: 820)
         .onAppear {
             profile = store.compatibilityProfile(for: application)
             if profile.graphicsAPI == nil, let graphicsProfile {

@@ -52,6 +52,7 @@ final class BorealStore {
     var runtimeOperationDetail: String?
     private let storageURL: URL
     private let services: BorealServices
+    private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
     private var performanceLogURLs: [UUID: URL] = [:]
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
@@ -2141,6 +2142,16 @@ final class BorealStore {
                     gameDirectory: gameDirectory
                 )
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
+                if provider != .steam {
+                    let graphicsPlan = try graphicsCompatibilityManager.apply(
+                        configuration: profile,
+                        application: applications[index],
+                        executable: configuredPlan.executable,
+                        environment: managed,
+                        runtime: runtime
+                    )
+                    configuredPlan = graphicsCompatibilityManager.applying(graphicsPlan, to: configuredPlan)
+                }
                 session = try await services.processRunner.run(plan: configuredPlan, environment: managed, runtime: runtime)
             } else {
                 let executable = URL(fileURLWithPath: applications[index].executablePath)
@@ -2154,6 +2165,14 @@ final class BorealStore {
                     )
                 )
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
+                let graphicsPlan = try graphicsCompatibilityManager.apply(
+                    configuration: profile,
+                    application: applications[index],
+                    executable: configuredPlan.executable,
+                    environment: managed,
+                    runtime: runtime
+                )
+                configuredPlan = graphicsCompatibilityManager.applying(graphicsPlan, to: configuredPlan)
                 session = try await services.processRunner.run(plan: configuredPlan, environment: managed, runtime: runtime)
             }
             applications[index].status = .running

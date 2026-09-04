@@ -90,6 +90,59 @@ nonisolated enum WineGraphicsBackend: String, Codable, CaseIterable, Sendable, H
     }
 }
 
+nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case none
+    case dgVoodoo2
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .none: "Disabled"
+        case .dgVoodoo2: "dgVoodoo2"
+        }
+    }
+}
+
+/// The legacy API is selected explicitly in the first implementation. Boreal
+/// does not guess from a filename and never installs every wrapper DLL.
+nonisolated enum LegacyGraphicsAPI: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case directDraw
+    case direct3D8
+    case direct3D9
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .directDraw: "DirectDraw / Direct3D 1–7"
+        case .direct3D8: "Direct3D 8"
+        case .direct3D9: "Direct3D 9"
+        }
+    }
+
+    var libraryName: String {
+        switch self {
+        case .directDraw: "ddraw"
+        case .direct3D8: "d3d8"
+        case .direct3D9: "d3d9"
+        }
+    }
+}
+
+nonisolated enum DLLOverrideMode: String, Codable, Sendable, Hashable {
+    case nativeThenBuiltin
+
+    var wineValue: String {
+        switch self {
+        case .nativeThenBuiltin: "n,b"
+        }
+    }
+}
+
+nonisolated struct DLLOverride: Codable, Sendable, Hashable {
+    var library: String
+    var mode: DLLOverrideMode
+}
+
 nonisolated enum GraphicsAPI: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case automatic
     case directX9
@@ -169,6 +222,8 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var windowsVersion: WineWindowsVersion = .windows11
     var architecture: WinePrefixArchitecture = .win64
     var graphicsBackend: WineGraphicsBackend = .automatic
+    var legacyWrapper: LegacyGraphicsWrapper = .none
+    var legacyGraphicsAPI: LegacyGraphicsAPI = .directDraw
     var graphicsAPI: GraphicsAPI? = nil
     var esyncEnabled = true
     var msyncEnabled = true
@@ -176,6 +231,11 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var fullscreenFSREnabled = false
     var debugLoggingEnabled = false
     var launchArguments = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case windowsVersion, architecture, graphicsBackend, legacyWrapper, legacyGraphicsAPI, graphicsAPI
+        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, launchArguments
+    }
 
     static let `default` = WineCompatibilityProfile()
 
@@ -208,6 +268,24 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
         if escaped { current.append("\\") }
         if !current.isEmpty { result.append(current) }
         return result
+    }
+}
+
+extension WineCompatibilityProfile {
+    nonisolated init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        windowsVersion = try values.decodeIfPresent(WineWindowsVersion.self, forKey: .windowsVersion) ?? .windows11
+        architecture = try values.decodeIfPresent(WinePrefixArchitecture.self, forKey: .architecture) ?? .win64
+        graphicsBackend = try values.decodeIfPresent(WineGraphicsBackend.self, forKey: .graphicsBackend) ?? .automatic
+        legacyWrapper = try values.decodeIfPresent(LegacyGraphicsWrapper.self, forKey: .legacyWrapper) ?? .none
+        legacyGraphicsAPI = try values.decodeIfPresent(LegacyGraphicsAPI.self, forKey: .legacyGraphicsAPI) ?? .directDraw
+        graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI)
+        esyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? true
+        msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
+        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true
+        fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
+        debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
+        launchArguments = try values.decodeIfPresent(String.self, forKey: .launchArguments) ?? ""
     }
 }
 

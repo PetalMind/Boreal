@@ -177,8 +177,9 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
         values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
-        // Prefix registry state is the single graphics-backend source of truth.
-        // Do not let Boreal's parent process inject stale DLL overrides.
+        // Prefix registry state owns renderer overrides. Clear only inherited
+        // parent state here; a per-game launch plan may intentionally add a
+        // legacy-wrapper override after this base environment is built.
         values.removeValue(forKey: "WINEDLLOVERRIDES")
         // FPS telemetry is high-frequency. Keeping Wine's broad warning channels
         // enabled can produce hundreds of megabytes per session and push the most

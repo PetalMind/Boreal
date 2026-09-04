@@ -130,6 +130,112 @@ struct WineCompatibilityProfileTests {
         #expect(application.resolvedAuxiliaryExecutables.isEmpty)
         #expect(application.resolvedCompatibilityProfile.windowsVersion == .windows10)
         #expect(application.resolvedCompatibilityProfile.graphicsBackend == .wineD3D)
+        #expect(application.resolvedCompatibilityProfile.legacyWrapper == .none)
+    }
+
+    @Test func legacyCompatibilityProfileDecodesWithoutWrapperFields() throws {
+        let data = Data(#"{"windowsVersion":"win7","architecture":"win32","graphicsBackend":"wineD3D","esyncEnabled":false}"#.utf8)
+        let profile = try JSONDecoder().decode(WineCompatibilityProfile.self, from: data)
+
+        #expect(profile.windowsVersion == .windows7)
+        #expect(profile.architecture == .win32)
+        #expect(profile.graphicsBackend == .wineD3D)
+        #expect(profile.legacyWrapper == .none)
+        #expect(profile.legacyGraphicsAPI == .directDraw)
+        #expect(!profile.esyncEnabled)
+    }
+
+    @Test func dgVoodooInstallsOnlySelectedLibraryAndResetRemovesIt() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-wrapper-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let component = root.appending(path: "runtime/GraphicsComponents/dgVoodoo2", directoryHint: .isDirectory)
+        let game = root.appending(path: "game", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: component.appending(path: "x86"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: game, withIntermediateDirectories: true)
+        try Data("ddraw-wrapper".utf8).write(to: component.appending(path: "x86/ddraw.dll"))
+        try Data("d3d8-wrapper".utf8).write(to: component.appending(path: "x86/d3d8.dll"))
+        let manifest = LegacyWrapperComponentManifest(
+            id: "dgVoodoo2",
+            version: "test",
+            architectures: ["x86"],
+            supportedAPIs: [.directDraw, .direct3D8]
+        )
+        try JSONEncoder().encode(manifest).write(to: component.appending(path: "manifest.json"))
+        let executable = game.appending(path: "game.exe")
+        try Data().write(to: executable)
+        let runtime = makeRuntime(root: root.appending(path: "runtime"))
+        let environment = makeEnvironment(root: root.appending(path: "environment"), architecture: .win32)
+        let manager = LegacyWrapperManager()
+
+        let activation = try manager.activate(
+            .dgVoodoo2,
+            api: .directDraw,
+            gameExecutable: executable,
+            environment: environment,
+            runtime: runtime
+        )
+
+        #expect(activation.dllOverrides == [DLLOverride(library: "ddraw", mode: .nativeThenBuiltin)])
+        #expect(fileManager.fileExists(atPath: game.appending(path: "ddraw.dll").path))
+        #expect(!fileManager.fileExists(atPath: game.appending(path: "d3d8.dll").path))
+
+        try manager.reset(gameExecutable: executable)
+        #expect(!fileManager.fileExists(atPath: game.appending(path: "ddraw.dll").path))
+        #expect(!fileManager.fileExists(atPath: game.appending(path: ".boreal-legacy-wrapper.json").path))
+    }
+
+    @Test func dgVoodooRefusesToOverwriteForeignWrapper() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-wrapper-foreign-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let component = root.appending(path: "runtime/GraphicsComponents/dgVoodoo2/x86", directoryHint: .isDirectory)
+        let game = root.appending(path: "game", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: component, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: game, withIntermediateDirectories: true)
+        try Data("managed".utf8).write(to: component.appending(path: "ddraw.dll"))
+        try JSONEncoder().encode(LegacyWrapperComponentManifest(
+            id: "dgVoodoo2",
+            version: "test",
+            architectures: ["x86"],
+            supportedAPIs: [.directDraw]
+        )).write(to: component.deletingLastPathComponent().appending(path: "manifest.json"))
+        let executable = game.appending(path: "game.exe")
+        let foreign = game.appending(path: "ddraw.dll")
+        try Data().write(to: executable)
+        try Data("user-mod".utf8).write(to: foreign)
+        let manager = LegacyWrapperManager()
+
+        #expect(throws: GraphicsCompatibilityError.self) {
+            try manager.activate(
+                .dgVoodoo2,
+                api: .directDraw,
+                gameExecutable: executable,
+                environment: makeEnvironment(root: root.appending(path: "environment"), architecture: .win32),
+                runtime: makeRuntime(root: root.appending(path: "runtime"))
+            )
+        }
+        #expect(try String(contentsOf: foreign, encoding: .utf8) == "user-mod")
+    }
+
+    @Test func graphicsLayerPlanAddsPerLaunchOverrideWithoutDroppingProviderOverrides() {
+        let manager = GraphicsCompatibilityManager()
+        let plan = WindowsLaunchPlan(
+            executable: URL(fileURLWithPath: "/tmp/game.exe"),
+            arguments: [],
+            environment: ["WINEDLLOVERRIDES": "xaudio2_7=b"],
+            workingDirectory: URL(fileURLWithPath: "/tmp")
+        )
+        let graphics = GraphicsLayerPlan(
+            legacyWrapper: .dgVoodoo2,
+            backend: .dxvk,
+            dllOverrides: [DLLOverride(library: "ddraw", mode: .nativeThenBuiltin)],
+            files: []
+        )
+
+        let configured = manager.applying(graphics, to: plan)
+
+        #expect(configured.environment["WINEDLLOVERRIDES"] == "xaudio2_7=b;ddraw=n,b")
     }
 
     @Test func titanQuestProfileMapsDirectXModesToDocumentedArguments() {
@@ -164,5 +270,32 @@ struct WineCompatibilityProfileTests {
         )
 
         #expect(configured.arguments == ["-applaunch", "475150", "/dx9"])
+    }
+
+    private func makeRuntime(root: URL) -> InstalledRuntime {
+        InstalledRuntime(
+            id: "test-runtime",
+            displayName: "Test Runtime",
+            wineVersion: "test",
+            rootURL: root,
+            wineExecutable: root.appending(path: "wine"),
+            wineServerExecutable: root.appending(path: "wineserver"),
+            wineBootExecutable: root.appending(path: "wineboot"),
+            architecture: .arm64,
+            requirements: [],
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
+        )
+    }
+
+    private func makeEnvironment(root: URL, architecture: WinePrefixArchitecture) -> ManagedBorealEnvironment {
+        ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "Test", architecture: architecture.rawValue),
+            runtimeID: "test-runtime",
+            rootURL: root,
+            prefixURL: root.appending(path: "prefix"),
+            logsURL: root.appending(path: "Logs"),
+            state: .ready
+        )
     }
 }
