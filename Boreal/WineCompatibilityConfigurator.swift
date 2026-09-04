@@ -5,10 +5,12 @@ struct WineCompatibilityConfigurator: View {
     @Environment(\.dismiss) private var dismiss
     let application: WindowsApplication
     @State private var profile: WineCompatibilityProfile
+    @State private var detectedGraphicsAPI: GraphicsAPI?
 
     init(application: WindowsApplication) {
         self.application = application
         _profile = State(initialValue: application.resolvedCompatibilityProfile)
+        _detectedGraphicsAPI = State(initialValue: nil)
     }
 
     var body: some View {
@@ -149,6 +151,17 @@ struct WineCompatibilityConfigurator: View {
         .onAppear {
             profile = store.compatibilityProfile(for: application)
         }
+        .task(id: application.executablePath) {
+            guard graphicsProfile == nil,
+                  FileManager.default.fileExists(atPath: application.executablePath) else { return }
+            let executable = URL(fileURLWithPath: application.executablePath)
+            let detected = await Task.detached(priority: .utility) {
+                GraphicsAPIDetector.detect(executable: executable)
+            }.value
+            guard !Task.isCancelled else { return }
+            detectedGraphicsAPI = detected
+            if profile.graphicsAPI == nil { profile.graphicsAPI = detected }
+        }
     }
 
     private func presetButton(_ title: String, symbol: String, profile value: WineCompatibilityProfile) -> some View {
@@ -181,7 +194,7 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var usesSharedSteamEnvironment: Bool {
-        application.storeProvider == .steam || application.isSteamRuntimeHost
+        application.usesSharedSteamEnvironment
     }
 
     private var graphicsProfile: GameGraphicsProfile? {
@@ -212,11 +225,6 @@ struct WineCompatibilityConfigurator: View {
             return api.displayName + " · Manual"
         }
         return api.displayName
-    }
-
-    private var detectedGraphicsAPI: GraphicsAPI? {
-        guard FileManager.default.fileExists(atPath: application.executablePath) else { return nil }
-        return GraphicsAPIDetector.detect(executable: URL(fileURLWithPath: application.executablePath))
     }
 
     private var graphicsAPIExplanation: String {

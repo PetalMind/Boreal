@@ -364,6 +364,40 @@ struct DownloadsView: View {
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13))
             .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
 
+            if !store.runtimeComponentUpdates.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(store.runtimeComponentUpdates.enumerated()), id: \.element.id) { index, update in
+                        HStack(spacing: 14) {
+                            Image(systemName: update.state == .available ? "arrow.down.circle.fill" : "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(update.state == .available ? Color.accentColor : Color.green)
+                                .frame(width: 36)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(update.component.displayName).font(.headline)
+                                Text(componentUpdateDetail(update)).font(.callout).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if update.state == .available {
+                                Button("Update") { store.updateRuntimeComponent(update) }.buttonStyle(.borderedProminent)
+                            } else if update.state == .notInstalled {
+                                Button("Install") { store.updateRuntimeComponent(update) }.buttonStyle(.bordered)
+                            } else {
+                                Label("Current", systemImage: "checkmark").foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(16)
+                        if index < store.runtimeComponentUpdates.count - 1 { Divider().padding(.leading, 66) }
+                    }
+                }
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13))
+                .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
+            }
+            if let error = store.runtimeComponentUpdateError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+
             ForEach(store.localRuntimeCandidates) { candidate in
                 localRuntimeRow(candidate)
             }
@@ -525,6 +559,15 @@ struct DownloadsView: View {
         case .preparing: return "Downloading and verifying…"
         case .needsAttention: return "Needs Attention"
         case .loading: return "Checking…"
+        }
+    }
+
+    private func componentUpdateDetail(_ update: RuntimeComponentUpdate) -> String {
+        let target = "for \(update.runtimeName)"
+        switch update.state {
+        case .notInstalled: return "Available \(update.latestVersion) \(target)"
+        case .current: return "\(update.latestVersion) installed \(target)"
+        case .available: return "\(update.installedVersion ?? "Installed") → \(update.latestVersion) \(target)"
         }
     }
 

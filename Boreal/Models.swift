@@ -320,6 +320,9 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
 
     var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
     var usesStoreMetadataOnly: Bool { storeMetadataOnly == true }
+    var usesSharedSteamEnvironment: Bool {
+        (storeProvider == .steam && !usesStoreMetadataOnly) || isSteamRuntimeHost
+    }
     var resolvedAuxiliaryExecutables: [AuxiliaryExecutable] { auxiliaryExecutables ?? [] }
     var resolvedCompatibilityProfile: WineCompatibilityProfile {
         compatibilityProfile ?? WineCompatibilityProfile(

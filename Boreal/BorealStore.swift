@@ -51,6 +51,8 @@ final class BorealStore {
     var localRuntimeCandidates: [LocalRuntimeCandidate] = []
     var runtimeDiscoveryState: RuntimeDiscoveryState = .loading
     var runtimeOperationDetail: String?
+    var runtimeComponentUpdates: [RuntimeComponentUpdate] = []
+    var runtimeComponentUpdateError: String?
     private let storageURL: URL
     private let services: BorealServices
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
@@ -269,10 +271,6 @@ final class BorealStore {
             if let preferredBackend = builtIn.preferredBackend {
                 profile.graphicsBackend = preferredBackend
             }
-        } else if FileManager.default.fileExists(atPath: application.executablePath) {
-            profile.graphicsAPI = GraphicsAPIDetector.detect(
-                executable: URL(fileURLWithPath: application.executablePath)
-            )
         }
         if environment(id: application.environmentID)?.architecture == "32-bit" {
             profile.architecture = .win32
@@ -330,8 +328,7 @@ final class BorealStore {
         let requiresRecreation = previousProfile.architecture != profile.architecture
             || requestedEngine != currentEngine
             || !currentRuntimeSupportsBackend
-        let usesSharedSteamEnvironment = (applications[index].storeProvider == .steam && !applications[index].usesStoreMetadataOnly)
-            || applications[index].isSteamRuntimeHost
+        let usesSharedSteamEnvironment = applications[index].usesSharedSteamEnvironment
         applications[index].lastResult = requiresRecreation
             ? "Rebuilding environment for compatibility changes"
             : (usesSharedSteamEnvironment ? "Compatibility profile saved for the next launch" : "Applying compatibility profile")
@@ -2244,7 +2241,13 @@ final class BorealStore {
                   let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }) else {
                 throw InstallerServiceError.noRuntimeAvailable
             }
-            let profile = compatibilityProfile(for: applications[index])
+            var profile = compatibilityProfile(for: applications[index])
+            if profile.graphicsAPI == nil {
+                let executable = URL(fileURLWithPath: applications[index].executablePath)
+                profile.graphicsAPI = await Task.detached(priority: .utility) {
+                    GraphicsAPIDetector.detect(executable: executable)
+                }.value
+            }
             let graphicsProfile = GameGraphicsProfiles.profile(for: applications[index])
             let selectedGraphicsAPI = profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic
             let graphicsLaunchOption = selectedGraphicsAPI == .automatic ? nil : graphicsProfile?.launchOption(for: selectedGraphicsAPI)
@@ -2323,6 +2326,7 @@ final class BorealStore {
             applications[index].status = .running
             applications[index].lastOpened = .now
             activeSessions[id] = session
+            ControllerManager.shared.activate(for: id)
             performanceLogURLs[id] = session.stderrLog
             activeEnvironments[id] = managed
             activeRuntimes[id] = runtime
@@ -2350,6 +2354,7 @@ final class BorealStore {
                 try await services.environmentManager.remove(managed)
             }
             applications.removeAll { $0.id == id }
+            ControllerManager.shared.deactivate(for: id)
             if !hasOtherApps { environments.removeAll { $0.id == app.environmentID } }
             activeSessions[id] = nil
             performanceLogURLs[id] = nil
@@ -2444,6 +2449,7 @@ final class BorealStore {
             case .active:
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
+                ControllerManager.shared.activate(for: appID)
                 save()
                 monitorEnvironmentSession(environment: managed, runtime: installedRuntime, appID: appID)
             case .inactive:
@@ -2474,6 +2480,7 @@ final class BorealStore {
         performanceLogURLs[appID] = nil
         activeEnvironments[appID] = nil
         activeRuntimes[appID] = nil
+        ControllerManager.shared.deactivate(for: appID)
         environmentMonitorIDs[appID] = nil
         save()
     }
@@ -2538,6 +2545,7 @@ final class BorealStore {
                 runtimeDiscoveryState = localRuntimeCandidates.isEmpty
                     ? .failed(runtimeCatalogDetails(error: error))
                     : .loaded
+                await refreshRuntimeComponentUpdates()
                 return
             }
             for runtime in available where !installedIDs.contains(runtime.id) {
@@ -2556,10 +2564,94 @@ final class BorealStore {
             }
             runtimeStatuses = values
             runtimeDiscoveryState = .loaded
+            await refreshRuntimeComponentUpdates()
         } catch {
             runtimeStatuses = []
             localRuntimeCandidates = await services.runtimeManager.localRuntimeCandidates()
             runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
+        }
+    }
+
+    func refreshRuntimeComponentUpdates() async {
+        do {
+            runtimeComponentUpdates = try await services.runtimeManager.componentUpdates()
+            runtimeComponentUpdateError = nil
+        } catch {
+            runtimeComponentUpdateError = error.localizedDescription
+        }
+    }
+
+    func updateRuntimeComponent(_ update: RuntimeComponentUpdate) {
+        guard runtimeOperationDetail == nil else { return }
+        guard !activeRuntimes.values.contains(where: { $0.id == update.runtimeID }) else {
+            runtimeComponentUpdateError = "Quit games using \(update.runtimeName) before updating its compatibility components."
+            return
+        }
+        runtimeOperationDetail = "Downloading, verifying, and installing \(update.component.displayName) \(update.latestVersion)…"
+        Task {
+            do {
+                _ = try await services.runtimeManager.downloadAndInstallComponent(update.component, into: update.runtimeID)
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: "\(update.component.displayName) couldn’t be updated",
+                    stage: "Checking and installing the independent compatibility component update"
+                )
+            }
+        }
+    }
+
+    func runAutomaticCompatibilityUpdateCheck() async {
+        let defaults = UserDefaults.standard
+        let lastCheck = defaults.object(forKey: "lastCompatibilityUpdateCheck") as? Date
+        guard lastCheck == nil || Date.now.timeIntervalSince(lastCheck!) >= 24 * 60 * 60 else { return }
+        defaults.set(Date.now, forKey: "lastCompatibilityUpdateCheck")
+        await refreshRuntimeStatuses()
+        if defaults.object(forKey: "automaticRuntimeUpdates") == nil || defaults.bool(forKey: "automaticRuntimeUpdates") {
+            await installAvailableRuntimeRevisionsIfSafe()
+        }
+        for update in runtimeComponentUpdates where update.state == .available {
+            guard !activeRuntimes.values.contains(where: { $0.id == update.runtimeID }) else { continue }
+            let key = update.component == .dxvk ? "automaticDXVKUpdates" : "automaticVKD3DUpdates"
+            guard defaults.object(forKey: key) == nil || defaults.bool(forKey: key) else { continue }
+            do {
+                _ = try await services.runtimeManager.downloadAndInstallComponent(update.component, into: update.runtimeID)
+            } catch {
+                runtimeComponentUpdateError = error.localizedDescription
+            }
+        }
+        await refreshRuntimeStatuses()
+    }
+
+    private func installAvailableRuntimeRevisionsIfSafe() async {
+        guard activeSessions.isEmpty,
+              !applications.contains(where: { $0.status == .running || $0.status.isBusy }) else { return }
+        let installed = runtimeStatuses.filter { $0.source == .installed }
+        let candidates = runtimeStatuses.filter { candidate in
+            guard candidate.source == .catalog, candidate.state == .available else { return false }
+            return installed.contains {
+                $0.name == candidate.name && $0.architecture == candidate.architecture
+                    && $0.engine == candidate.engine
+            }
+        }
+        for candidate in candidates {
+            do {
+                guard let manifest = try await services.runtimeManager.availableRuntimes().first(where: { $0.id == candidate.id }) else { continue }
+                let replacement = try await services.runtimeManager.install(manifest)
+                let replacedIDs = Set(installed.filter {
+                    $0.name == candidate.name && $0.architecture == candidate.architecture && $0.engine == candidate.engine
+                }.map(\.id))
+                for index in environments.indices where environments[index].runtimeID.map(replacedIDs.contains) == true {
+                    environments[index].runtimeID = replacement.id
+                    environments[index].runtime = replacement.runtimeDescription
+                }
+                save()
+            } catch {
+                runtimeComponentUpdateError = error.localizedDescription
+            }
         }
     }
 

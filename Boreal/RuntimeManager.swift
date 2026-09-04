@@ -193,7 +193,77 @@ actor RuntimeManager: RuntimeManaging {
             }
         }
         try await extractGraphicsArchive(archive, to: extracted)
-        return try await installGraphicsComponent(backend, from: extracted, into: runtimeID)
+        let installed = try await installGraphicsComponent(backend, from: extracted, into: runtimeID)
+        if backend == .dxvk {
+            try recordComponentReceipt(.dxvk, version: release.tagName, repository: repository, in: installed)
+        }
+        return installed
+    }
+
+    func componentUpdates() async throws -> [RuntimeComponentUpdate] {
+        let runtimes = try await installedRuntimes().filter { $0.resolvedEngine == .wine }
+        guard !runtimes.isEmpty else { return [] }
+        var releases: [RuntimeComponent: GitHubRelease] = [:]
+        for component in RuntimeComponent.allCases {
+            releases[component] = try await latestRelease(for: component)
+        }
+        return runtimes.flatMap { runtime in
+            RuntimeComponent.allCases.compactMap { component in
+                guard let release = releases[component] else { return nil }
+                let receipt = componentReceipt(component, in: runtime)
+                let state: RuntimeComponentUpdate.State
+                if let receipt {
+                    state = receipt.version == release.tagName ? .current : .available
+                } else {
+                    state = .notInstalled
+                }
+                return RuntimeComponentUpdate(
+                    runtimeID: runtime.id,
+                    runtimeName: runtime.displayName,
+                    component: component,
+                    installedVersion: receipt?.version,
+                    latestVersion: release.tagName,
+                    state: state
+                )
+            }
+        }
+    }
+
+    func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
+        if component == .dxvk {
+            return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID)
+        }
+        let repository = "HansKristian-Work/vkd3d-proton"
+        let release = try await latestRelease(for: component)
+        guard let asset = release.assets.first(where: {
+            let name = $0.name.lowercased()
+            return (name.hasSuffix(".tar.zst") || name.hasSuffix(".tar.gz") || name.hasSuffix(".zip"))
+                && !name.contains("debug") && !name.contains("source")
+        }), asset.browserDownloadURL.scheme == "https", asset.browserDownloadURL.host == "github.com",
+            asset.size > 0, asset.size <= 250 * 1_024 * 1_024 else {
+            throw RuntimeManagerError.downloadFailed("No compatible binary artifact was found in the official \(release.tagName) release.")
+        }
+        try prepareDirectories()
+        let transactionRoot = runtimesURL.appending(path: ".component-downloads/\(UUID().uuidString)", directoryHint: .isDirectory)
+        let archive = transactionRoot.appending(path: asset.name)
+        let extracted = transactionRoot.appending(path: "package", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: extracted, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: transactionRoot) }
+        try await download(RuntimeArtifact(
+            url: asset.browserDownloadURL,
+            sha256: asset.digest?.replacingOccurrences(of: "sha256:", with: "") ?? String(repeating: "0", count: 64),
+            compressedSize: asset.size
+        ), to: archive)
+        if let digest = asset.digest?.replacingOccurrences(of: "sha256:", with: "") {
+            let actual = try RuntimeSecurity.sha256(of: archive)
+            guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
+                throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
+            }
+        }
+        try await extractComponentArchive(archive, to: extracted)
+        let installed = try await installVKD3D(from: extracted, into: runtimeID)
+        try recordComponentReceipt(.vkd3d, version: release.tagName, repository: repository, in: installed)
+        return refreshingDetectedFeatures(of: installed)
     }
 
     func installGraphicsComponent(
@@ -312,6 +382,61 @@ actor RuntimeManager: RuntimeManaging {
             try? fileManager.removeItem(at: destination)
             if fileManager.fileExists(atPath: backup.path) { try? fileManager.moveItem(at: backup, to: destination) }
             try? previousDescriptor.write(to: runtime.rootURL.appending(path: "installed-runtime.json"), options: .atomic)
+            try? makeImmutable(runtime.rootURL)
+            throw error
+        }
+    }
+
+    private func installVKD3D(from source: URL, into runtimeID: String) async throws -> InstalledRuntime {
+        try prepareDirectories()
+        guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains(".."),
+              var runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }),
+              runtime.resolvedEngine == .wine else {
+            throw RuntimeManagerError.localRuntimeInvalid("VKD3D-Proton requires an installed Wine runtime.")
+        }
+        let libraries = try discoverComponentLibraries(
+            in: source,
+            names: ["d3d12.dll", "d3d12core.dll"]
+        )
+        let x64Names = Set(libraries.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
+        guard x64Names.contains("d3d12.dll") else {
+            throw RuntimeManagerError.localRuntimeInvalid("The package does not contain a compiled 64-bit d3d12.dll.")
+        }
+        let destination = runtime.rootURL.appending(path: "GraphicsComponents/VKD3D", directoryHint: .isDirectory)
+        let staging = runtime.rootURL.appending(path: ".graphics-installing-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let backup = runtime.rootURL.appending(path: ".graphics-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let descriptorURL = runtime.rootURL.appending(path: "installed-runtime.json")
+        let previousDescriptor = try Data(contentsOf: descriptorURL)
+        do {
+            try makeWritable(runtime.rootURL)
+            try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+            for library in libraries {
+                let architectureFolder = library.architecture == .x86 ? "x32" : "x64"
+                let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
+                try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+                try fileManager.copyItem(at: library.url, to: folder.appending(path: library.url.lastPathComponent.lowercased()))
+            }
+            if fileManager.fileExists(atPath: destination.path) { try fileManager.moveItem(at: destination, to: backup) }
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: staging, to: destination)
+            var features = runtime.features ?? RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
+            features.vkd3d = true
+            runtime = InstalledRuntime(
+                id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion,
+                rootURL: runtime.rootURL, wineExecutable: runtime.wineExecutable,
+                wineServerExecutable: runtime.wineServerExecutable, wineBootExecutable: runtime.wineBootExecutable,
+                architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin,
+                engine: runtime.engine, features: features
+            )
+            try makeEncoder().encode(runtime).write(to: descriptorURL, options: .atomic)
+            try? fileManager.removeItem(at: backup)
+            try makeImmutable(runtime.rootURL)
+            return runtime
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            try? fileManager.removeItem(at: destination)
+            if fileManager.fileExists(atPath: backup.path) { try? fileManager.moveItem(at: backup, to: destination) }
+            try? previousDescriptor.write(to: descriptorURL, options: .atomic)
             try? makeImmutable(runtime.rootURL)
             throw error
         }
@@ -708,7 +833,6 @@ actor RuntimeManager: RuntimeManaging {
         let result = try await processExecutor.waitForExit(receipt.id)
         guard result.exitCode == 0 else { throw RuntimeManagerError.unsupportedArchive }
     }
-
     private func resolveRuntime(manifest: BorealRuntime, root: URL) throws -> InstalledRuntime {
         let wine = try containedURL(manifest.layout.wineExecutable, root: root)
         let server = try containedURL(manifest.layout.wineServerExecutable, root: root)
@@ -884,13 +1008,47 @@ actor RuntimeManager: RuntimeManaging {
         candidates.first { fileManager.isExecutableFile(atPath: app.appending(path: $0).path) }
     }
 
-    private func discoverGraphicsLibraries(
-        in root: URL,
-        backend: WineGraphicsBackend
-    ) throws -> [GraphicsLibrary] {
-        let supported: Set<String> = backend == .dxmt
-            ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
-            : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+    private func latestRelease(for component: RuntimeComponent) async throws -> GitHubRelease {
+        let repository = component == .dxvk ? "Gcenx/DXVK-macOS" : "HansKristian-Work/vkd3d-proton"
+        guard let url = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
+            throw RuntimeManagerError.invalidManifest
+        }
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Boreal", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw RuntimeManagerError.downloadFailed("The official release service is currently unavailable.")
+        }
+        return try JSONDecoder().decode(GitHubRelease.self, from: data)
+    }
+
+    private func componentReceipt(_ component: RuntimeComponent, in runtime: InstalledRuntime) -> RuntimeComponentReceipt? {
+        let url = runtime.rootURL
+            .appending(path: "GraphicsComponents/\(component.directoryName)/component.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(RuntimeComponentReceipt.self, from: data)
+    }
+
+    private func recordComponentReceipt(
+        _ component: RuntimeComponent,
+        version: String,
+        repository: String,
+        in runtime: InstalledRuntime
+    ) throws {
+        let directory = runtime.rootURL.appending(path: "GraphicsComponents/\(component.directoryName)", directoryHint: .isDirectory)
+        let receipt = RuntimeComponentReceipt(
+            component: component,
+            version: version,
+            sourceRepository: repository,
+            installedAt: Date()
+        )
+        try makeWritable(runtime.rootURL)
+        defer { try? makeImmutable(runtime.rootURL) }
+        try makeEncoder().encode(receipt).write(to: directory.appending(path: "component.json"), options: .atomic)
+    }
+
+    private func discoverComponentLibraries(in root: URL, names: Set<String>) throws -> [GraphicsLibrary] {
         guard let enumerator = fileManager.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
@@ -899,15 +1057,57 @@ actor RuntimeManager: RuntimeManaging {
         var selected: [String: GraphicsLibrary] = [:]
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-            let name = url.lastPathComponent.lowercased()
-            guard supported.contains(name) else { continue }
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  names.contains(url.lastPathComponent.lowercased()) else { continue }
             let architecture = WindowsExecutableArchitecture.inspect(url)
             guard architecture == .x86 || architecture == .x86_64 else { continue }
-            let key = "\(architecture)-\(name)"
-            selected[key] = selected[key] ?? GraphicsLibrary(url: url, architecture: architecture)
+            selected["\(architecture)-\(url.lastPathComponent.lowercased())"] = GraphicsLibrary(url: url, architecture: architecture)
         }
-        return selected.values.sorted {
+        return Array(selected.values)
+    }
+
+    private func extractComponentArchive(_ archive: URL, to destination: URL) async throws {
+        if archive.lastPathComponent.lowercased().hasSuffix(".tar.zst") {
+            let listing = ProcessLaunchRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-tf", archive.path],
+                environment: ProcessInfo.processInfo.environment, currentDirectory: destination,
+                stdoutLog: destination.appending(path: "listing.stdout.log"),
+                stderrLog: destination.appending(path: "listing.stderr.log")
+            )
+            let listingReceipt = try await processExecutor.launch(listing)
+            let listingResult = try await processExecutor.waitForExit(listingReceipt.id)
+            guard listingResult.exitCode == 0,
+                  let contents = try? String(contentsOf: listingResult.stdoutLog, encoding: .utf8) else {
+                throw RuntimeManagerError.unsupportedArchive
+            }
+            for entry in contents.split(whereSeparator: \.isNewline).map(String.init) {
+                guard !entry.hasPrefix("/"), !entry.split(separator: "/").contains("..") else {
+                    throw RuntimeManagerError.unsafeArchive(entry)
+                }
+            }
+            let extraction = ProcessLaunchRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-xf", archive.path, "-C", destination.path],
+                environment: ProcessInfo.processInfo.environment, currentDirectory: destination,
+                stdoutLog: destination.appending(path: "extract.stdout.log"),
+                stderrLog: destination.appending(path: "extract.stderr.log")
+            )
+            let receipt = try await processExecutor.launch(extraction)
+            guard try await processExecutor.waitForExit(receipt.id).exitCode == 0 else {
+                throw RuntimeManagerError.unsupportedArchive
+            }
+            return
+        }
+        try await extractGraphicsArchive(archive, to: destination)
+    }
+
+    private func discoverGraphicsLibraries(
+        in root: URL,
+        backend: WineGraphicsBackend
+    ) throws -> [GraphicsLibrary] {
+        let supported: Set<String> = backend == .dxmt
+            ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+            : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+        return try discoverComponentLibraries(in: root, names: supported).sorted {
             if $0.architecture != $1.architecture { return String(describing: $0.architecture) < String(describing: $1.architecture) }
             return $0.url.lastPathComponent < $1.url.lastPathComponent
         }
@@ -959,6 +1159,7 @@ actor RuntimeManager: RuntimeManaging {
         if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
         features.dxmt = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT").path)
         features.dxvk = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXVK").path)
+        features.vkd3d = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/VKD3D").path)
         return InstalledRuntime(
             id: runtime.id,
             displayName: runtime.displayName,

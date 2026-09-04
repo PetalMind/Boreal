@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var installCandidate: InstallCandidate?
     @State private var showsNewEnvironment = false
     @State private var newEnvironmentName = ""
+    @State private var controllerManager = ControllerManager.shared
     @AppStorage("developerMode") private var developerMode = false
 
     enum LibraryStyle: String, CaseIterable { case grid, list }
@@ -216,6 +217,9 @@ struct ContentView: View {
                             .foregroundStyle(runtimeFooter.tint)
                     }
                     Text(runtimeFooter.title)
+                    Image(systemName: controllerManager.detectionState.symbol)
+                        .foregroundStyle(controllerTint)
+                        .help(controllerHelp)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
                         .font(.caption2)
@@ -340,6 +344,22 @@ struct ContentView: View {
             return ("Runtime Available", "arrow.down.circle.fill", .accentColor, "Download the Windows runtime")
         }
         return ("Runtime Setup Needed", "shippingbox", .orange, "Open runtime setup")
+    }
+
+    private var controllerTint: Color {
+        switch controllerManager.detectionState {
+        case .ready: .green
+        case .unsupported: .red
+        case .unavailable: .gray
+        }
+    }
+
+    private var controllerHelp: String {
+        switch controllerManager.detectionState {
+        case .ready: "Controller detected and ready for Wine"
+        case .unsupported: "Controller detected, but it does not expose the extended gamepad profile"
+        case .unavailable: "No controller detected"
+        }
     }
 
     private var sidebarSelection: Binding<SidebarDestination?> {
@@ -559,7 +579,7 @@ private struct BorealStoreMark: View {
 private extension LibrarySourceFilter {
     var subtitle: String {
         switch self {
-        case .boreal: "Local Windows apps"
+        case .boreal: "Your locally installed games"
         case .steam: "Steam library"
         case .epic: "Epic collection"
         case .gog: "DRM-free games"

@@ -719,6 +719,34 @@ struct BorealTests {
         #expect(projectedGame.backgroundImageURL == "https://example.com/bioshock-background.jpg")
     }
 
+    @Test func metadataOnlyStoreLinkRemainsCustomInstalled() throws {
+        let application = WindowsApplication(
+            name: "Darksiders II Deathinitive Edition",
+            publisher: "Gunfire Games",
+            executablePath: "/tmp/Darksiders2.exe",
+            installerPath: "/tmp/setup.exe",
+            environmentID: UUID(),
+            storeProvider: .steam,
+            storeExternalID: "388410",
+            storeMetadataOnly: true
+        )
+        let storeGame = StoreLibraryGame(
+            provider: .steam,
+            externalID: "388410",
+            name: "Darksiders II Deathinitive Edition"
+        )
+
+        let item = try #require(LibraryProjector.makeItems(
+            applications: [application],
+            storeGames: [storeGame]
+        ).first)
+
+        #expect(item.source == .boreal)
+        #expect(item.source.title == "Custom Installed")
+        #expect(item.id == .storeGame(storeGame.id))
+        #expect(!application.usesSharedSteamEnvironment)
+    }
+
     @Test func libraryProjectionIgnoresUnavailableLinkedApplicationForStoreState() {
         let application = WindowsApplication(
             name: "Not Downloaded",

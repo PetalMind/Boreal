@@ -45,7 +45,7 @@ nonisolated enum LibrarySourceFilter: String, CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .boreal: "Windows Apps"
+        case .boreal: "Custom Installed"
         case .steam: "Steam"
         case .epic: "Epic Games"
         case .gog: "GOG"
@@ -158,7 +158,7 @@ nonisolated enum LibraryProjector {
         }.map { app in
             LibraryItem(
                 id: .application(app.id), kind: .application(app), name: app.name, subtitle: app.publisher, producer: app.publisher,
-                source: app.storeProvider.map(source) ?? .boreal,
+                source: app.usesStoreMetadataOnly ? .boreal : (app.storeProvider.map(source) ?? .boreal),
                 installed: app.status != .unavailable,
                 readyToPlay: app.status == .ready || app.status == .running,
                 running: app.status == .running,
@@ -191,7 +191,9 @@ nonisolated enum LibraryProjector {
                 ?? .unknown
             return LibraryItem(
                 id: .storeGame(game.id), kind: .storeGame(game), name: game.name,
-                subtitle: game.developer ?? game.provider.rawValue, producer: game.developer, source: source(game.provider),
+                subtitle: game.developer ?? game.provider.rawValue,
+                producer: game.developer,
+                source: linkedApp?.usesStoreMetadataOnly == true ? .boreal : source(game.provider),
                 installed: installed, readyToPlay: ready, running: running, needsAttention: attention,
                 lastUsed: usableLinkedApp?.lastOpened ?? game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
                 storageBytes: storageBytes,

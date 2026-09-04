@@ -83,21 +83,12 @@ nonisolated enum GraphicsAPIDetector {
         executable: URL,
         fileManager: FileManager = .default
     ) -> GraphicsAPI? {
-        var candidates = [executable]
-        if let files = try? fileManager.contentsOfDirectory(
-            at: executable.deletingLastPathComponent(),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            candidates.append(contentsOf: files.filter {
-                ["dll", "exe"].contains($0.pathExtension.lowercased())
-            }.prefix(64))
-        }
+        let candidates = [executable]
         var detected = Set<GraphicsAPI>()
         for candidate in candidates {
             guard let handle = try? FileHandle(forReadingFrom: candidate) else { continue }
             defer { try? handle.close() }
-            guard let data = try? handle.read(upToCount: 64 * 1_024 * 1_024) else { continue }
+            guard let data = try? handle.read(upToCount: 8 * 1_024 * 1_024) else { continue }
             let text = String(decoding: data, as: UTF8.self).lowercased()
             if text.contains("d3d12.dll") { detected.insert(.directX12) }
             if text.contains("d3d11.dll") { detected.insert(.directX11) }

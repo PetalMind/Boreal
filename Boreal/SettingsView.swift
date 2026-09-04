@@ -16,13 +16,23 @@ struct GeneralSettingsView: View {
 
 struct RuntimeSettingsView: View {
     @AppStorage("automaticRuntimeUpdates") private var automaticRuntimeUpdates = true
+    @AppStorage("automaticDXVKUpdates") private var automaticDXVKUpdates = true
+    @AppStorage("automaticVKD3DUpdates") private var automaticVKD3DUpdates = true
     var body: some View {
         Form {
             Section("Boreal Runtime") {
                 Toggle("Update runtimes automatically", isOn: $automaticRuntimeUpdates)
             }
+            Section("Graphics components") {
+                Toggle("Update DXVK automatically", isOn: $automaticDXVKUpdates)
+                Toggle("Update VKD3D-Proton automatically", isOn: $automaticVKD3DUpdates)
+            }
+            Section {
+                Text("Runtime, DXVK, and VKD3D updates are checked independently from Boreal app updates.")
+                    .foregroundStyle(.secondary)
+            }
             Section { Text("Application-specific Windows and graphics options are available from that application’s details.").foregroundStyle(.secondary) }
-        }.formStyle(.grouped).frame(width: 520, height: 240).navigationTitle("Runtime")
+        }.formStyle(.grouped).frame(width: 520, height: 360).navigationTitle("Runtime")
     }
 }
 

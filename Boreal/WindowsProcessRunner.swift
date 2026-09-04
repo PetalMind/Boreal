@@ -177,6 +177,10 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
         values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
+        // winebus can use its bundled SDL backend to expose macOS controllers
+        // as Windows HID/XInput devices. These also keep hot-plug events alive
+        // after the Wine window becomes the foreground application.
+        values = ControllerWineSupport.applyingEnvironment(to: values)
         // Prefix registry state owns renderer overrides. Clear only inherited
         // parent state here; a per-game launch plan may intentionally add a
         // legacy-wrapper override after this base environment is built.

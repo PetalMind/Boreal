@@ -37,18 +37,20 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var d3dmetal: Bool
     var dxmt: Bool
     var dxvk: Bool = false
+    var vkd3d: Bool = false
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk
+        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, vkd3d
     }
 
-    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false) {
+    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, vkd3d: Bool = false) {
         self.wow64 = wow64
         self.wineMono = wineMono
         self.wineGecko = wineGecko
         self.d3dmetal = d3dmetal
         self.dxmt = dxmt
         self.dxvk = dxvk
+        self.vkd3d = vkd3d
     }
 
     init(from decoder: Decoder) throws {
@@ -59,7 +61,35 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
         dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
         dxvk = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
+        vkd3d = try values.decodeIfPresent(Bool.self, forKey: .vkd3d) ?? false
     }
+}
+
+nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case dxvk
+    case vkd3d
+
+    var id: String { rawValue }
+    var displayName: String { self == .dxvk ? "DXVK" : "VKD3D-Proton" }
+    var directoryName: String { self == .dxvk ? "DXVK" : "VKD3D" }
+}
+
+nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
+    let component: RuntimeComponent
+    let version: String
+    let sourceRepository: String
+    let installedAt: Date
+}
+
+nonisolated struct RuntimeComponentUpdate: Identifiable, Sendable, Hashable {
+    enum State: Sendable, Hashable { case notInstalled, current, available }
+    var id: String { "\(runtimeID):\(component.rawValue)" }
+    let runtimeID: String
+    let runtimeName: String
+    let component: RuntimeComponent
+    let installedVersion: String?
+    let latestVersion: String
+    let state: State
 }
 
 nonisolated enum WindowsExecutableArchitecture: Equatable, Sendable {
@@ -367,9 +397,16 @@ nonisolated protocol RuntimeManaging: Sendable {
         _ backend: WineGraphicsBackend,
         into runtimeID: String
     ) async throws -> InstalledRuntime
+    func componentUpdates() async throws -> [RuntimeComponentUpdate]
+    func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime
 }
 
 nonisolated extension RuntimeManaging {
+    func componentUpdates() async throws -> [RuntimeComponentUpdate] { [] }
+    func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
+        if component == .dxvk { return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID) }
+        throw CocoaError(.featureUnsupported)
+    }
     func installGraphicsComponent(
         _ backend: WineGraphicsBackend,
         from source: URL,

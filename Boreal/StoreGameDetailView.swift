@@ -136,7 +136,11 @@ struct StoreGameDetailView: View {
     private var heroIdentity: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label(currentGame.provider.rawValue, systemImage: currentGame.provider.symbol)
+                if linkedApplication?.usesStoreMetadataOnly == true {
+                    Label("Custom Installed", systemImage: "square.grid.2x2")
+                } else {
+                    Label(currentGame.provider.rawValue, systemImage: currentGame.provider.symbol)
+                }
                 Text("IN YOUR LIBRARY")
             }
             .font(.caption.weight(.bold))

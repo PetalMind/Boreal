@@ -139,6 +139,27 @@ actor EnvironmentManager: EnvironmentManaging {
             runtime: runtime
         )
 
+        // Prefixes imported from older Wine builds may explicitly disable the
+        // SDL winebus backend. Normalize the documented WineBus switches so a
+        // controller is published through HID, DirectInput and XInput.
+        for (name, value) in [
+            ("Enable SDL", "1"),
+            ("Map Controllers", "1"),
+            ("Split Controllers", "0"),
+            ("DisableHidraw", "0")
+        ] {
+            try await runConfigurationCommand(
+                executable: runtime.wineExecutable,
+                arguments: [
+                    "reg", "add", #"HKLM\System\CurrentControlSet\Services\WineBus"#,
+                    "/v", name, "/t", "REG_DWORD", "/d", value, "/f"
+                ],
+                logName: "wine-controller-\(name.replacingOccurrences(of: " ", with: "-").lowercased())",
+                environment: environment,
+                runtime: runtime
+            )
+        }
+
         try await applyGraphicsBackend(environment, runtime: runtime)
     }
 
@@ -283,6 +304,7 @@ actor EnvironmentManager: EnvironmentManaging {
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
         values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
+        values = ControllerWineSupport.applyingEnvironment(to: values)
         values.removeValue(forKey: "WINEDLLOVERRIDES")
         values["WINEDEBUG"] = values["WINEDEBUG"] ?? "-all"
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")

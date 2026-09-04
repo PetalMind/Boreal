@@ -17,9 +17,12 @@ struct BorealApp: App {
             ContentView()
                 .environment(store)
                 .task {
+                    ControllerManager.shared.start()
+                    await store.runAutomaticCompatibilityUpdateCheck()
                     await store.runAutomaticLibraryRefreshLoop()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    ControllerManager.shared.shutdown()
                     store.pauseAllStoreGameOperations()
                 }
         }
@@ -56,6 +59,7 @@ struct BorealApp: App {
             TabView {
                 Tab("General", systemImage: "gearshape") { GeneralSettingsView() }
                 Tab("Runtime", systemImage: "gearshape.2") { RuntimeSettingsView() }
+                Tab("Controllers", systemImage: "gamecontroller") { ControllerSettingsView() }
                 Tab("Overlay", systemImage: "gauge.with.dots.needle.67percent") { GameOverlaySettingsView() }
                 Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettingsView() }
             }
