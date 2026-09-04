@@ -297,17 +297,36 @@ final class BorealStore {
 
     func rebuildShaderCache(for game: StoreLibraryGame) { clearGameDiskStorage(.shaders, for: game) }
 
-    func dependencyStatuses(for environmentID: UUID) -> [RuntimeDependencyStatus] {
-        environmentDependencyStatuses[environmentID] ?? RuntimeDependency.allCases.map {
-            RuntimeDependencyStatus(dependency: $0, state: .missing, detail: "Checking environment…")
+    func dependencyStatuses(for environmentID: UUID, application: WindowsApplication? = nil) -> [RuntimeDependencyStatus] {
+        let resolvedApplication = application ?? applications.first {
+            $0.environmentID == environmentID && !$0.usesStoreMetadataOnly
+        }
+        let recommendations = RuntimeDependencyResolver.resolve(
+            executableURL: resolvedApplication.map { URL(fileURLWithPath: $0.executablePath) }
+        )
+        return environmentDependencyStatuses[environmentID] ?? RuntimeDependency.allCases.map {
+            let resolution = recommendations[$0] ?? (.optional, "Install only when needed")
+            return RuntimeDependencyStatus(dependency: $0, state: .missing, detail: resolution.1, recommendation: resolution.0)
         }
     }
 
-    func refreshDependencies(for environmentID: UUID) {
+    func refreshDependencies(for environmentID: UUID, application: WindowsApplication? = nil) {
         guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
+        let resolvedApplication = application ?? applications.first {
+            $0.environmentID == environmentID && !$0.usesStoreMetadataOnly
+        }
+        let recommendations = RuntimeDependencyResolver.resolve(
+            executableURL: resolvedApplication.map { URL(fileURLWithPath: $0.executablePath) }
+        )
         Task { [weak self] in
             guard let self, let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { return }
-            let statuses = await services.environmentManager.dependencyStatuses(managed, runtime: runtime)
+            let statuses = await services.environmentManager.dependencyStatuses(managed, runtime: runtime).map { status in
+                var resolved = status
+                let resolution = recommendations[status.dependency] ?? (.optional, "Install only when needed")
+                resolved.recommendation = resolution.0
+                resolved.detail = resolution.1
+                return resolved
+            }
             environmentDependencyStatuses[environmentID] = statuses
         }
     }
@@ -334,10 +353,10 @@ final class BorealStore {
         }
     }
 
-    func installMissingDependencies(for environmentID: UUID) {
+    func installRequiredDependencies(for environmentID: UUID) {
         guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
         let dependencies = dependencyStatuses(for: environmentID)
-            .filter { $0.state == .missing || $0.state == .failed }
+            .filter { ($0.state == .missing || $0.state == .failed) && $0.recommendation == .required }
             .map(\.dependency)
         guard !dependencies.isEmpty else { return }
         for dependency in dependencies {
@@ -690,16 +709,33 @@ final class BorealStore {
         isEnrichingInstalledApplicationMetadata = true
         defer { isEnrichingInstalledApplicationMetadata = false }
         let candidates = applications.filter {
-            !$0.isSteamRuntimeHost && $0.storeProvider == nil && $0.storeExternalID == nil
+            guard !$0.isSteamRuntimeHost else { return false }
+            if $0.storeProvider == nil && $0.storeExternalID == nil { return true }
+            guard $0.usesStoreMetadataOnly,
+                  let provider = $0.storeProvider,
+                  let externalID = $0.storeExternalID else { return false }
+            return !storeGames.contains { $0.provider == provider && $0.externalID == externalID }
         }
         var changed = false
         for candidate in candidates {
             let executable = URL(fileURLWithPath: candidate.executablePath)
-            guard let metadata = await matchStoreMetadata(for: [
-                candidate.name,
-                executable.deletingPathExtension().lastPathComponent,
-                executable.deletingLastPathComponent().lastPathComponent,
-            ]),
+            let metadata: StoreLibraryGame?
+            if candidate.usesStoreMetadataOnly,
+               candidate.storeProvider == .steam,
+               let externalID = candidate.storeExternalID {
+                let seed = StoreLibraryGame(provider: .steam, externalID: externalID, name: candidate.name)
+                let refreshed = await services.steamLibrary.loadDetails(for: seed)
+                metadata = refreshed.hasPresentationMetadata ? refreshed : nil
+            } else if candidate.storeProvider == nil && candidate.storeExternalID == nil {
+                metadata = await matchStoreMetadata(for: [
+                    candidate.name,
+                    executable.deletingPathExtension().lastPathComponent,
+                    executable.deletingLastPathComponent().lastPathComponent,
+                ])
+            } else {
+                metadata = nil
+            }
+            guard let metadata,
             let index = applications.firstIndex(where: { $0.id == candidate.id }) else { continue }
             applications[index].name = metadata.name
             applications[index].publisher = metadata.developer ?? applications[index].publisher
@@ -768,13 +804,13 @@ final class BorealStore {
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
                             value.preserveMeasuredActivity(from: existing)
-                            value.compatibility = game.compatibility ?? existing.compatibility
-                            value.sizeEstimate = game.sizeEstimate ?? existing.sizeEstimate
+                            value.preservePresentationMetadata(from: existing)
                         }
                         return value
                     }
                     storeGames.removeAll { $0.provider == .steam }
                     storeGames.append(contentsOf: normalized)
+                    preserveCustomInstalledMetadata(for: .steam, excluding: Set(normalized.map(\.externalID)), from: existingGames)
                     storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     librarySyncState = .succeeded(.steam, count: normalized.count)
                     save()
@@ -988,7 +1024,7 @@ final class BorealStore {
         Task {
             do {
                 try await services.epicLibrary.disconnect()
-                storeGames.removeAll { $0.provider == .epic }
+                removeStoreGamesExceptCustomInstalledMetadata(for: .epic)
                 epicConnectionState = .disconnected
                 save()
             } catch {
@@ -1014,27 +1050,15 @@ final class BorealStore {
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
                             value.preserveMeasuredActivity(from: existing)
-                            value.developer = value.developer ?? existing.developer
-                            value.summary = value.summary ?? existing.summary
-                            value.artworkPath = value.artworkPath ?? existing.artworkPath
-                            value.portraitImageURL = value.portraitImageURL ?? existing.portraitImageURL
-                            value.headerImageURL = value.headerImageURL ?? existing.headerImageURL
-                            value.backgroundImageURL = value.backgroundImageURL ?? existing.backgroundImageURL
-                            value.screenshotURLs = value.screenshotURLs?.isEmpty == false
-                                ? value.screenshotURLs : existing.screenshotURLs
-                            value.videos = value.videos?.isEmpty == false ? value.videos : existing.videos
-                            value.storeRating = value.storeRating ?? existing.storeRating
-                            value.supportsWindows = value.supportsWindows ?? existing.supportsWindows
-                            value.supportsNativeMacOS = value.supportsNativeMacOS ?? existing.supportsNativeMacOS
-                            value.compatibility = value.compatibility ?? existing.compatibility
+                            value.preservePresentationMetadata(from: existing)
                             value.installedPlatform = existing.installedPlatform
-                            value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
                         }
                         return value
                     }
                     let enriched = await enrichCompatibility(in: normalized)
                     storeGames.removeAll { $0.provider == .epic }
                     storeGames.append(contentsOf: enriched)
+                    preserveCustomInstalledMetadata(for: .epic, excluding: Set(enriched.map(\.externalID)), from: existingGames)
                     storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     librarySyncState = .succeeded(.epic, count: normalized.count)
                     epicConnectionState = await services.epicLibrary.connectionState()
@@ -1087,7 +1111,7 @@ final class BorealStore {
         Task {
             do {
                 try await services.gogLibrary.disconnect()
-                storeGames.removeAll { $0.provider == .gog }
+                removeStoreGamesExceptCustomInstalledMetadata(for: .gog)
                 gogConnectionState = .disconnected
                 save()
             } catch {
@@ -1111,9 +1135,8 @@ final class BorealStore {
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
                             value.preserveMeasuredActivity(from: existing)
-                            value.compatibility = value.compatibility ?? existing.compatibility
+                            value.preservePresentationMetadata(from: existing)
                             value.installedPlatform = value.installedPlatform ?? existing.installedPlatform
-                            value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
                             if !value.isInstalled,
                                existing.isInstalled,
                                let path = existing.installPath,
@@ -1129,6 +1152,7 @@ final class BorealStore {
                     let enriched = await enrichCompatibility(in: normalized)
                     storeGames.removeAll { $0.provider == .gog }
                     storeGames.append(contentsOf: enriched)
+                    preserveCustomInstalledMetadata(for: .gog, excluding: Set(enriched.map(\.externalID)), from: existingGames)
                     storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     librarySyncState = .succeeded(.gog, count: normalized.count)
                     gogConnectionState = await services.gogLibrary.connectionState()
@@ -1148,6 +1172,32 @@ final class BorealStore {
         case .steam: syncSteamLibrary()
         case .epic: syncEpicLibrary()
         case .gog: syncGOGLibrary()
+        }
+    }
+
+    private func preserveCustomInstalledMetadata(
+        for provider: GameLibraryProvider,
+        excluding importedExternalIDs: Set<String>,
+        from existingGames: [String: StoreLibraryGame]
+    ) {
+        let retainedExternalIDs = Set(applications.compactMap { application -> String? in
+            guard application.usesStoreMetadataOnly,
+                  application.storeProvider == provider,
+                  let externalID = application.storeExternalID,
+                  !importedExternalIDs.contains(externalID) else { return nil }
+            return externalID
+        })
+        storeGames.append(contentsOf: retainedExternalIDs.compactMap { existingGames[$0] })
+    }
+
+    private func removeStoreGamesExceptCustomInstalledMetadata(for provider: GameLibraryProvider) {
+        let retainedExternalIDs = Set(applications.compactMap { application -> String? in
+            guard application.usesStoreMetadataOnly,
+                  application.storeProvider == provider else { return nil }
+            return application.storeExternalID
+        })
+        storeGames.removeAll {
+            $0.provider == provider && !retainedExternalIDs.contains($0.externalID)
         }
     }
 

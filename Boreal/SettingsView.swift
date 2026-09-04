@@ -45,8 +45,8 @@ struct ConsoleModeSettingsView: View {
         Form {
             Section("Controller-first interface") {
                 Toggle("Use Boreal Fullscreen / TV mode", isOn: $consoleModeEnabled)
-                Toggle("Enter fullscreen when a controller connects", isOn: $consoleModeAutoEnter)
-                Toggle("Return to fullscreen after a game exits", isOn: $returnAfterGame)
+                Toggle("Ask to enter fullscreen when a controller connects", isOn: $consoleModeAutoEnter)
+                Toggle("Return to fullscreen after a game exits while a controller is connected", isOn: $returnAfterGame)
             }
             Section("Controls") {
                 LabeledContent("Navigate", value: "D-pad / left stick")

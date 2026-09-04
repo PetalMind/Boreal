@@ -13,10 +13,14 @@ struct ControllerSettingsView: View {
                 categoryList
                 Divider()
                 ScrollView {
-                    HStack(alignment: .top, spacing: 28) {
-                        categoryContent.frame(maxWidth: .infinity, alignment: .leading)
-                        ControllerPreview(manager: manager).frame(width: 350)
+                    HStack(alignment: .top, spacing: 32) {
+                        categoryContent
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ControllerPreview(manager: manager)
+                            .frame(width: 420)
                     }
+                    .frame(maxWidth: 1440, alignment: .top)
+                    .frame(maxWidth: .infinity, alignment: .top)
                     .padding(28)
                 }
             }
@@ -59,7 +63,9 @@ struct ControllerSettingsView: View {
                 }.buttonStyle(.plain)
             }
             Spacer()
-        }.frame(width: 166, alignment: .leading).padding(16)
+        }
+        .frame(width: 184, alignment: .leading)
+        .padding(16)
     }
 
     @ViewBuilder private var categoryContent: some View {
@@ -84,7 +90,21 @@ struct ControllerSettingsView: View {
                     DetailRow(title: "Connection", value: "Connected", symbol: "dot.radiowaves.left.and.right")
                     DetailRow(title: "Profile", value: controller.supportsExtendedProfile ? "Extended gamepad" : "Basic profile", symbol: "slider.horizontal.3")
                 } else {
-                    ContentUnavailableView("No controller detected", systemImage: "gamecontroller", description: Text("Connect a controller in System Settings. Boreal updates this screen automatically.")).frame(maxWidth: .infinity).padding(.vertical, 20)
+                    HStack(spacing: 18) {
+                        Image(systemName: "gamecontroller")
+                            .font(.system(size: 30, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 58, height: 58)
+                            .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("No controller detected").font(.headline)
+                            Text("Connect a controller in System Settings. Boreal will update this screen automatically.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
                 }
                 Divider()
                 Button("Test Controller", systemImage: "waveform.path.ecg") { category = .layout }.disabled(manager.controllers.isEmpty)
@@ -153,7 +173,11 @@ struct ControllerSettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title).font(.title3.weight(.semibold))
             Text(subtitle).font(.callout).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 12, content: content).padding(18).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            VStack(alignment: .leading, spacing: 12, content: content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.055), lineWidth: 1))
         }.padding(.bottom, 22)
     }
 
@@ -195,22 +219,19 @@ private struct ControllerPreview: View {
     private var family: ControllerFamily { manager.controllers.first?.family ?? .generic }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Live controller").font(.headline)
                     Text("\(family.rawValue) layout").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Image(systemName: "view.3d").foregroundStyle(.cyan)
+                Image(systemName: "rectangle.on.rectangle").foregroundStyle(.cyan)
             }
 
-            Controller3DView(family: family, state: manager.liveState)
-                .frame(height: 290)
-                .overlay(alignment: .bottomTrailing) {
-                    Label("Drag to rotate · Scroll to zoom", systemImage: "rotate.3d")
-                        .font(.caption2).foregroundStyle(.secondary).padding(8)
-                }
+            Controller2DView(family: family, state: manager.liveState)
+                .frame(height: 300)
+                .padding(.horizontal, 8)
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 7) {
                 telemetryRow("Left stick", x: manager.liveState.leftStickX, y: manager.liveState.leftStickY)
@@ -223,7 +244,11 @@ private struct ControllerPreview: View {
             } else {
                 Text("Move a stick or press a button").font(.caption).foregroundStyle(.secondary)
             }
-        }.padding(18).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .padding(20)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.cyan.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 16, y: 8)
     }
 
     private func telemetryRow(_ title: String, x: Float, y: Float) -> some View {

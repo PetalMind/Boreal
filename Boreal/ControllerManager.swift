@@ -25,6 +25,7 @@ final class ControllerManager {
     private var observers: [NSObjectProtocol] = []
     private var activeApplications: [UUID: Bool] = [:]
     private var pressedInputs: [ObjectIdentifier: Set<ControllerInput>] = [:]
+    private var repeatTasks: [ObjectIdentifier: [ControllerInput: Task<Void, Never>]] = [:]
     private var isStarted = false
 
     var detectionState: ControllerDetectionState {
@@ -153,9 +154,13 @@ final class ControllerManager {
         if let newest = pressed.first {
             lastInput = newest
             pressed.forEach { input in
+                if !(input == .buttonB && current.contains(.menu)) {
                 NotificationCenter.default.post(name: .borealControllerInputPressed, object: input)
+                }
+                startRepeatIfNeeded(input, controllerID: identifier)
             }
         }
+        released.forEach { stopRepeat($0, controllerID: identifier) }
         guard isMappingEnabled, activeApplications.values.contains(true) else {
             pressedInputs[identifier] = current
             return
@@ -173,6 +178,7 @@ final class ControllerManager {
 
     private func releaseInputs(for controller: GCController) {
         let identifier = ObjectIdentifier(controller)
+        repeatTasks.removeValue(forKey: identifier)?.values.forEach { $0.cancel() }
         (pressedInputs.removeValue(forKey: identifier) ?? []).forEach { postKey(for: $0, isDown: false) }
     }
 
@@ -180,6 +186,30 @@ final class ControllerManager {
         let allPressed = pressedInputs.values.reduce(into: Set<ControllerInput>()) { $0.formUnion($1) }
         allPressed.forEach { postKey(for: $0, isDown: false) }
         pressedInputs.removeAll()
+        repeatTasks.values.flatMap(\.values).forEach { $0.cancel() }
+        repeatTasks.removeAll()
+    }
+
+    private func startRepeatIfNeeded(_ input: ControllerInput, controllerID: ObjectIdentifier) {
+        let repeatable: Set<ControllerInput> = [
+            .dpadUp, .dpadDown, .dpadLeft, .dpadRight,
+            .leftStickUp, .leftStickDown, .leftStickLeft, .leftStickRight
+        ]
+        guard repeatable.contains(input) else { return }
+        repeatTasks[controllerID, default: [:]][input]?.cancel()
+        repeatTasks[controllerID, default: [:]][input] = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(420))
+            while !Task.isCancelled, pressedInputs[controllerID]?.contains(input) == true {
+                NotificationCenter.default.post(name: .borealControllerInputPressed, object: input)
+                try? await Task.sleep(for: .milliseconds(110))
+            }
+        }
+    }
+
+    private func stopRepeat(_ input: ControllerInput, controllerID: ObjectIdentifier) {
+        repeatTasks[controllerID]?[input]?.cancel()
+        repeatTasks[controllerID]?[input] = nil
+        if repeatTasks[controllerID]?.isEmpty == true { repeatTasks[controllerID] = nil }
     }
 
     private func refreshControllers() {

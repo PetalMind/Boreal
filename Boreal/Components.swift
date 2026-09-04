@@ -29,6 +29,58 @@ struct BorealGlassBackdrop: View {
     }
 }
 
+struct ControllerConsoleModeDialog: View {
+    let confirm: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.42)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 14) {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                        .frame(width: 48, height: 48)
+                        .background(.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Controller detected")
+                            .font(.title2.weight(.semibold))
+                        Text("Start console mode?")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Text("Console mode switches Boreal to fullscreen and makes the library easier to control with a controller.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack {
+                    Spacer()
+                    Button("Not now", action: dismiss)
+                        .keyboardShortcut(.cancelAction)
+                    Button("Start console mode", action: confirm)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(28)
+            .frame(width: 500)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(.white.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.28), radius: 28, y: 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onExitCommand(perform: dismiss)
+    }
+}
+
 struct AppIconView: View {
     let symbol: String
     var size: CGFloat = 88

@@ -118,11 +118,54 @@ nonisolated enum RuntimeDependencyState: String, Codable, Sendable, Hashable {
     case installed, missing, installing, failed
 }
 
+nonisolated enum RuntimeDependencyRecommendation: String, Codable, Sendable, Hashable {
+    case required, recommended, optional
+}
+
 nonisolated struct RuntimeDependencyStatus: Identifiable, Codable, Sendable, Hashable {
     var id: RuntimeDependency { dependency }
     let dependency: RuntimeDependency
     var state: RuntimeDependencyState
     var detail: String?
+    var recommendation: RuntimeDependencyRecommendation = .optional
+}
+
+nonisolated enum RuntimeDependencyResolver {
+    static func resolve(executableURL: URL?) -> [RuntimeDependency: (RuntimeDependencyRecommendation, String)] {
+        var result: [RuntimeDependency: (RuntimeDependencyRecommendation, String)] = [
+            .vc2015To2022: (.recommended, "Common runtime for modern Windows games"),
+            .xinput: (.recommended, "Common controller API for Windows games"),
+            .directXRuntime: (.optional, "Install only when the game needs legacy DirectX components"),
+            .vc2010: (.optional, "Install only for games built with Visual C++ 2010"),
+            .xact: (.optional, "Install only for games using legacy XACT audio"),
+            .dotNetFramework: (.optional, "Install only when this game explicitly requires .NET Framework"),
+            .physX: (.optional, "Install only for games that use NVIDIA PhysX")
+        ]
+        guard let executableURL,
+              let data = try? Data(contentsOf: executableURL, options: [.mappedIfSafe]),
+              !data.isEmpty else { return result }
+
+        // PE import names are ASCII. Scanning the memory-mapped bytes also
+        // catches delay-loaded imports without executing or modifying the game.
+        func containsImport(_ name: String) -> Bool {
+            let lower = Data(name.lowercased().utf8)
+            let upper = Data(name.uppercased().utf8)
+            return data.range(of: lower) != nil || data.range(of: upper) != nil
+        }
+        let evidence: [(RuntimeDependency, [String], String)] = [
+            (.directXRuntime, ["d3dx9_", "d3dcompiler_43.dll"], "Required by this executable's legacy DirectX imports"),
+            (.vc2010, ["msvcp100.dll", "msvcr100.dll"], "Required by this executable's Visual C++ 2010 imports"),
+            (.vc2015To2022, ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"], "Required by this executable's Visual C++ runtime imports"),
+            (.xact, ["xactengine"], "Required by this executable's XACT audio import"),
+            (.xinput, ["xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll"], "Required by this executable's controller API import"),
+            (.dotNetFramework, ["mscoree.dll"], "Required by this managed .NET executable"),
+            (.physX, ["physxloader.dll", "physx3"], "Required by this executable's NVIDIA PhysX import")
+        ]
+        for (dependency, names, detail) in evidence where names.contains(where: containsImport) {
+            result[dependency] = (.required, detail)
+        }
+        return result
+    }
 }
 
 nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {

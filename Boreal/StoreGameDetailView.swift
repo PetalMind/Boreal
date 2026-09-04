@@ -76,7 +76,7 @@ struct StoreGameDetailView: View {
         }
         .task(id: linkedEnvironment?.id) {
             if let environmentID = linkedEnvironment?.id {
-                store.refreshDependencies(for: environmentID)
+                store.refreshDependencies(for: environmentID, application: linkedApplication)
             }
         }
         .task(id: game.id) {
@@ -270,32 +270,26 @@ struct StoreGameDetailView: View {
 
     private var dependenciesSection: some View {
         let environmentID = linkedEnvironment!.id
-        let statuses = store.dependencyStatuses(for: environmentID)
-        let canInstall = statuses.contains { $0.state == .missing || $0.state == .failed }
+        let statuses = store.dependencyStatuses(for: environmentID, application: linkedApplication)
+        let required = statuses.filter { $0.recommendation == .required }
+        let recommended = statuses.filter { $0.recommendation == .recommended }
+        let optional = statuses.filter { $0.recommendation == .optional }
+        let canInstallRequired = required.contains { $0.state == .missing || $0.state == .failed }
         return detailCard("Dependencies", symbol: "shippingbox.fill") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Boreal installs these components into this game's Windows environment.")
+                Text("Boreal keeps this game’s prefix minimal and installs components only when they are required or you choose them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(statuses) { status in
-                    HStack(spacing: 10) {
-                        Image(systemName: dependencySymbol(status.state))
-                            .foregroundStyle(dependencyColor(status.state))
-                            .frame(width: 18)
-                        Text(status.dependency.displayName)
-                        Spacer()
-                        if status.state == .installing {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text(dependencyTitle(status.state))
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                if !required.isEmpty {
+                    dependencyGroup("Required", statuses: required, environmentID: environmentID)
                 }
-                if canInstall {
-                    Button("Install", systemImage: "arrow.down.circle.fill") {
-                        store.installMissingDependencies(for: environmentID)
+                if !recommended.isEmpty {
+                    dependencyGroup("Recommended for this game", statuses: recommended, environmentID: environmentID)
+                }
+                dependencyGroup("Optional", statuses: optional, environmentID: environmentID)
+                if canInstallRequired {
+                    Button("Install Required Dependencies", systemImage: "arrow.down.circle.fill") {
+                        store.installRequiredDependencies(for: environmentID)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(statuses.contains { $0.state == .installing })
@@ -304,19 +298,39 @@ struct StoreGameDetailView: View {
         }
     }
 
-    private func dependencyTitle(_ state: RuntimeDependencyState) -> String {
-        switch state {
-        case .installed: "Installed"
-        case .missing: "Missing"
-        case .installing: "Installing…"
-        case .failed: "Failed"
+    @ViewBuilder
+    private func dependencyGroup(_ title: String, statuses: [RuntimeDependencyStatus], environmentID: UUID) -> some View {
+        Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        ForEach(statuses) { status in
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: dependencySymbol(status.state))
+                    .foregroundStyle(dependencyColor(status.state))
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(status.dependency.displayName)
+                    if let detail = status.detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if status.state == .installing {
+                    ProgressView().controlSize(.small)
+                } else if status.state == .installed {
+                    Text("Installed").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                } else {
+                    Button(status.state == .failed ? "Retry" : "Install") {
+                        store.installDependency(status.dependency, for: environmentID)
+                    }
+                    .controlSize(.small)
+                }
+            }
         }
     }
 
     private func dependencySymbol(_ state: RuntimeDependencyState) -> String {
         switch state {
         case .installed: "checkmark.circle.fill"
-        case .missing: "exclamationmark.triangle.fill"
+        case .missing: "circle"
         case .installing: "arrow.down.circle"
         case .failed: "xmark.circle.fill"
         }
@@ -325,7 +339,7 @@ struct StoreGameDetailView: View {
     private func dependencyColor(_ state: RuntimeDependencyState) -> Color {
         switch state {
         case .installed: .green
-        case .missing: .orange
+        case .missing: .secondary
         case .installing: .accentColor
         case .failed: .red
         }

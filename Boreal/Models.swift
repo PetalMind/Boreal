@@ -564,6 +564,17 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     }
 
     var measuredPlaytime: TimeInterval { max(0, borealPlaytimeSeconds ?? 0) }
+    var hasPresentationMetadata: Bool {
+        developer != nil
+            || summary != nil
+            || artworkPath != nil
+            || portraitImageURL != nil
+            || headerImageURL != nil
+            || backgroundImageURL != nil
+            || screenshotURLs?.isEmpty == false
+            || videos?.isEmpty == false
+            || storeRating != nil
+    }
     var resolvedPlaySessions: [GamePlaySession] {
         (playSessions ?? []).sorted { $0.startedAt > $1.startedAt }
     }
@@ -592,6 +603,23 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
         if let existingLastPlayed = existing.lastPlayed {
             lastPlayed = max(lastPlayed ?? .distantPast, existingLastPlayed)
         }
+    }
+
+    mutating func preservePresentationMetadata(from existing: StoreLibraryGame) {
+        developer = developer ?? existing.developer
+        summary = summary ?? existing.summary
+        artworkPath = artworkPath ?? existing.artworkPath
+        portraitImageURL = portraitImageURL ?? existing.portraitImageURL
+        headerImageURL = headerImageURL ?? existing.headerImageURL
+        backgroundImageURL = backgroundImageURL ?? existing.backgroundImageURL
+        screenshotURLs = screenshotURLs?.isEmpty == false ? screenshotURLs : existing.screenshotURLs
+        videos = videos?.isEmpty == false ? videos : existing.videos
+        storeRating = storeRating ?? existing.storeRating
+        supportsWindows = supportsWindows ?? existing.supportsWindows
+        supportsNativeMacOS = supportsNativeMacOS ?? existing.supportsNativeMacOS
+        compatibility = compatibility ?? existing.compatibility
+        sizeEstimate = sizeEstimate ?? existing.sizeEstimate
+        currentPlayerCount = currentPlayerCount ?? existing.currentPlayerCount
     }
 }
 

@@ -29,7 +29,9 @@ struct ContentView: View {
     @AppStorage("consoleModeEnabled") private var consoleModeEnabled = false
     @AppStorage("consoleModeAutoEnter") private var consoleModeAutoEnter = true
     @AppStorage("consoleModeReturnAfterGame") private var consoleModeReturnAfterGame = true
+    @State private var showsControllerPrompt = false
     @State private var hadRunningGame = false
+    @State private var hasNativeRunningGame = false
 
     enum LibraryStyle: String, CaseIterable { case grid, list }
 
@@ -42,16 +44,38 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .borealControllerConnected)) { _ in
-            guard consoleModeAutoEnter else { return }
-            consoleModeEnabled = true
+            guard consoleModeAutoEnter, !consoleModeEnabled, !showsControllerPrompt else { return }
+            showsControllerPrompt = true
         }
         .onChange(of: consoleModeEnabled) { _, enabled in
             synchronizeFullscreen(enabled: enabled)
         }
         .onChange(of: runningOverlayGames) { _, games in
-            if !games.isEmpty { hadRunningGame = true }
-            if games.isEmpty, hadRunningGame, consoleModeReturnAfterGame {
-                consoleModeEnabled = true
+            if !games.isEmpty {
+                if !hadRunningGame, consoleModeEnabled { minimizeConsoleWindow() }
+                hadRunningGame = true
+            }
+            if games.isEmpty, !hasNativeRunningGame { finishConsoleGameSession() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .borealNativeGameDidStart)) { _ in
+            hasNativeRunningGame = true
+            guard consoleModeEnabled else { return }
+            hadRunningGame = true
+            minimizeConsoleWindow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .borealNativeGameDidStop)) { _ in
+            hasNativeRunningGame = false
+            if runningOverlayGames.isEmpty { finishConsoleGameSession() }
+        }
+        .overlay {
+            if showsControllerPrompt {
+                ControllerConsoleModeDialog(
+                    confirm: {
+                        showsControllerPrompt = false
+                        consoleModeEnabled = true
+                    },
+                    dismiss: { showsControllerPrompt = false }
+                )
             }
         }
     }
@@ -117,6 +141,37 @@ struct ContentView: View {
             let isFullscreen = window.styleMask.contains(.fullScreen)
             if enabled != isFullscreen { window.toggleFullScreen(nil) }
         }
+    }
+
+    private func minimizeConsoleWindow() {
+        DispatchQueue.main.async {
+            borealMainWindow?.miniaturize(nil)
+        }
+    }
+
+    private func restoreConsoleWindow() {
+        DispatchQueue.main.async {
+            guard let window = borealMainWindow else { return }
+            window.deminiaturize(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func finishConsoleGameSession() {
+        guard hadRunningGame else { return }
+        hadRunningGame = false
+        if consoleModeReturnAfterGame, !controllerManager.controllers.isEmpty {
+            restoreConsoleWindow()
+            consoleModeEnabled = true
+        }
+    }
+
+    private var borealMainWindow: NSWindow? {
+        NSApp.mainWindow
+            ?? NSApp.windows.first { window in
+                !(window is NSPanel) && window.canBecomeMain
+            }
     }
 
     private var runningOverlayGames: [OverlayGame] {
@@ -333,6 +388,15 @@ struct ContentView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                consoleModeEnabled.toggle()
+            } label: {
+                Image(systemName: consoleModeEnabled ? "gamecontroller.fill" : "gamecontroller")
+            }
+            .help(consoleModeEnabled ? "Turn off console mode" : "Turn on console mode")
+            .accessibilityLabel(consoleModeEnabled ? "Turn off console mode" : "Turn on console mode")
+        }
         if selection == .library && libraryPath.isEmpty {
             ToolbarItemGroup(placement: .primaryAction) {
                 LibraryToolbarControls(

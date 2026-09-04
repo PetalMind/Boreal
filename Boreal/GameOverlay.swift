@@ -3,6 +3,11 @@ import Charts
 import Observation
 import SwiftUI
 
+extension Notification.Name {
+    static let borealNativeGameDidStart = Notification.Name("BorealNativeGameDidStart")
+    static let borealNativeGameDidStop = Notification.Name("BorealNativeGameDidStop")
+}
+
 nonisolated struct OverlayGame: Hashable, Sendable {
     let id: UUID
     let name: String
@@ -210,6 +215,7 @@ final class GameOverlayController {
         nativeGame = nil
         nativeGameProcessID = nil
         synchronize(games: managedGames)
+        NotificationCenter.default.post(name: .borealNativeGameDidStop, object: nil)
     }
 
     private func activateNativeGame(
@@ -227,6 +233,7 @@ final class GameOverlayController {
         expectedNativeGame = nil
         updatePreferredGameScreen(for: application)
         synchronize(games: managedGames)
+        NotificationCenter.default.post(name: .borealNativeGameDidStart, object: nil)
         scheduleFullscreenVisibilityRefresh()
     }
 

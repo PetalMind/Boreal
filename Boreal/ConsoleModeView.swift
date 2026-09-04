@@ -8,6 +8,9 @@ struct ConsoleModeView: View {
     @Environment(BorealStore.self) private var store
     @State private var section = ConsoleSection.home
     @State private var focusedID: LibraryItem.ID?
+    @State private var focusedRail = 0
+    @State private var focusedIndex = 0
+    @State private var focusedControl = 0
     @State private var selectedItem: LibraryItem.ID?
     @State private var showsOnboarding = !UserDefaults.standard.bool(forKey: "consoleModeOnboardingShown")
     @State private var showsGameMenu = false
@@ -54,6 +57,7 @@ struct ConsoleModeView: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 Divider().opacity(0.18)
+                ScrollViewReader { verticalProxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 30) {
                         if selectedItem == nil {
@@ -61,11 +65,8 @@ struct ConsoleModeView: View {
                                 .font(.system(size: 46, weight: .bold, design: .rounded))
                                 .tracking(-1.1)
                         }
-                        if let selectedItem {
-                            ConsoleGameDetailView(
-                                item: items.first { $0.id == selectedItem },
-                                close: { self.selectedItem = nil }
-                            )
+                        if selectedItem != nil {
+                            consoleGameDetail
                         } else {
                             sectionContent
                         }
@@ -75,6 +76,11 @@ struct ConsoleModeView: View {
                     .padding(.top, 42)
                     .padding(.bottom, 72)
                     .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .onChange(of: focusAnchor) { _, anchor in
+                    guard let anchor else { return }
+                    withAnimation(.easeOut(duration: 0.18)) { verticalProxy.scrollTo(anchor, anchor: .center) }
+                }
                 }
                 footer
             }
@@ -92,9 +98,9 @@ struct ConsoleModeView: View {
         }
         .onChange(of: section) { _, _ in
             selectedItem = nil
-            focusedID = items.first?.id
+            resetFocus()
         }
-        .onAppear { focusedID = items.first?.id }
+        .onAppear { resetFocus() }
     }
 
     @ViewBuilder private var sectionContent: some View {
@@ -121,6 +127,15 @@ struct ConsoleModeView: View {
             }
             Spacer()
             Text(Date.now, style: .time).font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(.secondary)
+            Button {
+                consoleModeEnabled.toggle()
+            } label: {
+                Image(systemName: "gamecontroller.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help("Turn off console mode")
+            .accessibilityLabel("Turn off console mode")
             Button("Exit", systemImage: "rectangle.portrait.and.arrow.right", action: exit)
                 .buttonStyle(.bordered).controlSize(.large)
         }
@@ -133,21 +148,26 @@ struct ConsoleModeView: View {
     @ViewBuilder private var homeSections: some View {
         if let featured = items.first(where: { $0.lastUsed != nil }) ?? items.first {
             ConsoleHomeHero(item: featured) {
+                focusedRail = 0
+                focusedIndex = 0
                 focusedID = featured.id
                 selectedItem = featured.id
             }
+            .overlay(consoleFocusOutline(focusedRail == 0))
+            .id("rail-0")
         }
         let recent = Array(items.prefix(8))
-        if !recent.isEmpty { gameRail(title: "Recently Added", values: recent) }
+        if !recent.isEmpty { gameRail(title: "Recently Added", values: recent, rail: 1) }
         let favorites = items.filter { store.favoriteKeys.contains($0.favoriteKey) }.prefix(8).map { $0 }
-        if !favorites.isEmpty { gameRail(title: "Favorites", values: favorites) }
+        if !favorites.isEmpty { gameRail(title: "Favorites", values: favorites, rail: 2) }
         let ready = items.filter(\.readyToPlay).prefix(8).map { $0 }
-        if !ready.isEmpty { gameRail(title: "Installed & Ready", values: ready) }
-        attentionSection
+        if !ready.isEmpty { gameRail(title: "Installed & Ready", values: ready, rail: 3) }
+        let attention = items.filter(\.needsAttention)
+        if !attention.isEmpty { gameRail(title: "Needs Attention", values: attention, rail: 4) }
         downloadsSummary
     }
 
-    private func gameRail(title: String, values: [LibraryItem]) -> some View {
+    private func gameRail(title: String, values: [LibraryItem], rail: Int = 0) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Text(title).font(.system(size: 28, weight: .bold, design: .rounded))
@@ -157,29 +177,32 @@ struct ConsoleModeView: View {
             if values.isEmpty {
                 Text("Nothing here yet.").foregroundStyle(.secondary).font(.title3)
             } else {
+                ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     HStack(spacing: 22) {
                         ForEach(values) { item in
-                            ConsoleGameCard(item: item, focused: focusedID == item.id) {
+                            ConsoleGameCard(item: item, focused: focusedRail == rail && focusedID == item.id) {
+                                focusedRail = rail
+                                focusedIndex = values.firstIndex(where: { $0.id == item.id }) ?? 0
                                 focusedID = item.id
                                 selectedItem = item.id
                             }
+                            .id(item.id)
                         }
                     }
                     .padding(.vertical, 10).padding(.horizontal, 8)
                 }
                 .scrollIndicators(.hidden)
                 .contentMargins(.horizontal, -8, for: .scrollContent)
+                .onChange(of: focusedID) { _, id in
+                    guard focusedRail == rail, let id else { return }
+                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
+                }
+                }
             }
         }
         .padding(.top, 6)
-    }
-
-    private var attentionSection: some View {
-        let values = items.filter(\.needsAttention)
-        return Group {
-            if !values.isEmpty { gameRail(title: "Needs Attention", values: values) }
-        }
+        .id("rail-\(rail)")
     }
 
     private var downloadsSummary: some View {
@@ -201,8 +224,10 @@ struct ConsoleModeView: View {
             if store.activeStoreGameOperations.isEmpty {
                 Text("No active downloads.").font(.title3).foregroundStyle(.secondary)
             } else {
-                ForEach(store.activeStoreGameOperations, id: \.game.id) { operation in
-                    HStack(spacing: 18) {
+                ForEach(Array(store.activeStoreGameOperations.enumerated()), id: \.element.game.id) { index, operation in
+                    Button {
+                        toggleDownload(operation)
+                    } label: { HStack(spacing: 18) {
                         Image(systemName: "arrow.down.circle.fill").font(.title2).foregroundStyle(.cyan)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(operation.game.name).font(.title3.weight(.semibold))
@@ -211,8 +236,11 @@ struct ConsoleModeView: View {
                         }
                         Spacer()
                         Text(operation.state.isCancellable ? "Pause" : "Resume").foregroundStyle(.cyan)
-                    }
-                    .padding(18).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                    }}
+                    .buttonStyle(.plain)
+                    .padding(18).background(.white.opacity(focusedControl == index ? 0.16 : 0.08), in: RoundedRectangle(cornerRadius: 16))
+                    .overlay(consoleFocusOutline(focusedControl == index))
+                    .id("control-\(index)")
                 }
             }
         }
@@ -221,14 +249,19 @@ struct ConsoleModeView: View {
     private var activityContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Recent activity").font(.title2.bold())
-            ForEach(items.filter { $0.lastUsed != nil }.prefix(8)) { item in
-                HStack {
+            ForEach(Array(items.filter { $0.lastUsed != nil }.prefix(8).enumerated()), id: \.element.id) { index, item in
+                Button { focusedID = item.id; selectedItem = item.id } label: { HStack {
                     Image(systemName: item.running ? "play.circle.fill" : "clock").foregroundStyle(item.running ? .green : .secondary)
                     Text(item.name).font(.title3.weight(.medium))
                     Spacer()
                     Text(item.lastUsed ?? .distantPast, style: .relative).foregroundStyle(.secondary)
-                }
+                }}
+                .buttonStyle(.plain)
                 .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(.white.opacity(focusedControl == index ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(consoleFocusOutline(focusedControl == index))
+                .id("control-\(index)")
             }
         }
     }
@@ -239,12 +272,18 @@ struct ConsoleModeView: View {
             Toggle("Keep TV mode enabled", isOn: $consoleModeEnabled)
                 .font(.title3).toggleStyle(.switch).padding(18)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-            Toggle("Enter when a controller connects", isOn: $consoleModeAutoEnter)
+                .overlay(consoleFocusOutline(focusedControl == 0))
+                .id("control-0")
+            Toggle("Ask to enter when a controller connects", isOn: $consoleModeAutoEnter)
                 .font(.title3).toggleStyle(.switch).padding(18)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-            Toggle("Return after a game exits", isOn: $consoleModeReturnAfterGame)
+                .overlay(consoleFocusOutline(focusedControl == 1))
+                .id("control-1")
+            Toggle("Return after a game exits while a controller is connected", isOn: $consoleModeReturnAfterGame)
                 .font(.title3).toggleStyle(.switch).padding(18)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                .overlay(consoleFocusOutline(focusedControl == 2))
+                .id("control-2")
             settingRow("Controller", value: controllerStatus)
             settingRow("Navigation", value: "D-pad / left stick")
             settingRow("Confirm / Back / Menu", value: "A / B / Y")
@@ -259,6 +298,101 @@ struct ConsoleModeView: View {
     private var controllerStatus: String {
         if let controller = ControllerManager.shared.controllers.first { return "\(controller.name) · Connected" }
         return "No controller detected"
+    }
+
+    private var focusAnchor: String? {
+        if selectedItem != nil { return "console-detail" }
+        switch section {
+        case .home, .library, .installed, .recent, .favorites: return "rail-\(focusedRail)"
+        case .downloads, .activity, .settings: return "control-\(focusedControl)"
+        }
+    }
+
+    private var homeRails: [[LibraryItem]] {
+        let featured = (items.first(where: { $0.lastUsed != nil }) ?? items.first).map { [$0] } ?? []
+        return [
+            featured,
+            Array(items.prefix(8)),
+            items.filter { store.favoriteKeys.contains($0.favoriteKey) }.prefix(8).map { $0 },
+            items.filter(\.readyToPlay).prefix(8).map { $0 },
+            items.filter(\.needsAttention)
+        ]
+    }
+
+    private var currentRailItems: [LibraryItem] {
+        if section == .home { return homeRails[safe: focusedRail] ?? [] }
+        return items
+    }
+
+    private var consoleGameDetail: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            if let item = selectedItem.flatMap({ id in items.first { $0.id == id } }) {
+                HStack(alignment: .top, spacing: 28) {
+                    switch item.kind {
+                    case .application(let application):
+                        AppIconView(symbol: application.iconSymbol, size: 96)
+                            .frame(width: 240, height: 160)
+                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 22))
+                    case .storeGame(let game):
+                        GameArtworkView(game: game, width: 300, height: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: 22))
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(item.name).font(.system(size: 42, weight: .bold, design: .rounded))
+                        Label(item.statusText, systemImage: item.running ? "play.circle.fill" : "gamecontroller.fill")
+                            .font(.title3).foregroundStyle(item.running ? .green : .secondary)
+                        Text("Choose an action with the D-pad and press A.").foregroundStyle(.secondary)
+                    }
+                }
+                VStack(spacing: 12) {
+                    detailActionRow(index: 0, title: primaryDetailTitle(item), symbol: primaryDetailSymbol(item)) {
+                        activateSelectedGame()
+                    }
+                    detailActionRow(index: 1, title: store.isFavorite(key: item.favoriteKey) ? "Remove from Favorites" : "Add to Favorites", symbol: "heart.fill") {
+                        store.toggleFavorite(key: item.favoriteKey)
+                    }
+                    if item.running {
+                        detailActionRow(index: 2, title: "Performance Overlay", symbol: "gauge.with.dots.needle.67percent") {
+                            GameOverlayController.shared.toggleVisibility()
+                        }
+                    }
+                    detailActionRow(index: item.running ? 3 : 2, title: "Back to Library", symbol: "chevron.left") {
+                        selectedItem = nil; focusedControl = 0
+                    }
+                }
+            } else {
+                ContentUnavailableView("Game Not Found", systemImage: "questionmark.app")
+            }
+        }
+        .id("console-detail")
+    }
+
+    private func detailActionRow(index: Int, title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol).font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+        }
+        .buttonStyle(.plain)
+        .background(.white.opacity(focusedControl == index ? 0.16 : 0.075), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(consoleFocusOutline(focusedControl == index))
+    }
+
+    private func consoleFocusOutline(_ visible: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 16).stroke(visible ? .cyan : .clear, lineWidth: 3)
+    }
+
+    private func primaryDetailTitle(_ item: LibraryItem) -> String {
+        if item.running { return "Stop Game" }
+        return item.readyToPlay ? "Play" : "Install / Prepare"
+    }
+
+    private func primaryDetailSymbol(_ item: LibraryItem) -> String {
+        item.running ? "stop.fill" : (item.readyToPlay ? "play.fill" : "arrow.down.circle.fill")
+    }
+
+    private func toggleDownload(_ operation: (game: StoreLibraryGame, state: StoreGameOperationState)) {
+        if operation.state.isCancellable { store.cancelStoreGameOperation(operation.game) }
+        else { store.resumeStoreGameOperation(operation.game) }
     }
 
     private func progressText(_ progress: StoreGameOperationProgress) -> String {
@@ -296,30 +430,166 @@ struct ConsoleModeView: View {
     }
 
     private func handle(_ input: ControllerInput) {
+        if showsOnboarding {
+            if input == .buttonA {
+                UserDefaults.standard.set(true, forKey: "consoleModeOnboardingShown")
+                showsOnboarding = false
+            } else if input == .buttonB {
+                showsOnboarding = false
+            }
+            return
+        }
+        if showsQuickMenu {
+            if input == .buttonB || input == .menu { showsQuickMenu = false }
+            else if input == .buttonA, let app = selectedApplication {
+                if app.status == .running { GameOverlayController.shared.toggleVisibility() }
+                else { store.toggleRunning(app.id) }
+                showsQuickMenu = false
+            }
+            return
+        }
+        if showsGameMenu {
+            if input == .buttonB || input == .buttonY { showsGameMenu = false }
+            else if input == .buttonA {
+                activateSelectedGame()
+                showsGameMenu = false
+            } else if input == .buttonX, let item = focusedItem {
+                store.toggleFavorite(key: item.favoriteKey)
+                showsGameMenu = false
+            }
+            return
+        }
         switch input {
-        case .leftShoulder: section = ConsoleSection.allCases[max(0, section.index - 1)]
-        case .rightShoulder: section = ConsoleSection.allCases[min(ConsoleSection.allCases.count - 1, section.index + 1)]
-        case .dpadLeft, .leftStickLeft: moveFocus(by: -1)
-        case .dpadRight, .leftStickRight: moveFocus(by: 1)
-        case .dpadUp, .leftStickUp: moveFocus(by: -4)
-        case .dpadDown, .leftStickDown: moveFocus(by: 4)
-        case .buttonA:
-            if selectedItem != nil { activateSelectedGame() }
-            else { selectedItem = focusedID }
+        case .leftShoulder: moveSection(by: -1)
+        case .rightShoulder: moveSection(by: 1)
+        case .dpadLeft, .leftStickLeft: moveHorizontal(by: -1)
+        case .dpadRight, .leftStickRight: moveHorizontal(by: 1)
+        case .dpadUp, .leftStickUp: moveVertical(by: -1)
+        case .dpadDown, .leftStickDown: moveVertical(by: 1)
+        case .buttonA: activateFocusedControl()
         case .buttonB:
             if selectedItem != nil { selectedItem = nil }
             else { exit() }
         case .buttonX:
-            if let item = focusedItem { store.toggleFavorite(key: item.favoriteKey) }
-        case .buttonY: showsGameMenu = true
+            if selectedItem != nil || [.home, .library, .installed, .recent, .favorites].contains(section),
+               let item = focusedItem {
+                store.toggleFavorite(key: item.favoriteKey)
+            }
+        case .buttonY:
+            if (selectedItem != nil || [.home, .library, .installed, .recent, .favorites].contains(section)),
+               focusedItem != nil {
+                showsGameMenu = true
+            }
+        case .menu: showsQuickMenu = true
         default: break
         }
     }
 
-    private func moveFocus(by offset: Int) {
-        guard !items.isEmpty else { return }
-        let current = focusedID.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
-        focusedID = items[min(max(0, current + offset), items.count - 1)].id
+    private func moveSection(by offset: Int) {
+        guard selectedItem == nil else { return }
+        section = ConsoleSection.allCases[min(max(0, section.index + offset), ConsoleSection.allCases.count - 1)]
+    }
+
+    private func moveHorizontal(by offset: Int) {
+        if selectedItem != nil {
+            moveDetailFocus(by: offset)
+            return
+        }
+        switch section {
+        case .home, .library, .installed, .recent, .favorites:
+            let values = currentRailItems
+            guard !values.isEmpty else { return }
+            focusedIndex = min(max(0, focusedIndex + offset), values.count - 1)
+            focusedID = values[focusedIndex].id
+        case .settings:
+            activateSetting()
+        case .downloads, .activity:
+            break
+        }
+    }
+
+    private func moveVertical(by offset: Int) {
+        if selectedItem != nil {
+            moveDetailFocus(by: offset)
+            return
+        }
+        switch section {
+        case .home:
+            let available = homeRails.indices.filter { !homeRails[$0].isEmpty }
+            guard let position = available.firstIndex(of: focusedRail) else { return }
+            focusedRail = available[min(max(0, position + offset), available.count - 1)]
+            let values = currentRailItems
+            focusedIndex = min(focusedIndex, max(0, values.count - 1))
+            focusedID = values[safe: focusedIndex]?.id
+        case .library, .installed, .recent, .favorites:
+            break
+        case .downloads:
+            let count = store.activeStoreGameOperations.count
+            if count > 0 { focusedControl = min(max(0, focusedControl + offset), count - 1) }
+        case .activity:
+            let count = items.filter { $0.lastUsed != nil }.prefix(8).count
+            if count > 0 { focusedControl = min(max(0, focusedControl + offset), count - 1) }
+        case .settings:
+            focusedControl = min(max(0, focusedControl + offset), 2)
+        }
+    }
+
+    private func activateFocusedControl() {
+        if selectedItem != nil {
+            activateDetailControl()
+            return
+        }
+        switch section {
+        case .home, .library, .installed, .recent, .favorites:
+            selectedItem = focusedID
+            focusedControl = 0
+        case .downloads:
+            guard let operation = store.activeStoreGameOperations[safe: focusedControl] else { return }
+            toggleDownload(operation)
+        case .activity:
+            let values = Array(items.filter { $0.lastUsed != nil }.prefix(8))
+            guard let item = values[safe: focusedControl] else { return }
+            focusedID = item.id; selectedItem = item.id; focusedControl = 0
+        case .settings:
+            activateSetting()
+        }
+    }
+
+    private func activateSetting() {
+        switch focusedControl {
+        case 0: consoleModeEnabled.toggle()
+        case 1: consoleModeAutoEnter.toggle()
+        case 2: consoleModeReturnAfterGame.toggle()
+        default: break
+        }
+    }
+
+    private func moveDetailFocus(by offset: Int) {
+        let maximum = focusedItem?.running == true ? 3 : 2
+        focusedControl = min(max(0, focusedControl + offset), maximum)
+    }
+
+    private func activateDetailControl() {
+        guard let item = focusedItem else { return }
+        switch focusedControl {
+        case 0: activateSelectedGame()
+        case 1: store.toggleFavorite(key: item.favoriteKey)
+        case 2 where item.running: GameOverlayController.shared.toggleVisibility()
+        default: selectedItem = nil; focusedControl = 0
+        }
+    }
+
+    private func resetFocus() {
+        focusedRail = 0
+        focusedIndex = 0
+        focusedControl = 0
+        if section == .home {
+            let first = homeRails.indices.first { !homeRails[$0].isEmpty } ?? 0
+            focusedRail = first
+            focusedID = homeRails[safe: first]?.first?.id
+        } else {
+            focusedID = items.first?.id
+        }
     }
 
     private func activateSelectedGame() {
