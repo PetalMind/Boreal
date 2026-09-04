@@ -74,6 +74,57 @@ nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hash
     var directoryName: String { self == .dxvk ? "DXVK" : "VKD3D" }
 }
 
+/// Windows redistributables belong to a mutable game environment, never to
+/// the immutable runtime package or the user's global Wine prefix.
+nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case directXRuntime, vc2010, vc2015To2022, xact, xinput, dotNetFramework, physX
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .directXRuntime: "DirectX runtime"
+        case .vc2010: "VC++ 2010"
+        case .vc2015To2022: "VC++ 2015–2022"
+        case .xact: "XACT"
+        case .xinput: "XInput"
+        case .dotNetFramework: ".NET Framework"
+        case .physX: "PhysX"
+        }
+    }
+    var winetricksVerb: String {
+        switch self {
+        case .directXRuntime: "d3dx9"
+        case .vc2010: "vcrun2010"
+        case .vc2015To2022: "vcrun2019"
+        case .xact: "xact"
+        case .xinput: "xinput"
+        case .dotNetFramework: "dotnet48"
+        case .physX: "physx"
+        }
+    }
+    var detectionLibraries: [String] {
+        switch self {
+        case .directXRuntime: ["d3dx9_43.dll", "d3dcompiler_43.dll"]
+        case .vc2010: ["msvcp100.dll", "msvcr100.dll"]
+        case .vc2015To2022: ["msvcp140.dll", "vcruntime140.dll"]
+        case .xact: ["xactengine3_7.dll"]
+        case .xinput: ["xinput1_3.dll", "xinput1_4.dll"]
+        case .dotNetFramework: ["mscoree.dll"]
+        case .physX: ["PhysXLoader.dll"]
+        }
+    }
+}
+
+nonisolated enum RuntimeDependencyState: String, Codable, Sendable, Hashable {
+    case installed, missing, installing, failed
+}
+
+nonisolated struct RuntimeDependencyStatus: Identifiable, Codable, Sendable, Hashable {
+    var id: RuntimeDependency { dependency }
+    let dependency: RuntimeDependency
+    var state: RuntimeDependencyState
+    var detail: String?
+}
+
 nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
     let component: RuntimeComponent
     let version: String

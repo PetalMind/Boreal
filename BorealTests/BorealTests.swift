@@ -11,6 +11,105 @@ import Testing
 
 struct BorealTests {
 
+    @Test func storeGameRecordsMeasuredPlaySessionsAndKeepsHistoryNewestFirst() {
+        let firstStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let secondStart = firstStart.addingTimeInterval(3_600)
+        var game = StoreLibraryGame(provider: .gog, externalID: "game", name: "Game", playtimeMinutes: 120)
+
+        game.appendPlaySession(GamePlaySession(
+            startedAt: firstStart,
+            endedAt: firstStart.addingTimeInterval(90),
+            measuredDurationSeconds: 90,
+            lastCheckpointAt: firstStart.addingTimeInterval(90)
+        ))
+        game.appendPlaySession(GamePlaySession(
+            startedAt: secondStart,
+            endedAt: secondStart.addingTimeInterval(3_661),
+            measuredDurationSeconds: 3_661,
+            lastCheckpointAt: secondStart.addingTimeInterval(3_661)
+        ))
+        game.borealPlaytimeSeconds = game.resolvedPlaySessions.reduce(0) { $0 + $1.duration }
+        game.lastPlayed = secondStart.addingTimeInterval(3_661)
+
+        #expect(game.measuredPlaytime == 3_751)
+        #expect(game.playtimeMinutes == 120)
+        #expect(game.lastPlayed == secondStart.addingTimeInterval(3_661))
+        #expect(game.resolvedPlaySessions.map(\.startedAt) == [secondStart, firstStart])
+
+        var refreshed = StoreLibraryGame(provider: .gog, externalID: "game", name: "Game", playtimeMinutes: 10)
+        refreshed.preserveMeasuredActivity(from: game)
+        #expect(refreshed.measuredPlaytime == 3_751)
+        #expect(refreshed.playtimeMinutes == 183)
+        #expect(refreshed.resolvedPlaySessions.count == 2)
+    }
+
+    @Test func unfinishedSessionSurvivesPersistenceAndShortSessionsStayExact() throws {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var session = GamePlaySession(
+            startedAt: start,
+            endedAt: nil,
+            measuredDurationSeconds: 0,
+            lastCheckpointAt: start
+        )
+        session.checkpoint(elapsed: 1.75, at: start.addingTimeInterval(2))
+
+        let restored = try JSONDecoder().decode(
+            GamePlaySession.self,
+            from: JSONEncoder().encode(session)
+        )
+
+        #expect(restored.isActive)
+        #expect(restored.duration == 1.75)
+        #expect(restored.lastCheckpointAt == start.addingTimeInterval(2))
+    }
+
+    @Test func clockRollbackCannotCreateNegativeSessionDuration() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var session = GamePlaySession(
+            startedAt: start,
+            endedAt: nil,
+            measuredDurationSeconds: 12,
+            lastCheckpointAt: start
+        )
+
+        session.checkpoint(elapsed: -3_600, at: start.addingTimeInterval(-3_600))
+        session.finish(at: start.addingTimeInterval(-3_600))
+
+        #expect(session.duration == 12)
+        #expect(session.endedAt == start)
+    }
+
+    @Test func activityStatisticsUseCalendarWeeksAndRealSessionDurations() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        let now = Date(timeIntervalSince1970: 1_725_532_800) // 2024-09-05 12:00 UTC
+        let thisWeekStart = calendar.dateInterval(of: .weekOfYear, for: now)!.start
+        let sessions = [
+            GamePlaySession(
+                startedAt: thisWeekStart.addingTimeInterval(3_600),
+                endedAt: thisWeekStart.addingTimeInterval(7_200),
+                measuredDurationSeconds: 3_600,
+                lastCheckpointAt: nil
+            ),
+            GamePlaySession(
+                startedAt: thisWeekStart.addingTimeInterval(-86_400),
+                endedAt: thisWeekStart.addingTimeInterval(-86_400 + 7_200),
+                measuredDurationSeconds: 7_200,
+                lastCheckpointAt: nil
+            ),
+        ]
+
+        let statistics = GameActivityStatistics(sessions: sessions, now: now, calendar: calendar)
+
+        #expect(statistics.thisWeek == 3_600)
+        #expect(statistics.lastWeek == 7_200)
+        #expect(statistics.averageSession == 5_400)
+        #expect(statistics.longestSession == 7_200)
+        #expect(statistics.days.count == 84)
+        #expect(statistics.days.reduce(0) { $0 + $1.duration } == 10_800)
+    }
+
     @Test func automaticLibraryRefreshRunsAtMostThreeTimesPerDay() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
 
@@ -622,6 +721,33 @@ struct BorealTests {
         #expect(URL(fileURLWithPath: lines[4]).resolvingSymlinksInPath() == workingDirectory.resolvingSymlinksInPath())
         #expect(lines[5] == game.path)
         #expect(lines[6] == "-windowed")
+    }
+
+    @Test func overlayCompatibleFullscreenWrapsEveryRendererLaunchInWineDesktop() {
+        let environmentID = UUID(uuidString: "00000000-0000-0000-0000-000000000042")!
+        let executable = URL(fileURLWithPath: "/Games/Darksiders II/Darksiders2.exe")
+        let plan = WindowsLaunchPlan(
+            executable: executable,
+            arguments: ["-dx11"],
+            environment: ["WINEDLLOVERRIDES": "d3d11=n,b"],
+            workingDirectory: executable.deletingLastPathComponent(),
+            overlayCompatibleFullscreen: true
+        )
+
+        let arguments = WineLaunchArguments.make(
+            for: plan,
+            environmentID: environmentID,
+            displayWidth: 2560,
+            displayHeight: 1440
+        )
+
+        #expect(arguments == [
+            "explorer",
+            "/desktop=Boreal-000000,2560x1440",
+            executable.path,
+            "-dx11",
+        ])
+        #expect(plan.environment["WINEDLLOVERRIDES"] == "d3d11=n,b")
     }
 
     @Test func libraryProjectionSearchesMetadataAndCombinesFilterCategories() {

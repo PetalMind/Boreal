@@ -21,8 +21,14 @@ struct StoreGameDetailView: View {
     @State private var showsUninstallConfirmation = false
     @State private var selectedTab: DetailTab = .overview
     @State private var compatibilityApplication: WindowsApplication?
+    @State private var showsDiskStorageConfirmation = false
+    @State private var diskStorageCategory: GameDiskStorageCategory?
 
-    private var currentGame: StoreLibraryGame { store.storeGame(id: game.id) ?? game }
+    private var currentGame: StoreLibraryGame {
+        store.storeGames.first {
+            $0.provider == game.provider && $0.externalID == game.externalID
+        } ?? game
+    }
 
     var body: some View {
         ScrollView {
@@ -65,6 +71,14 @@ struct StoreGameDetailView: View {
         .task(id: game.id) {
             await store.loadCommunityCompatibility(for: game.id)
         }
+        .task(id: diskReportTaskID) {
+            store.refreshGameDiskStorage(for: currentGame)
+        }
+        .task(id: linkedEnvironment?.id) {
+            if let environmentID = linkedEnvironment?.id {
+                store.refreshDependencies(for: environmentID)
+            }
+        }
         .task(id: game.id) {
             await store.loadStoreGameSizeIfNeeded(for: game.id)
         }
@@ -88,6 +102,14 @@ struct StoreGameDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text(uninstallConfirmationMessage)
+        }
+        .confirmationDialog("Clear \(diskStorageCategory?.title ?? "selected storage")?", isPresented: $showsDiskStorageConfirmation) {
+            Button("Clear", role: .destructive) {
+                if let category = diskStorageCategory { store.clearGameDiskStorage(category, for: currentGame) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes only data Boreal identified as disposable. Game files and the Windows prefix are not touched.")
         }
     }
 
@@ -217,7 +239,7 @@ struct StoreGameDetailView: View {
         case .compatibility:
             compatibilitySection
         case .activity:
-            libraryOverview
+            activitySection
         case .files:
             installationFilesSection
         }
@@ -239,10 +261,74 @@ struct StoreGameDetailView: View {
     private var overviewMainColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
             operationAndLibraryOverview
+            if linkedEnvironment != nil { dependenciesSection }
             mediaSection
             overviewEditorialGrid
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var dependenciesSection: some View {
+        let environmentID = linkedEnvironment!.id
+        let statuses = store.dependencyStatuses(for: environmentID)
+        let canInstall = statuses.contains { $0.state == .missing || $0.state == .failed }
+        return detailCard("Dependencies", symbol: "shippingbox.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Boreal installs these components into this game's Windows environment.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(statuses) { status in
+                    HStack(spacing: 10) {
+                        Image(systemName: dependencySymbol(status.state))
+                            .foregroundStyle(dependencyColor(status.state))
+                            .frame(width: 18)
+                        Text(status.dependency.displayName)
+                        Spacer()
+                        if status.state == .installing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text(dependencyTitle(status.state))
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if canInstall {
+                    Button("Install", systemImage: "arrow.down.circle.fill") {
+                        store.installMissingDependencies(for: environmentID)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(statuses.contains { $0.state == .installing })
+                }
+            }
+        }
+    }
+
+    private func dependencyTitle(_ state: RuntimeDependencyState) -> String {
+        switch state {
+        case .installed: "Installed"
+        case .missing: "Missing"
+        case .installing: "Installing…"
+        case .failed: "Failed"
+        }
+    }
+
+    private func dependencySymbol(_ state: RuntimeDependencyState) -> String {
+        switch state {
+        case .installed: "checkmark.circle.fill"
+        case .missing: "exclamationmark.triangle.fill"
+        case .installing: "arrow.down.circle"
+        case .failed: "xmark.circle.fill"
+        }
+    }
+
+    private func dependencyColor(_ state: RuntimeDependencyState) -> Color {
+        switch state {
+        case .installed: .green
+        case .missing: .orange
+        case .installing: .accentColor
+        case .failed: .red
+        }
     }
 
     @ViewBuilder private var operationAndLibraryOverview: some View {
@@ -312,7 +398,9 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder private var primaryActions: some View {
         HStack(spacing: 10) {
-            if game.provider == .steam {
+            if let operation = storeOperation {
+                storeOperationPrimaryButton(operation)
+            } else if game.provider == .steam {
                 if currentGame.isInstalled, currentGame.installedPlatform == .nativeMacOS, currentGame.installPath != nil {
                     Button("Play", systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
@@ -421,13 +509,82 @@ struct StoreGameDetailView: View {
     }
 
     @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: String) -> some View {
-        if app.status == .running {
+        switch app.status {
+        case .running:
             Button("Stop", systemImage: "stop.fill") { store.toggleRunning(app.id) }
                 .buttonStyle(BorealPrimaryActionButtonStyle())
-        } else {
+        case .preparing:
+            primaryStatusButton("Preparing…", symbol: "gearshape.2.fill")
+        case .starting:
+            primaryStatusButton("Launching…", symbol: "play.circle.fill")
+        case .installing:
+            primaryStatusButton("Installing…", symbol: "shippingbox.fill")
+        case .needsAttention:
+            Button("Retry", systemImage: "arrow.clockwise") { store.retry(app.id) }
+                .buttonStyle(BorealPrimaryActionButtonStyle())
+        case .unavailable:
+            primaryStatusButton("Unsupported", symbol: "xmark.octagon.fill")
+        case .ready:
             Button(playTitle, systemImage: "play.fill") { store.toggleRunning(app.id) }
                 .buttonStyle(BorealPrimaryActionButtonStyle())
-                .disabled(app.status.isBusy || app.status == .unavailable || storeOperation != nil)
+        }
+    }
+
+    @ViewBuilder private func storeOperationPrimaryButton(_ operation: StoreGameOperationState) -> some View {
+        switch operation {
+        case .installing(let progress):
+            primaryStatusButton(operationTitle(for: progress), symbol: operationSymbol(for: progress))
+        case .preparingEnvironment:
+            primaryStatusButton("Preparing…", symbol: "gearshape.2.fill")
+        case .paused:
+            Button("Queued", systemImage: "clock.fill") { store.resumeStoreGameOperation(currentGame) }
+                .buttonStyle(BorealPrimaryActionButtonStyle())
+                .help("Resume installation")
+        case .awaitingProvider:
+            primaryStatusButton("Queued", symbol: "clock.fill")
+        case .failed:
+            Button("Retry", systemImage: "arrow.clockwise") {
+                if store.canResumeStoreGameOperation(currentGame) {
+                    store.resumeStoreGameOperation(currentGame)
+                } else {
+                    store.clearStoreGameOperation(for: currentGame)
+                    showsInstallationOptions = true
+                }
+            }
+            .buttonStyle(BorealPrimaryActionButtonStyle())
+        }
+    }
+
+    private func primaryStatusButton(_ title: String, symbol: String) -> some View {
+        Button(title, systemImage: symbol) { }
+            .buttonStyle(BorealPrimaryActionButtonStyle())
+            .disabled(true)
+    }
+
+    private func operationTitle(for progress: StoreGameOperationProgress) -> String {
+        let base: String
+        if currentGame.isInstalled {
+            base = progress.phase == .verifying ? "Repairing" : "Updating"
+        } else {
+            switch progress.phase {
+            case .preparing: base = "Preparing"
+            case .downloading: base = "Downloading"
+            case .installing: base = "Installing"
+            case .verifying: base = "Finishing"
+            }
+        }
+        if let fraction = progress.clampedFraction {
+            return "\(base)… \(Int((fraction * 100).rounded()))%"
+        }
+        return "\(base)…"
+    }
+
+    private func operationSymbol(for progress: StoreGameOperationProgress) -> String {
+        switch progress.phase {
+        case .preparing: "gearshape.2.fill"
+        case .downloading: "arrow.down.circle.fill"
+        case .installing: "shippingbox.fill"
+        case .verifying: "checkmark.shield.fill"
         }
     }
 
@@ -545,12 +702,23 @@ struct StoreGameDetailView: View {
     }
 
     private var playtime: String {
-        guard game.playtimeMinutes > 0 else { return "Not played" }
-        if game.playtimeMinutes < 60 { return "\(game.playtimeMinutes) min" }
-        return String(format: "%.1f hours", Double(game.playtimeMinutes) / 60)
+        let providerSeconds = TimeInterval(currentGame.playtimeMinutes * 60)
+        let activeSeconds = store.activePlaySessionElapsed(for: currentGame) ?? 0
+        let completedMeasuredSeconds = currentGame.completedPlaySessions.reduce(0) { $0 + $1.duration }
+        let totalSeconds = activeSeconds > 0
+            ? max(providerSeconds, completedMeasuredSeconds) + activeSeconds
+            : max(providerSeconds, currentGame.measuredPlaytime)
+        guard totalSeconds > 0 else { return "Not played" }
+        return formatDuration(totalSeconds)
     }
 
     private var libraryOverview: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            libraryOverviewContent
+        }
+    }
+
+    private var libraryOverviewContent: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 0) {
                 overviewMetric("Library status", value: libraryStatus, symbol: libraryStatusSymbol)
@@ -559,7 +727,7 @@ struct StoreGameDetailView: View {
                 overviewDivider
                 overviewMetric(
                     "Last played",
-                    value: currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never",
+                    value: lastPlayedValue,
                     symbol: "calendar"
                 )
                 overviewDivider
@@ -572,7 +740,7 @@ struct StoreGameDetailView: View {
                 Divider()
                 overviewMetric(
                     "Last played",
-                    value: currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never",
+                    value: lastPlayedValue,
                     symbol: "calendar"
                 )
                 Divider()
@@ -581,6 +749,168 @@ struct StoreGameDetailView: View {
         }
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12)) }
+    }
+
+    private var lastPlayedValue: String {
+        if store.activePlaySessionStart(for: currentGame) != nil { return "Playing now" }
+        return currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never"
+    }
+
+    private var activitySection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            libraryOverview
+            if store.activePlaySessionStart(for: currentGame) != nil {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    detailCard("Current session", symbol: "timer") {
+                        HStack {
+                            Label("Boreal is measuring this session", systemImage: "record.circle.fill")
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Text(formatDuration(store.activePlaySessionElapsed(for: currentGame) ?? 0))
+                                .font(.title3.monospacedDigit().weight(.semibold))
+                        }
+                    }
+                }
+            }
+            detailCard("Tracked by Boreal", symbol: "clock.badge.checkmark") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(formatDuration(currentGame.measuredPlaytime))
+                            .font(.title2.weight(.semibold))
+                        Text("Measured while the managed Wine/GPTK environment was active")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(currentGame.completedPlaySessions.count) sessions")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                activityStatistics(at: context.date)
+            }
+            if !currentGame.completedPlaySessions.isEmpty {
+                detailCard("Session history", symbol: "list.bullet.rectangle") {
+                    VStack(spacing: 0) {
+                        ForEach(currentGame.completedPlaySessions) { session in
+                            HStack(spacing: 12) {
+                                Image(systemName: "play.circle.fill")
+                                    .foregroundStyle(.cyan)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(session.startedAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.callout.weight(.medium))
+                                    Text("Ended \((session.endedAt ?? session.startedAt).formatted(date: .omitted, time: .shortened))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(formatDuration(session.duration))
+                                    .font(.callout.monospacedDigit().weight(.semibold))
+                            }
+                            .padding(.vertical, 10)
+                            if session.id != currentGame.completedPlaySessions.last?.id { Divider() }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func activityStatistics(at date: Date) -> some View {
+        let statistics = GameActivityStatistics(sessions: activitySessions, now: date)
+        return VStack(alignment: .leading, spacing: 20) {
+            detailCard("Activity statistics", symbol: "chart.bar.fill") {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        activityStatistic("This week", duration: statistics.thisWeek)
+                        activityStatistic("Last week", duration: statistics.lastWeek)
+                        activityStatistic("Average session", duration: statistics.averageSession)
+                        activityStatistic("Longest session", duration: statistics.longestSession)
+                    }
+                    VStack(spacing: 10) {
+                        HStack(spacing: 10) {
+                            activityStatistic("This week", duration: statistics.thisWeek)
+                            activityStatistic("Last week", duration: statistics.lastWeek)
+                        }
+                        HStack(spacing: 10) {
+                            activityStatistic("Average session", duration: statistics.averageSession)
+                            activityStatistic("Longest session", duration: statistics.longestSession)
+                        }
+                    }
+                }
+            }
+            detailCard("Activity heatmap", symbol: "square.grid.3x3.fill") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ScrollView(.horizontal) {
+                        LazyHGrid(
+                            rows: Array(repeating: GridItem(.fixed(14), spacing: 4), count: 7),
+                            spacing: 4
+                        ) {
+                            ForEach(statistics.days) { day in
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(heatmapColor(for: day.duration, maximum: statistics.days.map(\.duration).max() ?? 0))
+                                    .frame(width: 14, height: 14)
+                                    .help("\(day.date.formatted(date: .abbreviated, time: .omitted)): \(formatDuration(day.duration))")
+                                    .accessibilityLabel(day.date.formatted(date: .complete, time: .omitted))
+                                    .accessibilityValue(formatDuration(day.duration))
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .scrollIndicators(.hidden)
+                    HStack(spacing: 6) {
+                        Text("Less")
+                        ForEach(0..<5, id: \.self) { level in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(heatmapColor(for: Double(level), maximum: 4))
+                                .frame(width: 12, height: 12)
+                        }
+                        Text("More")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var activitySessions: [GamePlaySession] {
+        var sessions = currentGame.completedPlaySessions
+        if var active = currentGame.activePlaySession,
+           let elapsed = store.activePlaySessionElapsed(for: currentGame) {
+            active.measuredDurationSeconds = elapsed
+            sessions.append(active)
+        }
+        return sessions
+    }
+
+    private func activityStatistic(_ title: String, duration: TimeInterval) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(formatDuration(duration))
+                .font(.title3.monospacedDigit().weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func heatmapColor(for duration: TimeInterval, maximum: TimeInterval) -> Color {
+        guard duration > 0, maximum > 0 else { return .secondary.opacity(0.12) }
+        let level = min(1, max(0.2, duration / maximum))
+        return .cyan.opacity(0.25 + level * 0.75)
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        if hours > 0 { return String(format: "%d h %02d min", hours, minutes) }
+        if minutes > 0 { return "\(minutes) min" }
+        return "\(seconds) sec"
     }
 
     private func overviewMetric(_ title: String, value: String, symbol: String) -> some View {
@@ -885,6 +1215,7 @@ struct StoreGameDetailView: View {
                     }
                 }
             }
+            diskStorageCard
             detailCard("Actions", symbol: "ellipsis") {
                 if currentGame.installPath != nil {
                     Button("Open game folder", systemImage: "folder") { showGameFiles() }
@@ -933,7 +1264,39 @@ struct StoreGameDetailView: View {
             if let application = linkedApplication {
                 metric("Executable", value: URL(fileURLWithPath: application.executablePath).lastPathComponent, symbol: "doc")
             }
+            diskStorageCard
         }
+    }
+
+    private var diskStorageCard: some View {
+        let report = store.gameDiskReport(for: currentGame)
+        return detailCard("Disk usage", symbol: "internaldrive.fill") {
+            ForEach(GameDiskStorageCategory.allCases, id: \.self) { category in
+                let item = report?.item(category)
+                metric(category.title, value: item?.bytes.map(store.formattedBytes) ?? "Unavailable", symbol: category == .shaders ? "sparkles" : "internaldrive")
+            }
+            Divider()
+            Text("Shader Cache").font(.subheadline.weight(.semibold))
+            HStack {
+                Text("Cache may rebuild during gameplay. Temporary stutter is expected.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear") { diskStorageCategory = .shaders; showsDiskStorageConfirmation = true }
+                    .disabled(report?.item(.shaders)?.bytes == nil)
+                Button("Rebuild") { store.rebuildShaderCache(for: currentGame) }
+                    .disabled(report?.item(.shaders)?.bytes == nil)
+            }
+            .buttonStyle(.bordered)
+            HStack {
+                clearButton(.downloads, title: "Remove Downloads", report: report)
+                clearButton(.snapshots, title: "Delete Old Snapshots", report: report)
+            }
+        }
+    }
+
+    private func clearButton(_ category: GameDiskStorageCategory, title: String, report: GameDiskStorageReport?) -> some View {
+        Button(title) { diskStorageCategory = category; showsDiskStorageConfirmation = true }
+            .disabled(report?.item(category)?.bytes == nil)
     }
 
     private var libraryStatus: String {
@@ -977,6 +1340,10 @@ struct StoreGameDetailView: View {
     }
 
     private var linkedApplication: WindowsApplication? { store.linkedApplication(for: game) }
+
+    private var diskReportTaskID: String {
+        "disk-\(game.id.uuidString)-\(currentGame.installPath ?? "uninstalled")"
+    }
 
     private var linkedEnvironment: WindowsEnvironment? {
         guard let application = linkedApplication else { return nil }

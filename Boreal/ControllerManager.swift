@@ -22,7 +22,7 @@ final class ControllerManager {
     }
 
     private var observers: [NSObjectProtocol] = []
-    private var activeApplicationIDs: Set<UUID> = []
+    private var activeApplications: [UUID: Bool] = [:]
     private var pressedInputs: [ObjectIdentifier: Set<ControllerInput>] = [:]
     private var isStarted = false
 
@@ -81,18 +81,18 @@ final class ControllerManager {
     func resetMapping() { mapping = .standard }
 
     func shutdown() {
-        activeApplicationIDs.removeAll()
+        activeApplications.removeAll()
         releaseAllInputs()
         GCController.stopWirelessControllerDiscovery()
     }
 
-    func activate(for applicationID: UUID) {
-        activeApplicationIDs.insert(applicationID)
+    func activate(for applicationID: UUID, keyboardMappingEnabled: Bool = true) {
+        activeApplications[applicationID] = keyboardMappingEnabled
     }
 
     func deactivate(for applicationID: UUID) {
-        activeApplicationIDs.remove(applicationID)
-        if activeApplicationIDs.isEmpty { releaseAllInputs() }
+        activeApplications[applicationID] = nil
+        if !activeApplications.values.contains(true) { releaseAllInputs() }
     }
 
     private func configure(_ controller: GCController) {
@@ -132,7 +132,7 @@ final class ControllerManager {
         let pressed = current.subtracting(previous)
         let released = previous.subtracting(current)
         if let newest = pressed.first { lastInput = newest }
-        guard isMappingEnabled, !activeApplicationIDs.isEmpty else {
+        guard isMappingEnabled, activeApplications.values.contains(true) else {
             pressedInputs[identifier] = current
             return
         }

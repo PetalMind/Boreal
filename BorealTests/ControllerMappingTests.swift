@@ -40,4 +40,21 @@ struct ControllerMappingTests {
         #expect(environment["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] == "1")
         #expect(environment["EXISTING"] == "value")
     }
+
+    @Test func legacyCompatibilityProfileGetsSafeControllerDefaults() throws {
+        let data = Data(#"{"windowsVersion":"win11","architecture":"win64"}"#.utf8)
+        let profile = try JSONDecoder().decode(WineCompatibilityProfile.self, from: data)
+
+        #expect(profile.forceXInput)
+        #expect(!profile.disableSteamInputEquivalent)
+    }
+
+    @Test func environmentCopiesPerGameXInputPreference() {
+        var profile = WineCompatibilityProfile.default
+        profile.forceXInput = false
+
+        let configuration = EnvironmentConfiguration(name: "Controller test", profile: profile)
+
+        #expect(!configuration.forceXInput)
+    }
 }

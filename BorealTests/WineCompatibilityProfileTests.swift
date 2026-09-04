@@ -146,6 +146,13 @@ struct WineCompatibilityProfileTests {
         ])
     }
 
+    @Test func legacyProfileDefaultsToOverlayCompatibleFullscreen() throws {
+        let data = Data(#"{"windowsVersion":"win10","fullscreenFSREnabled":false}"#.utf8)
+        let profile = try JSONDecoder().decode(WineCompatibilityProfile.self, from: data)
+
+        #expect(profile.overlayCompatibleFullscreen)
+    }
+
     @Test func legacyEnvironmentConfigurationUsesSafeDefaults() throws {
         let data = Data(#"{"name":"Legacy","windowsVersion":"win10","architecture":"win32"}"#.utf8)
         let configuration = try JSONDecoder().decode(EnvironmentConfiguration.self, from: data)

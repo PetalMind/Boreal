@@ -44,7 +44,8 @@ BorealRuntime/
 ├── Dependencies/
 ├── Support/
 │   ├── wine-mono/
-│   └── wine-gecko/
+│   ├── wine-gecko/
+│   └── winetricks
 ├── Licenses/
 │   └── THIRD_PARTY_NOTICES.txt
 ├── SBOM.spdx.json
@@ -54,6 +55,8 @@ BorealRuntime/
 `Dependencies` contains redistributable frameworks and libraries needed by the packaged Wine build. System GStreamer is intentionally rejected: Rosetta 2 may be a platform requirement, but GStreamer, MoltenVK, SDL, GnuTLS, freetype and similar runtime libraries must be bundled and relocatable.
 
 Mono and Gecko are pinned components. When `features.wineMono` or `features.wineGecko` is true, the corresponding component version and support directory are mandatory. P0 deliberately leaves D3DMetal and DXMT disabled.
+
+When present, `Support/winetricks` is used from the runtime package. Older and locally imported runtimes are supported too: Boreal downloads the official Winetricks script once into `Application Support/Boreal/Tools/Winetricks`, caches it, and invokes it with the selected environment's `WINEPREFIX`. The global PATH and any user-managed Wine prefix are never used. The environment records a small receipt under `.boreal-dependencies` and the UI also verifies the resulting DLLs in `drive_c/windows`.
 
 The package manifest does not contain the artifact URL, size, or SHA-256 because embedding the artifact hash inside the artifact would be self-referential. Those fields live only in the signed catalog entry. All other fields must match exactly.
 

@@ -28,6 +28,10 @@ private actor StoreSizeEstimateGate {
 @MainActor
 @Observable
 final class BorealStore {
+    private struct ActivePlaySession {
+        var sessionID: UUID
+        var checkpointInstant: ContinuousClock.Instant
+    }
     private struct PersistedState: Codable {
         var applications: [WindowsApplication]
         var environments: [WindowsEnvironment]
@@ -53,6 +57,9 @@ final class BorealStore {
     var runtimeOperationDetail: String?
     var runtimeComponentUpdates: [RuntimeComponentUpdate] = []
     var runtimeComponentUpdateError: String?
+    var environmentDependencyStatuses: [UUID: [RuntimeDependencyStatus]] = [:]
+    var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
+    var diskStorageOperationIDs: Set<UUID> = []
     private let storageURL: URL
     private let services: BorealServices
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
@@ -64,6 +71,8 @@ final class BorealStore {
     private var unexpectedLauncherFailures: Set<UUID> = []
     private var environmentSessionStates: [UUID: EnvironmentSessionState] = [:]
     private var environmentMonitorIDs: [UUID: UUID] = [:]
+    private var activePlaySessions: [UUID: ActivePlaySession] = [:]
+    private var playSessionCheckpointTasks: [UUID: Task<Void, Never>] = [:]
     private var storeOperationTasks: [String: Task<Void, Never>] = [:]
     private var storeOperationTokens: [String: UUID] = [:]
     private var storeDownloadRecords: [String: StoreDownloadRecord] = [:]
@@ -145,6 +154,22 @@ final class BorealStore {
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
+    func activePlaySessionStart(for game: StoreLibraryGame) -> Date? {
+        guard let application = linkedApplication(for: game), activePlaySessions[application.id] != nil else { return nil }
+        return storeGames.first(where: {
+            $0.provider == game.provider && $0.externalID == game.externalID
+        })?.activePlaySession?.startedAt
+    }
+    func activePlaySessionElapsed(for game: StoreLibraryGame) -> TimeInterval? {
+        guard let application = linkedApplication(for: game),
+              let active = activePlaySessions[application.id],
+              let session = storeGames.first(where: {
+                  $0.provider == game.provider && $0.externalID == game.externalID
+              })?.playSessions?.first(where: { $0.id == active.sessionID }) else { return nil }
+        let components = active.checkpointInstant.duration(to: ContinuousClock().now).components
+        return session.duration
+            + max(0, Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000)
+    }
     func isFavorite(key: String) -> Bool { favoriteKeys.contains(key) }
 
     func auxiliaryExecutables(for application: WindowsApplication) -> [AuxiliaryExecutable] {
@@ -191,6 +216,7 @@ final class BorealStore {
             }) else { return }
             var value = refreshed
             value.id = storeGames[index].id
+            value.preserveMeasuredActivity(from: storeGames[index])
             storeGames[index] = value
             save()
         }
@@ -241,6 +267,100 @@ final class BorealStore {
         }
     }
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
+
+    func refreshGameDiskStorage(for game: StoreLibraryGame) {
+        let gameID = game.id
+        let gamePath = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let prefixPath = linkedApplication(for: game).flatMap { environment(id: $0.environmentID)?.prefixPath }.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let supportPath = storageURL.deletingLastPathComponent()
+        Task.detached(priority: .utility) { [weak self] in
+            let report = GameDiskStorage.report(gameURL: gamePath, prefixURL: prefixPath, applicationSupportURL: supportPath)
+            await MainActor.run { self?.gameDiskReports[gameID] = report }
+        }
+    }
+
+    func gameDiskReport(for game: StoreLibraryGame) -> GameDiskStorageReport? { gameDiskReports[game.id] }
+
+    func clearGameDiskStorage(_ category: GameDiskStorageCategory, for game: StoreLibraryGame) {
+        guard category != .gameFiles, category != .prefix,
+              let report = gameDiskReports[game.id], diskStorageOperationIDs.insert(game.id).inserted else { return }
+        Task { [weak self] in
+            defer { self?.diskStorageOperationIDs.remove(game.id) }
+            do {
+                try GameDiskStorage.remove(category, from: report)
+                refreshGameDiskStorage(for: game)
+            } catch {
+                present(error, title: category.title + " couldn’t be cleared", stage: "Removing selected game storage")
+            }
+        }
+    }
+
+    func rebuildShaderCache(for game: StoreLibraryGame) { clearGameDiskStorage(.shaders, for: game) }
+
+    func dependencyStatuses(for environmentID: UUID) -> [RuntimeDependencyStatus] {
+        environmentDependencyStatuses[environmentID] ?? RuntimeDependency.allCases.map {
+            RuntimeDependencyStatus(dependency: $0, state: .missing, detail: "Checking environment…")
+        }
+    }
+
+    func refreshDependencies(for environmentID: UUID) {
+        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
+        Task { [weak self] in
+            guard let self, let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { return }
+            let statuses = await services.environmentManager.dependencyStatuses(managed, runtime: runtime)
+            environmentDependencyStatuses[environmentID] = statuses
+        }
+    }
+
+    func installDependency(_ dependency: RuntimeDependency, for environmentID: UUID) {
+        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
+        guard let current = environmentDependencyStatuses[environmentID],
+              let index = current.firstIndex(where: { $0.dependency == dependency }),
+              current[index].state != .installed else { return }
+        environmentDependencyStatuses[environmentID]?[index].state = .installing
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { throw InstallerServiceError.noRuntimeAvailable }
+                try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
+                refreshDependencies(for: environmentID)
+            } catch {
+                if let index = environmentDependencyStatuses[environmentID]?.firstIndex(where: { $0.dependency == dependency }) {
+                    environmentDependencyStatuses[environmentID]?[index].state = .failed
+                    environmentDependencyStatuses[environmentID]?[index].detail = error.localizedDescription
+                }
+                present(error, title: "(dependency.displayName) couldn’t be installed", stage: "Installing the dependency into the selected Windows environment")
+            }
+        }
+    }
+
+    func installMissingDependencies(for environmentID: UUID) {
+        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
+        let dependencies = dependencyStatuses(for: environmentID)
+            .filter { $0.state == .missing || $0.state == .failed }
+            .map(\.dependency)
+        guard !dependencies.isEmpty else { return }
+        for dependency in dependencies {
+            if let index = environmentDependencyStatuses[environmentID]?.firstIndex(where: { $0.dependency == dependency }) {
+                environmentDependencyStatuses[environmentID]?[index].state = .installing
+            }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { throw InstallerServiceError.noRuntimeAvailable }
+                // The actor executes each command serially so winetricks never
+                // changes the same prefix concurrently.
+                for dependency in dependencies {
+                    try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
+                }
+                refreshDependencies(for: environmentID)
+            } catch {
+                refreshDependencies(for: environmentID)
+                present(error, title: "Dependencies couldn’t be installed", stage: "Installing Windows libraries into the selected environment")
+            }
+        }
+    }
     func applications(in environmentID: UUID) -> [WindowsApplication] { applications.filter { $0.environmentID == environmentID } }
 
     func recommendedRuntimeEngine(for game: StoreLibraryGame) -> RuntimeEngine {
@@ -532,6 +652,7 @@ final class BorealStore {
             }
             await refreshAuxiliaryExecutables(for: app.id)
             activeSessions[app.id] = commit.firstLaunch
+            beginPlaySession(appID: app.id)
             performanceLogURLs[app.id] = commit.firstLaunch.stderrLog
             activeEnvironments[app.id] = managed
             activeRuntimes[app.id] = commit.runtime
@@ -646,6 +767,7 @@ final class BorealStore {
                         var value = game
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
+                            value.preserveMeasuredActivity(from: existing)
                             value.compatibility = game.compatibility ?? existing.compatibility
                             value.sizeEstimate = game.sizeEstimate ?? existing.sizeEstimate
                         }
@@ -891,6 +1013,7 @@ final class BorealStore {
                         var value = game
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
+                            value.preserveMeasuredActivity(from: existing)
                             value.developer = value.developer ?? existing.developer
                             value.summary = value.summary ?? existing.summary
                             value.artworkPath = value.artworkPath ?? existing.artworkPath
@@ -987,6 +1110,7 @@ final class BorealStore {
                         var value = game
                         if let existing = existingGames[game.externalID] {
                             value.id = existing.id
+                            value.preserveMeasuredActivity(from: existing)
                             value.compatibility = value.compatibility ?? existing.compatibility
                             value.installedPlatform = value.installedPlatform ?? existing.installedPlatform
                             value.sizeEstimate = value.sizeEstimate ?? existing.sizeEstimate
@@ -2268,8 +2392,11 @@ final class BorealStore {
                         throw SteamWindowsError.gameNotInstalled(appID)
                     }
                     gameDirectory = installedDirectory
+                    var bootstrapPlan = SteamWindowsService.bootstrapPlan(steamExecutable: executable)
+                    bootstrapPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
+                    bootstrapPlan.overlayDisplayID = profile.overlayDisplayID
                     let bootstrap = try await services.processRunner.run(
-                        plan: SteamWindowsService.bootstrapPlan(steamExecutable: executable),
+                        plan: bootstrapPlan,
                         environment: managed,
                         runtime: runtime
                     )
@@ -2290,6 +2417,8 @@ final class BorealStore {
                     gameDirectory: gameDirectory
                 )
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
+                configuredPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
+                configuredPlan.overlayDisplayID = profile.overlayDisplayID
                 if provider != .steam {
                     let graphicsPlan = try graphicsCompatibilityManager.apply(
                         configuration: profile,
@@ -2313,6 +2442,8 @@ final class BorealStore {
                     )
                 )
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
+                configuredPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
+                configuredPlan.overlayDisplayID = profile.overlayDisplayID
                 let graphicsPlan = try graphicsCompatibilityManager.apply(
                     configuration: profile,
                     application: applications[index],
@@ -2326,7 +2457,11 @@ final class BorealStore {
             applications[index].status = .running
             applications[index].lastOpened = .now
             activeSessions[id] = session
-            ControllerManager.shared.activate(for: id)
+            beginPlaySession(appID: id)
+            ControllerManager.shared.activate(
+                for: id,
+                keyboardMappingEnabled: !profile.disableSteamInputEquivalent
+            )
             performanceLogURLs[id] = session.stderrLog
             activeEnvironments[id] = managed
             activeRuntimes[id] = runtime
@@ -2389,6 +2524,20 @@ final class BorealStore {
             }
             activeSessions[appID] = nil
             save()
+            if !wasRequested,
+               let application = application(id: appID),
+               !application.usesSharedSteamEnvironment {
+                schedulePrimaryProcessExit(appID: appID)
+            }
+        }
+    }
+
+    private func schedulePrimaryProcessExit(appID: UUID) {
+        guard let expectedSessionID = activePlaySessions[appID]?.sessionID else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, activePlaySessions[appID]?.sessionID == expectedSessionID else { return }
+            endPlaySession(appID: appID)
         }
     }
 
@@ -2449,7 +2598,11 @@ final class BorealStore {
             case .active:
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
-                ControllerManager.shared.activate(for: appID)
+                beginPlaySession(appID: appID)
+                ControllerManager.shared.activate(
+                    for: appID,
+                    keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
+                )
                 save()
                 monitorEnvironmentSession(environment: managed, runtime: installedRuntime, appID: appID)
             case .inactive:
@@ -2467,6 +2620,7 @@ final class BorealStore {
 
     private func markEnvironmentEnded(appID: UUID) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+        endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
         let wasRequested = requestedStops.remove(appID) != nil
         if unexpectedLauncherFailures.remove(appID) != nil && !wasRequested {
@@ -2482,6 +2636,85 @@ final class BorealStore {
         activeRuntimes[appID] = nil
         ControllerManager.shared.deactivate(for: appID)
         environmentMonitorIDs[appID] = nil
+        save()
+    }
+
+    func beginPlaySession(appID: UUID, at date: Date = .now) {
+        guard activePlaySessions[appID] == nil,
+              let application = application(id: appID),
+              let provider = application.storeProvider,
+              let externalID = application.storeExternalID,
+              let gameIndex = storeGames.firstIndex(where: {
+                  $0.provider == provider && $0.externalID == externalID
+              }) else { return }
+        let session: GamePlaySession
+        if let unfinished = storeGames[gameIndex].activePlaySession {
+            session = unfinished
+        } else {
+            session = GamePlaySession(
+                startedAt: date,
+                endedAt: nil,
+                measuredDurationSeconds: 0,
+                lastCheckpointAt: date
+            )
+            storeGames[gameIndex].appendPlaySession(session)
+            save()
+        }
+        activePlaySessions[appID] = ActivePlaySession(
+            sessionID: session.id,
+            checkpointInstant: ContinuousClock().now
+        )
+        startPlaySessionCheckpointing(appID: appID, sessionID: session.id)
+    }
+
+    func endPlaySession(appID: UUID, at date: Date = .now) {
+        playSessionCheckpointTasks[appID]?.cancel()
+        playSessionCheckpointTasks[appID] = nil
+        checkpointPlaySession(appID: appID, at: date)
+        let active = activePlaySessions.removeValue(forKey: appID)
+        guard let application = application(id: appID),
+              let provider = application.storeProvider,
+              let externalID = application.storeExternalID,
+              let gameIndex = storeGames.firstIndex(where: {
+                  $0.provider == provider && $0.externalID == externalID
+              }),
+              var session = active.flatMap({ active in
+                  storeGames[gameIndex].playSessions?.first(where: { $0.id == active.sessionID })
+              }) ?? storeGames[gameIndex].activePlaySession else { return }
+        session.finish(at: date)
+        storeGames[gameIndex].updatePlaySession(session)
+        save()
+    }
+
+    private func startPlaySessionCheckpointing(appID: UUID, sessionID: UUID) {
+        playSessionCheckpointTasks[appID]?.cancel()
+        playSessionCheckpointTasks[appID] = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, let self,
+                      activePlaySessions[appID]?.sessionID == sessionID else { return }
+                checkpointPlaySession(appID: appID)
+            }
+        }
+    }
+
+    private func checkpointPlaySession(appID: UUID, at date: Date = .now) {
+        guard var active = activePlaySessions[appID],
+              let application = application(id: appID),
+              let provider = application.storeProvider,
+              let externalID = application.storeExternalID,
+              let gameIndex = storeGames.firstIndex(where: {
+                  $0.provider == provider && $0.externalID == externalID
+              }),
+              var session = storeGames[gameIndex].playSessions?.first(where: { $0.id == active.sessionID }) else { return }
+        let now = ContinuousClock().now
+        let elapsed = active.checkpointInstant.duration(to: now)
+        let components = elapsed.components
+        let elapsedSeconds = Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+        session.checkpoint(elapsed: elapsedSeconds, at: date)
+        storeGames[gameIndex].updatePlaySession(session)
+        active.checkpointInstant = now
+        activePlaySessions[appID] = active
         save()
     }
 

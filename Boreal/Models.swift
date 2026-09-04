@@ -230,12 +230,18 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var msyncEnabled = true
     var retinaModeEnabled = true
     var fullscreenFSREnabled = false
+    var overlayCompatibleFullscreen = true
+    /// Selected CoreGraphics display ID for the Wine desktop; nil follows the main display.
+    var overlayDisplayID: UInt32? = nil
     var debugLoggingEnabled = false
+    var disableSteamInputEquivalent = false
+    var forceXInput = true
     var launchArguments = ""
 
     private enum CodingKeys: String, CodingKey {
         case windowsVersion, architecture, graphicsBackend, legacyWrapper, legacyGraphicsAPI, graphicsAPI
-        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, launchArguments
+        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
+        case disableSteamInputEquivalent, forceXInput, launchArguments
     }
 
     static let `default` = WineCompatibilityProfile()
@@ -285,7 +291,11 @@ extension WineCompatibilityProfile {
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
         retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
+        overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? true
+        overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
+        disableSteamInputEquivalent = try values.decodeIfPresent(Bool.self, forKey: .disableSteamInputEquivalent) ?? false
+        forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         launchArguments = try values.decodeIfPresent(String.self, forKey: .launchArguments) ?? ""
     }
 }
@@ -431,6 +441,90 @@ nonisolated struct StoreVideo: Codable, Hashable, Sendable, Identifiable {
     var videoURL: String
 }
 
+nonisolated struct GamePlaySession: Identifiable, Codable, Hashable, Sendable {
+    var id = UUID()
+    var startedAt: Date
+    var endedAt: Date?
+    /// Accumulated from ContinuousClock checkpoints while Boreal is alive.
+    /// Optional keeps sessions written by the first implementation decodable.
+    var measuredDurationSeconds: TimeInterval?
+    var lastCheckpointAt: Date?
+
+    var isActive: Bool { endedAt == nil }
+    var duration: TimeInterval {
+        if let measuredDurationSeconds { return max(0, measuredDurationSeconds) }
+        guard let endedAt else { return 0 }
+        return max(0, endedAt.timeIntervalSince(startedAt))
+    }
+
+    mutating func checkpoint(elapsed: TimeInterval, at date: Date) {
+        measuredDurationSeconds = duration + max(0, elapsed)
+        lastCheckpointAt = date
+    }
+
+    mutating func finish(at date: Date) {
+        endedAt = max(date, startedAt)
+        lastCheckpointAt = endedAt
+    }
+}
+
+nonisolated struct GameActivityDay: Identifiable, Hashable, Sendable {
+    var date: Date
+    var duration: TimeInterval
+    var id: Date { date }
+}
+
+nonisolated struct GameActivityStatistics: Hashable, Sendable {
+    var thisWeek: TimeInterval
+    var lastWeek: TimeInterval
+    var averageSession: TimeInterval
+    var longestSession: TimeInterval
+    var days: [GameActivityDay]
+
+    init(
+        sessions: [GamePlaySession],
+        now: Date = .now,
+        calendar: Calendar = .autoupdatingCurrent,
+        heatmapDayCount: Int = 84
+    ) {
+        let validSessions = sessions.filter { $0.duration > 0 }
+        let thisWeekInterval = calendar.dateInterval(of: .weekOfYear, for: now)
+        let lastWeekDate = thisWeekInterval?.start.addingTimeInterval(-1)
+        let lastWeekInterval = lastWeekDate.flatMap { calendar.dateInterval(of: .weekOfYear, for: $0) }
+        thisWeek = validSessions
+            .filter { thisWeekInterval?.contains($0.startedAt) == true }
+            .reduce(0) { $0 + $1.duration }
+        lastWeek = validSessions
+            .filter { lastWeekInterval?.contains($0.startedAt) == true }
+            .reduce(0) { $0 + $1.duration }
+        let total = validSessions.reduce(0) { $0 + $1.duration }
+        averageSession = validSessions.isEmpty ? 0 : total / Double(validSessions.count)
+        longestSession = validSessions.map(\.duration).max() ?? 0
+
+        let today = calendar.startOfDay(for: now)
+        let count = max(1, heatmapDayCount)
+        let firstDay = calendar.date(byAdding: .day, value: -(count - 1), to: today) ?? today
+        var durationByDay: [Date: TimeInterval] = [:]
+        for session in validSessions {
+            var cursor = session.startedAt
+            var remaining = session.duration
+            while remaining > 0 {
+                let day = calendar.startOfDay(for: cursor)
+                let nextDay = calendar.date(byAdding: .day, value: 1, to: day) ?? cursor.addingTimeInterval(86_400)
+                let slice = min(remaining, max(0.001, nextDay.timeIntervalSince(cursor)))
+                durationByDay[day, default: 0] += slice
+                remaining -= slice
+                cursor = nextDay
+            }
+        }
+        days = (0..<count).compactMap { offset in
+            calendar.date(byAdding: .day, value: offset, to: firstDay).map {
+                GameActivityDay(date: $0, duration: durationByDay[$0, default: 0])
+            }
+        }
+    }
+}
+
 nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var provider: GameLibraryProvider
@@ -447,8 +541,14 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var storeRating: StoreRating?
     var supportsWindows: Bool?
     var supportsNativeMacOS: Bool?
+    /// Time reported by the store provider. It deliberately excludes Boreal's
+    /// local timer so a later provider sync cannot double-count a session.
     var playtimeMinutes: Int = 0
     var lastPlayed: Date?
+    /// Sessions measured from the managed Wine/GPTK environment rather than
+    /// imported from a store. Optional keeps older library files decodable.
+    var borealPlaytimeSeconds: TimeInterval?
+    var playSessions: [GamePlaySession]?
     var isInstalled = false
     var installPath: String?
     var installedPlatform: StoreGameInstallationPlatform?
@@ -461,6 +561,37 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
         if let storageBytes, storageBytes > 0 { return storageBytes }
         if let installedBytes = sizeEstimate?.installedBytes, installedBytes > 0 { return installedBytes }
         return nil
+    }
+
+    var measuredPlaytime: TimeInterval { max(0, borealPlaytimeSeconds ?? 0) }
+    var resolvedPlaySessions: [GamePlaySession] {
+        (playSessions ?? []).sorted { $0.startedAt > $1.startedAt }
+    }
+    var completedPlaySessions: [GamePlaySession] { resolvedPlaySessions.filter { !$0.isActive } }
+    var activePlaySession: GamePlaySession? { resolvedPlaySessions.first(where: \.isActive) }
+
+    mutating func appendPlaySession(_ session: GamePlaySession) {
+        var recordedSessions = playSessions ?? []
+        recordedSessions.append(session)
+        playSessions = recordedSessions
+    }
+
+    mutating func updatePlaySession(_ session: GamePlaySession) {
+        guard var recordedSessions = playSessions,
+              let index = recordedSessions.firstIndex(where: { $0.id == session.id }) else { return }
+        recordedSessions[index] = session
+        playSessions = recordedSessions
+        borealPlaytimeSeconds = recordedSessions.reduce(0) { $0 + $1.duration }
+        if let endedAt = session.endedAt { lastPlayed = endedAt }
+    }
+
+    mutating func preserveMeasuredActivity(from existing: StoreLibraryGame) {
+        borealPlaytimeSeconds = existing.borealPlaytimeSeconds
+        playSessions = existing.playSessions
+        playtimeMinutes = max(playtimeMinutes, existing.playtimeMinutes)
+        if let existingLastPlayed = existing.lastPlayed {
+            lastPlayed = max(lastPlayed ?? .distantPast, existingLastPlayed)
+        }
     }
 }
 

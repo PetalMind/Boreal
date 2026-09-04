@@ -32,6 +32,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var retinaModeEnabled: Bool = true
     var fullscreenFSREnabled: Bool = false
     var debugLoggingEnabled: Bool = false
+    var forceXInput: Bool = true
 
     init(name: String, windowsVersion: String = "win11", architecture: String = "win64", profile: WineCompatibilityProfile? = nil) {
         self.name = name
@@ -44,11 +45,12 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.retinaModeEnabled = profile?.retinaModeEnabled ?? true
         self.fullscreenFSREnabled = profile?.fullscreenFSREnabled ?? false
         self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
+        self.forceXInput = profile?.forceXInput ?? true
     }
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, graphicsBackend, graphicsAPI, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled
+        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput
     }
 
     init(from decoder: Decoder) throws {
@@ -63,6 +65,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
+        forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
     }
 }
 
@@ -102,6 +105,9 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
     case configurationFailed(exitCode: Int32, stderrLog: URL)
     case validationFailed(EnvironmentValidation)
     case runtimeMismatch
+    case dependencyInstallerMissing(URL)
+    case dependencyInstallerDownloadFailed
+    case dependencyInstallationFailed(dependency: RuntimeDependency, exitCode: Int32, stderrLog: URL)
 
     var errorDescription: String? {
         switch self {
@@ -109,6 +115,9 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
         case .configurationFailed(let code, _): "Wine couldn’t apply the compatibility profile (exit code \(code))."
         case .validationFailed: "The Windows environment is incomplete."
         case .runtimeMismatch: "The selected runtime does not match this environment."
+        case .dependencyInstallerMissing: "This runtime package does not contain Boreal's dependency installer."
+        case .dependencyInstallerDownloadFailed: "Boreal could not download its dependency installer from the official source."
+        case .dependencyInstallationFailed(let dependency, let code, _): "\(dependency.displayName) could not be installed (exit code \(code))."
         }
     }
 }
@@ -118,6 +127,8 @@ nonisolated protocol EnvironmentManaging: Sendable {
     func initialize(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func validate(_ environment: ManagedBorealEnvironment) async throws -> EnvironmentValidation
+    func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus]
+    func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics?
     func remove(_ environment: ManagedBorealEnvironment) async throws
 }
@@ -125,4 +136,6 @@ nonisolated protocol EnvironmentManaging: Sendable {
 extension EnvironmentManaging {
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { }
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics? { nil }
+    func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] { [] }
+    func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { throw CocoaError(.featureUnsupported) }
 }

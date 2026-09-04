@@ -1,11 +1,19 @@
+import AppKit
 import SwiftUI
 
 struct WineCompatibilityConfigurator: View {
+    private struct DisplayChoice: Identifiable {
+        let id: UInt32
+        let label: String
+    }
+
     @Environment(BorealStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let application: WindowsApplication
     @State private var profile: WineCompatibilityProfile
     @State private var detectedGraphicsAPI: GraphicsAPI?
+    @State private var controllerManager = ControllerManager.shared
+    @State private var showsControllerMapping = false
 
     init(application: WindowsApplication) {
         self.application = application
@@ -121,6 +129,57 @@ struct WineCompatibilityConfigurator: View {
                     Toggle("MSync synchronization", isOn: $profile.msyncEnabled)
                     Toggle("Retina rendering", isOn: $profile.retinaModeEnabled)
                     Toggle("Fullscreen FSR scaling", isOn: $profile.fullscreenFSREnabled)
+                    Toggle("Overlay-compatible fullscreen", isOn: $profile.overlayCompatibleFullscreen)
+                    Text("Runs this game inside a borderless Wine desktop sized to the main display, preventing exclusive fullscreen from covering Boreal’s overlay.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Overlay display", selection: $profile.overlayDisplayID) {
+                        Text("Automatic (main display)").tag(Optional<UInt32>.none)
+                        ForEach(availableDisplays) { display in
+                            Text(display.label).tag(Optional(display.id))
+                        }
+                    }
+                    .disabled(!profile.overlayCompatibleFullscreen)
+                    Text("Choose the monitor where the game should appear. Physical pixel dimensions are used so Retina and ultrawide displays keep a 1:1 Wine desktop size.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Controller") {
+                    if let controller = controllerManager.controllers.first {
+                        HStack(spacing: 12) {
+                            Image(systemName: controller.supportsExtendedProfile ? "gamecontroller.fill" : "gamecontroller")
+                                .font(.title2)
+                                .foregroundStyle(controller.supportsExtendedProfile ? .green : .red)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(controller.name).fontWeight(.medium)
+                                Text("Connected").font(.caption).foregroundStyle(.green)
+                            }
+                            Spacer()
+                        }
+                        LabeledContent("Mapped as:", value: profile.forceXInput ? "Xbox 360 Controller" : "Native Wine controller")
+                    } else {
+                        HStack(spacing: 12) {
+                            Image(systemName: "gamecontroller")
+                                .font(.title2).foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("No controller detected").fontWeight(.medium)
+                                Text("Disconnected").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    Toggle("Disable Steam Input equivalent", isOn: $profile.disableSteamInputEquivalent)
+                    Text("Disables Boreal's controller-to-keyboard mapping for this game. It does not change Steam's own Steam Input setting.")
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    Toggle("Force XInput", isOn: $profile.forceXInput)
+                    Text("Publishes SDL controllers through WineBus as an Xbox 360-compatible XInput device. Restart the complete Wine session after changing this option.")
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    Button("Controller mapping", systemImage: "gamecontroller") {
+                        showsControllerMapping = true
+                    }
                 }
 
                 Section("Advanced") {
@@ -150,6 +209,10 @@ struct WineCompatibilityConfigurator: View {
         .frame(width: 620, height: 820)
         .onAppear {
             profile = store.compatibilityProfile(for: application)
+            controllerManager.start()
+        }
+        .sheet(isPresented: $showsControllerMapping) {
+            NavigationStack { ControllerSettingsView() }
         }
         .task(id: application.executablePath) {
             guard graphicsProfile == nil,
@@ -195,6 +258,15 @@ struct WineCompatibilityConfigurator: View {
 
     private var usesSharedSteamEnvironment: Bool {
         application.usesSharedSteamEnvironment
+    }
+
+    private var availableDisplays: [DisplayChoice] {
+        NSScreen.screens.enumerated().compactMap { index, screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            let id = UInt32(number.uint32Value)
+            let pixelSize = screen.convertRectToBacking(screen.frame).size
+            return DisplayChoice(id: id, label: "Display \(index + 1) — \(Int(pixelSize.width))×\(Int(pixelSize.height))")
+        }
     }
 
     private var graphicsProfile: GameGraphicsProfile? {

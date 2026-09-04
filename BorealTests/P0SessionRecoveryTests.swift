@@ -72,12 +72,31 @@ struct P0SessionRecoveryTests {
             installerPath: "",
             environmentID: environmentID,
             status: .running,
-            compatibility: .unknown
+            compatibility: .unknown,
+            storeProvider: .gog,
+            storeExternalID: "recovery-game"
+        )
+        let sessionStart = Date().addingTimeInterval(-120)
+        let game = StoreLibraryGame(
+            provider: .gog,
+            externalID: "recovery-game",
+            name: "Recovery App",
+            borealPlaytimeSeconds: 30,
+            playSessions: [GamePlaySession(
+                startedAt: sessionStart,
+                endedAt: nil,
+                measuredDurationSeconds: 30,
+                lastCheckpointAt: sessionStart.addingTimeInterval(30)
+            )]
         )
         try FileManager.default.createDirectory(at: managed.prefixURL, withIntermediateDirectories: true)
         try Data().write(to: URL(fileURLWithPath: application.executablePath))
         let storageURL = root.appending(path: "library.json")
-        try JSONEncoder().encode(TestPersistedState(applications: [application], environments: [environment])).write(to: storageURL)
+        try JSONEncoder().encode(TestPersistedState(
+            applications: [application],
+            environments: [environment],
+            storeGames: [game]
+        )).write(to: storageURL)
 
         let runner = RecoveryProcessRunner()
         let services = BorealServices(
@@ -98,6 +117,10 @@ struct P0SessionRecoveryTests {
         store.forceQuit(applicationID)
         try await waitUntil { store.application(id: applicationID)?.status == .ready }
         #expect(await runner.forceQuitCount == 1)
+        let recoveredGame = try #require(store.storeGames.first)
+        #expect(recoveredGame.activePlaySession == nil)
+        #expect(recoveredGame.completedPlaySessions.count == 1)
+        #expect(recoveredGame.measuredPlaytime >= 30)
     }
 
     @MainActor

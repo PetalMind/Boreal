@@ -2,7 +2,9 @@ import Foundation
 
 actor EnvironmentManager: EnvironmentManaging {
     private let environmentsURL: URL
+    private let dependencyToolsURL: URL
     private let processExecutor: any ProcessExecuting
+    private let session: URLSession
     private let fileManager = FileManager.default
     private let graphicsBackendManager = GraphicsBackendManager()
     private let prefixInitializationAttempts: Int
@@ -11,11 +13,14 @@ actor EnvironmentManager: EnvironmentManaging {
     init(
         applicationSupportURL: URL,
         processExecutor: any ProcessExecuting,
+        session: URLSession = .shared,
         prefixInitializationAttempts: Int = 120,
         prefixInitializationInterval: Duration = .milliseconds(250)
     ) {
         self.environmentsURL = applicationSupportURL.appending(path: "Environments", directoryHint: .isDirectory)
+        self.dependencyToolsURL = applicationSupportURL.appending(path: "Tools/Winetricks/2026-09-04", directoryHint: .isDirectory)
         self.processExecutor = processExecutor
+        self.session = session
         self.prefixInitializationAttempts = max(prefixInitializationAttempts, 1)
         self.prefixInitializationInterval = prefixInitializationInterval
     }
@@ -144,7 +149,7 @@ actor EnvironmentManager: EnvironmentManaging {
         // controller is published through HID, DirectInput and XInput.
         for (name, value) in [
             ("Enable SDL", "1"),
-            ("Map Controllers", "1"),
+            ("Map Controllers", environment.configuration.forceXInput ? "1" : "0"),
             ("Split Controllers", "0"),
             ("DisableHidraw", "0")
         ] {
@@ -223,6 +228,61 @@ actor EnvironmentManager: EnvironmentManaging {
         let missing = missingPrefixPaths(at: environment.prefixURL)
         let stored = try? load(at: environment.rootURL)
         return EnvironmentValidation(missingPaths: missing, state: stored?.state ?? environment.state)
+    }
+
+    func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] {
+        RuntimeDependency.allCases.map { dependency in
+            let marker = environment.prefixURL.appending(path: ".boreal-dependencies/\(dependency.rawValue)")
+            let directories = ["system32", "syswow64"].map { environment.prefixURL.appending(path: "drive_c/windows/\($0)") }
+            let hasLibraries = dependency.detectionLibraries.contains { library in
+                directories.contains { $0.appending(path: library).path.isEmpty == false && fileManager.fileExists(atPath: $0.appending(path: library).path) }
+            }
+            return RuntimeDependencyStatus(dependency: dependency, state: (hasLibraries || fileManager.fileExists(atPath: marker.path)) ? .installed : .missing, detail: nil)
+        }
+    }
+
+    func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
+        // InstalledRuntime persists the resolved executable URLs, while the
+        // package support directory has a stable location in every runtime.
+        let packagedInstaller = runtime.rootURL.appending(path: "Support/winetricks")
+        let winetricks = fileManager.isExecutableFile(atPath: packagedInstaller.path)
+            ? packagedInstaller
+            : try await ensureDependencyInstaller()
+        let request = ProcessLaunchRequest(
+            executable: winetricks,
+            arguments: ["--unattended", dependency.winetricksVerb],
+            environment: wineEnvironment(for: environment, runtime: runtime),
+            currentDirectory: environment.rootURL,
+            stdoutLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue).stdout.log"),
+            stderrLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue).stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 else {
+            throw EnvironmentManagerError.dependencyInstallationFailed(dependency: dependency, exitCode: result.exitCode, stderrLog: result.stderrLog)
+        }
+        let markers = environment.prefixURL.appending(path: ".boreal-dependencies", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: markers, withIntermediateDirectories: true)
+        try Data("\(dependency.winetricksVerb)\n".utf8).write(to: markers.appending(path: dependency.rawValue), options: .atomic)
+    }
+
+    private func ensureDependencyInstaller() async throws -> URL {
+        let installer = dependencyToolsURL.appending(path: "winetricks")
+        if fileManager.isExecutableFile(atPath: installer.path) { return installer }
+        guard let url = URL(string: "https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks") else {
+            throw EnvironmentManagerError.dependencyInstallerMissing(installer)
+        }
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              data.count > 10_000, data.count < 2_000_000,
+              data.starts(with: Data("#!/".utf8)) else {
+            throw EnvironmentManagerError.dependencyInstallerDownloadFailed
+        }
+        try fileManager.createDirectory(at: dependencyToolsURL, withIntermediateDirectories: true)
+        try data.write(to: installer, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: installer.path)
+        return installer
     }
 
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics? {
@@ -308,6 +368,8 @@ actor EnvironmentManager: EnvironmentManaging {
         values.removeValue(forKey: "WINEDLLOVERRIDES")
         values["WINEDEBUG"] = values["WINEDEBUG"] ?? "-all"
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")
+        values["WINE"] = runtime.wineExecutable.path
+        values["WINE64"] = runtime.wineExecutable.path
         return values
     }
 

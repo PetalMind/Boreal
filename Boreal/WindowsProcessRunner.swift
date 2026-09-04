@@ -1,4 +1,29 @@
+import CoreGraphics
 import Foundation
+
+nonisolated enum WineLaunchArguments {
+    static func make(
+        for plan: WindowsLaunchPlan,
+        environmentID: UUID,
+        displayWidth: Int,
+        displayHeight: Int
+    ) -> [String] {
+        if plan.executable.pathExtension.lowercased() == "msi" {
+            return ["msiexec", "/i", plan.executable.path] + plan.arguments
+        }
+        guard plan.overlayCompatibleFullscreen else {
+            return [plan.executable.path] + plan.arguments
+        }
+        let width = max(displayWidth, 1)
+        let height = max(displayHeight, 1)
+        let desktopName = "Boreal-\(environmentID.uuidString.prefix(6))"
+        return [
+            "explorer",
+            "/desktop=\(desktopName),\(width)x\(height)",
+            plan.executable.path,
+        ] + plan.arguments
+    }
+}
 
 actor WindowsProcessRunner: WindowsProcessRunning {
     private let processExecutor: any ProcessExecuting
@@ -23,12 +48,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     func run(plan: WindowsLaunchPlan, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> WindowsProcessSession {
         let sessionID = UUID()
         let stem = "launch-\(ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-"))-\(sessionID.uuidString.prefix(8))"
-        let wineArguments: [String]
-        if plan.executable.pathExtension.lowercased() == "msi" {
-            wineArguments = ["msiexec", "/i", plan.executable.path] + plan.arguments
-        } else {
-            wineArguments = [plan.executable.path] + plan.arguments
-        }
+        let displayID = plan.overlayDisplayID.flatMap {
+            let candidate = CGDirectDisplayID($0)
+            let bounds = CGDisplayBounds(candidate)
+            return CGDisplayIsOnline(candidate) != 0 && !bounds.isEmpty ? candidate : nil
+        } ?? CGMainDisplayID()
+        let wineArguments = WineLaunchArguments.make(
+            for: plan,
+            environmentID: environment.id,
+            displayWidth: CGDisplayPixelsWide(displayID),
+            displayHeight: CGDisplayPixelsHigh(displayID)
+        )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
         // The managed environment always owns these values. Provider metadata

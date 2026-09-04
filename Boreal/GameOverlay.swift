@@ -269,7 +269,13 @@ final class GameOverlayController {
         panel.sharingType = .none
         panel.canBecomeVisibleWithoutLogin = false
         panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.collectionBehavior = [
+            .canJoinAllApplications,
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .stationary,
+            .ignoresCycle,
+        ]
         panel.setAccessibilityLabel("Boreal game performance overlay")
         return panel
     }
@@ -299,9 +305,10 @@ final class GameOverlayController {
         panel.setFrameOrigin(origin)
     }
 
-    /// Finds the display occupied by the active game's largest layer-0 window.
+    /// Finds the display occupied by the active game's largest application window.
     /// Quartz window bounds and display bounds use the same top-left coordinate
-    /// system, so this also works for borderless and exclusive fullscreen windows.
+    /// system. Wine can place a fullscreen game above layer 0 (Darksiders II uses
+    /// layer 21), so accept application layers below the system shielding level.
     private func updatePreferredGameScreen(for application: NSRunningApplication?) {
         guard let application,
               application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
@@ -309,7 +316,9 @@ final class GameOverlayController {
 
         let candidates = windows.compactMap { info -> CGRect? in
             guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == application.processIdentifier,
-                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue,
+                  layer >= 0,
+                  layer < Int(CGShieldingWindowLevel()),
                   ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
                   let bounds = info[kCGWindowBounds as String] as? [String: Any],
                   let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),

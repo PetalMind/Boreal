@@ -24,6 +24,8 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
     var arguments: [String]
     var environment: [String: String]
     var workingDirectory: URL
+    var overlayCompatibleFullscreen = false
+    var overlayDisplayID: UInt32? = nil
 }
 
 nonisolated struct ProcessLaunchRequest: Sendable {
