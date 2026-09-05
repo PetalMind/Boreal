@@ -131,6 +131,9 @@ nonisolated struct DetectedController: Identifiable, Hashable, Sendable {
     let name: String
     let category: String
     let supportsExtendedProfile: Bool
+    let batteryLevel: Float?
+    let playerNumber: Int?
+    let connectionName: String
 
     var family: ControllerFamily {
         let descriptor = "\(name) \(category)".lowercased()

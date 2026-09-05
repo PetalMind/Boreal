@@ -30,6 +30,42 @@ nonisolated enum RuntimeEngine: String, Codable, Sendable, Hashable {
     var graphicsName: String { self == .gamePortingToolkit ? "D3DMetal" : "WineD3D" }
 }
 
+/// Optional fields mean unverified, never inferred from the Wine/GPTK version.
+nonisolated struct GraphicsBackendCapabilities: Codable, Sendable, Hashable {
+    var metal4: Bool?
+    var hdr: Bool?
+    var upscaling: Bool?
+    var frameGeneration: Bool?
+    var performanceInsights: Bool?
+    var metalHUD: Bool?
+    var gpuCapture: Bool?
+    var metalSystemTrace: Bool?
+}
+
+nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
+    var backend: GraphicsBackend
+    var api: GraphicsAPI
+    var fullscreenFSREnabled: Bool
+
+    func resolvedBackend(runtime: InstalledRuntime) -> GraphicsBackend {
+        GraphicsBackendManager().resolve(backend, graphicsAPI: api, runtime: runtime)
+    }
+
+    func capabilities(runtime: InstalledRuntime) -> GraphicsBackendCapabilities {
+        let resolved = resolvedBackend(runtime: runtime)
+        var result = runtime.features?.graphicsCapabilities?[resolved.rawValue] ?? GraphicsBackendCapabilities()
+        // Existing D3DMetal HUD integration is known independently of GPTK version.
+        if result.metalHUD == nil, resolved == .d3dMetal, runtime.features?.d3dmetal == true {
+            result.metalHUD = true
+        }
+        return result
+    }
+
+    var environment: [String: String] {
+        ["WINE_FULLSCREEN_FSR": fullscreenFSREnabled ? "1" : "0"]
+    }
+}
+
 nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wow64: Bool
     var wineMono: Bool
@@ -38,9 +74,10 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var dxmt: Bool
     var dxvk: Bool = false
     var vkd3d: Bool = false
+    var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, vkd3d
+        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, vkd3d, graphicsCapabilities
     }
 
     init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, vkd3d: Bool = false) {
@@ -62,6 +99,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
         dxvk = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
         vkd3d = try values.decodeIfPresent(Bool.self, forKey: .vkd3d) ?? false
+        graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
     }
 }
 

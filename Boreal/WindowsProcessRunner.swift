@@ -206,7 +206,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         }
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
-        values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
+        values.merge(environment.configuration.graphicsConfiguration.environment) { _, configured in configured }
         // winebus can use its bundled SDL backend to expose macOS controllers
         // as Windows HID/XInput devices. These also keep hot-plug events alive
         // after the Wine window becomes the foreground application.
@@ -220,7 +220,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // recent FPS record out of the sampler's bounded read window.
         let debugChannels = environment.configuration.debugLoggingEnabled ? "+all" : (values["WINEDEBUG"] ?? "-all")
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
-        if runtime.resolvedEngine == .gamePortingToolkit {
+        if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD == true {
             // D3DMetal does not pass its presents through Wine's +fps channel.
             // Ask Metal HUD to emit per-frame present intervals to the launch
             // console instead. The native HUD stays transparent because Boreal

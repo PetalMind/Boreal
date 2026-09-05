@@ -55,7 +55,9 @@ nonisolated enum WinePrefixArchitecture: String, Codable, CaseIterable, Sendable
     var displayName: String { self == .win64 ? "64-bit (Win64)" : "32-bit (Win32)" }
 }
 
-nonisolated enum WineGraphicsBackend: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+nonisolated typealias WineGraphicsBackend = GraphicsBackend
+
+nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case automatic
     case d3dMetal
     case dxmt
@@ -334,6 +336,10 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
         (storeProvider == .steam && !usesStoreMetadataOnly) || isSteamRuntimeHost
     }
     var resolvedAuxiliaryExecutables: [AuxiliaryExecutable] { auxiliaryExecutables ?? [] }
+    var storeReference: StoreReference? {
+        guard let storeProvider, let storeExternalID, !storeExternalID.isEmpty else { return nil }
+        return StoreReference(provider: storeProvider, externalID: storeExternalID)
+    }
     var resolvedCompatibilityProfile: WineCompatibilityProfile {
         compatibilityProfile ?? WineCompatibilityProfile(
             windowsVersion: WineWindowsVersion.allCases.first(where: { $0.displayName == windowsVersion }) ?? .windows11,
@@ -556,6 +562,10 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var sizeEstimate: StoreGameSizeEstimate?
     var compatibility: CommunityCompatibility?
     var currentPlayerCount: Int?
+
+    var storeReference: StoreReference {
+        StoreReference(provider: provider, externalID: externalID)
+    }
 
     var displayedStorageBytes: Int64? {
         if let storageBytes, storageBytes > 0 { return storageBytes }
@@ -945,7 +955,7 @@ nonisolated enum GameStorage {
 }
 
 enum SidebarDestination: Hashable {
-    case library, favorites, accounts, environments, downloads, controllers
+    case library, discovery, favorites, accounts, environments, downloads, controllers
 }
 
 enum LibraryRoute: Hashable {

@@ -363,7 +363,7 @@ actor EnvironmentManager: EnvironmentManaging {
         }
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
-        values["WINE_FULLSCREEN_FSR"] = environment.configuration.fullscreenFSREnabled ? "1" : "0"
+        values.merge(environment.configuration.graphicsConfiguration.environment) { _, configured in configured }
         values = ControllerWineSupport.applyingEnvironment(to: values)
         values.removeValue(forKey: "WINEDLLOVERRIDES")
         values["WINEDEBUG"] = values["WINEDEBUG"] ?? "-all"

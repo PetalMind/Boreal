@@ -11,6 +11,60 @@ import Testing
 
 struct BorealTests {
 
+    @Test func layeredStorageSeparatesCatalogFromTransientAndInstallationState() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-layered-storage-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let layout = BorealStorageLayout(applicationSupportURL: root)
+        let executable = layout.gamesURL.appending(path: "GOG/12345/Game.exe")
+        let environmentID = UUID()
+        let application = WindowsApplication(
+            name: "Layered Game",
+            publisher: "Boreal",
+            executablePath: executable.path,
+            installerPath: "/tmp/installer.exe",
+            environmentID: environmentID,
+            status: .running,
+            lastOpened: .now,
+            lastResult: "Running",
+            storeProvider: .gog,
+            storeExternalID: "12345"
+        )
+        let game = StoreLibraryGame(
+            provider: .gog,
+            externalID: "12345",
+            name: "Layered Game",
+            playtimeMinutes: 15,
+            borealPlaytimeSeconds: 90,
+            playSessions: [GamePlaySession(startedAt: .now, endedAt: nil)]
+        )
+
+        let snapshot = BorealStorageSnapshot(
+            applications: [application],
+            storeGames: [game],
+            favoriteKeys: ["GOG::12345"],
+            storeDownloads: [:],
+            lastAutomaticLibraryRefreshAt: .now,
+            layout: layout
+        )
+        let data = try JSONEncoder().encode(snapshot.library)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let applicationRecord = try #require(object["applications"] as? [[String: Any]])[0]
+        let gameRecord = try #require(object["games"] as? [[String: Any]])[0]
+
+        #expect(object["schemaVersion"] as? Int == BorealStorageSchema.current)
+        #expect(applicationRecord["status"] == nil)
+        #expect(applicationRecord["lastOpened"] == nil)
+        #expect(applicationRecord["lastResult"] == nil)
+        #expect(applicationRecord["installerPath"] as? String == "")
+        #expect(gameRecord["playSessions"] == nil)
+        #expect(gameRecord["isInstalled"] == nil)
+        #expect(gameRecord["installPath"] == nil)
+        #expect(snapshot.library.installations.first?.location == .managed(relativePath: "GOG/12345"))
+        #expect(snapshot.sessions.records.first?.sessions.count == 1)
+        #expect(snapshot.favorites.keys == ["GOG::12345"])
+        #expect(snapshot.appState.lastAutomaticLibraryRefreshAt != nil)
+    }
+
     @Test func storeGameRecordsMeasuredPlaySessionsAndKeepsHistoryNewestFirst() {
         let firstStart = Date(timeIntervalSince1970: 1_700_000_000)
         let secondStart = firstStart.addingTimeInterval(3_600)

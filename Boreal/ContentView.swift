@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var selection: SidebarDestination? = .library
     @State private var libraryPath: [LibraryRoute] = []
     @State private var searchText = ""
+    @State private var discoverySearchText = ""
     @AppStorage("libraryStyle") private var libraryStyle = LibraryStyle.grid
     @AppStorage("librarySort") private var librarySort = LibrarySort.nameAscending
     @AppStorage("libraryGrouping") private var libraryGrouping = LibraryGrouping.source
@@ -191,6 +192,21 @@ struct ContentView: View {
         List(selection: sidebarSelection) {
             Section {
                 Button {
+                    showDiscovery()
+                } label: {
+                    BorealSidebarRow(
+                        title: "Discovery",
+                        subtitle: "Find games for your Mac",
+                        symbol: "sparkles",
+                        tint: .purple,
+                        count: store.discoveryCatalog?.trackedCount,
+                        isSelected: selection == .discovery
+                    )
+                }
+                .buttonStyle(.plain)
+                .tag(SidebarDestination.discovery)
+                .accessibilityAddTraits(selection == .discovery ? .isSelected : [])
+                Button {
                     showLibrary()
                     librarySourceFilters = ""
                     libraryAvailabilityFilters = ""
@@ -334,6 +350,9 @@ struct ContentView: View {
 
     @ViewBuilder private var destinationView: some View {
         switch selection ?? .library {
+        case .discovery:
+            DiscoveryView(searchText: $discoverySearchText)
+                .searchable(text: $discoverySearchText, placement: .toolbar, prompt: "Search Discovery")
         case .library, .favorites:
             LibraryView(
                 searchText: $searchText,
@@ -429,6 +448,7 @@ struct ContentView: View {
     private var title: String {
         switch selection ?? .library {
         case .library: "Library"
+        case .discovery: "Discovery"
         case .favorites: "Favorites"
         case .accounts: "Accounts"
         case .environments: "Environments"
@@ -483,6 +503,12 @@ struct ContentView: View {
         if let style { libraryStyle = style }
         selection = .library
         libraryPath = route.map { [$0] } ?? []
+    }
+
+    private func showDiscovery() {
+        selection = .discovery
+        libraryPath.removeAll()
+        discoverySearchText = ""
     }
 
     private func showLibrary(source: LibrarySourceFilter) {

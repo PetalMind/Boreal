@@ -11,6 +11,7 @@ nonisolated struct BorealServices: Sendable {
     let gogLibrary: any GOGLibraryProviding
     let storeProviders: GameStoreProviderRegistry
     let communityCompatibility: any CommunityCompatibilityLoading
+    let discoveryCatalog: any DiscoveryCatalogLoading
 
     init(
         runtimeManager: any RuntimeManaging,
@@ -22,7 +23,8 @@ nonisolated struct BorealServices: Sendable {
         epicLibrary: any EpicLibraryProviding,
         gogLibrary: any GOGLibraryProviding,
         storeProviders: GameStoreProviderRegistry? = nil,
-        communityCompatibility: any CommunityCompatibilityLoading = ProtonStoreCompatibilityService()
+        communityCompatibility: any CommunityCompatibilityLoading = ProtonStoreCompatibilityService(),
+        discoveryCatalog: any DiscoveryCatalogLoading = AppleGamingWikiDiscoveryService()
     ) {
         self.runtimeManager = runtimeManager
         self.environmentManager = environmentManager
@@ -38,6 +40,7 @@ nonisolated struct BorealServices: Sendable {
             GOGGameStoreProvider(service: gogLibrary),
         ])
         self.communityCompatibility = communityCompatibility
+        self.discoveryCatalog = discoveryCatalog
     }
 
     @MainActor static func live(applicationSupportURL: URL) -> BorealServices {
@@ -74,7 +77,8 @@ nonisolated struct BorealServices: Sendable {
             steamWindows: SteamWindowsService(applicationSupportURL: applicationSupportURL, installer: installer),
             epicLibrary: LegendaryEpicService(applicationSupportURL: applicationSupportURL),
             gogLibrary: GOGService(applicationSupportURL: applicationSupportURL),
-            communityCompatibility: ProtonStoreCompatibilityService()
+            communityCompatibility: ProtonStoreCompatibilityService(),
+            discoveryCatalog: AppleGamingWikiDiscoveryService(applicationSupportURL: applicationSupportURL)
         )
     }
 }

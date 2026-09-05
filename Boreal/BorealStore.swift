@@ -57,10 +57,16 @@ final class BorealStore {
     var runtimeOperationDetail: String?
     var runtimeComponentUpdates: [RuntimeComponentUpdate] = []
     var runtimeComponentUpdateError: String?
+    var discoveryCatalog: AppleGamingWikiCatalog?
+    var discoveryState: AppleGamingWikiDiscoveryState = .idle
+    var discoveryMetadata: [String: DiscoveryGameMetadata] = [:]
     var environmentDependencyStatuses: [UUID: [RuntimeDependencyStatus]] = [:]
     var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
     var diskStorageOperationIDs: Set<UUID> = []
     private let storageURL: URL
+    private let storageLayout: BorealStorageLayout
+    private let libraryRepository: LibraryRepository
+    private let usesLayeredStorage: Bool
     private let services: BorealServices
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
@@ -85,12 +91,20 @@ final class BorealStore {
     private var lastAutomaticLibraryRefreshAt: Date?
     private var isRunningAutomaticLibraryRefresh = false
     private var isEnrichingInstalledApplicationMetadata = false
+    private var discoveryLoadTask: Task<Void, Never>?
+    private var discoveryMetadataLoads: Set<String> = []
+    private var unavailableDiscoveryMetadata: Set<String> = []
 
     nonisolated static let automaticLibraryRefreshInterval: TimeInterval = 8 * 60 * 60
 
     init(storageURL: URL? = nil, services: BorealServices? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        self.storageURL = storageURL ?? base.appending(path: "Boreal/library.json")
+        let supportRoot = storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal", directoryHint: .isDirectory)
+        let layout = BorealStorageLayout(applicationSupportURL: supportRoot)
+        self.storageLayout = layout
+        self.storageURL = storageURL ?? layout.libraryURL
+        self.libraryRepository = LibraryRepository(layout: layout)
+        self.usesLayeredStorage = storageURL == nil
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
         load()
         var didNormalizeApplicationState = false
@@ -154,6 +168,66 @@ final class BorealStore {
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
+
+    func loadDiscoveryCatalog() {
+        guard discoveryState != .loading else { return }
+        discoveryState = .loading
+        discoveryLoadTask?.cancel()
+        discoveryLoadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: false)
+                guard !Task.isCancelled else { return }
+                discoveryCatalog = catalog
+                discoveryState = .loaded
+            } catch {
+                guard !Task.isCancelled else { return }
+                discoveryState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func refreshDiscoveryCatalog() {
+        guard discoveryState != .loading else { return }
+        discoveryState = .loading
+        discoveryLoadTask?.cancel()
+        discoveryLoadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: true)
+                guard !Task.isCancelled else { return }
+                discoveryCatalog = catalog
+                discoveryState = .loaded
+            } catch {
+                guard !Task.isCancelled else { return }
+                discoveryState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func loadDiscoveryMetadata(for game: AppleGamingWikiGame) {
+        guard discoveryMetadata[game.id] == nil,
+              !unavailableDiscoveryMetadata.contains(game.id),
+              discoveryMetadataLoads.insert(game.id).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let metadata = await services.discoveryCatalog.metadata(for: game, forceRefresh: false)
+            discoveryMetadataLoads.remove(game.id)
+            if let metadata {
+                discoveryMetadata[game.id] = metadata
+            } else {
+                unavailableDiscoveryMetadata.insert(game.id)
+            }
+        }
+    }
+
+    func isDiscoveryMetadataLoading(for game: AppleGamingWikiGame) -> Bool {
+        discoveryMetadataLoads.contains(game.id)
+    }
+
+    func isDiscoveryMetadataUnavailable(for game: AppleGamingWikiGame) -> Bool {
+        unavailableDiscoveryMetadata.contains(game.id)
+    }
     func activePlaySessionStart(for game: StoreLibraryGame) -> Date? {
         guard let application = linkedApplication(for: game), activePlaySessions[application.id] != nil else { return nil }
         return storeGames.first(where: {
@@ -1244,6 +1318,7 @@ final class BorealStore {
         if case .connected = gogConnectionState { providers.append(.gog) }
 
         for provider in providers {
+            guard UserDefaults.standard.object(forKey: "automaticLibrarySync." + provider.rawValue) as? Bool != false else { continue }
             await waitForLibrarySyncToFinish()
             guard !Task.isCancelled else { return }
             syncLibrary(provider)
@@ -2163,17 +2238,42 @@ final class BorealStore {
     }
 
     private func load() {
-        guard let originalData = try? Data(contentsOf: storageURL),
+        if usesLayeredStorage, let layered = BorealStorageLoader.loadLayered(from: storageLayout) {
+            applications = layered.applications
+            environments = layered.environments
+            let persistedGames = layered.storeGames
+            storeGames = persistedGames.filter { $0.provider != .gog }
+                + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
+            storeDownloadRecords = layered.storeDownloads
+            favoriteKeys = layered.favoriteKeys
+            lastAutomaticLibraryRefreshAt = layered.lastAutomaticLibraryRefreshAt
+            recoverInterruptedDownloads()
+            storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if !storeDownloadRecords.isEmpty { save() }
+            return
+        }
+
+        let sourceURL = usesLayeredStorage ? storageLayout.legacyLibraryURL : storageURL
+        guard let originalData = try? Data(contentsOf: sourceURL),
               let data = Self.removingNonProtonCompatibility(from: originalData),
               let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
         applications = state.applications
         environments = state.environments
+        if usesLayeredStorage {
+            BorealStorageLoader.migrateLegacyEnvironments(state.environments, to: storageLayout)
+        }
         let persistedGames = state.storeGames ?? []
         storeGames = persistedGames.filter { $0.provider != .gog }
             + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
         storeDownloadRecords = state.storeDownloads ?? [:]
         favoriteKeys = Set(state.favoriteKeys ?? [])
         lastAutomaticLibraryRefreshAt = state.lastAutomaticLibraryRefreshAt
+        recoverInterruptedDownloads()
+        storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if usesLayeredStorage || !storeDownloadRecords.isEmpty { save() }
+    }
+
+    private func recoverInterruptedDownloads() {
         for (key, record) in Array(storeDownloadRecords) {
             var recovered = record
             if recovered.status == .downloading { recovered.status = .paused }
@@ -2186,10 +2286,8 @@ final class BorealStore {
                 reason: record.status == .downloading
                     ? "Boreal closed during this download. Resume it when you are ready."
                     : (record.lastError ?? "Paused. Downloaded files were kept.")
-            )
+                )
         }
-        storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        if !storeDownloadRecords.isEmpty { save() }
     }
 
     private nonisolated static func removingNonProtonCompatibility(from data: Data) -> Data? {
@@ -2510,6 +2608,7 @@ final class BorealStore {
             beginPlaySession(appID: id)
             ControllerManager.shared.activate(
                 for: id,
+                profileName: applications[index].name,
                 keyboardMappingEnabled: !profile.disableSteamInputEquivalent
             )
             performanceLogURLs[id] = session.stderrLog
@@ -2651,6 +2750,7 @@ final class BorealStore {
                 beginPlaySession(appID: appID)
                 ControllerManager.shared.activate(
                     for: appID,
+                    profileName: app.name,
                     keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
                 )
                 save()
@@ -2778,6 +2878,26 @@ final class BorealStore {
     }
 
     private func save() {
+        if usesLayeredStorage {
+            let snapshot = BorealStorageSnapshot(
+                applications: applications,
+                storeGames: storeGames,
+                favoriteKeys: favoriteKeys,
+                storeDownloads: storeDownloadRecords,
+                lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
+                layout: storageLayout
+            )
+            Task { [weak self, libraryRepository] in
+                do {
+                    try await libraryRepository.save(snapshot)
+                } catch {
+                    await MainActor.run {
+                        self?.present(error, title: "Boreal couldn’t save your Library", stage: "Saving layered application state")
+                    }
+                }
+            }
+            return
+        }
         do {
             try FileManager.default.createDirectory(at: storageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(PersistedState(

@@ -217,13 +217,16 @@ private enum ControllerSettingsCategory: String, CaseIterable, Identifiable {
 private struct ControllerPreview: View {
     let manager: ControllerManager
     private var family: ControllerFamily { manager.controllers.first?.family ?? .generic }
+    private var controller: DetectedController? { manager.controllers.first }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Live controller").font(.headline)
-                    Text("\(family.rawValue) layout").font(.caption).foregroundStyle(.secondary)
+                    Text(controller.map { "\($0.name) · Connected" } ?? "No controller connected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "rectangle.on.rectangle").foregroundStyle(.cyan)
@@ -232,6 +235,18 @@ private struct ControllerPreview: View {
             Controller2DView(family: family, state: manager.liveState)
                 .frame(height: 300)
                 .padding(.horizontal, 8)
+
+            if let controller {
+                Divider()
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
+                    informationRow("Battery", value: controller.batteryLevel.map {
+                        $0.formatted(.percent.precision(.fractionLength(0)))
+                    } ?? "Unavailable")
+                    informationRow("Connection", value: controller.connectionName)
+                    informationRow("Player", value: controller.playerNumber.map(String.init) ?? "Unavailable")
+                    informationRow("Profile", value: manager.activeProfileName ?? "No active game")
+                }
+            }
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 7) {
                 telemetryRow("Left stick", x: manager.liveState.leftStickX, y: manager.liveState.leftStickY)
@@ -257,6 +272,14 @@ private struct ControllerPreview: View {
             Text("X \(x.formatted(.number.precision(.fractionLength(2))))")
             Text("Y \(y.formatted(.number.precision(.fractionLength(2))))")
         }.font(.caption.monospacedDigit())
+    }
+
+    private func informationRow(_ title: String, value: String) -> some View {
+        GridRow {
+            Text(title).foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
+            Text(value).fontWeight(.medium).gridCellColumns(2)
+        }
+        .font(.caption)
     }
 
     private func triggerRow(_ title: String, value: Float) -> some View {

@@ -34,6 +34,10 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
 
+    var graphicsConfiguration: GraphicsBackendConfiguration {
+        GraphicsBackendConfiguration(backend: graphicsBackend, api: graphicsAPI, fullscreenFSREnabled: fullscreenFSREnabled)
+    }
+
     init(name: String, windowsVersion: String = "win11", architecture: String = "win64", profile: WineCompatibilityProfile? = nil) {
         self.name = name
         self.windowsVersion = profile?.windowsVersion.rawValue ?? windowsVersion
@@ -70,6 +74,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
 }
 
 nonisolated struct ManagedBorealEnvironment: Codable, Identifiable, Sendable, Hashable {
+    var schemaVersion: Int = BorealStorageSchema.current
     let id: UUID
     var configuration: EnvironmentConfiguration
     let runtimeID: String
@@ -77,6 +82,45 @@ nonisolated struct ManagedBorealEnvironment: Codable, Identifiable, Sendable, Ha
     let prefixURL: URL
     let logsURL: URL
     var state: ManagedEnvironmentState
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, configuration, runtimeID, rootURL, prefixURL, logsURL, state
+    }
+
+    init(
+        schemaVersion: Int = BorealStorageSchema.current,
+        id: UUID,
+        configuration: EnvironmentConfiguration,
+        runtimeID: String,
+        rootURL: URL,
+        prefixURL: URL,
+        logsURL: URL,
+        state: ManagedEnvironmentState
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.configuration = configuration
+        self.runtimeID = runtimeID
+        self.rootURL = rootURL
+        self.prefixURL = prefixURL
+        self.logsURL = logsURL
+        self.state = state
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard schemaVersion <= BorealStorageSchema.current else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: values, debugDescription: "Unsupported environment schema version")
+        }
+        id = try values.decode(UUID.self, forKey: .id)
+        configuration = try values.decode(EnvironmentConfiguration.self, forKey: .configuration)
+        runtimeID = try values.decode(String.self, forKey: .runtimeID)
+        rootURL = try values.decode(URL.self, forKey: .rootURL)
+        prefixURL = try values.decode(URL.self, forKey: .prefixURL)
+        logsURL = try values.decode(URL.self, forKey: .logsURL)
+        state = try values.decode(ManagedEnvironmentState.self, forKey: .state)
+    }
 }
 
 nonisolated struct EnvironmentValidation: Sendable, Equatable {

@@ -45,7 +45,10 @@ actor GameMetricsSampler {
             gpuTemperatureCelsius: gpu.temperature,
             frameTimeMilliseconds: framesPerSecond.flatMap { $0 > 0 ? 1_000 / $0 : nil },
             onePercentLowFPS: onePercentLow,
-            thermalState: thermalState
+            thermalState: thermalState,
+            memoryPressure: memoryPressure(),
+            swapUsedBytes: swapUsage(),
+            gpuAllocatedBytes: gpu.allocated
         )
     }
 
@@ -174,19 +177,42 @@ actor GameMetricsSampler {
         }
         guard result == KERN_SUCCESS else { return nil }
         let pageSize = UInt64(vm_kernel_page_size)
-        let usedPages = UInt64(statistics.active_count + statistics.inactive_count + statistics.wire_count + statistics.compressor_page_count)
-        return (usedPages * pageSize, ProcessInfo.processInfo.physicalMemory)
+        let usedPages = UInt64(statistics.active_count) + UInt64(statistics.inactive_count) + UInt64(statistics.wire_count) + UInt64(statistics.compressor_page_count)
+        let reclaimable = UInt64(statistics.external_page_count) + UInt64(statistics.purgeable_count)
+        let used = (usedPages - min(usedPages, reclaimable)) * pageSize
+        return (min(used, ProcessInfo.processInfo.physicalMemory), ProcessInfo.processInfo.physicalMemory)
     }
 
-    private func gpuStatistics() -> (utilization: Double?, temperature: Double?) {
+    private func memoryPressure() -> MemoryPressureLevel? {
+        var value: UInt32 = 0
+        var size = MemoryLayout.size(ofValue: value)
+        guard sysctlbyname("kern.memorystatus_vm_pressure_level", &value, &size, nil, 0) == 0 else { return nil }
+        // This sysctl exports Dispatch flags, not the kernel's internal enum.
+        switch value {
+        case UInt32(DispatchSource.MemoryPressureEvent.normal.rawValue): return .normal
+        case UInt32(DispatchSource.MemoryPressureEvent.warning.rawValue): return .warning
+        case UInt32(DispatchSource.MemoryPressureEvent.critical.rawValue): return .critical
+        default: return nil
+        }
+    }
+
+    private func swapUsage() -> UInt64? {
+        var usage = xsw_usage()
+        var size = MemoryLayout.size(ofValue: usage)
+        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 else { return nil }
+        return usage.xsu_used
+    }
+
+    private func gpuStatistics() -> (utilization: Double?, temperature: Double?, allocated: UInt64?) {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else {
-            return (nil, nil)
+            return (nil, nil, nil)
         }
         defer { IOObjectRelease(iterator) }
 
         var utilization: Double?
         var temperature: Double?
+        var allocated: UInt64?
         var service = IOIteratorNext(iterator)
         while service != 0 {
             defer { IOObjectRelease(service) }
@@ -194,12 +220,16 @@ actor GameMetricsSampler {
             if IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
                let dictionary = properties?.takeRetainedValue() as? [String: Any] {
                 let statistics = dictionary["PerformanceStatistics"] as? [String: Any] ?? dictionary
+                // Driver-reported mapped allocation, shared with RAM; never add it to RAM usage.
+                if let bytes = statistics["Alloc system memory"] as? NSNumber, bytes.doubleValue >= 0 {
+                    allocated = (allocated ?? 0) + bytes.uint64Value
+                }
                 utilization = utilization ?? numericValue(in: statistics, matching: ["Device Utilization %", "GPU Activity(%)", "Renderer Utilization %"])
                 temperature = temperature ?? numericValue(in: statistics, matching: ["Temperature(C)", "GPU Temperature", "Temperature"])
             }
             service = IOIteratorNext(iterator)
         }
-        return (utilization.map { min(max($0, 0), 100) }, normalizedTemperature(temperature))
+        return (utilization.map { min(max($0, 0), 100) }, normalizedTemperature(temperature), allocated)
     }
 
     private func numericValue(in dictionary: [String: Any], matching keys: [String]) -> Double? {

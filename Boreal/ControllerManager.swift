@@ -23,10 +23,16 @@ final class ControllerManager {
     }
 
     private var observers: [NSObjectProtocol] = []
-    private var activeApplications: [UUID: Bool] = [:]
+    private var activeApplications: [UUID: ActiveControllerApplication] = [:]
     private var pressedInputs: [ObjectIdentifier: Set<ControllerInput>] = [:]
     private var repeatTasks: [ObjectIdentifier: [ControllerInput: Task<Void, Never>]] = [:]
     private var isStarted = false
+    private var batteryRefreshTask: Task<Void, Never>?
+
+    var activeProfileName: String? {
+        activeApplications.values.first(where: \.keyboardMappingEnabled)?.profileName
+            ?? activeApplications.values.first?.profileName
+    }
 
     var detectionState: ControllerDetectionState {
         if controllers.contains(where: \.supportsExtendedProfile) { return .ready }
@@ -73,6 +79,13 @@ final class ControllerManager {
         GCController.startWirelessControllerDiscovery {
             Task { @MainActor in ControllerManager.shared.refreshControllers() }
         }
+        batteryRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                self?.refreshControllers()
+            }
+        }
     }
 
     func requestAccessibilityAccess() {
@@ -90,17 +103,22 @@ final class ControllerManager {
 
     func shutdown() {
         activeApplications.removeAll()
+        batteryRefreshTask?.cancel()
+        batteryRefreshTask = nil
         releaseAllInputs()
         GCController.stopWirelessControllerDiscovery()
     }
 
-    func activate(for applicationID: UUID, keyboardMappingEnabled: Bool = true) {
-        activeApplications[applicationID] = keyboardMappingEnabled
+    func activate(for applicationID: UUID, profileName: String, keyboardMappingEnabled: Bool = true) {
+        activeApplications[applicationID] = ActiveControllerApplication(
+            profileName: profileName,
+            keyboardMappingEnabled: keyboardMappingEnabled
+        )
     }
 
     func deactivate(for applicationID: UUID) {
         activeApplications[applicationID] = nil
-        if !activeApplications.values.contains(true) { releaseAllInputs() }
+        if !activeApplications.values.contains(where: \.keyboardMappingEnabled) { releaseAllInputs() }
     }
 
     private func configure(_ controller: GCController) {
@@ -161,7 +179,7 @@ final class ControllerManager {
             }
         }
         released.forEach { stopRepeat($0, controllerID: identifier) }
-        guard isMappingEnabled, activeApplications.values.contains(true) else {
+        guard isMappingEnabled, activeApplications.values.contains(where: \.keyboardMappingEnabled) else {
             pressedInputs[identifier] = current
             return
         }
@@ -215,11 +233,19 @@ final class ControllerManager {
     private func refreshControllers() {
         controllers = GCController.controllers().enumerated().map { index, controller in
             let name = controller.vendorName ?? "Game controller"
+            if controller.playerIndex == .indexUnset {
+                controller.playerIndex = GCControllerPlayerIndex(rawValue: index) ?? .indexUnset
+            }
             return DetectedController(
                 id: "\(name)-\(controller.productCategory)-\(index)",
                 name: name,
                 category: controller.productCategory,
-                supportsExtendedProfile: controller.extendedGamepad != nil
+                supportsExtendedProfile: controller.extendedGamepad != nil,
+                batteryLevel: controller.battery.flatMap { battery in
+                    battery.batteryState == .unknown ? nil : battery.batteryLevel
+                },
+                playerNumber: controller.playerIndex.playerNumber,
+                connectionName: controller.isAttachedToDevice ? "Attached" : "Bluetooth"
             )
         }
         if controllers.isEmpty { liveState = .idle }
@@ -228,5 +254,22 @@ final class ControllerManager {
     private func saveMapping() {
         guard let data = try? JSONEncoder().encode(mapping) else { return }
         UserDefaults.standard.set(data, forKey: "controllerMapping")
+    }
+}
+
+private struct ActiveControllerApplication {
+    let profileName: String
+    let keyboardMappingEnabled: Bool
+}
+
+private extension GCControllerPlayerIndex {
+    var playerNumber: Int? {
+        switch self {
+        case .index1: 1
+        case .index2: 2
+        case .index3: 3
+        case .index4: 4
+        default: nil
+        }
     }
 }

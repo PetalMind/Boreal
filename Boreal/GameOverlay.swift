@@ -20,6 +20,10 @@ nonisolated enum GameOverlayDetailLevel: String, CaseIterable, Sendable {
     case minimal, standard, diagnostic
 }
 
+nonisolated enum MemoryPressureLevel: String, Sendable {
+    case normal = "Normal", warning = "Warning", critical = "Critical"
+}
+
 nonisolated struct GamePerformanceSnapshot: Equatable, Sendable {
     var framesPerSecond: Double?
     var cpuUsage: Double?
@@ -31,6 +35,11 @@ nonisolated struct GamePerformanceSnapshot: Equatable, Sendable {
     var frameTimeMilliseconds: Double?
     var onePercentLowFPS: Double?
     var thermalState: String?
+    var memoryPressure: MemoryPressureLevel?
+    var swapUsedBytes: UInt64?
+    var gpuAllocatedBytes: UInt64?
+
+    var hasMemoryPressure: Bool { memoryPressure == .warning || memoryPressure == .critical }
 
     static let unavailable = GamePerformanceSnapshot()
 }
@@ -294,9 +303,9 @@ final class GameOverlayController {
 
     private func position(_ panel: NSPanel, preferPointerScreen: Bool = false) {
         let size: NSSize = switch configuredDetailLevel {
-        case .minimal: .init(width: 248, height: 190)
-        case .standard: .init(width: 300, height: 366)
-        case .diagnostic: .init(width: 520, height: 720)
+        case .minimal: .init(width: 248, height: 250)
+        case .standard: .init(width: 300, height: 520)
+        case .diagnostic: .init(width: 520, height: 850)
         }
         panel.setContentSize(size)
         let pointer = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
@@ -394,11 +403,27 @@ private struct GameOverlayView: View {
     var body: some View {
         switch model.detailLevel {
         case .minimal:
-            VStack(spacing: 8) { sessionInfo; performance; hideShortcut }
+            VStack(spacing: 8) { sessionInfo; performance; memoryWarning; hideShortcut }
                 .padding(16)
                 .card()
         case .standard: standard
         case .diagnostic: diagnostic
+        }
+    }
+
+    private func bytes(_ value: UInt64?) -> String {
+        value.map { String(format: "%.1f GB", Double($0) / 1_073_741_824) } ?? "—"
+    }
+
+    @ViewBuilder private var memoryWarning: some View {
+        if model.snapshot.hasMemoryPressure {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Memory pressure detected", systemImage: "exclamationmark.triangle.fill")
+                Text("Close memory-heavy applications")
+            }
+            .font(.caption)
+            .foregroundStyle(model.snapshot.memoryPressure == .critical ? .red : .orange)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -407,7 +432,11 @@ private struct GameOverlayView: View {
             sessionInfo; divider; performance; divider
             row("GPU", percent(model.snapshot.gpuUsage), .green)
             row("CPU", percent(model.snapshot.cpuUsage), .cyan)
-            row("Memory", memory, .green)
+            row("Memory", "\(memory) / \(totalMemory)", .green)
+            row("Swap", bytes(model.snapshot.swapUsedBytes), .purple)
+            row("GPU mapped", bytes(model.snapshot.gpuAllocatedBytes), .purple)
+            row("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—", .orange)
+            memoryWarning
             divider; info("display", model.displayResolution); info("square.3.layers.3d", "Metal")
             divider; hideShortcut
         }.padding(16).card()
@@ -424,11 +453,12 @@ private struct GameOverlayView: View {
             }
             divider
             HStack(alignment: .top, spacing: 16) {
-                column("MEMORY", "memorychip", .purple, [("Memory", memory), ("Total", totalMemory)])
+                column("MEMORY", "memorychip", .purple, [("Memory", memory), ("Total", totalMemory), ("Swap", bytes(model.snapshot.swapUsedBytes)), ("GPU mapped", bytes(model.snapshot.gpuAllocatedBytes)), ("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—")])
                 divider
                 column("THERMAL", "thermometer.medium", .orange, [("State", model.snapshot.thermalState ?? "—")])
             }
             divider
+            memoryWarning
             title("waveform.path.ecg", "LIVE HISTORY", .cyan)
             liveChart(
                 title: "FPS",

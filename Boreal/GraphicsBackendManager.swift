@@ -51,7 +51,9 @@ nonisolated struct GraphicsBackendManager: Sendable {
         runtime: InstalledRuntime
     ) throws -> GraphicsBackendActivation {
         try reset(environment)
-        let backend = resolve(requested, graphicsAPI: environment.configuration.graphicsAPI, runtime: runtime)
+        var configuration = environment.configuration.graphicsConfiguration
+        configuration.backend = requested
+        let backend = configuration.resolvedBackend(runtime: runtime)
         guard backend == .dxmt || backend == .dxvk else {
             return GraphicsBackendActivation(backend: backend, dllOverrides: [])
         }
