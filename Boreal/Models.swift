@@ -55,7 +55,7 @@ nonisolated enum WinePrefixArchitecture: String, Codable, CaseIterable, Sendable
     var displayName: String { self == .win64 ? "64-bit (Win64)" : "32-bit (Win32)" }
 }
 
-nonisolated typealias WineGraphicsBackend = GraphicsBackend
+typealias WineGraphicsBackend = GraphicsBackend
 
 nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case automatic

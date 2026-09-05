@@ -38,8 +38,8 @@ nonisolated enum AppleGamingWikiRating: String, Codable, CaseIterable, Hashable,
 
     var isPlayable: Bool {
         switch self {
-        case .perfect, .playable, .runs, .menu: true
-        case .unplayable, .unknown, .notApplicable: false
+        case .perfect, .playable: true
+        case .runs, .menu, .unplayable, .unknown, .notApplicable: false
         }
     }
 }
@@ -93,7 +93,21 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
     var parallels: AppleGamingWikiRating
     var linuxARM: AppleGamingWikiRating
 
+    var steamAppID: String?
+    var coverURL: String?
+    var genres: [String]?
+    var macOSStoreSupport: Bool?
+
     var id: String { pageURL }
+    var isTested: Bool { !availableRatings.isEmpty }
+    var isNative: Bool { native.isPlayable || macOSStoreSupport == true }
+    var bestMethod: String {
+        availableRatings.first(where: { $0.rating.isPlayable })?.title ?? (isNative ? "macOS" : "Unverified")
+    }
+    var bestRating: AppleGamingWikiRating {
+        availableRatings.map(\.rating).min(by: { $0.rank < $1.rank }) ?? .unknown
+    }
+
 
     func rating(for platform: AppleGamingWikiPlatform) -> AppleGamingWikiRating? {
         switch platform {
@@ -110,8 +124,8 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
         switch platform {
         case .all: true
         case .perfect:
-            [native, rosetta2, crossover, wine, parallels, linuxARM].contains(.perfect)
-        case .native: native.isPlayable
+            [native, rosetta2, crossover, wine, parallels].contains(.perfect)
+        case .native: isNative
         case .rosetta2: rosetta2.isPlayable
         case .crossover: crossover.isPlayable
         case .wine: wine.isPlayable
@@ -135,6 +149,9 @@ nonisolated struct AppleGamingWikiCatalog: Codable, Hashable, Sendable {
     var fetchedAt: Date
     var sourceUpdatedAt: Date?
     var isStale = false
+    var sourceNotice: String?
+    var steamOffset: Int?
+    var steamTotal: Int?
 
     var trackedCount: Int { games.count }
     var playableCount: Int { games.filter { $0.availableRatings.contains { $0.rating.isPlayable } }.count }
@@ -150,6 +167,9 @@ nonisolated struct DiscoveryGameMetadata: Codable, Hashable, Sendable {
     var originalImageURL: String?
     var sourceURL: String
     var fetchedAt: Date
+    var steamAppID: String?
+    var developer: String?
+    var genres: [String]?
 
     var hasPresentationContent: Bool {
         summary?.isEmpty == false || coverImageURL != nil || originalImageURL != nil
@@ -166,9 +186,13 @@ nonisolated enum AppleGamingWikiDiscoveryState: Equatable, Sendable {
 nonisolated protocol DiscoveryCatalogLoading: Sendable {
     func loadCatalog(forceRefresh: Bool) async throws -> AppleGamingWikiCatalog
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata?
+    func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog
+    func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame]
 }
 
 extension DiscoveryCatalogLoading {
+    func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame] { [] }
+    func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog { catalog }
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata? {
         _ = game
         _ = forceRefresh
@@ -227,28 +251,49 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
     }
 
     func loadCatalog(forceRefresh: Bool) async throws -> AppleGamingWikiCatalog {
-        let cached = readCache()
+        let cached = readCache() ?? Self.bundledCatalog()
         if !forceRefresh,
            let cached,
+           !cached.isStale,
            Date.now.timeIntervalSince(cached.fetchedAt) < Self.cacheLifetime {
             return cached
         }
 
         do {
-            var catalog = try await fetchCatalog()
-            catalog.isStale = false
+            async let wikiRequest = try? fetchCatalog()
+            async let steamRequest = try? fetchSteamPage(offset: 0)
+            let (wiki, steam) = await (wikiRequest, steamRequest)
+            guard wiki != nil || steam != nil else { throw AppleGamingWikiDiscoveryError.invalidResponse }
+            var catalog = wiki ?? cached ?? AppleGamingWikiCatalog(games: [], fetchedAt: .now)
+            catalog.isStale = wiki == nil
+            catalog.sourceNotice = wiki == nil ? "AppleGamingWiki unavailable; showing saved compatibility and live Steam data." : wiki?.sourceNotice
+            if let steam {
+                catalog.games = Self.merge(catalog.games, steam.games)
+                catalog.steamOffset = steam.offset
+                catalog.steamTotal = steam.total
+            } else {
+                catalog.sourceNotice = "Steam unavailable; showing AppleGamingWiki compatibility data."
+            }
+            catalog.fetchedAt = .now
             writeCache(catalog)
             return catalog
         } catch {
             guard var cached else { throw error }
             cached.isStale = true
+            cached.sourceNotice = "Sources unavailable. Showing the last saved catalog."
             return cached
         }
     }
 
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata? {
         if metadataCache == nil { metadataCache = readMetadataCache() }
-        if !forceRefresh, let cached = metadataCache?[game.id] { return cached }
+        if !forceRefresh, let cached = metadataCache?[game.id],
+           Date.now.timeIntervalSince(cached.fetchedAt) < Self.cacheLifetime { return cached }
+        if let metadata = await steamMetadata(for: game) {
+            metadataCache?[game.id] = metadata
+            writeMetadataCache()
+            return metadata
+        }
 
         guard var components = URLComponents(string: "https://www.applegamingwiki.com/w/api.php") else { return nil }
         components.queryItems = [
@@ -296,13 +341,22 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
         var seenURLs: Set<String> = []
         var games: [AppleGamingWikiGame] = []
         var sourceUpdatedAt: Date?
+        var partial = false
 
-        for _ in 0..<10 {
-            let html = try await fetchHTML(from: pageURL)
+        while seenURLs.insert(pageURL.absoluteString).inserted {
+            let html: String
+            do { html = try await fetchHTML(from: pageURL) }
+            catch {
+                if games.isEmpty { throw error }
+                partial = true
+                break
+            }
+            let pageGames = Self.parseGames(from: html)
+            if pageGames.isEmpty && !games.isEmpty { partial = true; break }
             if sourceUpdatedAt == nil { sourceUpdatedAt = Self.sourceDate(in: html) }
-            games.append(contentsOf: Self.parseGames(from: html))
+            games.append(contentsOf: pageGames)
 
-            guard let next = Self.nextPageURL(in: html), seenURLs.insert(next.absoluteString).inserted else { break }
+            guard let next = Self.nextPageURL(in: html) else { break }
             pageURL = next
         }
 
@@ -315,7 +369,8 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
         return AppleGamingWikiCatalog(
             games: normalized,
             fetchedAt: .now,
-            sourceUpdatedAt: sourceUpdatedAt
+            sourceUpdatedAt: sourceUpdatedAt,
+            sourceNotice: partial ? "AppleGamingWiki limits public access to \(normalized.count) records. Use Steam search to discover more macOS games." : nil
         )
     }
 
@@ -377,7 +432,7 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
         }
     }
 
-    private static func parseGames(from html: String) -> [AppleGamingWikiGame] {
+    static func parseGames(from html: String) -> [AppleGamingWikiGame] {
         let rows = matches(#"<tr[^>]*class="[^"]*table-listofgames-body-row[^"]*"[^>]*>(.*?)</tr>"#, in: html)
         return rows.compactMap { row in
             let normalizedRow = row.replacingOccurrences(of: "&#95;", with: "_")
@@ -443,7 +498,7 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
         return meaningful.count > 700 ? String(meaningful.prefix(697)) + "…" : meaningful
     }
 
-    private static func matches(_ pattern: String, in value: String) -> [String] {
+    static func matches(_ pattern: String, in value: String) -> [String] {
         guard let expression = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         return expression.matches(in: value, range: range).compactMap { match in
@@ -452,11 +507,11 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
         }
     }
 
-    private static func firstMatch(_ pattern: String, in value: String) -> String? {
+    static func firstMatch(_ pattern: String, in value: String) -> String? {
         matches(pattern, in: value).first
     }
 
-    private static func decodeHTML(_ value: String) -> String {
+    static func decodeHTML(_ value: String) -> String {
         var result = value
             .replacingOccurrences(of: "&amp;", with: "&")
             .replacingOccurrences(of: "&quot;", with: "\"")
@@ -480,172 +535,395 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
     }
 }
 
+
+extension AppleGamingWikiDiscoveryService {
+    nonisolated static func bundledCatalog() -> AppleGamingWikiCatalog? {
+        guard let url = Bundle.main.url(forResource: "DiscoveryCatalog", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(AppleGamingWikiCatalog.self, from: data)
+    }
+
+    private struct SteamPage {
+        var games: [AppleGamingWikiGame]
+        var offset: Int
+        var total: Int
+    }
+
+    private func fetchSteamPage(offset: Int, query: String? = nil) async throws -> SteamPage {
+        var components = URLComponents(string: "https://store.steampowered.com/search/results/")!
+        components.queryItems = [
+            .init(name: "start", value: String(offset)), .init(name: "count", value: "100"),
+            .init(name: "os", value: "mac"), .init(name: "category1", value: "998"),
+            .init(name: "infinite", value: "1"), .init(name: "l", value: "english")
+        ]
+        if let query { components.queryItems?.append(.init(name: "term", value: query)) }
+        guard let url = components.url else { throw AppleGamingWikiDiscoveryError.invalidResponse }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 25
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let html = root["results_html"] as? String,
+              let total = root["total_count"] as? Int else { throw AppleGamingWikiDiscoveryError.invalidResponse }
+        let games = Self.parseSteamGames(html)
+        guard !games.isEmpty || offset >= total else { throw AppleGamingWikiDiscoveryError.emptyCatalog }
+        return SteamPage(games: games, offset: offset + games.count, total: total)
+    }
+
+    static func parseSteamGames(_ html: String) -> [AppleGamingWikiGame] {
+        let tags: [String: String] = Bundle.main.url(forResource: "DiscoveryTags", withExtension: "json")
+            .flatMap { try? Data(contentsOf: $0) }
+            .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        return matches(#"(<a\s[^>]*class="search_result_row.*?</a>)"#, in: html).compactMap { row in
+            guard let id = firstMatch(#"data-ds-appid="(\d+)""#, in: row),
+                  let title = firstMatch(#"<span class="title">(.*?)</span>"#, in: row),
+                  row.contains("platform_img mac") else { return nil }
+            let tagIDs = firstMatch(#"data-ds-tagids="\[([^\]]*)\]""#, in: row)?.split(separator: ",").map(String.init) ?? []
+            return AppleGamingWikiGame(
+                title: decodeHTML(title), pageURL: "https://store.steampowered.com/app/\(id)/",
+                native: .unknown, rosetta2: .unknown, crossover: .unknown, wine: .unknown,
+                parallels: .unknown, linuxARM: .unknown, steamAppID: id,
+                coverURL: firstMatch(#"<img src="([^"]+)""#, in: row),
+                genres: tagIDs.compactMap { tags[$0] }, macOSStoreSupport: true
+            )
+        }
+    }
+
+    static func merge(_ existing: [AppleGamingWikiGame], _ incoming: [AppleGamingWikiGame]) -> [AppleGamingWikiGame] {
+        var result = existing
+        var indices = Dictionary(result.enumerated().map { ($0.element.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")), $0.offset) }, uniquingKeysWith: { first, _ in first })
+        for game in incoming {
+            let key = game.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            if let index = indices[key] {
+                result[index].steamAppID = game.steamAppID ?? result[index].steamAppID
+                result[index].coverURL = game.coverURL ?? result[index].coverURL
+                result[index].genres = game.genres ?? result[index].genres
+                result[index].macOSStoreSupport = game.macOSStoreSupport ?? result[index].macOSStoreSupport
+            } else {
+                indices[key] = result.count
+                result.append(game)
+            }
+        }
+        return result
+    }
+
+    func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame] {
+        try await fetchSteamPage(offset: 0, query: query).games
+    }
+
+    func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog {
+        let page = try await fetchSteamPage(offset: catalog.steamOffset ?? 0)
+        var result = catalog
+        result.games = Self.merge(catalog.games, page.games)
+        result.steamOffset = page.offset
+        result.steamTotal = page.total
+        writeCache(result)
+        return result
+    }
+
+    private func steamMetadata(for game: AppleGamingWikiGame) async -> DiscoveryGameMetadata? {
+        var appID = game.steamAppID
+        if appID == nil {
+            var components = URLComponents(string: "https://store.steampowered.com/api/storesearch/")!
+            components.queryItems = [.init(name: "term", value: game.title), .init(name: "l", value: "english"), .init(name: "cc", value: "US")]
+            guard let url = components.url,
+                  let data = await requestData(url),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let items = root["items"] as? [[String: Any]] else { return nil }
+            // Only exact normalized titles may attach a store identity to a wiki entry.
+            let normalize: (String) -> String = { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")).filter { $0.isLetter || $0.isNumber } }
+            let candidates = items.filter { ($0["name"] as? String).map(normalize) == normalize(game.title) }
+            guard candidates.count == 1, let id = candidates[0]["id"] as? Int else { return nil }
+            appID = String(id)
+        }
+        guard let appID,
+              let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appID)&l=english"),
+              let data = await requestData(url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let envelope = root[appID] as? [String: Any], envelope["success"] as? Bool == true,
+              let details = envelope["data"] as? [String: Any] else { return nil }
+        return DiscoveryGameMetadata(
+            summary: (details["short_description"] as? String).map(Self.decodeHTML),
+            coverImageURL: details["header_image"] as? String,
+            originalImageURL: details["header_image"] as? String,
+            sourceURL: game.pageURL, fetchedAt: .now, steamAppID: appID,
+            developer: (details["developers"] as? [String])?.joined(separator: ", "),
+            genres: (details["genres"] as? [[String: Any]])?.compactMap { $0["description"] as? String }
+        )
+    }
+
+    private func requestData(_ url: URL) async -> Data? {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return data
+    }
+}
+
 // MARK: - Discovery view
 
 struct DiscoveryView: View {
     @Environment(BorealStore.self) private var store
     @Binding var searchText: String
     @State private var platform: AppleGamingWikiPlatform = .all
-    @State private var sortAscending = true
+    @State private var genre = "All genres"
+    @State private var rating = "All ratings"
+    @State private var storefront = "All stores"
+    @State private var sortOrder = "Recommended"
+    @State private var testedOnly = false
+    @AppStorage("discoveryListLayout") private var listLayout = false
     @State private var selectedGame: AppleGamingWikiGame?
+    @State private var showGuide = false
+    @State private var pageSize = 80
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                header
-                if let catalog = store.discoveryCatalog {
-                    stats(catalog)
-                    platformPicker(catalog)
-                    catalogContent(catalog)
-                } else {
-                    stateContent
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            header
+                            if let catalog = store.discoveryCatalog {
+                                stats(catalog)
+                                filters(catalog)
+                                if !searchText.isEmpty, let message = store.discoverySearchMessage {
+                                    Text(message).font(.caption).foregroundStyle(.secondary)
+                                }
+                                if let notice = catalog.sourceNotice {
+                                    Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(.orange)
+                                }
+                                if case .failed(let message) = store.discoveryState {
+                                    Label(message, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange)
+                                }
+                                if searchText.isEmpty {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("Recommended for your Mac").font(.title3.bold())
+                                            Text("Games with a Perfect community rating on macOS.").font(.callout).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Button("See All", systemImage: "chevron.right") {
+                                            platform = .perfect
+                                            withAnimation { proxy.scrollTo("allGames", anchor: .top) }
+                                        }.buttonStyle(.bordered)
+                                    }
+                                    recommended(catalog)
+                                }
+                                catalogContent(catalog).id("allGames")
+                            } else {
+                                ContentUnavailableView {
+                                    Label("Discover games for your Mac", systemImage: "gamecontroller")
+                                } description: {
+                                    if case .failed(let message) = store.discoveryState { Text(message) }
+                                    else { ProgressView("Loading catalog…") }
+                                } actions: {
+                                    Button("Retry") { store.refreshDiscoveryCatalog() }.disabled(store.discoveryState == .loading)
+                                }
+                            }
+                        }
+                        .padding(28)
+                    }
+                }
+                if geometry.size.width >= 1180 {
+                    guide.frame(width: 300).padding(22)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .background(.white.opacity(0.025))
                 }
             }
-            .padding(30)
-            .frame(maxWidth: 1240, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .background(LinearGradient(colors: [Color(red: 0.045, green: 0.065, blue: 0.095), Color(red: 0.065, green: 0.075, blue: 0.115)], startPoint: .topTrailing, endPoint: .bottomLeading))
         }
-        .task { store.loadDiscoveryCatalog() }
+        .task { if store.discoveryCatalog == nil { store.loadDiscoveryCatalog() } }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    store.refreshDiscoveryCatalog()
-                } label: {
-                    Label("Refresh Discovery", systemImage: "arrow.clockwise")
-                }
-                .disabled(store.discoveryState == .loading)
-                .help("Refresh AppleGamingWiki data")
+                Button("Refresh Discovery", systemImage: "arrow.clockwise") { store.refreshDiscoveryCatalog() }
+                    .disabled(store.discoveryState == .loading)
             }
         }
-        .sheet(item: $selectedGame) { game in
-            DiscoveryGameDetailView(game: game)
+        .sheet(item: $selectedGame) { DiscoveryGameDetailView(game: $0) }
+        .sheet(isPresented: $showGuide) {
+            VStack { guide; Button("Done") { showGuide = false }.keyboardShortcut(.cancelAction) }.padding(28).frame(width: 410)
         }
+        .task(id: searchText) {
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { return }
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            await store.searchDiscoveryGames(query)
+        }
+        .onChange(of: searchText) { pageSize = 80 }
+        .onChange(of: platform) { pageSize = 80 }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Discovery", systemImage: "sparkles")
-                .font(.largeTitle.weight(.bold))
-            Text("Find games that fit your Mac before adding them to your Library.")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Community compatibility from AppleGamingWiki. These ratings describe the external method, not a Boreal-tested configuration or a guaranteed GPTK result.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Link("Browse AppleGamingWiki master list", destination: URL(string: "https://www.applegamingwiki.com/wiki/M1_compatible_games_master_list")!)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.cyan)
+        HStack {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("DISCOVER").font(.caption).foregroundStyle(.secondary)
+                Text("Discover games for your Mac").font(.system(size: 28, weight: .bold))
+                Text("Browse compatibility reports and find the best way to play before adding games to your library.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Learn more", systemImage: "book") { showGuide = true }.buttonStyle(.bordered)
         }
     }
 
     private func stats(_ catalog: AppleGamingWikiCatalog) -> some View {
-        HStack(spacing: 12) {
-            DiscoveryMetric(title: "Tracked", value: catalog.trackedCount.formatted(), symbol: "list.number", tint: .cyan)
+        HStack(spacing: 10) {
+            DiscoveryMetric(title: "Tracked games", value: catalog.trackedCount.formatted(), symbol: "gamecontroller", tint: .blue)
             DiscoveryMetric(title: "Playable", value: catalog.playableCount.formatted(), symbol: "checkmark.circle.fill", tint: .green)
-            DiscoveryMetric(title: "Native", value: catalog.count(for: .native).formatted(), symbol: "apple.logo", tint: .teal)
-            DiscoveryMetric(title: "CrossOver", value: catalog.count(for: .crossover).formatted(), symbol: "rectangle.2.swap", tint: .purple)
+            DiscoveryMetric(title: "Native / macOS", value: catalog.count(for: .native).formatted(), symbol: "apple.logo", tint: .blue)
+            DiscoveryMetric(title: "CrossOver / Wine / Parallels", value: catalog.games.filter { $0.crossover.isPlayable || $0.wine.isPlayable || $0.parallels.isPlayable }.count.formatted(), symbol: "atom", tint: .purple)
         }
     }
 
-    private func platformPicker(_ catalog: AppleGamingWikiCatalog) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(AppleGamingWikiPlatform.allCases, id: \.self) { value in
-                    Button {
-                        platform = value
-                    } label: {
-                        Label("\(value.title)  \(value == .all ? catalog.trackedCount : catalog.count(for: value))", systemImage: value.symbol)
+    private func filters(_ catalog: AppleGamingWikiCatalog) -> some View {
+        VStack(spacing: 14) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(AppleGamingWikiPlatform.allCases, id: \.self) { value in
+                        Button { platform = value } label: {
+                            Label(value.title, systemImage: value.symbol).padding(.horizontal, 6).padding(.vertical, 5)
+                        }.buttonStyle(.bordered).tint(platform == value ? .blue : .gray)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(platform == value ? .accentColor : .secondary)
-                    .controlSize(.small)
                 }
-                Divider().frame(height: 20)
-                Button {
-                    sortAscending.toggle()
-                } label: {
-                    Label(sortAscending ? "A–Z" : "Z–A", systemImage: "arrow.up.arrow.down")
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack { filterMenus(catalog); Spacer(); testedToggle }
+                VStack(alignment: .leading) { filterMenus(catalog); testedToggle }
+            }
+        }
+    }
+
+    private func filterMenus(_ catalog: AppleGamingWikiCatalog) -> some View {
+        let genres = Set(catalog.games.flatMap { $0.genres ?? [] }).sorted()
+        return HStack(spacing: 8) {
+            Picker("Genre", selection: $genre) {
+                Text("All genres").tag("All genres")
+                ForEach(genres, id: \.self) { Text($0).tag($0) }
+                Text("Not provided").tag("Not provided")
+            }.frame(maxWidth: 180)
+            Picker("Compatibility", selection: $rating) {
+                Text("All ratings").tag("All ratings")
+                ForEach(AppleGamingWikiRating.allCases.filter { $0 != .notApplicable }, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+            }.frame(maxWidth: 190)
+            Picker("Storefront", selection: $storefront) {
+                Text("All stores").tag("All stores")
+                Text("Steam").tag("Steam")
+                Text("Other / unknown").tag("Other / unknown")
+            }.frame(maxWidth: 160)
+            Picker("Sort by", selection: $sortOrder) {
+                ForEach(["Recommended", "Name A–Z", "Name Z–A"], id: \.self) { Text($0).tag($0) }
+            }.frame(maxWidth: 165)
+        }.labelsHidden().controlSize(.large)
+    }
+
+    private var testedToggle: some View {
+        Toggle("Tested only", isOn: $testedOnly).toggleStyle(.switch).controlSize(.small)
+            .help("Only entries with community compatibility reports. These are not tests performed by Boreal.")
+    }
+
+    private func recommended(_ catalog: AppleGamingWikiCatalog) -> some View {
+        let games = catalog.games.filter { ($0.native == .perfect || $0.rosetta2 == .perfect) && matchesFilters($0) }
+            .sorted { recommendationScore($0) == recommendationScore($1) ? $0.title.localizedStandardCompare($1.title) == .orderedAscending : recommendationScore($0) > recommendationScore($1) }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(Array(games.prefix(3))) { game in
+                    DiscoveryGameTile(game: game, horizontal: true) { selectedGame = game }.frame(width: 310)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                if games.isEmpty { Text("No recommendations match these filters.").foregroundStyle(.secondary).padding() }
             }
         }
     }
 
     private func catalogContent(_ catalog: AppleGamingWikiCatalog) -> some View {
-        let games = visibleGames(from: catalog)
+        let games = catalog.games.filter(matchesFilters).sorted {
+            if sortOrder == "Recommended", recommendationScore($0) != recommendationScore($1) { return recommendationScore($0) > recommendationScore($1) }
+            return sortOrder == "Name Z–A" ? $0.title.localizedStandardCompare($1.title) == .orderedDescending : $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
         return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(platform.title).font(.title2.weight(.semibold))
-                Text("\(games.count) games")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            HStack {
+                Text("All Games").font(.title3.bold())
+                Text("\(games.count.formatted()) games").foregroundStyle(.secondary)
                 Spacer()
-                if catalog.isStale {
-                    Label("Cached data", systemImage: "externaldrive")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                } else {
-                    Label("AppleGamingWiki", systemImage: "checkmark.seal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Picker("View", selection: $listLayout) {
+                    Label("Grid", systemImage: "square.grid.2x2").tag(false)
+                    Label("List", systemImage: "list.bullet").tag(true)
+                }.pickerStyle(.segmented).frame(width: 150)
             }
-            if let sourceUpdatedAt = catalog.sourceUpdatedAt {
-                Text("Source refreshed \(sourceUpdatedAt.formatted(date: .abbreviated, time: .omitted)) · fetched \(catalog.fetchedAt.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             if games.isEmpty {
-                ContentUnavailableView("No games found", systemImage: "magnifyingglass", description: Text("Try another search or compatibility method."))
-                    .frame(maxWidth: .infinity, minHeight: 260)
+                ContentUnavailableView("No games found", systemImage: "magnifyingglass", description: Text("Try another search or reset your filters."))
+                Button("Reset filters") { genre = "All genres"; rating = "All ratings"; storefront = "All stores"; platform = .all; testedOnly = false; searchText = "" }
+            } else if listLayout {
+                LazyVStack(spacing: 8) {
+                    ForEach(Array(games.prefix(pageSize))) { game in
+                        DiscoveryGameTile(game: game, horizontal: true) { selectedGame = game }
+                    }
+                }
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 250, maximum: 360), spacing: 14)], spacing: 14) {
-                    ForEach(games) { game in
-                        Button { selectedGame = game } label: {
-                            DiscoveryGameCard(game: game, selectedPlatform: platform)
-                        }
-                        .buttonStyle(.plain)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 12)], spacing: 12) {
+                    ForEach(Array(games.prefix(pageSize))) { game in
+                        DiscoveryGameTile(game: game) { selectedGame = game }
                     }
                 }
             }
-        }
-    }
-
-    private var stateContent: some View {
-        Group {
-            switch store.discoveryState {
-            case .idle, .loading:
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("Loading AppleGamingWiki…").foregroundStyle(.secondary)
+            HStack {
+                if games.count > pageSize { Button("Show more (\(games.count - pageSize))") { pageSize += 80 } }
+                if (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? 1) {
+                    Button(store.discoveryState == .loading ? "Loading…" : "Load more macOS games from Steam") { store.loadMoreDiscoveryGames() }
+                        .disabled(store.discoveryState == .loading)
                 }
-                .frame(maxWidth: .infinity, minHeight: 300)
-            case .failed(let message):
-                ContentUnavailableView {
-                    Label("Discovery unavailable", systemImage: "wifi.exclamationmark")
-                } description: {
-                    Text(message)
-                } actions: {
-                    Button("Try Again", systemImage: "arrow.clockwise") { store.refreshDiscoveryCatalog() }
-                }
-            case .loaded:
-                EmptyView()
+                Spacer()
+                Text(catalog.isStale ? "Saved catalog" : "Updated \(catalog.fetchedAt.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption).foregroundStyle(.secondary)
             }
+            if let total = catalog.steamTotal {
+                Text("Steam: \((catalog.steamOffset ?? 0).formatted()) of \(total.formatted()) listings loaded. Search also checks the live macOS catalog.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Compatibility: AppleGamingWiki • macOS availability, artwork and game information: Steam. Genre and storefront filters use identified catalog records; unknown values are available under ‘Not provided’ or ‘Other / unknown’.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 
-    private func visibleGames(from catalog: AppleGamingWikiCatalog) -> [AppleGamingWikiGame] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = catalog.games.filter { game in
-            game.matches(platform)
-                && (query.isEmpty || game.title.localizedCaseInsensitiveContains(query))
+    private func matchesFilters(_ game: AppleGamingWikiGame) -> Bool {
+        game.matches(platform)
+            && (searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || game.title.localizedCaseInsensitiveContains(searchText.trimmingCharacters(in: .whitespacesAndNewlines)))
+            && (!testedOnly || game.isTested)
+            && (rating == "All ratings" || (game.rating(for: platform) ?? game.bestRating).rawValue == rating)
+            && (genre == "All genres" || (genre == "Not provided" ? game.genres?.isEmpty != false : game.genres?.contains(genre) == true))
+            && (storefront == "All stores" || (storefront == "Steam" ? game.steamAppID != nil : game.steamAppID == nil))
+    }
+
+    private func recommendationScore(_ game: AppleGamingWikiGame) -> Int {
+        (game.native == .perfect ? 100 : game.rosetta2 == .perfect ? 90 : 0) + (game.coverURL == nil ? 0 : 10) - game.bestRating.rank
+    }
+
+    private var guide: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 12) {
+                if let game = store.discoveryCatalog?.games.first(where: { $0.coverURL != nil }) {
+                    DiscoveryArtwork(imageURL: game.coverURL, title: game.title, isLoading: false, height: 150)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                Text("Find the best way to play").font(.title2.bold())
+                Text("Discover games, compare compatibility reports and choose a setup for your Mac.").foregroundStyle(.secondary)
+            }.padding(16).background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
+            guideRow("Compatibility ratings", "Community reports for Native, Rosetta 2, CrossOver, Wine and Parallels.", "checkmark.seal")
+            guideRow("Store links", "Open the game's verified store page or search another storefront.", "link")
+            guideRow("Performance insights", "Read hardware and configuration reports on the source page.", "chart.bar")
+            guideRow("Add to library", "Save games you’re interested in. Purchase and installation are handled separately.", "plus")
+            Text("A macOS listing does not confirm Apple Silicon or current macOS compatibility. ‘Playable’ requires a Perfect or Playable community rating; reaching a menu is insufficient.")
+                .font(.caption).foregroundStyle(.secondary)
+            Link("Open compatibility documentation ↗", destination: AppleGamingWikiDiscoveryService.masterListURL)
         }
-        return filtered.sorted {
-            let result = $0.title.localizedStandardCompare($1.title)
-            return sortAscending ? result == .orderedAscending : result == .orderedDescending
+    }
+
+    private func guideRow(_ title: String, _ description: String, _ symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).font(.title2).frame(width: 44, height: 44).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline); Text(description).font(.callout).foregroundStyle(.secondary) }
         }
     }
 }
@@ -655,76 +933,85 @@ private struct DiscoveryMetric: View {
     let value: String
     let symbol: String
     let tint: Color
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(tint)
-            Text(value).font(.title2.weight(.bold))
-            Text(title).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.12)) }
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.title2).foregroundStyle(tint)
+                .frame(width: 45, height: 45).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 4) { Text(value).font(.title3.bold()); Text(title).font(.caption).foregroundStyle(.secondary) }
+            Spacer(minLength: 0)
+        }.padding(14).frame(maxWidth: .infinity, minHeight: 72)
+            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(0.08)))
     }
 }
 
-private struct DiscoveryGameCard: View {
+struct DiscoveryGameTile: View {
     @Environment(BorealStore.self) private var store
     let game: AppleGamingWikiGame
-    let selectedPlatform: AppleGamingWikiPlatform
-
+    var horizontal = false
+    let open: () -> Void
     private var metadata: DiscoveryGameMetadata? { store.discoveryMetadata[game.id] }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            DiscoveryArtwork(
-                imageURL: metadata?.coverImageURL ?? metadata?.originalImageURL,
-                title: game.title,
-                isLoading: store.isDiscoveryMetadataLoading(for: game),
-                height: 176
-            )
+        Group {
+            if horizontal {
+                HStack(spacing: 12) { artwork.frame(width: 105); details }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(9)
+            } else {
+                VStack(alignment: .leading, spacing: 0) { artwork; details.padding(10) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.09)))
+        .task(id: game.id) { await store.ensureDiscoveryMetadata(for: game) }
+    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text(game.title)
-                    .font(.headline)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
+    private var artwork: some View {
+        Button(action: open) {
+            DiscoveryArtwork(imageURL: metadata?.coverImageURL ?? game.coverURL, title: game.title, isLoading: store.isDiscoveryMetadataLoading(for: game), height: horizontal ? 106 : 96)
+        }.buttonStyle(.plain)
+    }
 
-                if let summary = metadata?.summary {
-                    Text(summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                } else if store.isDiscoveryMetadataUnavailable(for: game) {
-                    Text("No description available from the source.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Button(action: open) { Text(game.title).font(horizontal ? .headline : .system(size: 12, weight: .semibold)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain)
+            Text((game.genres ?? metadata?.genres)?.prefix(2).joined(separator: " · ") ?? "Genre not provided").font(horizontal ? .caption : .caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(metadata?.developer ?? (game.pageURL.contains("applegamingwiki") ? "AppleGamingWiki" : "Steam")).font(horizontal ? .caption : .caption2).foregroundStyle(.secondary).lineLimit(1)
+            Label(game.bestMethod == "Unverified" ? game.bestRating.rawValue : game.bestMethod, systemImage: "circle.fill")
+                .font(horizontal ? .caption : .system(size: 10)).foregroundStyle(game.isNative ? .green : game.bestRating.color)
+                .padding(.horizontal, 7).padding(.vertical, 4).background((game.isNative ? Color.green : game.bestRating.color).opacity(0.1), in: Capsule())
+            HStack {
+                if let id = game.steamAppID ?? metadata?.steamAppID, let url = URL(string: "https://store.steampowered.com/app/\(id)/") {
+                    Link(destination: url) { Image("SteamLogo").resizable().scaledToFit().frame(width: 17, height: 17) }.help("Open Steam store page")
                 }
+                Spacer(minLength: 2)
+                Button(store.isDiscoveryGameSaved(game) ? "Added" : "Add", systemImage: store.isDiscoveryGameSaved(game) ? "checkmark" : "plus") { store.toggleDiscoveryGame(game) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help(store.isDiscoveryGameSaved(game) ? "Remove from saved games" : "Save to your library")
+            }
+        }.frame(maxWidth: .infinity, minHeight: horizontal ? 100 : 132, alignment: .topLeading)
+    }
+}
 
-                if let rating = game.rating(for: selectedPlatform) {
-                    DiscoveryRatingLabel(title: selectedPlatform.title, rating: rating)
-                } else {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 6) {
-                        ForEach(game.availableRatings.prefix(4), id: \.title) { entry in
-                            DiscoveryRatingLabel(title: entry.title, rating: entry.rating, compact: true)
-                        }
+struct SavedDiscoveryGamesView: View {
+    @Environment(BorealStore.self) private var store
+    var searchText: String
+    @State private var selectedGame: AppleGamingWikiGame?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Saved from Discovery").font(.headline)
+            ScrollView(.horizontal) {
+                HStack(spacing: 12) {
+                    ForEach(store.savedDiscoveryGames.filter { searchText.isEmpty || $0.title.localizedCaseInsensitiveContains(searchText) }) { game in
+                        DiscoveryGameTile(game: game, horizontal: true) { selectedGame = game }.frame(width: 320)
                     }
                 }
-                Spacer(minLength: 0)
-                Text("AppleGamingWiki")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
-            .padding(16)
-        }
-        .frame(maxWidth: .infinity, minHeight: 350, alignment: .topLeading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12)) }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .task(id: game.id) { store.loadDiscoveryMetadata(for: game) }
+        }.padding(.horizontal, 24).padding(.vertical, 12)
+            .sheet(item: $selectedGame) { DiscoveryGameDetailView(game: $0) }
     }
 }
 
@@ -802,6 +1089,13 @@ private struct DiscoveryGameDetailView: View {
     let game: AppleGamingWikiGame
     @Environment(\.dismiss) private var dismiss
 
+    private func storeSearchURL(_ store: String) -> URL? {
+        let base = store == "GOG" ? "https://www.gog.com/en/games" : store == "Epic Games" ? "https://store.epicgames.com/en-US/browse" : "https://store.steampowered.com/search/"
+        var components = URLComponents(string: base)
+        components?.queryItems = [.init(name: store == "GOG" ? "query" : store == "Epic Games" ? "q" : "term", value: game.title)]
+        return components?.url
+    }
+
     private var metadata: DiscoveryGameMetadata? { store.discoveryMetadata[game.id] }
 
     var body: some View {
@@ -821,7 +1115,7 @@ private struct DiscoveryGameDetailView: View {
             ScrollView {
                 HStack(alignment: .top, spacing: 24) {
                     DiscoveryArtwork(
-                        imageURL: metadata?.originalImageURL ?? metadata?.coverImageURL,
+                        imageURL: metadata?.originalImageURL ?? metadata?.coverImageURL ?? game.coverURL,
                         title: game.title,
                         isLoading: store.isDiscoveryMetadataLoading(for: game),
                         height: 280
@@ -843,11 +1137,27 @@ private struct DiscoveryGameDetailView: View {
                                 }
                                 .foregroundStyle(.secondary)
                             } else {
-                                Text("No description is available from AppleGamingWiki for this game.")
+                                Text("No description is currently available from the sources.")
                                     .foregroundStyle(.secondary)
                             }
                         }
 
+                        HStack {
+                            Button(store.isDiscoveryGameSaved(game) ? "Remove from saved games" : "Add to library", systemImage: store.isDiscoveryGameSaved(game) ? "checkmark" : "plus") { store.toggleDiscoveryGame(game) }
+                                .buttonStyle(.borderedProminent)
+                            if let id = game.steamAppID ?? metadata?.steamAppID, let url = URL(string: "https://store.steampowered.com/app/\(id)/") {
+                                Link("Steam", destination: url).buttonStyle(.bordered)
+                            }
+                            Menu("Other stores") {
+                                ForEach(["Steam", "GOG", "Epic Games"], id: \.self) { name in
+                                    if let url = storeSearchURL(name) { Link("Search \(name)", destination: url) }
+                                }
+                            }
+                        }
+                        if !game.isTested {
+                            Text(game.isNative ? "Steam lists macOS support. No community compatibility report is available for this entry." : "No community compatibility report is available.")
+                                .foregroundStyle(.secondary)
+                        }
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Compatibility methods").font(.headline)
                             ForEach(game.availableRatings, id: \.title) { entry in
@@ -867,7 +1177,7 @@ private struct DiscoveryGameDetailView: View {
 
                         if let destination = URL(string: metadata?.sourceURL ?? game.pageURL) {
                             Link(destination: destination) {
-                                Label("Open AppleGamingWiki page", systemImage: "arrow.up.right.square")
+                                Label(game.pageURL.contains("applegamingwiki") ? "Open compatibility reports" : "Open source page", systemImage: "arrow.up.right.square")
                             }
                             .buttonStyle(.borderedProminent)
                         }
@@ -883,7 +1193,8 @@ private struct DiscoveryGameDetailView: View {
     }
 }
 
-private extension AppleGamingWikiRating {
+extension AppleGamingWikiRating {
+    nonisolated var rank: Int { Self.allCases.firstIndex(of: self) ?? 5 }
     var color: Color {
         switch self {
         case .perfect: .green

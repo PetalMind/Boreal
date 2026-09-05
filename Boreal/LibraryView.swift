@@ -442,6 +442,11 @@ struct LibraryView: View {
         selectedSources.isEmpty ? allItems : allItems.filter { selectedSources.contains($0.source) }
     }
 
+    private var showsSavedDiscoveryGames: Bool {
+        !store.savedDiscoveryGames.isEmpty && !favoritesOnly && sourceFilters.isEmpty
+            && availabilityFilters.isEmpty && compatibilityFilters.isEmpty && producerFilter.isEmpty
+    }
+
     private var hasActiveRefinement: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !selectedSources.isEmpty
@@ -451,10 +456,13 @@ struct LibraryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if showsSavedDiscoveryGames { SavedDiscoveryGamesView(searchText: searchText) }
             if !allItems.isEmpty { quickFilters }
             if !activeFilters.isEmpty { activeFilterBar }
             Group {
-                if allItems.isEmpty && !favoritesOnly {
+                if allItems.isEmpty && showsSavedDiscoveryGames {
+                    Spacer()
+                } else if allItems.isEmpty && !favoritesOnly {
                     BorealEmptyState(action: installAction, steamAction: syncSteamAction)
                 } else if items.isEmpty {
                     noResults

@@ -1,5 +1,6 @@
 import AppKit
 import AVKit
+import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -16,10 +17,14 @@ struct StoreGameDetailView: View {
     var onSelectProducer: (String) -> Void = { _ in }
     @State private var showsInstallationOptions = false
     @State private var showsProgressDetails = false
-    @State private var selectedScreenshot: StoreScreenshotSelection?
-    @State private var selectedVideo: StoreVideo?
+    @State private var selectedMedia: StoreMediaSelection?
     @State private var showsUninstallConfirmation = false
+    @State private var activityWidth: CGFloat = 0
+    @State private var activityDayCount = 7
+    @State private var selectedActivityDate: Date?
+    @State private var showsActivityInfo = false
     @State private var selectedTab: DetailTab = .overview
+    @State private var showsFullDescription = false
     @State private var compatibilityApplication: WindowsApplication?
     @State private var showsDiskStorageConfirmation = false
     @State private var diskStorageCategory: GameDiskStorageCategory?
@@ -31,33 +36,47 @@ struct StoreGameDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 0) {
+        GeometryReader { geometry in
+            let hasRail = geometry.size.width >= 1080
+            let inset: CGFloat = geometry.size.width < 600 ? 14 : 24
+            let railWidth: CGFloat = 250
+            let contentWidth = max(0, geometry.size.width - inset * 2 - (hasRail ? railWidth + 20 : 0))
+            ScrollView {
+                HStack(alignment: .top, spacing: 20) {
                     VStack(alignment: .leading, spacing: 0) {
-                        hero
+                        hero(width: contentWidth)
                         detailTabBar
-                        tabContent
-                            .padding(20)
+                        VStack(alignment: .leading, spacing: 12) {
+                            if storeOperation != nil { operationStatus }
+                            tabContent(width: contentWidth)
+                            if !hasRail { detailsSidebar }
+                        }
+                        .padding(.top, 14)
                     }
-                    .frame(minWidth: 760, maxWidth: .infinity, alignment: .leading)
-
-                    detailRail
-                        .frame(width: 286)
+                    .frame(width: contentWidth, alignment: .leading)
+                    if hasRail {
+                        detailsSidebar.frame(width: railWidth)
+                    }
                 }
-                .frame(minWidth: 1046, maxWidth: .infinity, alignment: .leading)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    hero
-                    detailTabBar
-                    tabContent
-                        .padding(20)
-                    detailsSidebar
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 20)
-                }
+                .padding(.horizontal, inset)
+                .padding(.top, 14)
+                .padding(.bottom, 24)
+                .frame(width: geometry.size.width, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                LinearGradient(
+                    colors: [Color(red: 0.045, green: 0.08, blue: 0.12), Color(red: 0.025, green: 0.04, blue: 0.065)],
+                    startPoint: .topTrailing, endPoint: .bottomLeading
+                )
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onChange(of: game.id) {
+            selectedTab = .overview
+            showsFullDescription = false
+        }
+        .onChange(of: visibleTabs) {
+            if !visibleTabs.contains(selectedTab) { selectedTab = .overview }
         }
         .sheet(isPresented: $showsInstallationOptions) {
             StoreGameInstallationSheet(
@@ -82,11 +101,8 @@ struct StoreGameDetailView: View {
         .task(id: game.id) {
             await store.loadStoreGameSizeIfNeeded(for: game.id)
         }
-        .sheet(item: $selectedVideo) { video in
-            StoreVideoPlayerView(video: video)
-        }
-        .sheet(item: $selectedScreenshot) { screenshot in
-            StoreScreenshotViewer(screenshot: screenshot, gameName: game.name)
+        .sheet(item: $selectedMedia) { selection in
+            StoreMediaViewer(selection: selection, game: currentGame)
         }
         .sheet(item: $compatibilityApplication) { application in
             WineCompatibilityConfigurator(application: store.application(id: application.id) ?? application)
@@ -113,131 +129,127 @@ struct StoreGameDetailView: View {
         }
     }
 
-    private var hero: some View {
-        ZStack(alignment: .bottomLeading) {
-            heroBackground
-            LinearGradient(
-                colors: [.black.opacity(0.04), .black.opacity(0.38), .black.opacity(0.94)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            ViewThatFits(in: .horizontal) {
-                heroWideContent
-                heroCompactContent
+    private func hero(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: width < 620 ? 16 : 24) {
+                GameArtworkView(game: currentGame, width: width < 620 ? 82 : 124, height: width < 620 ? 116 : 174)
+                VStack(alignment: .leading, spacing: 8) {
+                    heroIdentity
+                    if width >= 620 {
+                        heroBadges
+                        primaryActions.padding(.top, 2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 24)
+            if width < 620 {
+                heroBadges
+                primaryActions
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 272, maxHeight: 300, alignment: .bottomLeading)
-        .clipped()
+        .padding(width < 620 ? 16 : 20)
+        .frame(maxWidth: .infinity, minHeight: 214, alignment: .leading)
+        .background {
+            GeometryReader { geometry in
+                heroBackground
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .overlay {
+                        LinearGradient(colors: [.black.opacity(0.94), .black.opacity(0.72), .black.opacity(0.12)], startPoint: .leading, endPoint: .trailing)
+                    }
+                    .overlay {
+                        LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+                    }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
         .accessibilityElement(children: .contain)
     }
 
-    private var heroWideContent: some View {
-        HStack(alignment: .bottom, spacing: 24) {
-            heroArtwork
-            heroIdentity
-            Spacer(minLength: 20)
-        }
-    }
-
-    private var heroCompactContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .bottom, spacing: 18) {
-                GameArtworkView(game: currentGame, width: 112, height: 158)
-                heroIdentity
-            }
-        }
-    }
-
-    private var heroArtwork: some View {
-        GameArtworkView(game: currentGame, width: 156, height: 218)
-            .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
-    }
-
     private var heroIdentity: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                if linkedApplication?.usesStoreMetadataOnly == true {
-                    Label("Custom Installed", systemImage: "square.grid.2x2")
-                } else {
-                    Label(currentGame.provider.rawValue, systemImage: currentGame.provider.symbol)
-                }
-                Text("IN YOUR LIBRARY")
-            }
-            .font(.caption.weight(.bold))
-            .tracking(0.7)
-            .foregroundStyle(.white.opacity(0.72))
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(linkedApplication?.usesStoreMetadataOnly == true ? "Custom Installed" : currentGame.provider.rawValue)  ·  IN YOUR LIBRARY")
+                .font(.caption.weight(.semibold))
+                .tracking(0.5)
+                .foregroundStyle(.white.opacity(0.65))
+                .fixedSize(horizontal: false, vertical: true)
             Text(currentGame.name)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
+                .fixedSize(horizontal: false, vertical: true)
             if let developer = currentGame.developer {
-                Button {
-                    onSelectProducer(developer)
-                } label: {
-                    Text(developer)
-                        .font(.title3)
-                        .foregroundStyle(.white.opacity(0.76))
+                Button { onSelectProducer(developer) } label: {
+                    Text(developer).font(.callout).foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.leading)
                 }
                 .buttonStyle(.plain)
                 .help("Show all games by \(developer)")
             }
-            HStack(spacing: 8) {
-                StorePlatformBadge(game: currentGame)
-                StoreRatingBadge(rating: currentGame.storeRating)
-                if currentGame.supportsNativeMacOS != true,
-                   let compatibility = currentGame.compatibility {
-                    MacCompatibilityBadge(rating: compatibility.tier.rating)
-                }
-            }
-            primaryActions
-                .padding(.top, 4)
         }
+    }
+
+    private var heroBadges: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { heroBadgeContent }.fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 6) { heroBadgeContent }
+        }
+    }
+
+    @ViewBuilder private var heroBadgeContent: some View {
+        if currentGame.supportsNativeMacOS != true {
+            Label(compatibilityRating.rawValue + " compatibility", systemImage: compatibilityRating.symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(compatibilityTint)
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(compatibilityTint.opacity(0.12), in: Capsule())
+        }
+        StoreRatingBadge(rating: currentGame.storeRating)
+        StorePlatformBadge(game: currentGame)
     }
 
     private var visibleTabs: [DetailTab] {
         DetailTab.allCases.filter { tab in
             switch tab {
             case .overview, .activity: true
-            case .compatibility: currentGame.supportsNativeMacOS != true && currentGame.compatibility != nil
+            case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: currentGame.installPath != nil || linkedApplication != nil
             }
         }
     }
 
     private var detailTabBar: some View {
-        HStack(spacing: 28) {
-            ForEach(visibleTabs, id: \.self) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    Text(tab.rawValue)
-                        .font(.callout.weight(selectedTab == tab ? .semibold : .regular))
-                        .foregroundStyle(selectedTab == tab ? .primary : .secondary)
-                        .padding(.vertical, 14)
-                        .overlay(alignment: .bottom) {
-                            if selectedTab == tab {
-                                Capsule().fill(Color.accentColor).frame(height: 3)
+        ScrollView(.horizontal) {
+            HStack(spacing: 28) {
+                ForEach(visibleTabs, id: \.self) { tab in
+                    Button { selectedTab = tab } label: {
+                        Text(tab.rawValue)
+                            .font(.callout.weight(selectedTab == tab ? .semibold : .regular))
+                            .foregroundStyle(selectedTab == tab ? .primary : .secondary)
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                            .overlay(alignment: .bottom) {
+                                if selectedTab == tab { Capsule().fill(.blue).frame(height: 3) }
                             }
-                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
                 }
-                .buttonStyle(.plain)
             }
-            Spacer()
         }
-        .padding(.horizontal, 24)
-        .background(.black.opacity(0.10))
+        .scrollIndicators(.hidden)
         .overlay(alignment: .bottom) { Divider() }
     }
 
-    @ViewBuilder private var tabContent: some View {
+    @ViewBuilder private func tabContent(width: CGFloat) -> some View {
         switch selectedTab {
         case .overview:
-            overviewMainColumn
+            overviewMainColumn(width: width)
         case .compatibility:
-            compatibilitySection
+            VStack(alignment: .leading, spacing: 12) {
+                compatibilitySection
+                if linkedEnvironment != nil { dependenciesSection }
+            }
         case .activity:
             activitySection
         case .files:
@@ -245,25 +257,12 @@ struct StoreGameDetailView: View {
         }
     }
 
-    private var detailRail: some View {
+    private func overviewMainColumn(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if storeOperation != nil {
-                operationStatus
-            }
-            detailsSidebar
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 760, alignment: .topLeading)
-        .background(.black.opacity(0.12))
-        .overlay(alignment: .leading) { Divider() }
-    }
-
-    private var overviewMainColumn: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            operationAndLibraryOverview
-            if linkedEnvironment != nil { dependenciesSection }
-            mediaSection
-            overviewEditorialGrid
+            libraryOverview(width: width)
+            if currentGame.supportsNativeMacOS != true { compatibilityOverview(width: width) }
+            mediaSection(width: width)
+            overviewEditorialGrid(width: width)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -345,53 +344,113 @@ struct StoreGameDetailView: View {
         }
     }
 
-    @ViewBuilder private var operationAndLibraryOverview: some View {
-        if storeOperation != nil {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    operationStatus
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    libraryOverview
-                        .frame(width: 430)
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    operationStatus
-                    libraryOverview
-                }
-            }
-        } else {
-            libraryOverview
+    private func overviewEditorialGrid(width: CGFloat) -> some View {
+        let layout = width >= 880 ? AnyLayout(HStackLayout(alignment: .top, spacing: 12)) : AnyLayout(VStackLayout(spacing: 12))
+        return layout {
+            aboutGameSection.frame(maxWidth: .infinity, alignment: .leading)
+            gameSetupSection.frame(maxWidth: width >= 880 ? width * 0.4 : .infinity, alignment: .leading)
         }
     }
 
-    private var overviewEditorialGrid: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 12) {
-                aboutGameSection
-                if currentGame.supportsNativeMacOS != true,
-                   currentGame.compatibility != nil {
-                    compatibilitySection
-                }
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                aboutGameSection
-                if currentGame.supportsNativeMacOS != true,
-                   currentGame.compatibility != nil {
-                    compatibilitySection
+    @ViewBuilder private var gameSetupSection: some View {
+        if let environment = linkedEnvironment, let application = linkedApplication {
+            detailCard("Game setup", symbol: "gearshape.fill") {
+                metric("Runtime", value: environment.runtime, symbol: "internaldrive")
+                metric("Graphics", value: environment.graphics, symbol: "display")
+                metric("Windows", value: environment.windowsVersion, symbol: "window.ceiling")
+                let required = store.dependencyStatuses(for: environment.id, application: application).filter { $0.recommendation == .required }
+                metric("Components", value: required.isEmpty ? "None required" : (required.allSatisfy { $0.state == .installed } ? "Ready" : "Requires attention"), symbol: "checkmark.circle")
+                HStack(spacing: 10) {
+                    Button("Configure") { compatibilityApplication = application }
+                        .buttonStyle(BorealSecondaryActionButtonStyle())
+                    Button("Components", systemImage: "arrow.right") { selectedTab = .compatibility }
+                        .buttonStyle(BorealSecondaryActionButtonStyle())
                 }
             }
         }
     }
 
-    @ViewBuilder private var aboutGameSection: some View {
-        if let summary = currentGame.summary, !summary.isEmpty {
-            detailCard("About this game", symbol: "text.alignleft") {
+    private var compatibilityRating: CompatibilityRating {
+        currentGame.compatibility?.tier.rating ?? linkedApplication?.compatibility ?? .unknown
+    }
+
+    private var compatibilityTint: Color {
+        switch compatibilityRating {
+        case .excellent, .good: .mint
+        case .limited: .orange
+        case .unsupported: .red
+        case .unknown: .secondary
+        }
+    }
+
+    private func compatibilityOverview(width: CGFloat) -> some View {
+        detailCard("Compatibility", symbol: "gamecontroller.fill") {
+            let layout = width >= 1000 ? AnyLayout(HStackLayout(alignment: .center, spacing: 22)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            layout {
+                let summaryLayout = width >= 1000 || width < 520 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+                summaryLayout {
+                    HStack(spacing: 16) {
+                        Image(systemName: compatibilityRating.symbol)
+                            .font(.system(size: 25, weight: .bold))
+                            .foregroundStyle(compatibilityTint)
+                            .frame(width: 48, height: 48)
+                            .background(compatibilityTint.opacity(0.14), in: Circle())
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(compatibilityRating.rawValue + " compatibility")
+                                .font(.system(size: 18, weight: .semibold))
+                            Text(currentGame.compatibility == nil ? "No community reports available." : "Based on community compatibility reports.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if width < 1000 { compatibilityDetailsButton.frame(maxWidth: width >= 520 ? 140 : .infinity) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: width < 360 ? 1 : 2), alignment: .leading, spacing: 12) {
+                    compatibilityFact("Graphics", value: linkedEnvironment?.graphics ?? "Not configured", symbol: "display")
+                    compatibilityFact("Community", value: currentGame.compatibility.map { "\($0.reportCount.formatted()) reports · \($0.tier.title)" } ?? "No reports", symbol: "person.2.fill")
+                }
+                .frame(maxWidth: .infinity)
+                if width >= 1000 { compatibilityDetailsButton.frame(width: 150) }
+            }
+        }
+    }
+
+    private var compatibilityDetailsButton: some View {
+        Button("View details", systemImage: "arrow.right") { selectedTab = .compatibility }
+            .buttonStyle(BorealSecondaryActionButtonStyle())
+    }
+
+    private func compatibilityFact(_ title: String, value: String, symbol: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.title3).foregroundStyle(.indigo.opacity(0.9))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var aboutGameSection: some View {
+        detailCard("About this game", symbol: "doc.text.fill") {
+            if let summary = currentGame.summary, !summary.isEmpty {
                 Text(summary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(4)
+                    .font(.callout).foregroundStyle(.secondary).lineSpacing(2)
+                    .lineLimit(showsFullDescription ? nil : 4)
                     .textSelection(.enabled)
+                if summary.count > 160 {
+                    Button(showsFullDescription ? "Show less" : "Read more") { showsFullDescription.toggle() }
+                        .buttonStyle(.plain).foregroundStyle(.cyan).font(.caption.weight(.semibold))
+                }
+            } else {
+                Text("No description provided by this store.").font(.callout).foregroundStyle(.secondary)
             }
+            if let developer = currentGame.developer {
+                Divider()
+                metric("Developer", value: developer, symbol: "person.2")
+            }
+            metric("Source", value: currentGame.provider.rawValue, symbol: "bag")
         }
     }
 
@@ -410,8 +469,30 @@ struct StoreGameDetailView: View {
         }
     }
 
-    @ViewBuilder private var primaryActions: some View {
-        HStack(spacing: 10) {
+    private var storeImageFailurePlaceholder: some View {
+        ZStack {
+            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.82))
+        }
+    }
+
+    private var primaryActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                primaryLaunchAction
+                secondaryHeroActions
+            }.fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 10) {
+                primaryLaunchAction
+                secondaryHeroActions
+            }
+        }
+        .tint(.blue)
+    }
+
+    @ViewBuilder private var primaryLaunchAction: some View {
             if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
             } else if game.provider == .steam {
@@ -443,15 +524,28 @@ struct StoreGameDetailView: View {
                 Button(installButtonTitle, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
                     .buttonStyle(BorealPrimaryActionButtonStyle())
             }
-            if linkedApplication != nil || currentGame.isInstalled {
-                gameSettingsMenu
-            }
-            moreActionsMenu
-        }
-        .tint(.cyan)
     }
 
-    private var gameSettingsMenu: some View {
+    private var secondaryHeroActions: some View {
+        HStack(spacing: 10) {
+            Button {
+                store.toggleFavorite(key: "\(currentGame.provider.rawValue):\(currentGame.externalID)")
+            } label: {
+                Image(systemName: isFavorite ? "heart.fill" : "heart")
+            }
+            .buttonStyle(BorealSquareActionButtonStyle())
+            .foregroundStyle(isFavorite ? .purple : .secondary)
+            .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+            .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+            moreActionsMenu
+        }
+    }
+
+    private var isFavorite: Bool {
+        store.isFavorite(key: "\(currentGame.provider.rawValue):\(currentGame.externalID)")
+    }
+
+    private var moreActionsMenu: some View {
         Menu {
             if let app = linkedApplication {
                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") {
@@ -483,17 +577,7 @@ struct StoreGameDetailView: View {
             if !currentGame.isInstalled && linkedApplication == nil {
                 Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }
             }
-        } label: {
-            squareMenuLabel(symbol: "gearshape")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .help("Game settings")
-        .accessibilityLabel("Game settings")
-    }
 
-    private var moreActionsMenu: some View {
-        Menu {
             if currentGame.provider == .steam {
                 Button("View Steam Store Page", systemImage: "arrow.up.right.square") { openStorePage() }
             }
@@ -726,43 +810,15 @@ struct StoreGameDetailView: View {
         return formatDuration(totalSeconds)
     }
 
-    private var libraryOverview: some View {
+    private func libraryOverview(width: CGFloat) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            libraryOverviewContent
-        }
-    }
-
-    private var libraryOverviewContent: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 0) {
-                overviewMetric("Library status", value: libraryStatus, symbol: libraryStatusSymbol)
-                overviewDivider
-                overviewMetric("Playtime", value: playtime, symbol: "clock.fill")
-                overviewDivider
-                overviewMetric(
-                    "Last played",
-                    value: lastPlayedValue,
-                    symbol: "calendar"
-                )
-                overviewDivider
-                overviewMetric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive.fill")
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                overviewMetric("Library status", value: libraryStatus, symbol: libraryStatusSymbol)
-                Divider()
-                overviewMetric("Playtime", value: playtime, symbol: "clock.fill")
-                Divider()
-                overviewMetric(
-                    "Last played",
-                    value: lastPlayedValue,
-                    symbol: "calendar"
-                )
-                Divider()
-                overviewMetric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive.fill")
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: width >= 760 ? 4 : (width >= 360 ? 2 : 1)), spacing: 12) {
+                overviewMetric("Playtime", value: playtime, symbol: "clock")
+                overviewMetric("Last played", value: lastPlayedValue, symbol: "calendar")
+                overviewMetric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
+                overviewMetric("Compatibility", value: currentGame.supportsNativeMacOS == true ? "Native macOS" : compatibilityRating.rawValue, symbol: compatibilityRating.symbol, tint: currentGame.supportsNativeMacOS == true ? .mint : compatibilityTint)
             }
         }
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12)) }
     }
 
     private var lastPlayedValue: String {
@@ -771,122 +827,291 @@ struct StoreGameDetailView: View {
     }
 
     private var activitySection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            libraryOverview
-            if store.activePlaySessionStart(for: currentGame) != nil {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    detailCard("Current session", symbol: "timer") {
-                        HStack {
-                            Label("Boreal is measuring this session", systemImage: "record.circle.fill")
-                                .foregroundStyle(.green)
-                            Spacer()
-                            Text(formatDuration(store.activePlaySessionElapsed(for: currentGame) ?? 0))
-                                .font(.title3.monospacedDigit().weight(.semibold))
-                        }
-                    }
-                }
-            }
-            detailCard("Tracked by Boreal", symbol: "clock.badge.checkmark") {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(formatDuration(currentGame.measuredPlaytime))
-                            .font(.title2.weight(.semibold))
-                        Text("Measured while the managed Wine/GPTK environment was active")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text("\(currentGame.completedPlaySessions.count) sessions")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                activityStatistics(at: context.date)
-            }
-            if !currentGame.completedPlaySessions.isEmpty {
-                detailCard("Session history", symbol: "list.bullet.rectangle") {
-                    VStack(spacing: 0) {
-                        ForEach(currentGame.completedPlaySessions) { session in
-                            HStack(spacing: 12) {
-                                Image(systemName: "play.circle.fill")
-                                    .foregroundStyle(.cyan)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(session.startedAt.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.callout.weight(.medium))
-                                    Text("Ended \((session.endedAt ?? session.startedAt).formatted(date: .omitted, time: .shortened))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(formatDuration(session.duration))
-                                    .font(.callout.monospacedDigit().weight(.semibold))
-                            }
-                            .padding(.vertical, 10)
-                            if session.id != currentGame.completedPlaySessions.last?.id { Divider() }
-                        }
-                    }
-                }
-            }
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            activityDashboard(at: context.date)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func activityStatistics(at date: Date) -> some View {
-        let statistics = GameActivityStatistics(sessions: activitySessions, now: date)
-        return VStack(alignment: .leading, spacing: 20) {
-            detailCard("Activity statistics", symbol: "chart.bar.fill") {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) {
-                        activityStatistic("This week", duration: statistics.thisWeek)
-                        activityStatistic("Last week", duration: statistics.lastWeek)
-                        activityStatistic("Average session", duration: statistics.averageSession)
-                        activityStatistic("Longest session", duration: statistics.longestSession)
-                    }
-                    VStack(spacing: 10) {
-                        HStack(spacing: 10) {
-                            activityStatistic("This week", duration: statistics.thisWeek)
-                            activityStatistic("Last week", duration: statistics.lastWeek)
-                        }
-                        HStack(spacing: 10) {
-                            activityStatistic("Average session", duration: statistics.averageSession)
-                            activityStatistic("Longest session", duration: statistics.longestSession)
-                        }
-                    }
+    private func activityDashboard(at date: Date) -> some View {
+        let sessions = activitySessions
+        let statistics = GameActivityStatistics(sessions: sessions, now: date, heatmapDayCount: max(84, activityDayCount))
+        let columns = activityWidth >= 900 ? 5 : (activityWidth >= 560 ? 3 : (activityWidth >= 350 ? 2 : 1))
+        return VStack(alignment: .leading, spacing: 12) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns), spacing: 12) {
+                activityMetric("Total playtime", value: formatDuration(sessions.reduce(0) { $0 + $1.duration }), symbol: "clock")
+                activityMetric("Sessions", value: "\(sessions.count)", symbol: "gamecontroller")
+                activityMetric("Average session", value: formatDuration(statistics.averageSession), symbol: "chart.bar.fill")
+                activityMetric("Longest session", value: formatDuration(statistics.longestSession), symbol: "trophy")
+                activityMetric("Last played", value: lastPlayedValue, symbol: "calendar", subtitle: currentGame.lastPlayed.map { $0.formatted(.relative(presentation: .named)) })
+            }
+            if activityWidth >= 760 {
+                HStack(alignment: .top, spacing: 12) {
+                    activityTrackingCard.frame(width: (activityWidth - 12) * 0.56)
+                    activityWeekCard(statistics, at: date)
+                }
+            } else {
+                activityTrackingCard
+                activityWeekCard(statistics, at: date)
+            }
+            if activityWidth >= 900 {
+                HStack(alignment: .top, spacing: 12) {
+                    activityChart(statistics).frame(width: (activityWidth - 12) * 0.62)
+                    activityHeatmap(statistics)
+                }
+            } else {
+                activityChart(statistics)
+                activityHeatmap(statistics)
+            }
+            activityHistory(sessions)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { activityWidth = $0 }
+    }
+
+    private func activityMetric(_ title: String, value: String, symbol: String, subtitle: String? = nil) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 23, weight: .medium))
+                .foregroundStyle(.blue)
+                .frame(width: 44, height: 44)
+                .background(.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 18, weight: .semibold)).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.85)
+                if let subtitle {
+                    Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            detailCard("Activity heatmap", symbol: "square.grid.3x3.fill") {
-                VStack(alignment: .leading, spacing: 10) {
-                    ScrollView(.horizontal) {
-                        LazyHGrid(
-                            rows: Array(repeating: GridItem(.fixed(14), spacing: 4), count: 7),
-                            spacing: 4
-                        ) {
-                            ForEach(statistics.days) { day in
-                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .fill(heatmapColor(for: day.duration, maximum: statistics.days.map(\.duration).max() ?? 0))
-                                    .frame(width: 14, height: 14)
-                                    .help("\(day.date.formatted(date: .abbreviated, time: .omitted)): \(formatDuration(day.duration))")
-                                    .accessibilityLabel(day.date.formatted(date: .complete, time: .omitted))
-                                    .accessibilityValue(formatDuration(day.duration))
-                            }
-                        }
-                        .padding(.vertical, 2)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .overlay { RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(0.09)) }
+    }
+
+    private var activityTrackingCard: some View {
+        activityCard("Tracked by Boreal", symbol: "info.circle.fill", minimumHeight: 100) {
+            HStack(spacing: 16) {
+                Text("Activity is measured while \(currentGame.name) is launched through Boreal. Offline play and other launchers may not be included.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Learn more") { showsActivityInfo = true }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                    .overlay { RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.06)) }
+                    .fixedSize()
+                    .popover(isPresented: $showsActivityInfo) {
+                        Text("Boreal records elapsed time while a managed game session is active. These statistics use locally recorded sessions; store-reported playtime can differ. Sessions interrupted when Boreal closes may be incomplete.")
+                            .font(.callout).padding(20).frame(width: 320)
                     }
-                    .scrollIndicators(.hidden)
-                    HStack(spacing: 6) {
-                        Text("Less")
-                        ForEach(0..<5, id: \.self) { level in
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(heatmapColor(for: Double(level), maximum: 4))
-                                .frame(width: 12, height: 12)
+            }
+        }
+    }
+
+    private func activityWeekCard(_ statistics: GameActivityStatistics, at date: Date) -> some View {
+        activityCard("This week", symbol: "calendar.badge.clock", minimumHeight: 100) {
+            HStack(alignment: .top) {
+                if let week = Calendar.autoupdatingCurrent.dateInterval(of: .weekOfYear, for: date) {
+                    Text("\(week.start.formatted(.dateTime.day().month())) – \(week.end.addingTimeInterval(-1).formatted(.dateTime.day().month().year()))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(formatDuration(statistics.thisWeek)).font(.headline).monospacedDigit()
+                        if statistics.lastWeek > 0 {
+                            let change = (statistics.thisWeek - statistics.lastWeek) / statistics.lastWeek
+                            Text(change.formatted(.percent.precision(.fractionLength(0)).sign(strategy: .always())))
+                                .font(.caption).foregroundStyle(change >= 0 ? .green : .secondary)
                         }
-                        Text("More")
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    Text("Last week: \(formatDuration(statistics.lastWeek))")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private func activityChart(_ statistics: GameActivityStatistics) -> some View {
+        let days = Array(statistics.days.suffix(activityDayCount))
+        return activityCard("Playtime over time", symbol: "chart.xyaxis.line", minimumHeight: 180, showsPeriod: true) {
+            Chart(days) { day in
+                AreaMark(x: .value("Date", day.date), y: .value("Minutes", day.duration / 60))
+                    .foregroundStyle(LinearGradient(colors: [.blue.opacity(0.3), .blue.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+                LineMark(x: .value("Date", day.date), y: .value("Minutes", day.duration / 60))
+                    .foregroundStyle(.blue).lineStyle(StrokeStyle(lineWidth: 2))
+                if activityDayCount == 7 {
+                    PointMark(x: .value("Date", day.date), y: .value("Minutes", day.duration / 60))
+                        .foregroundStyle(.blue).symbolSize(28)
+                }
+                if let selection = selectedActivityDate,
+                   Calendar.autoupdatingCurrent.isDate(day.date, inSameDayAs: selection) {
+                    RuleMark(x: .value("Selected date", day.date))
+                        .foregroundStyle(.secondary.opacity(0.4))
+                        .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(formatDuration(day.duration)).fontWeight(.semibold)
+                                Text(day.date.formatted(date: .abbreviated, time: .omitted))
+                            }
+                            .font(.caption).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                        }
+                }
+            }
+            .chartXSelection(value: $selectedActivityDate)
+            .chartYScale(domain: 0...max(1, (days.map(\.duration).max() ?? 0) / 60 * 1.12))
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Color.clear
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            if let plotFrame = proxy.plotFrame {
+                                // Chart coordinates are relative to the plot, not the full card.
+                                selectedActivityDate = proxy.value(atX: location.x - geometry[plotFrame].minX, as: Date.self)
+                            }
+                        case .ended: selectedActivityDate = nil
+                        }
+                    }
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                    AxisValueLabel { if let minutes = value.as(Double.self) { Text("\(minutes.formatted(.number.precision(.fractionLength(0)))) min") } }
+                }
+            }
+            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 7)) }
+            .frame(height: 126)
+            .onChange(of: activityDayCount) { selectedActivityDate = nil }
+        }
+    }
+
+    private func activityHeatmap(_ statistics: GameActivityStatistics) -> some View {
+        let days = Array(statistics.days.suffix(84))
+        let maximum = days.map(\.duration).max() ?? 0
+        return activityCard("Activity heatmap", symbol: "square.grid.3x3.fill", minimumHeight: 180) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(spacing: 8) {
+                    HStack {
+                        Text(days.first?.date.formatted(.dateTime.month(.abbreviated)) ?? "")
+                        Spacer()
+                        Text(days[days.count / 2].date.formatted(.dateTime.month(.abbreviated)))
+                        Spacer()
+                        Text(days.last?.date.formatted(.dateTime.month(.abbreviated)) ?? "")
+                    }.font(.caption2).foregroundStyle(.secondary)
+                    // Twelve columns represent consecutive weeks, read top to bottom.
+                    HStack(spacing: 3) {
+                        ForEach(0..<12, id: \.self) { week in
+                            VStack(spacing: 3) {
+                                ForEach(0..<7, id: \.self) { weekday in
+                                    let day = days[week * 7 + weekday]
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(heatmapColor(for: day.duration, maximum: maximum))
+                                        .frame(maxWidth: .infinity).frame(height: 12)
+                                        .help("\(day.date.formatted(date: .abbreviated, time: .omitted)): \(formatDuration(day.duration))")
+                                        .accessibilityLabel(day.date.formatted(date: .complete, time: .omitted))
+                                        .accessibilityValue(formatDuration(day.duration))
+                                }
+                            }
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach([4, 2, 1, 0], id: \.self) { level in
+                        HStack(spacing: 7) {
+                            RoundedRectangle(cornerRadius: 2).fill(heatmapColor(for: Double(level), maximum: 4)).frame(width: 10, height: 10)
+                            Text(["No activity", "A little activity", "Some activity", "", "More activity"][level])
+                        }
+                    }
+                }.font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
+            }
+            .frame(height: 126)
+        }
+    }
+
+    private func activityHistory(_ sessions: [GamePlaySession]) -> some View {
+        activityCard("Session history", symbol: "list.bullet.rectangle", sessionCount: sessions.count) {
+            if sessions.isEmpty {
+                Text("No sessions recorded yet. Launch this game through Boreal to start tracking activity.")
+                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 18)
+            } else {
+                ScrollView(.horizontal) {
+                    Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
+                        GridRow {
+                            Text("Date").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Start time").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("End time").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Duration").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Status").frame(maxWidth: .infinity, alignment: .leading)
+                        }.font(.caption2).foregroundStyle(.secondary)
+                        ForEach(sessions.sorted { $0.startedAt > $1.startedAt }) { session in
+                            Divider().gridCellUnsizedAxes(.horizontal)
+                            GridRow {
+                                HStack(spacing: 9) {
+                                    Circle().fill(session.isActive ? .blue : .green).frame(width: 7, height: 7)
+                                    Text(session.startedAt.formatted(date: .abbreviated, time: .omitted))
+                                }
+                                Text(session.startedAt.formatted(date: .omitted, time: .shortened))
+                                Text(session.endedAt?.formatted(date: .omitted, time: .shortened) ?? "—")
+                                Text(formatDuration(session.duration)).monospacedDigit()
+                                Text(session.isActive ? "Playing now" : "Completed")
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(session.isActive ? .blue : .green)
+                                    .padding(.horizontal, 8).padding(.vertical, 3)
+                                    .background((session.isActive ? Color.blue : Color.green).opacity(0.12), in: Capsule())
+                            }.font(.caption)
+                        }
+                    }.frame(width: max(560, activityWidth - 28), alignment: .leading)
+                }
+                .scrollIndicators(.automatic)
+            }
+        }
+    }
+
+    private func activityCard<Content: View>(
+        _ title: String, symbol: String, minimumHeight: CGFloat = 0,
+        showsPeriod: Bool = false, sessionCount: Int? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .foregroundStyle(symbol == "info.circle.fill" ? Color.cyan : Color.primary.opacity(0.9))
+                Text(title).font(.callout.weight(.semibold)).lineLimit(1)
+                Spacer(minLength: 0)
+                if showsPeriod {
+                    HStack(spacing: 3) {
+                        ForEach([7, 30, 90, 365], id: \.self) { days in
+                            Button { activityDayCount = days } label: {
+                                Text(days == 365 ? "1Y" : "\(days)D")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .frame(width: activityWidth < 430 ? 29 : 39, height: 24)
+                                    .background(activityDayCount == days ? Color.blue : .clear, in: Capsule())
+                                    .foregroundStyle(activityDayCount == days ? .white : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(days == 365 ? "1 year" : "\(days) days")
+                            .accessibilityAddTraits(activityDayCount == days ? .isSelected : [])
+                        }
+                    }
+                    .padding(3).background(.white.opacity(0.04), in: Capsule())
+                }
+                if let sessionCount {
+                    Text("\(sessionCount) sessions").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(minHeight: 30)
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: minimumHeight, alignment: .topLeading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .overlay { RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(0.09)) }
     }
 
     private var activitySessions: [GamePlaySession] {
@@ -899,23 +1124,10 @@ struct StoreGameDetailView: View {
         return sessions
     }
 
-    private func activityStatistic(_ title: String, duration: TimeInterval) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(formatDuration(duration))
-                .font(.title3.monospacedDigit().weight(.semibold))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
     private func heatmapColor(for duration: TimeInterval, maximum: TimeInterval) -> Color {
         guard duration > 0, maximum > 0 else { return .secondary.opacity(0.12) }
         let level = min(1, max(0.2, duration / maximum))
-        return .cyan.opacity(0.25 + level * 0.75)
+        return .blue.opacity(0.25 + level * 0.75)
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
@@ -927,57 +1139,23 @@ struct StoreGameDetailView: View {
         return "\(seconds) sec"
     }
 
-    private func overviewMetric(_ title: String, value: String, symbol: String) -> some View {
-        VStack(spacing: 10) {
+    private func overviewMetric(_ title: String, value: String, symbol: String, tint: Color = .blue) -> some View {
+        HStack(spacing: 14) {
             Image(systemName: symbol)
                 .font(.title2)
-                .foregroundStyle(.cyan)
-                .frame(height: 28)
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.callout.weight(.semibold))
-                .lineLimit(1)
-        }
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity, minHeight: 124, alignment: .center)
-        .padding(.horizontal, 12)
-    }
-
-    private var overviewDivider: some View {
-        Divider().frame(height: 124)
-    }
-
-    private var detailContent: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 28) {
-                editorialContent
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                detailsSidebar
-                    .frame(width: 310)
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .background(tint.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 17, weight: .semibold)).foregroundStyle(title == "Compatibility" ? tint : .primary).lineLimit(1).minimumScaleFactor(0.8)
             }
-            VStack(alignment: .leading, spacing: 26) {
-                editorialContent
-                detailsSidebar
-            }
+            Spacer(minLength: 0)
         }
-    }
-
-    private var editorialContent: some View {
-        VStack(alignment: .leading, spacing: 26) {
-            if let summary = currentGame.summary, !summary.isEmpty {
-                section("About this game") {
-                    Text(summary)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
-                }
-            }
-            if currentGame.supportsNativeMacOS != true { compatibilitySection }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)) }
     }
 
     private var formattedDownloadSize: String {
@@ -994,7 +1172,7 @@ struct StoreGameDetailView: View {
             return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         }
         guard let estimate = currentGame.sizeEstimate,
-              let bytes = estimate.installedBytes, bytes > 0 else { return "Checking availability…" }
+              let bytes = estimate.installedBytes, bytes > 0 else { return "Not provided" }
         let formatted = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         return estimate.source.isExactManifest ? formatted : "≈ \(formatted)"
     }
@@ -1131,105 +1309,82 @@ struct StoreGameDetailView: View {
         return values.joined(separator: "  •  ")
     }
 
-    @ViewBuilder private var mediaSection: some View {
+    @ViewBuilder private func mediaSection(width: CGFloat) -> some View {
         let screenshots = currentGame.screenshotURLs ?? []
         let videos = currentGame.videos ?? []
-        if !screenshots.isEmpty || !videos.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Media").font(.headline)
+        let galleryURLs = screenshots.compactMap(URL.init(string:))
+        let mediaItems = galleryURLs.map(StoreMediaItem.screenshot) + videos.map(StoreMediaItem.video)
+        let visibleCount: CGFloat = width >= 1150 ? 5 : (width >= 850 ? 4 : (width >= 620 ? 3 : 2))
+        let thumbnailWidth = max(156, (width - 28 - (visibleCount - 1) * 10) / visibleCount)
+        if !mediaItems.isEmpty {
+            detailCard("Media", symbol: "photo", actionTitle: "View all media", action: {
+                selectedMedia = StoreMediaSelection(items: mediaItems, initialIndex: 0)
+            }) {
                 ScrollView(.horizontal) {
-                    HStack(spacing: 14) {
-                        ForEach(Array(screenshots.enumerated()), id: \.offset) { index, value in
-                            if let url = URL(string: value) {
-                                Button {
-                                    let galleryURLs = screenshots.compactMap(URL.init(string:))
-                                    selectedScreenshot = StoreScreenshotSelection(
-                                        urls: galleryURLs,
-                                        initialIndex: galleryURLs.firstIndex(of: url) ?? index
-                                    )
-                                } label: {
-                                    AsyncImage(url: url) { phase in
-                                        switch phase {
-                                        case .success(let image): image.resizable().scaledToFill()
-                                        case .failure: storeImageFailurePlaceholder
-                                        case .empty: Rectangle().fill(.background.secondary).overlay { ProgressView() }
-                                        @unknown default: Rectangle().fill(.background.secondary)
-                                        }
-                                    }
-                                    .frame(width: 205, height: 118)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                    .overlay(alignment: .bottomTrailing) {
-                                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                            .padding(9)
-                                            .background(.ultraThinMaterial, in: Circle())
-                                            .padding(9)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .help("Open screenshot")
-                            }
-                        }
-                        ForEach(videos) { video in
-                            Button { selectedVideo = video } label: {
-                                ZStack {
-                                    if let thumbnail = video.thumbnailURL, let url = URL(string: thumbnail) {
-                                        AsyncImage(url: url) { phase in
-                                            if let image = phase.image { image.resizable().scaledToFill() }
-                                            else { Rectangle().fill(.background.secondary) }
-                                        }
-                                    }
-                                    Color.black.opacity(0.25)
-                                    Image(systemName: "play.circle.fill").font(.system(size: 46)).foregroundStyle(.white)
-                                }
-                                .frame(width: 205, height: 118)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    HStack(spacing: 10) {
+                        ForEach(Array(mediaItems.enumerated()), id: \.element.id) { index, item in
+                            Button {
+                                selectedMedia = StoreMediaSelection(items: mediaItems, initialIndex: index)
+                            } label: {
+                                mediaThumbnail(item, width: thumbnailWidth)
                             }
                             .buttonStyle(.plain)
-                            .help(video.name)
+                            .help(item.isVideo ? item.accessibilityTitle : "Open screenshot \(index + 1)")
+                            .accessibilityLabel(item.isVideo ? item.accessibilityTitle : "Open screenshot \(index + 1) of \(mediaItems.count)")
                         }
                     }
                 }
-                .scrollIndicators(.hidden)
+                .scrollIndicators(.automatic)
             }
         }
     }
 
-    private var storeImageFailurePlaceholder: some View {
-        ZStack {
-            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.82))
-        }
+    private func mediaThumbnail(_ item: StoreMediaItem, width: CGFloat) -> some View {
+        StoreMediaThumbnail(item: item, width: width)
     }
 
     private var detailsSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let environment = linkedEnvironment {
-                detailCard("Environment", symbol: "flask.fill") {
-                    metric("Environment", value: environment.name, symbol: "shippingbox")
-                    metric("Runtime", value: environment.runtime, symbol: "gearshape.2")
-                    metric("Graphics", value: environment.graphics, symbol: "display")
-                    metric("Windows version", value: environment.windowsVersion, symbol: "window.ceiling")
-                    metric("Architecture", value: environment.architecture, symbol: "cpu")
-                }
-            }
             if currentGame.installPath != nil || currentGame.storageBytes != nil || currentGame.sizeEstimate != nil {
-                detailCard("Installation", symbol: "folder.fill") {
-                    if currentGame.installPath != nil {
-                        metric("Location", value: installationLocation, symbol: "folder")
-                    }
+                detailCard("Installation", symbol: "internaldrive.fill") {
+                    Label(currentGame.isInstalled || linkedApplication != nil ? "Installed" : "Not installed", systemImage: currentGame.isInstalled || linkedApplication != nil ? "checkmark.circle.fill" : "arrow.down.circle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(currentGame.isInstalled || linkedApplication != nil ? Color.mint : Color.secondary)
+                    Divider()
                     metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
+                    if let environment = linkedEnvironment {
+                        metric("Prefix", value: store.formattedBytes(environment.storageBytes), symbol: "shippingbox")
+                    }
+                    if currentGame.installPath != nil {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Location").font(.caption).foregroundStyle(.secondary)
+                            Text(installationLocation).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(3).truncationMode(.middle).textSelection(.enabled)
+                                .help(currentGame.installPath ?? installationLocation)
+                        }
+                    }
                     if currentGame.sizeEstimate?.downloadBytes != nil {
                         metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
                     }
                     if currentGame.installPath != nil {
-                        Button("Open installation folder", systemImage: "folder") { showGameFiles() }
+                        Button("Manage files", systemImage: "arrow.right") { selectedTab = .files }
                             .buttonStyle(BorealSecondaryActionButtonStyle())
                     }
                 }
             }
-            diskStorageCard
+            if let environment = linkedEnvironment {
+                detailCard("Environment", symbol: "shippingbox") {
+                    metric("Runtime", value: environment.runtime, symbol: "gearshape.2")
+                    metric("Graphics", value: environment.graphics, symbol: "display")
+                    metric("Windows version", value: environment.windowsVersion, symbol: "window.ceiling")
+                    metric("Architecture", value: environment.architecture, symbol: "cpu")
+                    if let application = linkedApplication {
+                        Button("Configure", systemImage: "arrow.right") { compatibilityApplication = application }
+                            .buttonStyle(BorealSecondaryActionButtonStyle())
+                    }
+                }
+            }
             detailCard("Actions", symbol: "ellipsis") {
                 if currentGame.installPath != nil {
                     Button("Open game folder", systemImage: "folder") { showGameFiles() }
@@ -1334,23 +1489,26 @@ struct StoreGameDetailView: View {
         return "Owned on \(currentGame.provider.rawValue). Install it when you are ready to play."
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.title2.weight(.semibold))
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    private var cardFill: LinearGradient {
+        LinearGradient(colors: [Color(red: 0.09, green: 0.125, blue: 0.18), Color(red: 0.065, green: 0.095, blue: 0.14)], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
-    private func detailCard<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 15) {
-            Label(title, systemImage: symbol).font(.headline)
+    private func detailCard<Content: View>(_ title: String, symbol: String, actionTitle: String? = nil, action: @escaping () -> Void = {}, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(title, systemImage: symbol).font(.headline)
+                Spacer(minLength: 8)
+                if let actionTitle {
+                    Button(actionTitle, systemImage: "arrow.right", action: action)
+                        .font(.caption.weight(.medium)).buttonStyle(.plain).foregroundStyle(.cyan)
+                }
+            }
             content()
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12)) }
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
     }
 
     private var linkedApplication: WindowsApplication? { store.linkedApplication(for: game) }
@@ -1399,8 +1557,8 @@ struct StoreGameDetailView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.14)) }
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.14)) }
     }
 
     private func compatibilitySummary(_ profile: CommunityCompatibility) -> String {
@@ -1418,12 +1576,12 @@ struct StoreGameDetailView: View {
     }
 
     private func metric(_ title: String, value: String, symbol: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol).frame(width: 24).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.caption).foregroundStyle(.secondary)
-                Text(value).fontWeight(.medium)
-            }
+        HStack(alignment: .top, spacing: 10) {
+            Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+            Spacer(minLength: 8)
+            Text(value).font(.caption.weight(.medium))
+                .multilineTextAlignment(.trailing).textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1511,21 +1669,28 @@ struct StoreGameDetailView: View {
 }
 
 private struct BorealSecondaryActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.callout.weight(.medium))
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(.white.opacity(configuration.isPressed ? 0.10 : 0.05))
+            .padding(.vertical, 9)
+            .foregroundStyle(.cyan)
+            .background(.blue.opacity(configuration.isPressed ? 0.28 : (isHovered ? 0.2 : 0.12)))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.white.opacity(0.14))
+                    .stroke(.blue.opacity(0.35))
             }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(isEnabled ? 1 : 0.45)
+            .onHover { isHovered = $0 }
     }
 }
 
 private struct BorealPrimaryActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.callout.weight(.semibold))
@@ -1535,14 +1700,15 @@ private struct BorealPrimaryActionButtonStyle: ButtonStyle {
             .background(
                 LinearGradient(
                     colors: configuration.isPressed
-                        ? [Color.indigo.opacity(0.85), Color.blue.opacity(0.85)]
-                        : [Color.indigo, Color.blue],
+                        ? [Color.blue.opacity(0.85), Color.blue.opacity(0.7)]
+                        : [Color(red: 0.02, green: 0.58, blue: 1), Color.blue],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
             )
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .shadow(color: .blue.opacity(0.22), radius: 8, y: 3)
+            .shadow(color: .blue.opacity(0.28), radius: 8, y: 3)
+            .opacity(isEnabled ? 1 : 0.5)
     }
 }
 
@@ -1550,7 +1716,6 @@ private struct BorealSquareActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.88))
             .frame(width: 40, height: 40)
             .background(.black.opacity(configuration.isPressed ? 0.50 : 0.34))
             .overlay {
@@ -1562,13 +1727,18 @@ private struct BorealSquareActionButtonStyle: ButtonStyle {
 }
 
 private struct BorealRailActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.callout)
             .foregroundStyle(configuration.role == .destructive ? Color.red : Color.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+            .background(.white.opacity(isHovered && isEnabled ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 6))
+            .onHover { isHovered = $0 }
             .contentShape(Rectangle())
-            .opacity(configuration.isPressed ? 0.65 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.65 : 1) : 0.4)
     }
 }
 
@@ -1762,136 +1932,331 @@ private struct StoreGameInstallationSheet: View {
     }
 }
 
-private struct StoreScreenshotSelection: Identifiable {
-    let urls: [URL]
-    let initialIndex: Int
-    var id: String { "\(urls.first?.absoluteString ?? "screenshots")#\(initialIndex)" }
+private enum StoreMediaItem: Hashable, Identifiable {
+    case screenshot(URL)
+    case video(StoreVideo)
+
+    var id: String {
+        switch self {
+        case .screenshot(let url): "screenshot:\(url.absoluteString)"
+        case .video(let video): "video:\(video.id)"
+        }
+    }
+
+    var thumbnailURL: URL? {
+        switch self {
+        case .screenshot(let url): url
+        case .video(let video): video.thumbnailURL.flatMap(URL.init(string:))
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .screenshot: "Screenshot"
+        case .video(let video): video.name
+        }
+    }
+
+    var accessibilityTitle: String {
+        switch self {
+        case .screenshot: "Open screenshot"
+        case .video(let video): "Play \(video.name)"
+        }
+    }
+
+    var isVideo: Bool {
+        if case .video = self { return true }
+        return false
+    }
 }
 
-private struct StoreScreenshotViewer: View {
-    @Environment(\.dismiss) private var dismiss
-    let screenshot: StoreScreenshotSelection
-    let gameName: String
-    @State private var currentIndex: Int
+private struct StoreMediaSelection: Identifiable {
+    let items: [StoreMediaItem]
+    let initialIndex: Int
+    var id: String { "\(items.map(\.id).joined(separator: "|"))#\(initialIndex)" }
+}
 
-    init(screenshot: StoreScreenshotSelection, gameName: String) {
-        self.screenshot = screenshot
-        self.gameName = gameName
-        _currentIndex = State(initialValue: min(max(screenshot.initialIndex, 0), max(screenshot.urls.count - 1, 0)))
+private struct StoreMediaThumbnail: View {
+    let item: StoreMediaItem
+    let width: CGFloat
+
+    var body: some View {
+        ZStack {
+            if let url = item.thumbnailURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFill()
+                    case .failure: placeholder
+                    case .empty: Rectangle().fill(.background.secondary).overlay { ProgressView() }
+                    @unknown default: Rectangle().fill(.background.secondary)
+                    }
+                }
+            } else {
+                placeholder
+            }
+            if item.isVideo {
+                LinearGradient(colors: [.black.opacity(0.05), .black.opacity(0.72)], startPoint: .top, endPoint: .bottom)
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: width, height: width * 0.46)
+        .overlay(alignment: .bottomLeading) {
+            if item.isVideo {
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .padding(8)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.82))
+        }
+    }
+}
+
+private struct StoreMediaViewer: View {
+    @Environment(\.dismiss) private var dismiss
+    let selection: StoreMediaSelection
+    let game: StoreLibraryGame
+    @State private var currentIndex: Int
+    @State private var player = AVPlayer()
+    @State private var isPlaying = false
+
+    init(selection: StoreMediaSelection, game: StoreLibraryGame) {
+        self.selection = selection
+        self.game = game
+        _currentIndex = State(initialValue: min(max(selection.initialIndex, 0), max(selection.items.count - 1, 0)))
     }
 
     var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Text(gameName).font(.title2).fontWeight(.semibold)
-                Spacer()
-                if screenshot.urls.count > 1 {
-                    Text("\(currentIndex + 1) of \(screenshot.urls.count)")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                Button("Close", systemImage: "xmark") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+        VStack(spacing: 0) {
+            header
+            Divider().opacity(0.6)
+            mediaStage
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
+            metadata
+            Divider().opacity(0.6)
+            filmstrip
+        }
+        .frame(minWidth: 860, idealWidth: 1_080, minHeight: 620, idealHeight: 760)
+        .background(.regularMaterial)
+        .preferredColorScheme(.dark)
+        .onAppear(perform: preparePlayer)
+        .onChange(of: currentIndex) { preparePlayer() }
+        .onDisappear { player.pause() }
+        .onExitCommand { dismiss() }
+        .background {
+            Button("Previous media", action: showPrevious)
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .hidden()
+            Button("Next media", action: showNext)
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .hidden()
+            Button("Play or pause video", action: togglePlayback)
+                .keyboardShortcut(.space, modifiers: [])
+                .hidden()
+            Button("Toggle fullscreen", action: toggleFullscreen)
+                .keyboardShortcut(.return, modifiers: [.command])
+                .hidden()
+            Button("Toggle fullscreen", action: toggleFullscreen)
+                .keyboardShortcut("f", modifiers: [])
+                .hidden()
+        }
+    }
+
+    private var currentItem: StoreMediaItem {
+        guard selection.items.indices.contains(currentIndex) else {
+            return selection.items.first ?? .screenshot(URL(fileURLWithPath: "/"))
+        }
+        return selection.items[currentIndex]
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            GameArtworkView(game: game, width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(game.name).font(.headline)
+                Text("Media").font(.caption).foregroundStyle(.secondary)
             }
-            ZStack {
-                Color.black.opacity(0.88)
-                if let url = currentURL {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFit()
-                        } else if phase.error != nil {
-                            ContentUnavailableView("Screenshot Unavailable", systemImage: "photo.badge.exclamationmark")
-                        } else {
-                            ProgressView()
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, screenshot.urls.count > 1 ? 72 : 18)
-                    .padding(.vertical, 18)
+            Spacer(minLength: 20)
+            Text("\(currentIndex + 1) / \(selection.items.count)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Button(action: toggleFullscreen) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Fullscreen (⌘↩)")
+            .accessibilityLabel("Fullscreen")
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+            }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityLabel("Close")
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+    }
+
+    private var mediaStage: some View {
+        ZStack {
+            mediaBackdrop
+            mediaContent
+            if selection.items.count > 1 {
+                HStack {
+                    galleryButton(title: "Previous media", symbol: "chevron.left", action: showPrevious)
+                    Spacer()
+                    galleryButton(title: "Next media", symbol: "chevron.right", action: showNext)
                 }
-                if screenshot.urls.count > 1 {
-                    HStack {
-                        galleryButton(title: "Previous screenshot", symbol: "chevron.left", action: showPrevious)
-                        Spacer()
-                        galleryButton(title: "Next screenshot", symbol: "chevron.right", action: showNext)
-                    }
-                    .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14)) }
+    }
+
+    @ViewBuilder private var mediaBackdrop: some View {
+        if let url = currentItem.thumbnailURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Color.black
+                }
+            }
+            .scaleEffect(1.15)
+            .blur(radius: 30)
+            .overlay(Color.black.opacity(0.56))
+        } else {
+            Color.black
+        }
+    }
+
+    @ViewBuilder private var mediaContent: some View {
+        switch currentItem {
+        case .screenshot(let url):
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFit()
+                } else if phase.error != nil {
+                    ContentUnavailableView("Screenshot Unavailable", systemImage: "photo.badge.exclamationmark")
+                } else {
+                    ProgressView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.14)) }
-        }
-        .padding(22)
-        .frame(minWidth: 1_280, idealWidth: 1_440, minHeight: 760, idealHeight: 900)
-        .background(.ultraThinMaterial)
-        .background {
-            Button("Previous screenshot", action: showPrevious)
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .hidden()
-            Button("Next screenshot", action: showNext)
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .hidden()
+        case .video:
+            VideoPlayer(player: player)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private var currentURL: URL? {
-        screenshot.urls.indices.contains(currentIndex) ? screenshot.urls[currentIndex] : nil
+    private var metadata: some View {
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(currentItem.title) \(currentIndex + 1) of \(selection.items.count)")
+                    .font(.subheadline.weight(.semibold))
+                Text(currentItem.isVideo ? "Video" : "Screenshot")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if currentItem.isVideo {
+                Image(systemName: "play.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 14)
+    }
+
+    private var filmstrip: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 12) {
+                ForEach(Array(selection.items.enumerated()), id: \.element.id) { index, item in
+                    Button {
+                        currentIndex = index
+                    } label: {
+                        StoreMediaThumbnail(item: item, width: 142)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(index == currentIndex ? Color.accentColor : .white.opacity(0.12), lineWidth: index == currentIndex ? 3 : 1)
+                            }
+                            .opacity(index == currentIndex ? 1 : 0.72)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(item.accessibilityTitle)
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 16)
+        }
+        .scrollIndicators(.automatic)
+    }
+
+    private func preparePlayer() {
+        player.pause()
+        isPlaying = false
+        guard case .video(let video) = currentItem, let url = URL(string: video.videoURL) else {
+            player.replaceCurrentItem(with: nil)
+            return
+        }
+        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        player.play()
+        isPlaying = true
+    }
+
+    private func togglePlayback() {
+        guard currentItem.isVideo else { return }
+        if isPlaying {
+            player.pause()
+        } else {
+            player.play()
+        }
+        isPlaying.toggle()
+    }
+
+    private func toggleFullscreen() {
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(nil)
     }
 
     private func showPrevious() {
-        guard !screenshot.urls.isEmpty else { return }
-        currentIndex = (currentIndex - 1 + screenshot.urls.count) % screenshot.urls.count
+        guard !selection.items.isEmpty else { return }
+        currentIndex = (currentIndex - 1 + selection.items.count) % selection.items.count
     }
 
     private func showNext() {
-        guard !screenshot.urls.isEmpty else { return }
-        currentIndex = (currentIndex + 1) % screenshot.urls.count
+        guard !selection.items.isEmpty else { return }
+        currentIndex = (currentIndex + 1) % selection.items.count
     }
 
     private func galleryButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 24, weight: .semibold))
-                .frame(width: 48, height: 64)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 46, height: 46)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay { Circle().stroke(.white.opacity(0.2)) }
         }
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
-    }
-}
-
-private struct StoreVideoPlayerView: View {
-    @Environment(\.dismiss) private var dismiss
-    let video: StoreVideo
-    @State private var player: AVPlayer
-
-    init(video: StoreVideo) {
-        self.video = video
-        _player = State(initialValue: AVPlayer())
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text(video.name).font(.title2).fontWeight(.semibold)
-                Spacer()
-                Button("Close", systemImage: "xmark") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            VideoPlayer(player: player)
-                .frame(minWidth: 760, minHeight: 430)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.16)) }
-        }
-        .padding(24)
-        .background(.ultraThinMaterial)
-        .onAppear {
-            guard let url = URL(string: video.videoURL) else { return }
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
-            player.play()
-        }
-        .onDisappear { player.pause() }
     }
 }

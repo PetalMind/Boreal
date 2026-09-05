@@ -302,11 +302,12 @@ final class GameOverlayController {
     }
 
     private func position(_ panel: NSPanel, preferPointerScreen: Bool = false) {
-        let size: NSSize = switch configuredDetailLevel {
+        var size: NSSize = switch configuredDetailLevel {
         case .minimal: .init(width: 248, height: 250)
         case .standard: .init(width: 300, height: 520)
         case .diagnostic: .init(width: 520, height: 850)
         }
+        size.height = min(size.height, (preferredGameScreen ?? NSScreen.main)?.visibleFrame.height ?? size.height)
         panel.setContentSize(size)
         let pointer = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
         guard let screen = preferredGameScreen
@@ -401,6 +402,7 @@ final class GameOverlayController {
 private struct GameOverlayView: View {
     let model: GameOverlayViewModel
     var body: some View {
+        ScrollView {
         switch model.detailLevel {
         case .minimal:
             VStack(spacing: 8) { sessionInfo; performance; memoryWarning; hideShortcut }
@@ -409,6 +411,8 @@ private struct GameOverlayView: View {
         case .standard: standard
         case .diagnostic: diagnostic
         }
+        }
+        .scrollIndicators(.hidden)
     }
 
     private func bytes(_ value: UInt64?) -> String {
@@ -435,6 +439,7 @@ private struct GameOverlayView: View {
             row("Memory", "\(memory) / \(totalMemory)", .green)
             row("Swap", bytes(model.snapshot.swapUsedBytes), .purple)
             row("GPU mapped", bytes(model.snapshot.gpuAllocatedBytes), .purple)
+                .help("System-wide driver allocation in shared RAM, not dedicated VRAM or game-only usage.")
             row("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—", .orange)
             memoryWarning
             divider; info("display", model.displayResolution); info("square.3.layers.3d", "Metal")

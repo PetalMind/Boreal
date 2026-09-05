@@ -1,0 +1,8 @@
+# Local JSON files
+*.json
+
+# macOS and Xcode user files
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/

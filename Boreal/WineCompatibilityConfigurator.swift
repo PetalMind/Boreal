@@ -39,33 +39,25 @@ struct WineCompatibilityConfigurator: View {
             Divider()
 
             Form {
-                Section("Quick setup") {
+                Section {
                     HStack {
                         presetButton("Recommended", symbol: "wand.and.stars", profile: .default)
                         presetButton("Older game", symbol: "clock.arrow.circlepath", profile: olderGameProfile)
                         presetButton("Performance", symbol: "gauge.with.dots.needle.67percent", profile: performanceProfile)
                     }
                     .buttonStyle(.bordered)
+                } header: {
+                    Text("Quick setup")
+                } footer: {
+                    Text("Choose a starting point, then adjust the settings below. Presets replace all settings in this dialog.")
+                }
+                if usesSharedSteamEnvironment {
+                    Label("Steam shares its Windows environment across games. Architecture, graphics renderer and older-game fixes are managed there.", systemImage: "person.2.fill")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
 
-                Section("Windows environment") {
-                    Picker("Windows version", selection: $profile.windowsVersion) {
-                        ForEach(WineWindowsVersion.allCases) { version in
-                            Text(version.displayName).tag(version)
-                        }
-                    }
-                    Picker("Prefix architecture", selection: $profile.architecture) {
-                        ForEach(WinePrefixArchitecture.allCases) { architecture in
-                            Text(architecture.displayName).tag(architecture)
-                        }
-                    }
-                    .disabled(usesSharedSteamEnvironment)
-                    Text("Architecture is fixed when a Wine prefix is created. Changing it rebuilds the isolated environment; game files stay in place.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                Section("Graphics and DirectX") {
-                    Picker("Graphics API", selection: graphicsAPIBinding) {
+                Section("Graphics") {
+                    Picker("DirectX version", selection: graphicsAPIBinding) {
                         ForEach(GraphicsAPI.allCases) { api in
                             Text(graphicsAPILabel(for: api)).tag(api)
                         }
@@ -73,74 +65,37 @@ struct WineCompatibilityConfigurator: View {
                     Text(graphicsAPIExplanation)
                         .font(.caption).foregroundStyle(.secondary)
 
-                    Picker("Translation backend", selection: $profile.graphicsBackend) {
+                    Picker("Graphics renderer", selection: $profile.graphicsBackend) {
                         ForEach(WineGraphicsBackend.allCases) { backend in
                             Text(backendLabel(backend)).tag(backend)
                         }
                     }
                     .disabled(usesSharedSteamEnvironment)
-                    Text(profile.graphicsBackend.detail)
+                    Text(graphicsBackendExplanation)
                         .font(.caption).foregroundStyle(.secondary)
                     if let issue = graphicsBackendIssue {
                         Label(issue, systemImage: "exclamationmark.triangle")
                             .font(.caption).foregroundStyle(.orange)
-                    } else if profile.graphicsBackend == .d3dMetal {
-                        Label("Requires a Game Porting Toolkit runtime.", systemImage: "info.circle")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if usesSharedSteamEnvironment {
-                        Label("Steam games use one shared client environment. Architecture and renderer are managed for that environment; the remaining options are still saved for this game.", systemImage: "person.2.fill")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
-                Section("Legacy graphics compatibility") {
-                    Picker("Legacy wrapper", selection: $profile.legacyWrapper) {
-                        ForEach(LegacyGraphicsWrapper.allCases) { wrapper in
-                            Text(wrapper.displayName).tag(wrapper)
-                        }
-                    }
-                    .disabled(usesSharedSteamEnvironment)
-                    if profile.legacyWrapper == .dgVoodoo2 {
-                        Picker("Legacy API", selection: $profile.legacyGraphicsAPI) {
-                            ForEach(LegacyGraphicsAPI.allCases) { api in
-                                Text(api.displayName).tag(api)
-                            }
-                        }
-                        Text("Boreal installs only the selected wrapper DLL beside the game executable. The runtime must supply a managed dgVoodoo2 component.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("Enable this only for games that use DirectDraw or an early Direct3D renderer.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if usesSharedSteamEnvironment {
-                        Label("Per-game wrappers are not available for games launched through the shared Windows Steam client in this first version.", systemImage: "info.circle")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("Reset graphics configuration", systemImage: "arrow.counterclockwise") {
-                        profile.graphicsBackend = .automatic
-                        profile.legacyWrapper = .none
-                        profile.legacyGraphicsAPI = .directDraw
-                    }
-                }
-
-                Section("Performance") {
-                    Toggle("ESync synchronization", isOn: $profile.esyncEnabled)
-                    Toggle("MSync synchronization", isOn: $profile.msyncEnabled)
-                    Toggle("Retina rendering", isOn: $profile.retinaModeEnabled)
-                    Toggle("Fullscreen FSR scaling", isOn: $profile.fullscreenFSREnabled)
-                    Toggle("Overlay-compatible fullscreen", isOn: $profile.overlayCompatibleFullscreen)
-                    Text("Runs this game inside a borderless Wine desktop sized to the main display, preventing exclusive fullscreen from covering Boreal’s overlay.")
+                Section("Display") {
+                    Toggle("High-resolution rendering (Retina)", isOn: $profile.retinaModeEnabled)
+                    Toggle("Fullscreen upscaling (FSR)", isOn: $profile.fullscreenFSREnabled)
+                    Text("Retina gives a sharper image. FSR can improve performance when playing fullscreen at a lower resolution; runtime support is required.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Keep Boreal overlay visible", isOn: $profile.overlayCompatibleFullscreen)
+                    Text("Uses a borderless fullscreen window so the game does not cover the overlay.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Picker("Overlay display", selection: $profile.overlayDisplayID) {
+                    Picker("Game display", selection: $profile.overlayDisplayID) {
                         Text("Automatic (main display)").tag(Optional<UInt32>.none)
                         ForEach(availableDisplays) { display in
                             Text(display.label).tag(Optional(display.id))
                         }
                     }
                     .disabled(!profile.overlayCompatibleFullscreen)
-                    Text("Choose the monitor where the game should appear. Physical pixel dimensions are used so Retina and ultrawide displays keep a 1:1 Wine desktop size.")
+                    Text("Choose which screen the borderless game window uses.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -157,24 +112,23 @@ struct WineCompatibilityConfigurator: View {
                             }
                             Spacer()
                         }
-                        LabeledContent("Mapped as:", value: profile.forceXInput ? "Xbox 360 Controller" : "Native Wine controller")
+                        LabeledContent("Controller mode", value: profile.forceXInput ? "Xbox 360 Controller" : "Native Wine controller")
                     } else {
                         HStack(spacing: 12) {
                             Image(systemName: "gamecontroller")
                                 .font(.title2).foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("No controller detected").fontWeight(.medium)
-                                Text("Disconnected").font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
 
-                    Toggle("Disable Steam Input equivalent", isOn: $profile.disableSteamInputEquivalent)
-                    Text("Disables Boreal's controller-to-keyboard mapping for this game. It does not change Steam's own Steam Input setting.")
+                    Toggle("Disable keyboard mapping", isOn: $profile.disableSteamInputEquivalent)
+                    Text("Stops Boreal from turning controller buttons into keyboard presses. Steam Input is unchanged.")
                         .font(.caption).foregroundStyle(.secondary)
 
-                    Toggle("Force XInput", isOn: $profile.forceXInput)
-                    Text("Publishes SDL controllers through WineBus as an Xbox 360-compatible XInput device. Restart the complete Wine session after changing this option.")
+                    Toggle("Xbox controller compatibility", isOn: $profile.forceXInput)
+                    Text("Presents the controller as an Xbox 360 controller. Restart the entire Wine session after changing this.")
                         .font(.caption).foregroundStyle(.secondary)
 
                     Button("Controller mapping", systemImage: "gamecontroller") {
@@ -182,22 +136,72 @@ struct WineCompatibilityConfigurator: View {
                     }
                 }
 
-                Section("Advanced") {
-                    TextField("Launch arguments", text: $profile.launchArguments, prompt: Text("e.g. -windowed -novsync"))
-                        .textFieldStyle(.roundedBorder)
-                    Toggle("Verbose Wine logging", isOn: $profile.debugLoggingEnabled)
-                    Text("Verbose logging can create large log files. Enable it only while diagnosing a problem.")
-                        .font(.caption).foregroundStyle(.secondary)
+                Section {
+                    DisclosureGroup("Windows environment") {
+                        Picker("Windows version", selection: $profile.windowsVersion) {
+                            ForEach(WineWindowsVersion.allCases) { version in
+                                Text(version.displayName).tag(version)
+                            }
+                        }
+                        Picker("Architecture", selection: $profile.architecture) {
+                            ForEach(WinePrefixArchitecture.allCases) { architecture in
+                                Text(architecture.displayName).tag(architecture)
+                            }
+                        }
+                        .disabled(usesSharedSteamEnvironment)
+                        Text("Changing architecture rebuilds the Windows environment. Your game files stay in place.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+
+                    DisclosureGroup("Older games") {
+                        Picker("Compatibility fix", selection: $profile.legacyWrapper) {
+                            ForEach(LegacyGraphicsWrapper.allCases) { wrapper in
+                                Text(wrapper.displayName).tag(wrapper)
+                            }
+                        }
+                        .disabled(usesSharedSteamEnvironment)
+                        if profile.legacyWrapper == .dgVoodoo2 {
+                            Picker("Older graphics API", selection: $profile.legacyGraphicsAPI) {
+                                ForEach(LegacyGraphicsAPI.allCases) { api in
+                                    Text(api.displayName).tag(api)
+                                }
+                            }
+                            Text("Uses dgVoodoo2 for the selected graphics API. Requires a runtime that includes dgVoodoo2.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("For older games that use DirectDraw or early Direct3D. Leave disabled unless needed.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    DisclosureGroup("Performance") {
+                        Toggle("ESync", isOn: $profile.esyncEnabled)
+                        Toggle("MSync", isOn: $profile.msyncEnabled)
+                        Text("These options can reduce CPU overhead. Support depends on the Wine runtime.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+
+                    DisclosureGroup("Launch and diagnostics") {
+                        TextField("Launch arguments", text: $profile.launchArguments, prompt: Text("e.g. -windowed -novsync"))
+                            .textFieldStyle(.roundedBorder)
+                        Toggle("Verbose Wine logging", isOn: $profile.debugLoggingEnabled)
+                        Text("Verbose logging can create large log files. Enable it only while diagnosing a problem.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Advanced")
+                } footer: {
+                    Text("Change these only to solve a specific problem with this game.")
                 }
             }
             .formStyle(.grouped)
 
             Divider()
             HStack {
-                Button("Reset") { profile = .default }
+                Button("Restore defaults") { profile = .default }
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Save configuration") {
+                Button("Save changes") {
                     store.updateCompatibilityProfile(for: application.id, profile: profile)
                     dismiss()
                 }
@@ -299,14 +303,24 @@ struct WineCompatibilityConfigurator: View {
         return api.displayName
     }
 
+    private var graphicsBackendExplanation: String {
+        switch profile.graphicsBackend {
+        case .automatic: "Chooses an available renderer for this game."
+        case .d3dMetal: "For DirectX 11 and 12. Requires Game Porting Toolkit."
+        case .dxmt: "Runs DirectX 11 using Metal. Requires DXMT support."
+        case .dxvk: "Runs DirectX 10 and 11 using Vulkan. DirectX 9 uses WineD3D."
+        case .wineD3D: "A fallback to try if other renderers cause graphics problems."
+        }
+    }
+
     private var graphicsAPIExplanation: String {
         let selectedAPI = graphicsAPIBinding.wrappedValue
         guard selectedAPI != .automatic else {
-            return "Boreal detects the DirectX imports and selects the best available renderer for this game. You can override both choices here."
+            return "Uses the detected DirectX version. Choose a specific version only if the game supports it."
         }
         if graphicsProfile?.launchOption(for: selectedAPI) != nil {
-            return "Boreal has a verified launch rule for this game and will request \(selectedAPI.displayName) when it starts."
+            return "Boreal will request \(selectedAPI.displayName) when this game starts."
         }
-        return "\(selectedAPI.displayName) is saved for this game. There is no universal Wine switch that can force every game to use it; add the game's documented launch argument below when Boreal has no verified rule yet."
+        return "This preference alone cannot switch the game to \(selectedAPI.displayName). Set it in the game or add its documented launch argument under Advanced → Launch and diagnostics."
     }
 }
