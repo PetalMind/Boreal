@@ -193,6 +193,10 @@ final class BorealStore {
               (applications[index].storeProvider == nil || applications[index].usesStoreMetadataOnly) else { return }
 
         applications[index].name = name
+        applications[index].publisher = "Windows application"
+        applications[index].storeProvider = nil
+        applications[index].storeExternalID = nil
+        applications[index].storeMetadataOnly = true
         applications[index].lastResult = "Searching Steam, Epic Games and GOG for game metadata…"
         if let environmentIndex = environments.firstIndex(where: { $0.id == applications[index].environmentID }) {
             environments[environmentIndex].name = name

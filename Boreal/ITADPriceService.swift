@@ -158,7 +158,7 @@ actor ITADPriceService: DiscoveryPricingLoading {
     func loadOverview(for game: AppleGamingWikiGame) async -> DiscoveryPriceSummary? {
         guard let id = await resolveGameID(for: game), let response: PriceOverviewResponse = await post(
             [id],
-            endpoint: "/games/overview/v2"
+            endpoint: "/games/overview/v2?country=\(countryCode)"
         ), let entry = response.prices.first(where: { $0.id == id }) else { return nil }
         return DiscoveryPriceSummary(
             itadGameID: id,
@@ -171,7 +171,7 @@ actor ITADPriceService: DiscoveryPricingLoading {
     func loadOffers(for itadGameID: String) async -> [ITADOffer]? {
         guard let response: [PriceListEntry] = await post(
             [itadGameID],
-            endpoint: "/games/prices/v3"
+            endpoint: "/games/prices/v3?country=\(countryCode)"
         ) else { return nil }
         return response.first(where: { $0.id == itadGameID })?.deals ?? []
     }

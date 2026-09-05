@@ -677,7 +677,8 @@ struct DiscoveryView: View {
     @State private var testedOnly = false
     @AppStorage("discoveryListLayout") private var listLayout = false
     @State private var showGuide = false
-    @State private var pageSize = 80
+    @AppStorage("discoveryGamesPerPage") private var gamesPerPage = 40
+    @State private var currentPage = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -724,6 +725,7 @@ struct DiscoveryView: View {
                 }
                 .padding(28)
             }
+            .onChange(of: currentPage) { withAnimation { proxy.scrollTo("allGames", anchor: .top) } }
         }
         .background(LinearGradient(colors: [Color(red: 0.045, green: 0.065, blue: 0.095), Color(red: 0.065, green: 0.075, blue: 0.115)], startPoint: .topTrailing, endPoint: .bottomLeading))
         .task { if store.discoveryCatalog == nil { store.loadDiscoveryCatalog() } }
@@ -742,8 +744,14 @@ struct DiscoveryView: View {
             do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
             await store.searchDiscoveryGames(query)
         }
-        .onChange(of: searchText) { pageSize = 80 }
-        .onChange(of: platform) { pageSize = 80 }
+        .onChange(of: searchText) { currentPage = 0 }
+        .onChange(of: platform) { currentPage = 0 }
+        .onChange(of: genre) { currentPage = 0 }
+        .onChange(of: rating) { currentPage = 0 }
+        .onChange(of: storefront) { currentPage = 0 }
+        .onChange(of: sortOrder) { currentPage = 0 }
+        .onChange(of: testedOnly) { currentPage = 0 }
+        .onChange(of: gamesPerPage) { currentPage = 0 }
     }
 
     private var header: some View {
@@ -832,11 +840,17 @@ struct DiscoveryView: View {
             if sortOrder == "Recommended", recommendationScore($0) != recommendationScore($1) { return recommendationScore($0) > recommendationScore($1) }
             return sortOrder == "Name Z–A" ? $0.title.localizedStandardCompare($1.title) == .orderedDescending : $0.title.localizedStandardCompare($1.title) == .orderedAscending
         }
+        let pageCount = max(1, Int(ceil(Double(games.count) / Double(gamesPerPage))))
+        let page = min(currentPage, pageCount - 1)
+        let visibleGames = Array(games.dropFirst(page * gamesPerPage).prefix(gamesPerPage))
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("All Games").font(.title3.bold())
                 Text("\(games.count.formatted()) games").foregroundStyle(.secondary)
                 Spacer()
+                Picker("Games per page", selection: $gamesPerPage) {
+                    ForEach([20, 40, 80], id: \.self) { Text("\($0) per page").tag($0) }
+                }.frame(width: 140)
                 Picker("View", selection: $listLayout) {
                     Label("Grid", systemImage: "square.grid.2x2").tag(false)
                     Label("List", systemImage: "list.bullet").tag(true)
@@ -847,23 +861,38 @@ struct DiscoveryView: View {
                 Button("Reset filters") { genre = "All genres"; rating = "All ratings"; storefront = "All stores"; platform = .all; testedOnly = false; searchText = "" }
             } else if listLayout {
                 LazyVStack(spacing: 8) {
-                    ForEach(Array(games.prefix(pageSize))) { game in
+                    ForEach(visibleGames) { game in
                         DiscoveryGameTile(game: game, horizontal: true) { selectGame(game) }
                     }
                 }
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 280), spacing: 12)], spacing: 12) {
-                    ForEach(Array(games.prefix(pageSize))) { game in
+                    ForEach(visibleGames) { game in
                         DiscoveryGameTile(game: game) { selectGame(game) }
                     }
                 }
             }
             HStack {
-                if games.count > pageSize { Button("Show more (\(games.count - pageSize))") { pageSize += 80 } }
-                if (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? 1) {
-                    Button(store.discoveryState == .loading ? "Loading…" : "Load more macOS games from Steam") { store.loadMoreDiscoveryGames() }
-                        .disabled(store.discoveryState == .loading)
+                Text("Page \(page + 1) of \(pageCount)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Previous page", systemImage: "chevron.left") { currentPage = max(0, page - 1) }
+                    .labelStyle(.iconOnly).buttonStyle(.bordered).disabled(page == 0)
+                ForEach(Array(paginationItems(current: page, count: pageCount).enumerated()), id: \.offset) { _, item in
+                    if let index = item {
+                        Button { currentPage = index } label: { Text("\(index + 1)") }
+                            .buttonStyle(.plain)
+                            .frame(minWidth: 34, minHeight: 34)
+                            .foregroundStyle(index == page ? .white : .primary)
+                            .background(index == page ? Color.accentColor : Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                            .accessibilityLabel("Page \(index + 1)")
+                            .accessibilityAddTraits(index == page ? .isSelected : [])
+                    } else {
+                        Text("…").frame(minWidth: 24).foregroundStyle(.secondary)
+                    }
                 }
+                Button("Next page", systemImage: "chevron.right") { currentPage = min(pageCount - 1, page + 1) }
+                    .labelStyle(.iconOnly).buttonStyle(.bordered).disabled(page + 1 >= pageCount)
                 Spacer()
                 Text(catalog.isStale ? "Saved catalog" : "Updated \(catalog.fetchedAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.caption).foregroundStyle(.secondary)
@@ -874,6 +903,14 @@ struct DiscoveryView: View {
             }
             Text("Compatibility: AppleGamingWiki • macOS availability, artwork and game information: Steam. Genre and storefront filters use identified catalog records; unknown values are available under ‘Not provided’ or ‘Other / unknown’.")
                 .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func paginationItems(current: Int, count: Int) -> [Int?] {
+        guard count > 7 else { return Array(0..<count).map(Optional.some) }
+        let pages = Set([0, count - 1, current - 1, current, current + 1].filter { (0..<count).contains($0) }).sorted()
+        return pages.enumerated().flatMap { offset, page in
+            offset > 0 && page - pages[offset - 1] > 1 ? [nil, page] : [page]
         }
     }
 

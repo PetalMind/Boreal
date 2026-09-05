@@ -7,35 +7,52 @@ struct GameOverlaySettingsView: View {
     @AppStorage("gameOverlayRefreshInterval") private var refreshInterval = 1.0
 
     var body: some View {
-        Form {
-            Section("In-game performance overlay") {
-                Toggle("Show overlay while a game is running", isOn: $isEnabled)
-                Picker("Information level", selection: $detailLevel) {
-                    Text("Minimal").tag(GameOverlayDetailLevel.minimal.rawValue)
-                    Text("Standard").tag(GameOverlayDetailLevel.standard.rawValue)
-                    Text("Diagnostic").tag(GameOverlayDetailLevel.diagnostic.rawValue)
+        ScrollView {
+            VStack(spacing: 14) {
+                SettingsCard("Performance Overlay", subtitle: "Choose what Boreal shows over a running game.", symbol: "gauge.with.dots.needle.67percent") {
+                    SettingsRow("Show overlay while a game is running") { Toggle("", isOn: $isEnabled).labelsHidden() }
+                    Divider()
+                    SettingsRow("Information level") {
+                        Picker("", selection: $detailLevel) {
+                            Text("Minimal").tag(GameOverlayDetailLevel.minimal.rawValue)
+                            Text("Standard").tag(GameOverlayDetailLevel.standard.rawValue)
+                            Text("Diagnostic").tag(GameOverlayDetailLevel.diagnostic.rawValue)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 260)
+                    }
+                    Divider()
+                    SettingsRow("Screen position") {
+                        Picker("", selection: $position) {
+                            Text("Top left").tag("topLeft")
+                            Text("Top right").tag("topRight")
+                            Text("Bottom left").tag("bottomLeft")
+                            Text("Bottom right").tag("bottomRight")
+                        }
+                        .labelsHidden()
+                        .frame(width: 260)
+                    }
+                    Divider()
+                    SettingsRow("Refresh rate") {
+                        Picker("", selection: $refreshInterval) {
+                            Text("Every second").tag(1.0)
+                            Text("Every 2 seconds").tag(2.0)
+                            Text("Every 5 seconds").tag(5.0)
+                        }
+                        .labelsHidden()
+                        .frame(width: 260)
+                    }
                 }
-                .pickerStyle(.segmented)
-                Picker("Screen position", selection: $position) {
-                    Text("Top left").tag("topLeft")
-                    Text("Top right").tag("topRight")
-                    Text("Bottom left").tag("bottomLeft")
-                    Text("Bottom right").tag("bottomRight")
-                }
-                Picker("Refresh rate", selection: $refreshInterval) {
-                    Text("Every second").tag(1.0)
-                    Text("Every 2 seconds").tag(2.0)
-                    Text("Every 5 seconds").tag(5.0)
+                SettingsCard("Shortcuts", subtitle: "Existing keyboard shortcuts for the overlay.", symbol: "command") {
+                    SettingsRow("Show or hide") { Text("⌘⌥O").foregroundStyle(.secondary) }
+                    Divider()
+                    SettingsRow("Cycle information level") { Text("⌘⌥I").foregroundStyle(.secondary) }
                 }
             }
-            Section {
-                Text("Hide or show the overlay with ⌘⌥O. Switch while playing with ⌘⌥I, or select Minimal, Standard and Diagnostic directly with ⌘⌥1, ⌘⌥2 and ⌘⌥3. Diagnostic view charts keep the latest 60 live samples. Values stay unavailable when macOS or the active runtime does not expose them.")
-                    .foregroundStyle(.secondary)
-            }
+            .padding(.horizontal, 32).padding(.bottom, 28)
         }
-        .formStyle(.grouped)
-        .frame(width: 560, height: 350)
-        .navigationTitle("Overlay")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: isEnabled) { GameOverlayController.shared.settingsChanged() }
         .onChange(of: detailLevel) { GameOverlayController.shared.settingsChanged() }
         .onChange(of: position) { GameOverlayController.shared.settingsChanged() }

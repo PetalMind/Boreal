@@ -34,12 +34,18 @@ struct StoreGameDetailView: View {
     @State private var diskStorageCategory: GameDiskStorageCategory?
     @State private var showsRenameDialog = false
     @State private var renameValue = ""
+    @State private var customApplicationID: UUID?
     @State private var priceHistoryRange: DiscoveryPriceHistoryRange = .threeMonths
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
 
     private var currentGame: StoreLibraryGame {
-        var value = store.storeGames.first {
+        let linkedGame: StoreLibraryGame? = linkedApplication.flatMap { application in
+            guard let provider = application.storeProvider,
+                  let externalID = application.storeExternalID else { return nil }
+            return store.storeGames.first { $0.provider == provider && $0.externalID == externalID }
+        }
+        var value = linkedGame ?? store.storeGames.first {
             $0.provider == game.provider && $0.externalID == game.externalID
         } ?? game
         if let application = linkedApplication, application.usesStoreMetadataOnly {
@@ -84,6 +90,9 @@ struct StoreGameDetailView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            customApplicationID = store.linkedApplication(for: game)?.id
+        }
         .onChange(of: game.id) {
             selectedTab = .overview
             showsFullDescription = false
@@ -155,6 +164,7 @@ struct StoreGameDetailView: View {
             Button("Cancel", role: .cancel) { renameValue = "" }
             Button("Rename") {
                 if let application = linkedApplication {
+                    customApplicationID = application.id
                     store.renameCustomApplication(application.id, to: renameValue)
                 }
                 renameValue = ""
@@ -1767,7 +1777,9 @@ struct StoreGameDetailView: View {
         .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
     }
 
-    private var linkedApplication: WindowsApplication? { store.linkedApplication(for: game) }
+    private var linkedApplication: WindowsApplication? {
+        customApplicationID.flatMap { store.application(id: $0) } ?? store.linkedApplication(for: game)
+    }
 
     private var diskReportTaskID: String {
         "disk-\(game.id.uuidString)-\(currentGame.installPath ?? "uninstalled")"

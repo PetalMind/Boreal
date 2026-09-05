@@ -16,8 +16,10 @@ struct ControllerSettingsView: View {
                     HStack(alignment: .top, spacing: 32) {
                         categoryContent
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        ControllerPreview(manager: manager)
-                            .frame(width: 420)
+                        if !manager.controllers.isEmpty {
+                            ControllerPreview(manager: manager)
+                                .frame(width: 420)
+                        }
                     }
                     .frame(maxWidth: 1440, alignment: .top)
                     .frame(maxWidth: .infinity, alignment: .top)
