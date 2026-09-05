@@ -1,8 +1,29 @@
 import SwiftUI
 
+struct BorealSettingsView: View {
+    var body: some View {
+        TabView {
+            Tab("General", systemImage: "gearshape") { GeneralSettingsView() }
+            Tab("Runtime", systemImage: "gearshape.2") { RuntimeSettingsView() }
+            Tab("Controllers", systemImage: "gamecontroller") { ControllerSettingsView() }
+            Tab("Fullscreen", systemImage: "rectangle.inset.filled") { ConsoleModeSettingsView() }
+            Tab("Overlay", systemImage: "gauge.with.dots.needle.67percent") { GameOverlaySettingsView() }
+            Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettingsView() }
+        }
+    }
+}
+
 struct GeneralSettingsView: View {
+    @Environment(BorealStore.self) private var store
     @AppStorage("automaticUpdates") private var automaticUpdates = true
     @AppStorage("keepInstallers") private var keepInstallers = false
+    @AppStorage(BorealSoundSettings.enabled) private var interfaceSoundsEnabled = true
+    @AppStorage(BorealSoundSettings.volume) private var interfaceSoundVolume = 0.35
+    @AppStorage(BorealSoundSettings.completedDownloads) private var soundsForCompletedDownloads = true
+    @AppStorage(BorealSoundSettings.installations) private var soundsForInstallations = true
+    @AppStorage(BorealSoundSettings.errorsAndWarnings) private var soundsForErrorsAndWarnings = true
+    @AppStorage(ITADPriceService.apiKeyDefaultsKey) private var itadAPIKey = ""
+    @AppStorage(ITADPriceService.countryCodeDefaultsKey) private var itadCountryCode = "PL"
 
     var body: some View {
         Form {
@@ -10,7 +31,39 @@ struct GeneralSettingsView: View {
                 Toggle("Check for updates automatically", isOn: $automaticUpdates)
                 Toggle("Keep downloaded installers", isOn: $keepInstallers)
             }
-        }.formStyle(.grouped).frame(width: 520, height: 240).navigationTitle("General")
+            Section("Sound") {
+                Toggle("Interface sounds", isOn: $interfaceSoundsEnabled)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("Sound volume")
+                        Spacer()
+                        Text(interfaceSoundVolume, format: .percent.precision(.fractionLength(0)))
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $interfaceSoundVolume, in: 0...1)
+                }
+                .disabled(!interfaceSoundsEnabled)
+            }
+            Section("Play sounds for") {
+                Toggle("Completed downloads", isOn: $soundsForCompletedDownloads)
+                Toggle("Installations", isOn: $soundsForInstallations)
+                Toggle("Errors and warnings", isOn: $soundsForErrorsAndWarnings)
+            }
+            Section("Discovery prices") {
+                SecureField("IsThereAnyDeal API key", text: $itadAPIKey)
+                TextField("Store country (ISO code)", text: $itadCountryCode)
+                LabeledContent("Authentication", value: "API Key")
+                Link("Register an API key ↗", destination: URL(string: "https://isthereanydeal.com/apps/")!)
+                Text("Use the API Key from the ITAD app page. OAuth Client ID, Client Secret and Redirect URI are not needed for game prices.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 520, height: 520)
+        .navigationTitle("General")
+        .onChange(of: itadAPIKey) { _, _ in store.invalidateDiscoveryPrices() }
+        .onChange(of: itadCountryCode) { _, _ in store.invalidateDiscoveryPrices() }
     }
 }
 

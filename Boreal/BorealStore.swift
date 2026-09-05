@@ -64,6 +64,7 @@ final class BorealStore {
     var discoveryCatalog: AppleGamingWikiCatalog?
     var discoveryState: AppleGamingWikiDiscoveryState = .idle
     var discoveryMetadata: [String: DiscoveryGameMetadata] = [:]
+    var discoveryPriceSummaries: [String: DiscoveryPriceSummary] = [:]
     var environmentDependencyStatuses: [UUID: [RuntimeDependencyStatus]] = [:]
     var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
     var diskStorageOperationIDs: Set<UUID> = []
@@ -98,6 +99,9 @@ final class BorealStore {
     private var discoveryLoadTask: Task<Void, Never>?
     private var discoveryMetadataLoads: Set<String> = []
     private var unavailableDiscoveryMetadata: Set<String> = []
+    private var discoveryPriceLoads: Set<String> = []
+    private var discoveryOffersLoads: Set<String> = []
+    private var loadedDiscoveryOffers: Set<String> = []
 
     nonisolated static let automaticLibraryRefreshInterval: TimeInterval = 8 * 60 * 60
 
@@ -180,6 +184,27 @@ final class BorealStore {
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
+
+    func renameCustomApplication(_ applicationID: UUID, to requestedName: String) {
+        let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let index = applications.firstIndex(where: { $0.id == applicationID }),
+              !applications[index].isSteamRuntimeHost,
+              (applications[index].storeProvider == nil || applications[index].usesStoreMetadataOnly) else { return }
+
+        applications[index].name = name
+        applications[index].lastResult = "Searching Steam, Epic Games and GOG for game metadata…"
+        if let environmentIndex = environments.firstIndex(where: { $0.id == applications[index].environmentID }) {
+            environments[environmentIndex].name = name
+        }
+        save()
+
+        Task { [weak self] in
+            guard let self else { return }
+            let metadata = await matchStoreMetadata(for: [name])
+            applyRenamedApplicationMetadata(metadata, to: applicationID, requestedName: name)
+        }
+    }
 
     func loadDiscoveryCatalog() {
         guard discoveryState != .loading else { return }
@@ -319,6 +344,77 @@ final class BorealStore {
 
     func isDiscoveryMetadataUnavailable(for game: AppleGamingWikiGame) -> Bool {
         unavailableDiscoveryMetadata.contains(game.id)
+    }
+
+    func discoveryPriceSummary(for game: AppleGamingWikiGame) -> DiscoveryPriceSummary? {
+        discoveryPriceSummaries[game.id]
+    }
+
+    func isDiscoveryPriceLoading(for game: AppleGamingWikiGame) -> Bool {
+        discoveryPriceLoads.contains(game.id) || discoveryOffersLoads.contains(game.id)
+    }
+
+    func invalidateDiscoveryPrices() {
+        discoveryPriceSummaries.removeAll()
+        discoveryPriceLoads.removeAll()
+        discoveryOffersLoads.removeAll()
+        loadedDiscoveryOffers.removeAll()
+    }
+
+    func ensureDiscoveryPrice(for game: AppleGamingWikiGame) async {
+        guard discoveryPriceSummaries[game.id] == nil,
+              discoveryPriceLoads.insert(game.id).inserted else { return }
+        var resolvedGame = game
+        if let metadata = discoveryMetadata[game.id] {
+            resolvedGame.steamAppID = metadata.steamAppID ?? game.steamAppID
+        }
+        let summary = await services.discoveryPricing.loadOverview(for: resolvedGame)
+        discoveryPriceLoads.remove(game.id)
+        if let summary { discoveryPriceSummaries[game.id] = summary }
+    }
+
+    func ensureDiscoveryOffers(for game: AppleGamingWikiGame) async {
+        await ensureDiscoveryPrice(for: game)
+        guard var summary = discoveryPriceSummaries[game.id],
+              !loadedDiscoveryOffers.contains(game.id),
+              discoveryOffersLoads.insert(game.id).inserted else { return }
+        let offers = await services.discoveryPricing.loadOffers(for: summary.itadGameID)
+        discoveryOffersLoads.remove(game.id)
+        guard let offers else { return }
+        summary.offers = offers
+        discoveryPriceSummaries[game.id] = summary
+        loadedDiscoveryOffers.insert(game.id)
+    }
+
+    func loadDiscoveryPriceHistory(for game: AppleGamingWikiGame, since: Date?) async -> [ITADPriceHistoryPoint]? {
+        await ensureDiscoveryPrice(for: game)
+        guard let itadGameID = discoveryPriceSummaries[game.id]?.itadGameID else { return nil }
+        return await services.discoveryPricing.loadHistory(for: itadGameID, since: since)
+    }
+
+    func discoveryStoreDetails(for game: AppleGamingWikiGame) async -> StoreLibraryGame? {
+        let details: StoreLibraryGame?
+        if let appID = game.steamAppID ?? discoveryMetadata[game.id]?.steamAppID {
+            details = await services.steamLibrary.loadDetails(
+                for: StoreLibraryGame(provider: .steam, externalID: appID, name: game.title)
+            )
+        } else {
+            details = await services.steamLibrary.searchStoreGame(named: game.title)
+        }
+        guard var details else { return nil }
+        details.currentPlayerCount = await services.steamLibrary.loadCurrentPlayerCount(appID: details.externalID)
+        return details
+    }
+
+    func addDiscoveryGameToLibrary(_ game: AppleGamingWikiGame, details: StoreLibraryGame) {
+        guard !storeGames.contains(where: {
+            $0.provider == details.provider && $0.externalID == details.externalID
+        }) else { return }
+        storeGames.append(details)
+        storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if !isDiscoveryGameSaved(game) { toggleDiscoveryGame(game) }
+        save()
+        SoundService.shared.play(.confirmation)
     }
     func activePlaySessionStart(for game: StoreLibraryGame) -> Date? {
         guard let application = linkedApplication(for: game), activePlaySessions[application.id] != nil else { return nil }
@@ -784,6 +880,7 @@ final class BorealStore {
     }
 
     func install(_ candidate: InstallCandidate) async -> UUID? {
+        SoundService.shared.play(.installationStarted)
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
         do {
             let commit = try await services.installer.install(candidate.url, name: candidate.name) { [weak self] stage in
@@ -844,6 +941,7 @@ final class BorealStore {
             save()
             installation.completedStages = Set(InstallationStage.allCases)
             installation.state = .succeeded(app.id)
+            SoundService.shared.play(.installationCompleted)
             monitorLauncher(session: commit.firstLaunch, appID: app.id)
             monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
             await refreshRuntimeStatuses()
@@ -855,19 +953,82 @@ final class BorealStore {
             installation.state = .failed
             installation.failureMessage = error.localizedDescription
             installation.rollbackCompleted = installation.stage != .preparingRuntime
+            SoundService.shared.play(.error)
             return nil
         }
     }
 
     private func matchStoreMetadata(for rawNames: [String]) async -> StoreLibraryGame? {
-        for name in rawNames.map(Self.storeSearchTitle).filter({ !$0.isEmpty }) {
+        let names = rawNames.map(Self.storeSearchTitle).filter { !$0.isEmpty }
+        for name in names {
             let normalized = SteamLibraryService.normalizedStoreTitle(name)
             let localMatches = storeGames.filter { SteamLibraryService.normalizedStoreTitle($0.name) == normalized }
             if localMatches.count == 1 { return localMatches[0] }
             if localMatches.count > 1 { continue }
             if let match = await services.steamLibrary.searchStoreGame(named: name) { return match }
         }
+
+        // Epic and GOG expose the signed-in library, not a public title search.
+        // That library is still the real provider source for matching custom installs.
+        async let epicGames = try? await services.epicLibrary.loadLibrary()
+        async let gogGames = try? await services.gogLibrary.loadLibrary()
+        let (epic, gog) = await (epicGames ?? [], gogGames ?? [])
+        for name in names {
+            if let match = matchingStoreGame(named: name, in: epic) { return match }
+            if let match = matchingStoreGame(named: name, in: gog) { return match }
+        }
         return nil
+    }
+
+    private func matchingStoreGame(named name: String, in games: [StoreLibraryGame]) -> StoreLibraryGame? {
+        let normalized = SteamLibraryService.normalizedStoreTitle(name)
+        let exact = games.filter { SteamLibraryService.normalizedStoreTitle($0.name) == normalized }
+        if exact.count == 1 { return exact[0] }
+        let queryTokens = Set(normalized.split(separator: " "))
+        let candidates = games.filter { game in
+            let tokens = Set(SteamLibraryService.normalizedStoreTitle(game.name).split(separator: " "))
+            return !queryTokens.isEmpty && queryTokens.isSubset(of: tokens)
+        }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private func applyRenamedApplicationMetadata(_ metadata: StoreLibraryGame?, to applicationID: UUID, requestedName: String) {
+        guard let applicationIndex = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        guard applications[applicationIndex].name == requestedName else { return }
+        guard let metadata else {
+            applications[applicationIndex].lastResult = "Renamed; no matching metadata found in Steam, Epic Games or GOG."
+            save()
+            return
+        }
+
+        // Keep the user's library name; the store record supplies artwork and
+        // description, while the linked application remains the display-name source.
+        applications[applicationIndex].name = requestedName
+        applications[applicationIndex].publisher = metadata.developer ?? applications[applicationIndex].publisher
+        applications[applicationIndex].storeProvider = metadata.provider
+        applications[applicationIndex].storeExternalID = metadata.externalID
+        applications[applicationIndex].storeMetadataOnly = true
+        applications[applicationIndex].lastResult = "Matched metadata from \(metadata.provider.rawValue)"
+        if let environmentIndex = environments.firstIndex(where: { $0.id == applications[applicationIndex].environmentID }) {
+            environments[environmentIndex].name = requestedName
+        }
+
+        if let existingIndex = storeGames.firstIndex(where: {
+            $0.provider == metadata.provider && $0.externalID == metadata.externalID
+        }) {
+            var value = metadata
+            value.id = storeGames[existingIndex].id
+            value.preserveMeasuredActivity(from: storeGames[existingIndex])
+            value.preservePresentationMetadata(from: storeGames[existingIndex])
+            value.isInstalled = storeGames[existingIndex].isInstalled
+            value.installPath = storeGames[existingIndex].installPath
+            value.installedPlatform = storeGames[existingIndex].installedPlatform
+            value.storageBytes = storeGames[existingIndex].storageBytes
+            storeGames[existingIndex] = value
+        } else {
+            storeGames.append(metadata)
+        }
+        save()
     }
 
     private func enrichInstalledApplicationMetadata() async {
@@ -1087,6 +1248,7 @@ final class BorealStore {
         storeGames[index].installPath = installationPath
         storeGames[index].installedPlatform = .windows
         storeGames[index].storageBytes = GameStorage.allocatedSize(of: URL(fileURLWithPath: installationPath))
+        SoundService.shared.play(.downloadCompleted)
     }
 
     private func steamRuntimeHost() -> WindowsApplication? {
@@ -1177,6 +1339,7 @@ final class BorealStore {
             do {
                 let displayName = try await services.epicLibrary.authenticate(authorizationCode: authorizationCode)
                 epicConnectionState = .connected(displayName: displayName)
+                SoundService.shared.play(.confirmation)
                 syncEpicLibrary()
             } catch {
                 epicConnectionState = .failed(error.localizedDescription)
@@ -1264,6 +1427,7 @@ final class BorealStore {
             do {
                 let displayName = try await services.gogLibrary.authenticate(authorizationCode: authorizationCode)
                 gogConnectionState = .connected(displayName: displayName)
+                SoundService.shared.play(.confirmation)
                 syncGOGLibrary()
             } catch {
                 gogConnectionState = .failed(error.localizedDescription)
@@ -1457,6 +1621,7 @@ final class BorealStore {
         let architecture = WindowsExecutableArchitecture.inspect(selected)
         let engine: RuntimeEngine = architecture == .x86_64 ? .gamePortingToolkit : .wine
         let environmentArchitecture = architecture == .x86 ? "win32" : "win64"
+        SoundService.shared.play(.installationStarted)
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
         let task = Task<UUID?, Never> { [weak self] in
             guard let self else { return nil }
@@ -1505,6 +1670,7 @@ final class BorealStore {
                 save()
                 installation.completedStages = Set(InstallationStage.allCases)
                 installation.state = .succeeded(app.id)
+                SoundService.shared.play(.installationCompleted)
                 installationTask = nil
                 await refreshRuntimeStatuses()
                 return app.id
@@ -1518,6 +1684,7 @@ final class BorealStore {
                 installation.state = .failed
                 installation.failureMessage = diagnostics?.technicalDetails(for: error) ?? error.localizedDescription
                 installation.rollbackCompleted = createdEnvironment != nil
+                SoundService.shared.play(.error)
                 installationTask = nil
                 return nil
             }
@@ -1547,6 +1714,7 @@ final class BorealStore {
             storeGames[index].installedPlatform = .nativeMacOS
             storeGames[index].storageBytes = GameStorage.allocatedSize(of: selected)
             save()
+            SoundService.shared.play(.installationCompleted)
             return
         }
 
@@ -1564,6 +1732,7 @@ final class BorealStore {
 
         let token = UUID()
         storeOperationTokens[key] = token
+        SoundService.shared.play(.installationStarted)
         storeGameOperations[key] = .preparingEnvironment(StoreGameOperationProgress(
             message: "Preparing the existing installation…",
             fractionCompleted: 0
@@ -1628,6 +1797,7 @@ final class BorealStore {
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
                 save()
+                SoundService.shared.play(.installationCompleted)
             } catch is CancellationError {
                 if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
                 finishCancelledStoreOperation(key: key, token: token)
@@ -1665,6 +1835,7 @@ final class BorealStore {
             initialProgress.startedAt = startedAt
         }
         storeOperationTokens[key] = token
+        SoundService.shared.play(.installationStarted)
         storeGameOperations[key] = .installing(initialProgress)
         storeDownloadRecords[key] = StoreDownloadRecord(
             provider: game.provider,
@@ -1713,6 +1884,7 @@ final class BorealStore {
                 storeDownloadRecords[key] = nil
                 lastDownloadRecordSave[key] = nil
                 save()
+                SoundService.shared.play(.downloadCompleted)
                 syncLibrary(game.provider)
             } catch is CancellationError {
                 finishCancelledStoreOperation(key: key, token: token)
@@ -2049,7 +2221,7 @@ final class BorealStore {
                 await refreshAuxiliaryExecutables(for: app.id)
                 if let resolvedCompatibility,
                    let gameIndex = storeGames.firstIndex(where: { $0.id == game.id }),
-                   storeGames[gameIndex].compatibility == nil {
+                    storeGames[gameIndex].compatibility == nil {
                     storeGames[gameIndex].compatibility = resolvedCompatibility
                 }
                 guard storeOperationTokens[key] == token else { return }
@@ -2057,6 +2229,7 @@ final class BorealStore {
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
                 save()
+                SoundService.shared.play(.installationCompleted)
             } catch is CancellationError {
                 if let createdEnvironment { try? await services.environmentManager.remove(createdEnvironment) }
                 finishCancelledStoreOperation(key: key, token: token)
@@ -2696,6 +2869,7 @@ final class BorealStore {
             }
             applications[index].status = .running
             applications[index].lastOpened = .now
+            SoundService.shared.play(.launch)
             activeSessions[id] = session
             beginPlaySession(appID: id)
             ControllerManager.shared.activate(
@@ -2754,6 +2928,7 @@ final class BorealStore {
             guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
             let wasRequested = requestedStops.contains(appID)
             if let result, result.exitCode != 0, !wasRequested {
+                SoundService.shared.play(.error)
                 unexpectedLauncherFailures.insert(appID)
                 applications[index].lastResult = "Exited unexpectedly"
                 applications[index].lastExitCode = result.exitCode
@@ -2966,6 +3141,7 @@ final class BorealStore {
         applications[index].lastErrorDetail = detail
         environmentSessionStates[applications[index].environmentID] = .unknown
         environmentMonitorIDs[appID] = nil
+        SoundService.shared.play(.warning)
         save()
     }
 
@@ -3399,6 +3575,7 @@ final class BorealStore {
         retryApplicationID: UUID? = nil,
         diagnostics: EnvironmentFailureDiagnostics? = nil
     ) {
+        SoundService.shared.play(.error)
         presentedIssue = BorealIssue(
             title: title,
             stage: stage,

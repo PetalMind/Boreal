@@ -8,12 +8,16 @@ struct StoreGameDetailView: View {
     private enum DetailTab: String, CaseIterable {
         case overview = "Overview"
         case compatibility = "Compatibility"
+        case offers = "Offers"
         case activity = "Activity"
         case files = "Files"
     }
 
     @Environment(BorealStore.self) private var store
+    @AppStorage(ITADPriceService.apiKeyDefaultsKey) private var itadAPIKey = ""
+    @AppStorage(ITADPriceService.countryCodeDefaultsKey) private var itadCountryCode = "PL"
     let game: StoreLibraryGame
+    var discoveryGame: AppleGamingWikiGame? = nil
     var onSelectProducer: (String) -> Void = { _ in }
     @State private var showsInstallationOptions = false
     @State private var showsProgressDetails = false
@@ -28,11 +32,20 @@ struct StoreGameDetailView: View {
     @State private var compatibilityApplication: WindowsApplication?
     @State private var showsDiskStorageConfirmation = false
     @State private var diskStorageCategory: GameDiskStorageCategory?
+    @State private var showsRenameDialog = false
+    @State private var renameValue = ""
+    @State private var priceHistoryRange: DiscoveryPriceHistoryRange = .threeMonths
+    @State private var priceHistory: [ITADPriceHistoryPoint] = []
+    @State private var priceHistoryLoading = false
 
     private var currentGame: StoreLibraryGame {
-        store.storeGames.first {
+        var value = store.storeGames.first {
             $0.provider == game.provider && $0.externalID == game.externalID
         } ?? game
+        if let application = linkedApplication, application.usesStoreMetadataOnly {
+            value.name = application.name
+        }
+        return value
     }
 
     var body: some View {
@@ -74,6 +87,7 @@ struct StoreGameDetailView: View {
         .onChange(of: game.id) {
             selectedTab = .overview
             showsFullDescription = false
+            priceHistory = []
         }
         .onChange(of: visibleTabs) {
             if !visibleTabs.contains(selectedTab) { selectedTab = .overview }
@@ -101,9 +115,6 @@ struct StoreGameDetailView: View {
         .task(id: game.id) {
             await store.loadStoreGameSizeIfNeeded(for: game.id)
         }
-        .sheet(item: $selectedMedia) { selection in
-            StoreMediaViewer(selection: selection, game: currentGame)
-        }
         .sheet(item: $compatibilityApplication) { application in
             WineCompatibilityConfigurator(application: store.application(id: application.id) ?? application)
         }
@@ -112,6 +123,18 @@ struct StoreGameDetailView: View {
         }
         .task(id: game.id) {
             await store.loadSteamCurrentPlayerCountIfNeeded(for: game.id)
+        }
+        .task(id: "\(game.id)-itad-\(itadAPIKey)-\(itadCountryCode)") {
+            if let discoveryGame {
+                await store.ensureDiscoveryPrice(for: discoveryGame)
+            }
+        }
+        .task(id: "\(game.id)-offers-\(selectedTab.rawValue)-\(priceHistoryRange.rawValue)-\(itadAPIKey)-\(itadCountryCode)") {
+            guard selectedTab == .offers, let discoveryGame else { return }
+            await store.ensureDiscoveryOffers(for: discoveryGame)
+            priceHistoryLoading = true
+            priceHistory = await store.loadDiscoveryPriceHistory(for: discoveryGame, since: priceHistoryRange.since) ?? []
+            priceHistoryLoading = false
         }
         .confirmationDialog("Uninstall \(currentGame.name)?", isPresented: $showsUninstallConfirmation) {
             Button("Uninstall Game", role: .destructive) { uninstallGame() }
@@ -126,6 +149,26 @@ struct StoreGameDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes only data Boreal identified as disposable. Game files and the Windows prefix are not touched.")
+        }
+        .alert("Rename Game", isPresented: $showsRenameDialog) {
+            TextField("Game name", text: $renameValue)
+            Button("Cancel", role: .cancel) { renameValue = "" }
+            Button("Rename") {
+                if let application = linkedApplication {
+                    store.renameCustomApplication(application.id, to: renameValue)
+                }
+                renameValue = ""
+            }
+            .disabled(renameValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Boreal will search Steam, Epic Games and GOG for artwork, description and other game details.")
+        }
+        .overlay {
+            if let selection = selectedMedia {
+                StoreMediaViewer(selection: selection, game: currentGame) {
+                    selectedMedia = nil
+                }
+            }
         }
     }
 
@@ -169,7 +212,9 @@ struct StoreGameDetailView: View {
 
     private var heroIdentity: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(linkedApplication?.usesStoreMetadataOnly == true ? "Custom Installed" : currentGame.provider.rawValue)  ·  IN YOUR LIBRARY")
+            Text(discoveryGame == nil
+                 ? "\(linkedApplication?.usesStoreMetadataOnly == true ? "Custom Installed" : currentGame.provider.rawValue)  ·  IN YOUR LIBRARY"
+                 : "\(currentGame.provider.rawValue)  ·  DISCOVERY")
                 .font(.caption.weight(.semibold))
                 .tracking(0.5)
                 .foregroundStyle(.white.opacity(0.65))
@@ -211,7 +256,9 @@ struct StoreGameDetailView: View {
     private var visibleTabs: [DetailTab] {
         DetailTab.allCases.filter { tab in
             switch tab {
-            case .overview, .activity: true
+            case .overview: true
+            case .offers: discoveryGame != nil
+            case .activity: discoveryGame == nil
             case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: currentGame.installPath != nil || linkedApplication != nil
             }
@@ -250,6 +297,8 @@ struct StoreGameDetailView: View {
                 compatibilitySection
                 if linkedEnvironment != nil { dependenciesSection }
             }
+        case .offers:
+            discoveryOffersSection
         case .activity:
             activitySection
         case .files:
@@ -257,14 +306,195 @@ struct StoreGameDetailView: View {
         }
     }
 
-    private func overviewMainColumn(width: CGFloat) -> some View {
+    @ViewBuilder private func overviewMainColumn(width: CGFloat) -> some View {
+        if discoveryGame != nil {
+            discoveryOverview(width: width)
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                libraryOverview(width: width)
+                if currentGame.supportsNativeMacOS != true { compatibilityOverview(width: width) }
+                mediaSection(width: width)
+                overviewEditorialGrid(width: width)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func discoveryOverview(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            libraryOverview(width: width)
+            discoveryPriceCard
             if currentGame.supportsNativeMacOS != true { compatibilityOverview(width: width) }
             mediaSection(width: width)
             overviewEditorialGrid(width: width)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var discoveryPriceCard: some View {
+        if let discoveryGame {
+            detailCard("Price", symbol: "tag.fill", actionTitle: "View offers", action: { selectedTab = .offers }) {
+                if let summary = store.discoveryPriceSummary(for: discoveryGame) {
+                    if let offer = summary.bestOffer {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(offer.price.formatted)
+                                .font(.system(size: 24, weight: .bold))
+                            if let discount = offer.discountLabel {
+                                Text(discount)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.green)
+                                    .padding(.horizontal, 7).padding(.vertical, 4)
+                                    .background(.green.opacity(0.12), in: Capsule())
+                            }
+                            Spacer()
+                            Text(offer.shop.name).font(.callout).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("No current offers found.").foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 16) {
+                        if let low = summary.historicalLow {
+                            Label("Low \(low.price.formatted)", systemImage: "chart.line.downtrend.xyaxis")
+                        }
+                        if let quality = summary.dealQuality {
+                            Label(quality.title, systemImage: quality.symbol).foregroundStyle(quality == .poor ? .orange : .green)
+                        }
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                } else if store.isDiscoveryPriceLoading(for: discoveryGame) {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading current offers…")
+                    }
+                    .foregroundStyle(.secondary)
+                } else {
+                    Text(ITADPriceService.isConfigured ? "Price data is currently unavailable." : "Add an IsThereAnyDeal API key in Settings → General to load prices.")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Prices provided by IsThereAnyDeal.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    @ViewBuilder private var discoveryOffersSection: some View {
+        if let discoveryGame {
+            let summary = store.discoveryPriceSummary(for: discoveryGame)
+            VStack(alignment: .leading, spacing: 12) {
+                detailCard("Offers", symbol: "tag.fill") {
+                    if let summary {
+                        if let offer = summary.bestOffer {
+                            HStack(alignment: .firstTextBaseline) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Best price").font(.caption).foregroundStyle(.secondary)
+                                    Text(offer.price.formatted).font(.title2.bold())
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text(offer.shop.name).font(.callout.weight(.semibold))
+                                    if let quality = summary.dealQuality {
+                                        Label(quality.title, systemImage: quality.symbol)
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(quality == .poor ? .orange : .green)
+                                    }
+                                }
+                            }
+                        }
+                        if let low = summary.historicalLow {
+                            HStack {
+                                Label("Historical low", systemImage: "chart.line.downtrend.xyaxis")
+                                Spacer()
+                                Text(low.price.formatted).font(.callout.weight(.semibold))
+                                Text(low.timestamp.formatted(date: .abbreviated, time: .omitted))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        let offers = summary.offers.isEmpty ? (summary.bestOffer.map { [$0] } ?? []) : summary.offers
+                        if !offers.isEmpty {
+                            Divider()
+                            ForEach(offers.sorted { $0.price.amount < $1.price.amount }) { offer in
+                                discoveryOfferRow(offer)
+                            }
+                        } else {
+                            Text("No current offers found.").font(.callout).foregroundStyle(.secondary)
+                        }
+                    } else if store.isDiscoveryPriceLoading(for: discoveryGame) {
+                        ProgressView("Loading offers…")
+                    } else {
+                        Text(ITADPriceService.isConfigured ? "Price data is currently unavailable." : "Add an IsThereAnyDeal API key in Settings → General to load offers.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Offer links and price data are provided by IsThereAnyDeal.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                discoveryPriceHistorySection(for: discoveryGame)
+            }
+        }
+    }
+
+    private func discoveryOfferRow(_ offer: ITADOffer) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(offer.shop.name).font(.callout.weight(.semibold))
+                let platformNames = offer.platforms.map(\.name).joined(separator: " · ")
+                let drmNames = offer.drm.map(\.name).joined(separator: " · ")
+                if !platformNames.isEmpty || !drmNames.isEmpty {
+                    Text([platformNames, drmNames].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(offer.price.formatted).font(.callout.weight(.semibold))
+                    if let discount = offer.discountLabel {
+                        Text(discount).font(.caption2.weight(.bold)).foregroundStyle(.green)
+                    }
+                }
+                if let url = URL(string: offer.url) {
+                    Link("View offer", destination: url)
+                        .font(.caption).foregroundStyle(.cyan)
+                }
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func discoveryPriceHistorySection(for game: AppleGamingWikiGame) -> some View {
+        detailCard("Price history", symbol: "chart.xyaxis.line") {
+            Picker("Period", selection: $priceHistoryRange) {
+                ForEach(DiscoveryPriceHistoryRange.allCases, id: \.self) { range in
+                    Text(range.rawValue).tag(range)
+                }
+            }
+            .pickerStyle(.segmented)
+            if priceHistoryLoading {
+                ProgressView("Loading price history…")
+                    .frame(maxWidth: .infinity, minHeight: 180)
+            } else if priceHistory.isEmpty {
+                Text("No price history is available for this period.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
+            } else {
+                Chart(priceHistory.sorted { $0.timestamp < $1.timestamp }) { point in
+                    LineMark(
+                        x: .value("Date", point.timestamp),
+                        y: .value("Price", point.deal.price.amount)
+                    )
+                    .foregroundStyle(by: .value("Store", point.shop.name))
+                    PointMark(
+                        x: .value("Date", point.timestamp),
+                        y: .value("Price", point.deal.price.amount)
+                    )
+                    .foregroundStyle(by: .value("Store", point.shop.name))
+                }
+                .chartLegend(position: .bottom, alignment: .leading)
+                .frame(height: 220)
+            }
+            Text("History provided by IsThereAnyDeal.")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
     }
 
     private var dependenciesSection: some View {
@@ -371,7 +601,16 @@ struct StoreGameDetailView: View {
     }
 
     private var compatibilityRating: CompatibilityRating {
-        currentGame.compatibility?.tier.rating ?? linkedApplication?.compatibility ?? .unknown
+        if let discoveryGame {
+            switch discoveryGame.bestRating {
+            case .perfect: return .excellent
+            case .playable: return .good
+            case .runs, .menu: return .limited
+            case .unplayable: return .unsupported
+            case .unknown, .notApplicable: break
+            }
+        }
+        return currentGame.compatibility?.tier.rating ?? linkedApplication?.compatibility ?? .unknown
     }
 
     private var compatibilityTint: Color {
@@ -398,7 +637,7 @@ struct StoreGameDetailView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(compatibilityRating.rawValue + " compatibility")
                                 .font(.system(size: 18, weight: .semibold))
-                            Text(currentGame.compatibility == nil ? "No community reports available." : "Based on community compatibility reports.")
+                            Text(discoveryGame != nil ? "Based on AppleGamingWiki community reports." : (currentGame.compatibility == nil ? "No community reports available." : "Based on community compatibility reports."))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         .fixedSize(horizontal: false, vertical: true)
@@ -409,7 +648,7 @@ struct StoreGameDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: width < 360 ? 1 : 2), alignment: .leading, spacing: 12) {
                     compatibilityFact("Graphics", value: linkedEnvironment?.graphics ?? "Not configured", symbol: "display")
-                    compatibilityFact("Community", value: currentGame.compatibility.map { "\($0.reportCount.formatted()) reports · \($0.tier.title)" } ?? "No reports", symbol: "person.2.fill")
+                    compatibilityFact("Community", value: discoveryGame.map { "\($0.availableRatings.count) methods · \($0.bestRating.rawValue)" } ?? currentGame.compatibility.map { "\($0.reportCount.formatted()) reports · \($0.tier.title)" } ?? "No reports", symbol: "person.2.fill")
                 }
                 .frame(maxWidth: .infinity)
                 if width >= 1000 { compatibilityDetailsButton.frame(width: 150) }
@@ -493,7 +732,12 @@ struct StoreGameDetailView: View {
     }
 
     @ViewBuilder private var primaryLaunchAction: some View {
-            if let operation = storeOperation {
+            if let discoveryGame, !isInLibrary {
+                Button("Add to Library", systemImage: "plus") {
+                    store.addDiscoveryGameToLibrary(discoveryGame, details: currentGame)
+                }
+                .buttonStyle(BorealPrimaryActionButtonStyle())
+            } else if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
             } else if game.provider == .steam {
                 if currentGame.isInstalled, currentGame.installedPlatform == .nativeMacOS, currentGame.installPath != nil {
@@ -545,9 +789,21 @@ struct StoreGameDetailView: View {
         store.isFavorite(key: "\(currentGame.provider.rawValue):\(currentGame.externalID)")
     }
 
+    private var isInLibrary: Bool {
+        store.storeGames.contains {
+            $0.provider == currentGame.provider && $0.externalID == currentGame.externalID
+        }
+    }
+
     private var moreActionsMenu: some View {
         Menu {
             if let app = linkedApplication {
+                if app.usesStoreMetadataOnly {
+                    Button("Rename Game…", systemImage: "pencil") {
+                        renameValue = app.name
+                        showsRenameDialog = true
+                    }
+                }
                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") {
                     compatibilityApplication = app
                 }
@@ -1534,7 +1790,20 @@ struct StoreGameDetailView: View {
         VStack(alignment: .leading, spacing: 13) {
             Label("Mac Compatibility", systemImage: "checkmark.shield.fill")
                 .font(.headline)
-            if let profile = currentGame.compatibility {
+            if let discoveryGame, !discoveryGame.availableRatings.isEmpty {
+                ForEach(discoveryGame.availableRatings, id: \.title) { entry in
+                    HStack {
+                        Text(entry.title)
+                        Spacer()
+                        Label(entry.rating.rawValue, systemImage: entry.rating.symbol)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(entry.rating.color)
+                    }
+                    Divider().opacity(0.45)
+                }
+                Text("AppleGamingWiki ratings are community data and do not replace a Boreal-tested profile.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let profile = currentGame.compatibility {
                 HStack(alignment: .top, spacing: 18) {
                     MacCompatibilityBadge(rating: profile.tier.rating)
                     VStack(alignment: .leading, spacing: 5) {
@@ -2001,7 +2270,7 @@ private struct StoreMediaThumbnail: View {
                     .foregroundStyle(.white)
             }
         }
-        .frame(width: width, height: width * 0.46)
+        .frame(width: width, height: width * 9 / 16)
         .overlay(alignment: .bottomLeading) {
             if item.isVideo {
                 Text(item.title)
@@ -2025,37 +2294,40 @@ private struct StoreMediaThumbnail: View {
 }
 
 private struct StoreMediaViewer: View {
-    @Environment(\.dismiss) private var dismiss
     let selection: StoreMediaSelection
     let game: StoreLibraryGame
+    let onDismiss: () -> Void
     @State private var currentIndex: Int
     @State private var player = AVPlayer()
     @State private var isPlaying = false
 
-    init(selection: StoreMediaSelection, game: StoreLibraryGame) {
+    init(selection: StoreMediaSelection, game: StoreLibraryGame, onDismiss: @escaping () -> Void) {
         self.selection = selection
         self.game = game
+        self.onDismiss = onDismiss
         _currentIndex = State(initialValue: min(max(selection.initialIndex, 0), max(selection.items.count - 1, 0)))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().opacity(0.6)
-            mediaStage
-                .padding(.horizontal, 22)
-                .padding(.vertical, 18)
-            metadata
-            Divider().opacity(0.6)
-            filmstrip
+        GeometryReader { geometry in
+            let scale = min(1, max(0.6, min((geometry.size.width - 48) / 910, (geometry.size.height - 48) / 682)))
+
+            ZStack {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(Color(red: 0.015, green: 0.025, blue: 0.04).opacity(0.64))
+                    .ignoresSafeArea()
+
+                modalPanel
+                    .scaleEffect(scale)
+            }
         }
-        .frame(minWidth: 860, idealWidth: 1_080, minHeight: 620, idealHeight: 760)
-        .background(.regularMaterial)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(.dark)
         .onAppear(perform: preparePlayer)
         .onChange(of: currentIndex) { preparePlayer() }
         .onDisappear { player.pause() }
-        .onExitCommand { dismiss() }
+        .onExitCommand { onDismiss() }
         .background {
             Button("Previous media", action: showPrevious)
                 .keyboardShortcut(.leftArrow, modifiers: [])
@@ -2075,6 +2347,49 @@ private struct StoreMediaViewer: View {
         }
     }
 
+    private var modalPanel: some View {
+        ZStack(alignment: .top) {
+            Rectangle().fill(.clear)
+            header
+                .frame(width: 910, height: 76)
+            mediaStage
+                .frame(width: 910, height: 430)
+                .offset(y: 76)
+            metadata
+                .frame(width: 910, height: 50)
+                .offset(y: 506)
+            Divider()
+                .opacity(0.42)
+                .padding(.horizontal, 28)
+                .offset(y: 556)
+            filmstrip
+                .frame(width: 910, height: 125)
+                .offset(y: 557)
+        }
+        .frame(width: 910, height: 682)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.12, green: 0.14, blue: 0.17).opacity(0.72),
+                            Color(red: 0.035, green: 0.045, blue: 0.06).opacity(0.88)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.white.opacity(0.22), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.58), radius: 40, y: 20)
+    }
+
     private var currentItem: StoreMediaItem {
         guard selection.items.indices.contains(currentIndex) else {
             return selection.items.first ?? .screenshot(URL(fileURLWithPath: "/"))
@@ -2084,51 +2399,95 @@ private struct StoreMediaViewer: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            GameArtworkView(game: game, width: 38, height: 38)
+            headerArtwork
             VStack(alignment: .leading, spacing: 2) {
-                Text(game.name).font(.headline)
-                Text("Media").font(.caption).foregroundStyle(.secondary)
+                Text(game.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("Media")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.58))
             }
             Spacer(minLength: 20)
             Text("\(currentIndex + 1) / \(selection.items.count)")
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Button(action: toggleFullscreen) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("Fullscreen (⌘↩)")
-            .accessibilityLabel("Fullscreen")
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-            }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.82))
+                .padding(.trailing, 6)
+            headerButton(title: "Fullscreen", symbol: "arrow.up.left.and.arrow.down.right", action: toggleFullscreen)
+                .help("Fullscreen (⌘↩)")
+            headerButton(title: "Close", symbol: "xmark", action: onDismiss)
                 .keyboardShortcut(.cancelAction)
-                .accessibilityLabel("Close")
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 20)
+        .background {
+            LinearGradient(
+                colors: [.white.opacity(0.035), .black.opacity(0.08)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .overlay(alignment: .bottom) { Divider().opacity(0.34) }
+    }
+
+    private var headerArtwork: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LinearGradient(colors: [.indigo, .cyan.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
+            if let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "gamecontroller.fill").foregroundStyle(.white.opacity(0.82))
+                    }
+                }
+            } else {
+                Image(systemName: "gamecontroller.fill").foregroundStyle(.white.opacity(0.82))
+            }
+        }
+        .frame(width: 40, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.18)) }
+    }
+
+    private func headerButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)) }
+        .accessibilityLabel(title)
     }
 
     private var mediaStage: some View {
         ZStack {
             mediaBackdrop
             mediaContent
+                .frame(maxWidth: 720, maxHeight: 392)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(.white.opacity(0.14), lineWidth: 1)
+                }
             if selection.items.count > 1 {
                 HStack {
                     galleryButton(title: "Previous media", symbol: "chevron.left", action: showPrevious)
                     Spacer()
                     galleryButton(title: "Next media", symbol: "chevron.right", action: showNext)
                 }
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 20)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14)) }
+        .background(.black.opacity(0.22))
+        .clipped()
     }
 
     @ViewBuilder private var mediaBackdrop: some View {
@@ -2141,8 +2500,9 @@ private struct StoreMediaViewer: View {
                 }
             }
             .scaleEffect(1.15)
-            .blur(radius: 30)
-            .overlay(Color.black.opacity(0.56))
+            .blur(radius: 36)
+            .overlay(Color(red: 0.015, green: 0.035, blue: 0.055).opacity(0.58))
+            .overlay(Color.black.opacity(0.34))
         } else {
             Color.black
         }
@@ -2168,47 +2528,55 @@ private struct StoreMediaViewer: View {
     }
 
     private var metadata: some View {
-        HStack(alignment: .bottom) {
+        HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(currentItem.title) \(currentIndex + 1) of \(selection.items.count)")
-                    .font(.subheadline.weight(.semibold))
-                Text(currentItem.isVideo ? "Video" : "Screenshot")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("\(currentItem.isVideo ? "Video" : "Screenshot") \(currentIndex + 1) of \(selection.items.count)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text(currentItem.isVideo ? "Video" : "Image")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.48))
             }
             Spacer()
-            if currentItem.isVideo {
-                Image(systemName: "play.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(currentItem.isVideo ? currentItem.title : game.name)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+                Text(game.developer ?? game.provider.rawValue)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.46))
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 14)
+        .padding(.horizontal, 30)
+        .background(Color.black.opacity(0.08))
     }
 
     private var filmstrip: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 12) {
+            HStack(spacing: 28) {
                 ForEach(Array(selection.items.enumerated()), id: \.element.id) { index, item in
                     Button {
                         currentIndex = index
                     } label: {
-                        StoreMediaThumbnail(item: item, width: 142)
+                        StoreMediaThumbnail(item: item, width: 146)
                             .overlay {
                                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .stroke(index == currentIndex ? Color.accentColor : .white.opacity(0.12), lineWidth: index == currentIndex ? 3 : 1)
                             }
-                            .opacity(index == currentIndex ? 1 : 0.72)
+                            .shadow(color: index == currentIndex ? Color.accentColor.opacity(0.42) : .clear, radius: 4)
+                            .opacity(index == currentIndex ? 1 : 0.76)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(item.accessibilityTitle)
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 16)
+            .padding(.horizontal, 28)
+            .frame(minHeight: 124)
         }
-        .scrollIndicators(.automatic)
+        .scrollIndicators(.hidden)
+        .background(Color.black.opacity(0.12))
     }
 
     private func preparePlayer() {
@@ -2250,8 +2618,8 @@ private struct StoreMediaViewer: View {
     private func galleryButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 46, height: 46)
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 52, height: 52)
                 .background(.ultraThinMaterial, in: Circle())
                 .overlay { Circle().stroke(.white.opacity(0.2)) }
         }

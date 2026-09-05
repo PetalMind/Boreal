@@ -1,0 +1,16 @@
+Boreal interface sounds
+
+The bundled WAV files are adapted from CC0 sound effects published on
+OpenGameArt.org. Attribution is not required, but the original sources are
+kept here for provenance.
+
+- boreal-confirmation.wav: Beep Tone Sound SFX by qubodup
+  https://opengameart.org/content/beep-tone-sound-sfx
+- boreal-success.wav: Bell Arpeggio 24 by cynicmusic
+  https://opengameart.org/content/bell-arpeggio-24
+- boreal-launch.wav, boreal-task-start.wav, boreal-task-complete.wav,
+  boreal-warning.wav, boreal-error.wav: Atmospheric Interaction Sound Pack by
+  legoluft, submitted by qubodup
+  https://opengameart.org/content/atmospheric-interaction-sound-pack
+
+All listed sources are marked CC0 on their OpenGameArt pages.

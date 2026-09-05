@@ -189,8 +189,11 @@ nonisolated enum LibraryProjector {
             let compatibility = usableLinkedApp.flatMap { $0.compatibility == .unknown ? nil : $0.compatibility }
                 ?? game.compatibility?.tier.rating
                 ?? .unknown
+            let displayName: String
+            if let linkedApp, linkedApp.usesStoreMetadataOnly { displayName = linkedApp.name }
+            else { displayName = game.name }
             return LibraryItem(
-                id: .storeGame(game.id), kind: .storeGame(game), name: game.name,
+                id: .storeGame(game.id), kind: .storeGame(game), name: displayName,
                 subtitle: game.developer ?? game.provider.rawValue,
                 producer: game.developer,
                 source: linkedApp?.usesStoreMetadataOnly == true ? .boreal : source(game.provider),

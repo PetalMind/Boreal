@@ -288,6 +288,9 @@ struct ContentView: View {
                     Label("Environments", systemImage: "externaldrive").tag(SidebarDestination.environments)
                 }
             }
+            Section {
+                Label("Ustawienia", systemImage: "gearshape").tag(SidebarDestination.settings)
+            }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top) {
@@ -351,7 +354,9 @@ struct ContentView: View {
     @ViewBuilder private var destinationView: some View {
         switch selection ?? .library {
         case .discovery:
-            DiscoveryView(searchText: $discoverySearchText)
+            DiscoveryView(searchText: $discoverySearchText) {
+                libraryPath.append(.discoveryGame($0))
+            }
                 .searchable(text: $discoverySearchText, placement: .toolbar, prompt: "Search Discovery")
         case .library, .favorites:
             LibraryView(
@@ -375,6 +380,7 @@ struct ContentView: View {
         case .environments: EnvironmentsView { showsNewEnvironment = true }
         case .downloads: DownloadsView()
         case .controllers: ControllerSettingsView()
+        case .settings: BorealSettingsView()
         }
     }
 
@@ -396,11 +402,14 @@ struct ContentView: View {
                         libraryProducerFilter = producer
                         libraryPath.removeAll()
                     }
-                        .navigationTitle(game.name)
+                        .navigationTitle(store.linkedApplication(for: game)?.name ?? game.name)
                 } else {
                     ContentUnavailableView("Game Not Found", systemImage: "questionmark.app")
                         .navigationTitle("Game")
                 }
+            case .discoveryGame(let game):
+                DiscoveryGameDetailView(game: game)
+                    .navigationTitle(game.title)
             }
         }
         .frame(minWidth: 640, minHeight: 500)
@@ -454,6 +463,7 @@ struct ContentView: View {
         case .environments: "Environments"
         case .downloads: "Downloads"
         case .controllers: "Controller Settings"
+        case .settings: "Ustawienia"
         }
     }
 

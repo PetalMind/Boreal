@@ -955,10 +955,11 @@ nonisolated enum GameStorage {
 }
 
 enum SidebarDestination: Hashable {
-    case library, discovery, favorites, accounts, environments, downloads, controllers
+    case library, discovery, favorites, accounts, environments, downloads, controllers, settings
 }
 
 enum LibraryRoute: Hashable {
     case application(UUID)
     case storeGame(UUID)
+    case discoveryGame(AppleGamingWikiGame)
 }

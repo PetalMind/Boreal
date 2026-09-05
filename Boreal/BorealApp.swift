@@ -56,14 +56,8 @@ struct BorealApp: App {
         }
 
         Settings {
-            TabView {
-                Tab("General", systemImage: "gearshape") { GeneralSettingsView() }
-                Tab("Runtime", systemImage: "gearshape.2") { RuntimeSettingsView() }
-                Tab("Controllers", systemImage: "gamecontroller") { ControllerSettingsView() }
-                Tab("Fullscreen", systemImage: "rectangle.inset.filled") { ConsoleModeSettingsView() }
-                Tab("Overlay", systemImage: "gauge.with.dots.needle.67percent") { GameOverlaySettingsView() }
-                Tab("Advanced", systemImage: "wrench.and.screwdriver") { AdvancedSettingsView() }
-            }
+            BorealSettingsView()
+                .environment(store)
         }
     }
 }

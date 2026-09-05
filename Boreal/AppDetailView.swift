@@ -6,6 +6,8 @@ struct AppDetailView: View {
     let app: WindowsApplication
     let didRemove: () -> Void
     @State private var showsRemoveConfirmation = false
+    @State private var showsRenameDialog = false
+    @State private var renameValue = ""
     @State private var showsAdvanced = false
     @State private var showsCompatibilityConfigurator = false
     @AppStorage("developerMode") private var developerMode = false
@@ -38,6 +40,12 @@ struct AppDetailView: View {
                                 }
                                 Divider()
                                 Button("Show in Finder", systemImage: "folder") { revealExecutable() }
+                                if isCustomInstalled {
+                                    Button("Rename Game…", systemImage: "pencil") {
+                                        renameValue = app.name
+                                        showsRenameDialog = true
+                                    }
+                                }
                                 if app.status == .running {
                                     Button("Force Quit", systemImage: "xmark.octagon", role: .destructive) { store.forceQuit(app.id) }
                                 }
@@ -124,9 +132,24 @@ struct AppDetailView: View {
             Button("Remove App and Environment", role: .destructive) { store.removeApplication(app.id); didRemove() }
             Button("Cancel", role: .cancel) { }
         } message: { Text("This removes the app from Boreal. The original setup file is not deleted.") }
+        .alert("Rename Game", isPresented: $showsRenameDialog) {
+            TextField("Game name", text: $renameValue)
+            Button("Cancel", role: .cancel) { renameValue = "" }
+            Button("Rename") {
+                store.renameCustomApplication(app.id, to: renameValue)
+                renameValue = ""
+            }
+            .disabled(renameValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Boreal will search Steam, Epic Games and GOG for artwork, description and other game details.")
+        }
         .sheet(isPresented: $showsCompatibilityConfigurator) {
             WineCompatibilityConfigurator(application: store.application(id: app.id) ?? app)
         }
+    }
+
+    private var isCustomInstalled: Bool {
+        !app.isSteamRuntimeHost && (app.storeProvider == nil || app.usesStoreMetadataOnly)
     }
 
     @ViewBuilder private var primaryAction: some View {
