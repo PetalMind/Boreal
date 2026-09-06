@@ -27,7 +27,7 @@ struct WineCompatibilityProfileTests {
         #expect(GraphicsAPIDetector.detect(executable: executable) == .directX11)
     }
 
-    @Test func darksidersDeathinitiveProfileUsesWineD3DFallback() {
+    @Test func darksidersDeathinitiveProfileSelectsDirectX11AtLaunch() {
         let application = WindowsApplication(
             name: "Darksiders II Deathinitive Edition",
             publisher: "THQ Nordic",
@@ -38,7 +38,10 @@ struct WineCompatibilityProfileTests {
             storeExternalID: "388410"
         )
 
-        #expect(GameGraphicsProfiles.profile(for: application)?.preferredBackend == .wineD3D)
+        let profile = GameGraphicsProfiles.profile(for: application)
+        #expect(profile?.preferredBackend == .d9vk)
+        #expect(profile?.defaultAPI == .directX9)
+        #expect(profile?.launchOption(for: .directX11)?.arguments == ["-dx11"])
     }
 
     @Test func graphicsBackendChoicesIncludeEverySupportedRenderer() {
@@ -47,6 +50,7 @@ struct WineCompatibilityProfileTests {
             .d3dMetal,
             .dxmt,
             .dxvk,
+            .d9vk,
             .wineD3D
         ])
     }
@@ -301,7 +305,7 @@ struct WineCompatibilityProfileTests {
         #expect(profile?.launchOption(for: .directX9)?.arguments == ["/dx9"])
     }
 
-    @Test func graphicsLaunchOptionKeepsProviderArgumentsAndAddsAPIArguments() {
+    @Test func graphicsLaunchOptionKeepsProviderArgumentsAndAddsAPIArguments() throws {
         let plan = WindowsLaunchPlan(
             executable: URL(fileURLWithPath: "/tmp/steam.exe"),
             arguments: ["-applaunch", "475150"],
@@ -309,7 +313,7 @@ struct WineCompatibilityProfileTests {
             workingDirectory: URL(fileURLWithPath: "/tmp")
         )
 
-        let configured = GameGraphicsProfiles.applying(
+        let configured = try GameGraphicsProfiles.applying(
             GraphicsAPILaunchOption(api: .directX9, arguments: ["/dx9"]),
             to: plan
         )

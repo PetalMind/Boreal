@@ -56,7 +56,7 @@ nonisolated struct ITADPriceHistoryPoint: Codable, Hashable, Sendable, Identifia
     var id: String { "\(timestamp.timeIntervalSince1970)-\(shop.id)" }
 }
 
-nonisolated struct DiscoveryPriceSummary: Hashable, Sendable {
+nonisolated struct DiscoveryPriceSummary: Codable, Hashable, Sendable {
     let itadGameID: String
     var bestOffer: ITADOffer?
     var historicalLow: ITADHistoricalDeal?
@@ -128,6 +128,7 @@ actor ITADPriceService: DiscoveryPricingLoading {
     static let countryCodeDefaultsKey = "itadCountryCode"
     static let steamShopID = 61
     private static let baseURL = URL(string: "https://api.isthereanydeal.com")!
+    private static let cacheLifetime: TimeInterval = 3 * 60 * 60
 
     private struct PriceOverviewResponse: Decodable {
         let prices: [PriceOverviewEntry]
@@ -145,9 +146,12 @@ actor ITADPriceService: DiscoveryPricingLoading {
     }
 
     private let session: URLSession
+    private let cacheURL: URL?
+    private var cache: [String: DiscoveryPriceSummary]?
 
-    init(session: URLSession = .shared) {
+    init(applicationSupportURL: URL? = nil, session: URLSession = .shared) {
         self.session = session
+        cacheURL = applicationSupportURL?.appending(path: "Discovery/itad-prices.json", directoryHint: .notDirectory)
     }
 
     static var isConfigured: Bool {
@@ -156,16 +160,24 @@ actor ITADPriceService: DiscoveryPricingLoading {
     }
 
     func loadOverview(for game: AppleGamingWikiGame) async -> DiscoveryPriceSummary? {
+        let cacheKey = "\(countryCode)|\(game.id)"
+        if cache == nil { cache = readCache() }
+        if let cached = cache?[cacheKey], Date.now.timeIntervalSince(cached.fetchedAt) < Self.cacheLifetime {
+            return cached
+        }
         guard let id = await resolveGameID(for: game), let response: PriceOverviewResponse = await post(
             [id],
             endpoint: "/games/overview/v2?country=\(countryCode)"
         ), let entry = response.prices.first(where: { $0.id == id }) else { return nil }
-        return DiscoveryPriceSummary(
+        let summary = DiscoveryPriceSummary(
             itadGameID: id,
             bestOffer: entry.current,
             historicalLow: entry.lowest,
             fetchedAt: .now
         )
+        cache?[cacheKey] = summary
+        writeCache()
+        return summary
     }
 
     func loadOffers(for itadGameID: String) async -> [ITADOffer]? {
@@ -248,5 +260,24 @@ actor ITADPriceService: DiscoveryPricingLoading {
         let configured = UserDefaults.standard.string(forKey: Self.countryCodeDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if let configured, configured.count == 2 { return configured }
         return Locale.current.region?.identifier ?? "PL"
+    }
+
+    private func readCache() -> [String: DiscoveryPriceSummary] {
+        guard let cacheURL, let data = try? Data(contentsOf: cacheURL) else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([String: DiscoveryPriceSummary].self, from: data)) ?? [:]
+    }
+
+    private func writeCache() {
+        guard let cacheURL, let cache else { return }
+        do {
+            try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(cache).write(to: cacheURL, options: .atomic)
+        } catch {
+            // Prices remain available for the current session when persistence is unavailable.
+        }
     }
 }

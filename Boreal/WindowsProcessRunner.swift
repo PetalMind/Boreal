@@ -56,8 +56,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         let wineArguments = WineLaunchArguments.make(
             for: plan,
             environmentID: environment.id,
-            displayWidth: CGDisplayPixelsWide(displayID),
-            displayHeight: CGDisplayPixelsHigh(displayID)
+            displayWidth: Int(CGDisplayBounds(displayID).width),
+            displayHeight: Int(CGDisplayBounds(displayID).height)
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
@@ -207,6 +207,11 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
         values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
         values.merge(environment.configuration.graphicsConfiguration.environment) { _, configured in configured }
+        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime) == .d9vk {
+            // MoltenVK dynamically grows exhausted descriptor pools. Its warning
+            // for every allocation can otherwise write megabytes per minute.
+            values["MVK_CONFIG_LOG_LEVEL"] = "0"
+        }
         // winebus can use its bundled SDL backend to expose macOS controllers
         // as Windows HID/XInput devices. These also keep hot-plug events alive
         // after the Wine window becomes the foreground application.

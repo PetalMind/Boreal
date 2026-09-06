@@ -390,8 +390,18 @@ struct ContentView: View {
             switch route {
             case .application(let id):
                 if let app = store.application(id: id) {
-                    AppDetailView(app: app) { libraryPath.removeAll() }
-                        .navigationTitle(app.name)
+                    if app.usesStoreMetadataOnly,
+                       let provider = app.storeProvider,
+                       let externalID = app.storeExternalID,
+                       let game = store.storeGames.first(where: {
+                           $0.provider == provider && $0.externalID == externalID
+                       }) {
+                        StoreGameDetailView(game: game)
+                            .navigationTitle(app.name)
+                    } else {
+                        AppDetailView(app: app) { libraryPath.removeAll() }
+                            .navigationTitle(app.name)
+                    }
                 } else {
                     ContentUnavailableView("App Not Found", systemImage: "questionmark.app")
                         .navigationTitle("App")

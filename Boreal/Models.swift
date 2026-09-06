@@ -62,6 +62,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
     case d3dMetal
     case dxmt
     case dxvk
+    case d9vk
     case wineD3D
 
     var id: String { rawValue }
@@ -71,6 +72,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         case .d3dMetal: "D3DMetal"
         case .dxmt: "DXMT"
         case .dxvk: "DXVK"
+        case .d9vk: "D9VK"
         case .wineD3D: "Wine (WineD3D)"
         }
     }
@@ -80,6 +82,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         case .d3dMetal: "Apple Game Porting Toolkit renderer, optimized for DirectX 11 and 12."
         case .dxmt: "Metal-based Direct3D 11 translation. Requires a runtime package containing DXMT."
         case .dxvk: "Vulkan-based Direct3D 10–11 translation using the managed macOS package. Direct3D 9 uses WineD3D."
+        case .d9vk: "Vulkan-based Direct3D 9 translation using the managed macOS package."
         case .wineD3D: "Wine's built-in OpenGL renderer and the safest fallback."
         }
     }
@@ -87,7 +90,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         switch self {
         case .automatic: nil
         case .d3dMetal: .gamePortingToolkit
-        case .dxmt, .dxvk, .wineD3D: .wine
+        case .dxmt, .dxvk, .d9vk, .wineD3D: .wine
         }
     }
 }
@@ -168,6 +171,7 @@ nonisolated struct GraphicsAPILaunchOption: Codable, Hashable, Sendable {
     var api: GraphicsAPI
     var arguments: [String] = []
     var executable: String? = nil
+    var requiredFile: String? = nil
 }
 
 nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
@@ -177,6 +181,7 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     var defaultAPI: GraphicsAPI
     var launchOptions: [GraphicsAPILaunchOption]
     var preferredBackend: WineGraphicsBackend? = nil
+    var overlayCompatibleFullscreen: Bool? = nil
 
     func launchOption(for api: GraphicsAPI) -> GraphicsAPILaunchOption? {
         launchOptions.first { $0.api == api }

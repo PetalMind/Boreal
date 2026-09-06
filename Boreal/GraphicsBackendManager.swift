@@ -8,6 +8,7 @@ nonisolated struct GraphicsBackendActivation: Sendable, Equatable {
 nonisolated enum GraphicsBackendManagerError: LocalizedError, Sendable {
     case componentPackageMissing(WineGraphicsBackend)
     case componentPackageEmpty(WineGraphicsBackend)
+    case builtinDXVKPackage
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ nonisolated enum GraphicsBackendManagerError: LocalizedError, Sendable {
             "The selected runtime advertises \(backend.displayName), but its graphics component package is missing."
         case .componentPackageEmpty(let backend):
             "The \(backend.displayName) component package does not contain supported Direct3D libraries."
+        case .builtinDXVKPackage:
+            "This DXVK package contains Wine builtin DLLs, which cannot be activated through prefix overrides. Reinstall DXVK using the runtime component download, or import the archive without 'builtin' in its name."
         }
     }
 }
@@ -54,7 +57,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         var configuration = environment.configuration.graphicsConfiguration
         configuration.backend = requested
         let backend = configuration.resolvedBackend(runtime: runtime)
-        guard backend == .dxmt || backend == .dxvk else {
+        guard backend == .dxmt || backend == .dxvk || backend == .d9vk else {
             return GraphicsBackendActivation(backend: backend, dllOverrides: [])
         }
 
@@ -63,6 +66,11 @@ nonisolated struct GraphicsBackendManager: Sendable {
         }
         let candidates = try componentFiles(in: componentRoot, environment: environment)
         guard !candidates.isEmpty else { throw GraphicsBackendManagerError.componentPackageEmpty(backend) }
+        if backend == .dxvk || backend == .d9vk {
+            for (source, _) in candidates {
+                try Self.validateNativeDXVKLibrary(source)
+            }
+        }
 
         let backupRoot = environment.rootURL.appending(path: ".graphics-backup", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
@@ -138,12 +146,13 @@ nonisolated struct GraphicsBackendManager: Sendable {
         switch backend {
         case .dxmt: runtime.features?.dxmt == true
         case .dxvk: runtime.features?.dxvk == true
+        case .d9vk: runtime.features?.d9vk == true
         default: true
         }
     }
 
     private func componentRoot(for backend: WineGraphicsBackend, runtime: InstalledRuntime) -> URL? {
-        let folder = backend == .dxmt ? "DXMT" : "DXVK"
+        let folder = backend == .dxmt ? "DXMT" : backend == .d9vk ? "D9VK" : "DXVK"
         return [
             runtime.rootURL.appending(path: "GraphicsComponents/\(folder)", directoryHint: .isDirectory),
             runtime.rootURL.appending(path: "Support/Graphics/\(folder)", directoryHint: .isDirectory)
@@ -171,6 +180,15 @@ nonisolated struct GraphicsBackendManager: Sendable {
             }
         }
         return result
+    }
+
+    static func validateNativeDXVKLibrary(_ url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let header = try handle.read(upToCount: 84) ?? Data()
+        if header.dropFirst(64).starts(with: Data("Wine builtin DLL".utf8)) {
+            throw GraphicsBackendManagerError.builtinDXVKPackage
+        }
     }
 
     private func manifestURL(_ environment: ManagedBorealEnvironment) -> URL {

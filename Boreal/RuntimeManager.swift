@@ -144,11 +144,13 @@ actor RuntimeManager: RuntimeManaging {
         let repository: String
         switch backend {
         case .dxvk: repository = "Gcenx/DXVK-macOS"
+        case .d9vk: repository = "Sikarugir-App/d9vk"
         case .dxmt: repository = "3Shain/dxmt"
         default:
-            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT and DXVK can be installed as optional components.")
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK and D9VK can be installed as optional components.")
         }
-        guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
+        let releasePath = backend == .d9vk ? "releases?per_page=1" : "releases/latest"
+        guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/\(releasePath)") else {
             throw RuntimeManagerError.invalidManifest
         }
         var request = URLRequest(url: releaseURL)
@@ -158,13 +160,19 @@ actor RuntimeManager: RuntimeManaging {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw RuntimeManagerError.downloadFailed("The official release service is currently unavailable.")
         }
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
+        let release = backend == .d9vk
+            ? try JSONDecoder().decode([GitHubRelease].self, from: releaseData).first
+            : try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
+        guard let release else { throw RuntimeManagerError.invalidManifest }
         let asset = release.assets.first {
             let name = $0.name.lowercased()
-            return name.hasSuffix(".tar.gz") && name.contains("builtin") && !name.contains("debug")
+            return name.hasSuffix(".tar.gz")
+                && ((backend == .dxvk || backend == .d9vk) ? !name.contains("builtin") : name.contains("builtin"))
+                && !name.contains("debug")
         } ?? release.assets.first {
             let name = $0.name.lowercased()
             return name.hasSuffix(".zip") && !name.contains("debug")
+                && ((backend != .dxvk && backend != .d9vk) || !name.contains("builtin"))
         }
         guard let asset,
               asset.browserDownloadURL.scheme == "https",
@@ -194,8 +202,8 @@ actor RuntimeManager: RuntimeManaging {
         }
         try await extractGraphicsArchive(archive, to: extracted)
         let installed = try await installGraphicsComponent(backend, from: extracted, into: runtimeID)
-        if backend == .dxvk {
-            try recordComponentReceipt(.dxvk, version: release.tagName, repository: repository, in: installed)
+        if backend == .dxvk || backend == .d9vk {
+            try recordComponentReceipt(backend == .d9vk ? .d9vk : .dxvk, version: release.tagName, repository: repository, in: installed)
         }
         return installed
     }
@@ -232,6 +240,9 @@ actor RuntimeManager: RuntimeManaging {
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
         if component == .dxvk {
             return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID)
+        }
+        if component == .d9vk {
+            return try await downloadAndInstallGraphicsComponent(.d9vk, into: runtimeID)
         }
         let repository = "HansKristian-Work/vkd3d-proton"
         let release = try await latestRelease(for: component)
@@ -272,8 +283,8 @@ actor RuntimeManager: RuntimeManaging {
         into runtimeID: String
     ) async throws -> InstalledRuntime {
         try prepareDirectories()
-        guard backend == .dxmt || backend == .dxvk else {
-            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT and DXVK component packages can be imported.")
+        guard backend == .dxmt || backend == .dxvk || backend == .d9vk else {
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK and D9VK component packages can be imported.")
         }
         guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains("..") else {
             throw RuntimeManagerError.localRuntimeInvalid("The target runtime identifier is unsafe.")
@@ -282,7 +293,7 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
         }
         guard runtime.resolvedEngine == .wine else {
-            throw RuntimeManagerError.localRuntimeInvalid("DXMT and DXVK packages require a Wine runtime. D3DMetal is supplied by Game Porting Toolkit.")
+            throw RuntimeManagerError.localRuntimeInvalid("DXMT, DXVK and D9VK packages require a Wine runtime. D3DMetal is supplied by Game Porting Toolkit.")
         }
         if backend == .dxmt {
             #if !arch(arm64)
@@ -330,6 +341,11 @@ actor RuntimeManager: RuntimeManaging {
         }
         defer { if let extractionRoot { try? fileManager.removeItem(at: extractionRoot) } }
         let discovered = try discoverGraphicsLibraries(in: packageRoot, backend: backend)
+        if backend == .dxvk || backend == .d9vk {
+            for library in discovered {
+                try GraphicsBackendManager.validateNativeDXVKLibrary(library.url)
+            }
+        }
         guard !discovered.isEmpty else {
             throw RuntimeManagerError.localRuntimeInvalid(
                 "The selected package does not contain compiled \(backend.displayName) DLLs. Choose a release/build artifact, not the project source folder."
@@ -337,13 +353,13 @@ actor RuntimeManager: RuntimeManaging {
         }
         let required = backend == .dxmt
             ? Set(["dxgi.dll", "d3d11.dll"])
-            : Set(["d3d10core.dll", "d3d11.dll"])
+            : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["d3d10core.dll", "d3d11.dll"])
         let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
         guard required.isSubset(of: names) else {
             throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
         }
 
-        let componentName = backend == .dxmt ? "DXMT" : "DXVK"
+        let componentName = backend == .dxmt ? "DXMT" : backend == .d9vk ? "D9VK" : "DXVK"
         let destination = runtime.rootURL.appending(path: "GraphicsComponents/\(componentName)", directoryHint: .isDirectory)
         let staging = runtime.rootURL.appending(path: ".graphics-installing-\(UUID().uuidString)", directoryHint: .isDirectory)
         let backup = runtime.rootURL.appending(path: ".graphics-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -364,7 +380,9 @@ actor RuntimeManager: RuntimeManaging {
             var features = runtime.features ?? RuntimeFeatures(
                 wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false
             )
-            if backend == .dxmt { features.dxmt = true } else { features.dxvk = true }
+            if backend == .dxmt { features.dxmt = true }
+            else if backend == .d9vk { features.d9vk = true }
+            else { features.dxvk = true }
             runtime = InstalledRuntime(
                 id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion,
                 rootURL: runtime.rootURL, wineExecutable: runtime.wineExecutable,
@@ -1009,8 +1027,9 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     private func latestRelease(for component: RuntimeComponent) async throws -> GitHubRelease {
-        let repository = component == .dxvk ? "Gcenx/DXVK-macOS" : "HansKristian-Work/vkd3d-proton"
-        guard let url = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
+        let repository = component == .dxvk ? "Gcenx/DXVK-macOS" : component == .d9vk ? "Sikarugir-App/d9vk" : "HansKristian-Work/vkd3d-proton"
+        let releasePath = component == .d9vk ? "releases?per_page=1" : "releases/latest"
+        guard let url = URL(string: "https://api.github.com/repos/\(repository)/\(releasePath)") else {
             throw RuntimeManagerError.invalidManifest
         }
         var request = URLRequest(url: url)
@@ -1019,6 +1038,12 @@ actor RuntimeManager: RuntimeManaging {
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw RuntimeManagerError.downloadFailed("The official release service is currently unavailable.")
+        }
+        if component == .d9vk {
+            guard let release = try JSONDecoder().decode([GitHubRelease].self, from: data).first else {
+                throw RuntimeManagerError.invalidManifest
+            }
+            return release
         }
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
     }
@@ -1104,7 +1129,7 @@ actor RuntimeManager: RuntimeManaging {
         in root: URL,
         backend: WineGraphicsBackend
     ) throws -> [GraphicsLibrary] {
-        let supported: Set<String> = backend == .dxmt
+        let supported: Set<String> = backend == .d9vk ? ["d3d9.dll"] : backend == .dxmt
             ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
             : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
         return try discoverComponentLibraries(in: root, names: supported).sorted {
@@ -1159,6 +1184,7 @@ actor RuntimeManager: RuntimeManaging {
         if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
         features.dxmt = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT").path)
         features.dxvk = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXVK").path)
+        features.d9vk = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/D9VK").path)
         features.vkd3d = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/VKD3D").path)
         return InstalledRuntime(
             id: runtime.id,

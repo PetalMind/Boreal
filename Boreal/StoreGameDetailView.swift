@@ -89,6 +89,7 @@ struct StoreGameDetailView: View {
                 )
             }
         }
+        .id(currentGame.storeReference)
         .preferredColorScheme(.dark)
         .onAppear {
             customApplicationID = store.linkedApplication(for: game)?.id

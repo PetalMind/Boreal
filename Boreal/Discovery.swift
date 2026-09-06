@@ -238,16 +238,20 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
 
     static let masterListURL = URL(string: "https://www.applegamingwiki.com/wiki/M1_compatible_games_master_list")!
     private static let cacheLifetime: TimeInterval = 24 * 60 * 60
+    private static let unavailableMetadataLifetime: TimeInterval = 15 * 60
 
     private let session: URLSession
     private let cacheURL: URL?
     private let metadataCacheURL: URL?
+    private let unavailableMetadataCacheURL: URL?
     private var metadataCache: [String: DiscoveryGameMetadata]?
+    private var unavailableMetadataCache: [String: Date]?
 
     init(applicationSupportURL: URL? = nil, session: URLSession = .shared) {
         self.session = session
         cacheURL = applicationSupportURL?.appending(path: "Discovery/applegamingwiki.json", directoryHint: .notDirectory)
         metadataCacheURL = applicationSupportURL?.appending(path: "Discovery/applegamingwiki-metadata.json", directoryHint: .notDirectory)
+        unavailableMetadataCacheURL = applicationSupportURL?.appending(path: "Discovery/applegamingwiki-unavailable.json", directoryHint: .notDirectory)
     }
 
     func loadCatalog(forceRefresh: Bool) async throws -> AppleGamingWikiCatalog {
@@ -287,11 +291,13 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
 
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata? {
         if metadataCache == nil { metadataCache = readMetadataCache() }
+        if unavailableMetadataCache == nil { unavailableMetadataCache = readUnavailableMetadataCache() }
         if !forceRefresh, let cached = metadataCache?[game.id],
            Date.now.timeIntervalSince(cached.fetchedAt) < Self.cacheLifetime { return cached }
+        if !forceRefresh, let failedAt = unavailableMetadataCache?[game.id],
+           Date.now.timeIntervalSince(failedAt) < Self.unavailableMetadataLifetime { return nil }
         if let metadata = await steamMetadata(for: game) {
-            metadataCache?[game.id] = metadata
-            writeMetadataCache()
+            cache(metadata, for: game.id)
             return metadata
         }
 
@@ -318,7 +324,7 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
             let (data, response) = try await session.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200,
                   let page = try JSONDecoder().decode(MediaWikiResponse.self, from: data).query?.pages.values.first,
-                  page.pageid != nil else { return metadataCache?[game.id] }
+                  page.pageid != nil else { return cachedOrMarkUnavailable(game.id) }
 
             let metadata = DiscoveryGameMetadata(
                 summary: Self.cleanedSummary(page.extract, gameTitle: game.title),
@@ -327,13 +333,26 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
                 sourceURL: page.fullurl ?? game.pageURL,
                 fetchedAt: .now
             )
-            guard metadata.hasPresentationContent else { return metadataCache?[game.id] }
-            metadataCache?[game.id] = metadata
-            writeMetadataCache()
+            guard metadata.hasPresentationContent else { return cachedOrMarkUnavailable(game.id) }
+            cache(metadata, for: game.id)
             return metadata
         } catch {
-            return metadataCache?[game.id]
+            return cachedOrMarkUnavailable(game.id)
         }
+    }
+
+    private func cache(_ metadata: DiscoveryGameMetadata, for id: String) {
+        metadataCache?[id] = metadata
+        unavailableMetadataCache?.removeValue(forKey: id)
+        writeMetadataCache()
+        writeUnavailableMetadataCache()
+    }
+
+    private func cachedOrMarkUnavailable(_ id: String) -> DiscoveryGameMetadata? {
+        if let cached = metadataCache?[id] { return cached }
+        unavailableMetadataCache?[id] = .now
+        writeUnavailableMetadataCache()
+        return nil
     }
 
     private func fetchCatalog() async throws -> AppleGamingWikiCatalog {
@@ -429,6 +448,29 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
             try encoder.encode(metadataCache).write(to: metadataCacheURL, options: .atomic)
         } catch {
             // Presentation data remains available for the current session.
+        }
+    }
+
+    private func readUnavailableMetadataCache() -> [String: Date] {
+        guard let unavailableMetadataCacheURL,
+              let data = try? Data(contentsOf: unavailableMetadataCacheURL) else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([String: Date].self, from: data)) ?? [:]
+    }
+
+    private func writeUnavailableMetadataCache() {
+        guard let unavailableMetadataCacheURL, let unavailableMetadataCache else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: unavailableMetadataCacheURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(unavailableMetadataCache).write(to: unavailableMetadataCacheURL, options: .atomic)
+        } catch {
+            // A failed lookup may be retried next time when this optional cache is unavailable.
         }
     }
 
@@ -897,6 +939,12 @@ struct DiscoveryView: View {
                 Text(catalog.isStale ? "Saved catalog" : "Updated \(catalog.fetchedAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? 0) {
+                Button(store.discoveryState == .loading ? "Loading…" : "Load more macOS games from Steam") {
+                    store.loadMoreDiscoveryGames()
+                }
+                .disabled(store.discoveryState == .loading)
+            }
             if let total = catalog.steamTotal {
                 Text("Steam: \((catalog.steamOffset ?? 0).formatted()) of \(total.formatted()) listings loaded. Search also checks the live macOS catalog.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -999,14 +1047,25 @@ struct DiscoveryGameTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.09)))
         .task(id: "\(game.id)-\(itadAPIKey)-\(itadCountryCode)") {
-            await store.ensureDiscoveryMetadata(for: game)
-            await store.ensureDiscoveryPrice(for: game)
+            async let metadata: Void = store.ensureDiscoveryMetadata(for: game)
+            if !itadAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await store.ensureDiscoveryPrice(for: game)
+            }
+            await metadata
         }
     }
 
     private var artwork: some View {
         Button(action: open) {
-            DiscoveryArtwork(imageURL: metadata?.coverImageURL ?? game.coverURL, title: game.title, isLoading: store.isDiscoveryMetadataLoading(for: game), height: horizontal ? 106 : 96)
+            DiscoveryArtwork(
+                imageURL: (game.steamAppID ?? metadata?.steamAppID).map {
+                    "https://cdn.cloudflare.steamstatic.com/steam/apps/\($0)/library_600x900.jpg"
+                } ?? metadata?.coverImageURL ?? game.coverURL,
+                fallbackImageURL: metadata?.coverImageURL ?? game.coverURL,
+                title: game.title,
+                isLoading: store.isDiscoveryMetadataLoading(for: game),
+                height: horizontal ? 106 : 96
+            )
         }.buttonStyle(.plain)
     }
 
@@ -1048,6 +1107,10 @@ struct DiscoveryGameTile: View {
                 .font(horizontal ? .caption : .caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+        } else if itadAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text("Configure prices in Settings")
+                .font(horizontal ? .caption : .caption2)
+                .foregroundStyle(.secondary)
         } else if store.isDiscoveryPriceLoading(for: game) {
             Label("Loading price…", systemImage: "arrow.triangle.2.circlepath")
                 .font(horizontal ? .caption : .caption2)
@@ -1081,6 +1144,7 @@ struct SavedDiscoveryGamesView: View {
 
 private struct DiscoveryArtwork: View {
     let imageURL: String?
+    var fallbackImageURL: String? = nil
     let title: String
     let isLoading: Bool
     let height: CGFloat
@@ -1100,7 +1164,7 @@ private struct DiscoveryArtwork: View {
                     case .empty:
                         placeholder.overlay { ProgressView().tint(.white) }
                     case .failure:
-                        placeholder
+                        fallbackImage
                     @unknown default:
                         placeholder
                     }
@@ -1115,6 +1179,18 @@ private struct DiscoveryArtwork: View {
         .frame(height: height)
         .clipped()
         .accessibilityLabel("Cover for \(title)")
+    }
+
+    @ViewBuilder private var fallbackImage: some View {
+        if let fallbackImageURL, fallbackImageURL != imageURL, let url = URL(string: fallbackImageURL) {
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                placeholder
+            }
+        } else {
+            placeholder
+        }
     }
 
     private var placeholder: some View {

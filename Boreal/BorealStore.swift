@@ -61,6 +61,7 @@ final class BorealStore {
     private var discoverySearchResults: [AppleGamingWikiGame] = []
     var savedDiscoveryGames: [AppleGamingWikiGame] = []
     private let discoveryMetadataGate = StoreSizeEstimateGate(limit: 4)
+    private let discoveryPriceGate = StoreSizeEstimateGate(limit: 4)
     var discoveryCatalog: AppleGamingWikiCatalog?
     var discoveryState: AppleGamingWikiDiscoveryState = .idle
     var discoveryMetadata: [String: DiscoveryGameMetadata] = [:]
@@ -254,12 +255,12 @@ final class BorealStore {
 
     func ensureDiscoveryMetadata(for game: AppleGamingWikiGame) async {
         guard discoveryMetadata[game.id] == nil,
-              !unavailableDiscoveryMetadata.contains(game.id),
               discoveryMetadataLoads.insert(game.id).inserted else { return }
         await discoveryMetadataGate.acquire()
         if !Task.isCancelled {
             let metadata = await services.discoveryCatalog.metadata(for: game, forceRefresh: false)
             if let metadata {
+                unavailableDiscoveryMetadata.remove(game.id)
                 discoveryMetadata[game.id] = metadata
                 if let index = discoveryCatalog?.games.firstIndex(where: { $0.id == game.id }) {
                     discoveryCatalog?.games[index].steamAppID = metadata.steamAppID ?? game.steamAppID
@@ -368,6 +369,7 @@ final class BorealStore {
     func ensureDiscoveryPrice(for game: AppleGamingWikiGame) async {
         guard discoveryPriceSummaries[game.id] == nil,
               discoveryPriceLoads.insert(game.id).inserted else { return }
+        await discoveryPriceGate.acquire()
         var resolvedGame = game
         if let metadata = discoveryMetadata[game.id] {
             resolvedGame.steamAppID = metadata.steamAppID ?? game.steamAppID
@@ -375,6 +377,7 @@ final class BorealStore {
         let summary = await services.discoveryPricing.loadOverview(for: resolvedGame)
         discoveryPriceLoads.remove(game.id)
         if let summary { discoveryPriceSummaries[game.id] = summary }
+        await discoveryPriceGate.release()
     }
 
     func ensureDiscoveryOffers(for game: AppleGamingWikiGame) async {
@@ -669,12 +672,16 @@ final class BorealStore {
     }
 
     func compatibilityProfile(for application: WindowsApplication) -> WineCompatibilityProfile {
-        if let saved = application.compatibilityProfile { return saved }
-        var profile = application.resolvedCompatibilityProfile
+        var profile = application.compatibilityProfile ?? application.resolvedCompatibilityProfile
         if let builtIn = GameGraphicsProfiles.profile(for: application) {
-            profile.graphicsAPI = builtIn.defaultAPI
-            if let preferredBackend = builtIn.preferredBackend {
-                profile.graphicsBackend = preferredBackend
+            if application.compatibilityProfile == nil {
+                profile.graphicsAPI = builtIn.defaultAPI
+                if let preferredBackend = builtIn.preferredBackend {
+                    profile.graphicsBackend = preferredBackend
+                }
+            }
+            if let overlayCompatibleFullscreen = builtIn.overlayCompatibleFullscreen {
+                profile.overlayCompatibleFullscreen = overlayCompatibleFullscreen
             }
         }
         if environment(id: application.environmentID)?.architecture == "32-bit" {
@@ -704,6 +711,8 @@ final class BorealStore {
             return compatibleRuntimes.contains { $0.features?.dxmt == true } ? nil : "No installed Wine runtime contains the DXMT component package."
         case .dxvk:
             return compatibleRuntimes.contains { $0.features?.dxvk == true } ? nil : "No installed Wine runtime contains the DXVK component package."
+        case .d9vk:
+            return compatibleRuntimes.contains { $0.features?.d9vk == true } ? nil : "No installed Wine runtime contains the D9VK component package."
         case .automatic, .wineD3D:
             return nil
         }
@@ -728,6 +737,7 @@ final class BorealStore {
         case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.d3dmetal == true
         case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true
         case .dxvk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxvk == true
+        case .d9vk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.d9vk == true
         case .automatic, .wineD3D: currentRuntimeSupportsBackend = true
         }
         let requiresRecreation = previousProfile.architecture != profile.architecture
@@ -1068,7 +1078,6 @@ final class BorealStore {
             }
             guard let metadata,
             let index = applications.firstIndex(where: { $0.id == candidate.id }) else { continue }
-            applications[index].name = metadata.name
             applications[index].publisher = metadata.developer ?? applications[index].publisher
             applications[index].storeProvider = metadata.provider
             applications[index].storeExternalID = metadata.externalID
@@ -2425,6 +2434,7 @@ final class BorealStore {
             case .d3dMetal: return $0.features?.d3dmetal == true
             case .dxmt: return $0.features?.dxmt == true
             case .dxvk: return $0.features?.dxvk == true
+            case .d9vk: return $0.features?.d9vk == true
             case .automatic, .wineD3D: return true
             }
         }) {
@@ -2828,7 +2838,7 @@ final class BorealStore {
                     plan = try await storeProvider.launchPlan(for: game, runtime: runtime, environment: managed)
                 }
                 applications[index].executablePath = plan.executable.path
-                var configuredPlan = GameGraphicsProfiles.applying(
+                var configuredPlan = try GameGraphicsProfiles.applying(
                     graphicsLaunchOption,
                     to: plan,
                     gameDirectory: gameDirectory
@@ -2849,7 +2859,7 @@ final class BorealStore {
                 session = try await services.processRunner.run(plan: configuredPlan, environment: managed, runtime: runtime)
             } else {
                 let executable = URL(fileURLWithPath: applications[index].executablePath)
-                var configuredPlan = GameGraphicsProfiles.applying(
+                var configuredPlan = try GameGraphicsProfiles.applying(
                     graphicsLaunchOption,
                     to: WindowsLaunchPlan(
                         executable: executable,

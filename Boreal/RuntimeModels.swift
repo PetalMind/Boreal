@@ -73,11 +73,12 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var d3dmetal: Bool
     var dxmt: Bool
     var dxvk: Bool = false
+    var d9vk: Bool = false
     var vkd3d: Bool = false
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, vkd3d, graphicsCapabilities
+        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d, graphicsCapabilities
     }
 
     init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, vkd3d: Bool = false) {
@@ -98,6 +99,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
         dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
         dxvk = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
+        d9vk = try values.decodeIfPresent(Bool.self, forKey: .d9vk) ?? false
         vkd3d = try values.decodeIfPresent(Bool.self, forKey: .vkd3d) ?? false
         graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
     }
@@ -105,11 +107,12 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
 
 nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case dxvk
+    case d9vk
     case vkd3d
 
     var id: String { rawValue }
-    var displayName: String { self == .dxvk ? "DXVK" : "VKD3D-Proton" }
-    var directoryName: String { self == .dxvk ? "DXVK" : "VKD3D" }
+    var displayName: String { self == .dxvk ? "DXVK" : self == .d9vk ? "D9VK" : "VKD3D-Proton" }
+    var directoryName: String { self == .dxvk ? "DXVK" : self == .d9vk ? "D9VK" : "VKD3D" }
 }
 
 /// Windows redistributables belong to a mutable game environment, never to
@@ -537,6 +540,7 @@ nonisolated extension RuntimeManaging {
     func componentUpdates() async throws -> [RuntimeComponentUpdate] { [] }
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
         if component == .dxvk { return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID) }
+        if component == .d9vk { return try await downloadAndInstallGraphicsComponent(.d9vk, into: runtimeID) }
         throw CocoaError(.featureUnsupported)
     }
     func installGraphicsComponent(

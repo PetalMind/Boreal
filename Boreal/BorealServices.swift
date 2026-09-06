@@ -82,7 +82,7 @@ nonisolated struct BorealServices: Sendable {
             gogLibrary: GOGService(applicationSupportURL: applicationSupportURL),
             communityCompatibility: ProtonStoreCompatibilityService(),
             discoveryCatalog: AppleGamingWikiDiscoveryService(applicationSupportURL: applicationSupportURL),
-            discoveryPricing: ITADPriceService()
+            discoveryPricing: ITADPriceService(applicationSupportURL: applicationSupportURL)
         )
     }
 }

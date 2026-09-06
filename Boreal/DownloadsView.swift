@@ -345,11 +345,13 @@ struct DownloadsView: View {
                     if runtime.source == .installed, runtime.engine == .wine {
                         Menu {
                             Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
+                            Button("Install D9VK") { store.downloadGraphicsComponent(.d9vk, into: runtime.id) }
                             Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
                             Divider()
                             Menu("Advanced") {
                                 Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
                                 Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
+                                Button("Import D9VK Package…") { selectGraphicsPackage(.d9vk, for: runtime) }
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -409,7 +411,7 @@ struct DownloadsView: View {
         panel.title = "Choose Extracted \(backend.displayName) Package"
         panel.message = backend == .dxmt
             ? "Choose an extracted folder or ZIP containing the official DXMT 64-bit DLLs."
-            : "Choose an extracted folder or ZIP containing a macOS-compatible DXVK package and its DLLs."
+            : "Choose an extracted folder or ZIP containing a macOS-compatible \(backend.displayName) package and its DLLs."
         panel.prompt = "Install"
         panel.allowedContentTypes = [.zip]
         panel.canChooseFiles = true

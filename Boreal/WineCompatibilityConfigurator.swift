@@ -309,6 +309,7 @@ struct WineCompatibilityConfigurator: View {
         case .d3dMetal: "For DirectX 11 and 12. Requires Game Porting Toolkit."
         case .dxmt: "Runs DirectX 11 using Metal. Requires DXMT support."
         case .dxvk: "Runs DirectX 10 and 11 using Vulkan. DirectX 9 uses WineD3D."
+        case .d9vk: "Runs DirectX 9 using Vulkan. Requires the D9VK component."
         case .wineD3D: "A fallback to try if other renderers cause graphics problems."
         }
     }

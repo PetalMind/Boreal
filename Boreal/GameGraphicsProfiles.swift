@@ -15,10 +15,28 @@ nonisolated enum GameGraphicsProfiles {
         GameGraphicsProfile(
             provider: .steam,
             externalID: "388410",
-            availableAPIs: [.directX11],
-            defaultAPI: .directX11,
-            launchOptions: [],
-            preferredBackend: .wineD3D
+            availableAPIs: [.directX11, .directX9],
+            // The original Deathinitive release starts in D3D9. The optional
+            // -dx11 path requires a separate shader library that may not be shipped.
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX11, arguments: ["-dx11"], requiredFile: "Darksiders2.wsl"),
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            preferredBackend: .d9vk,
+            overlayCompatibleFullscreen: false
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1446463013",
+            availableAPIs: [.directX11, .directX9],
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX11, arguments: ["-dx11"], requiredFile: "Darksiders2.wsl"),
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            preferredBackend: .d9vk,
+            overlayCompatibleFullscreen: false
         )
     ]
 
@@ -33,7 +51,7 @@ nonisolated enum GameGraphicsProfiles {
         to plan: WindowsLaunchPlan,
         gameDirectory: URL? = nil,
         fileManager: FileManager = .default
-    ) -> WindowsLaunchPlan {
+    ) throws -> WindowsLaunchPlan {
         guard let option else { return plan }
         var configured = plan
         configured.arguments.append(contentsOf: option.arguments)
@@ -46,6 +64,17 @@ nonisolated enum GameGraphicsProfiles {
                 configured.workingDirectory = replacement.deletingLastPathComponent()
             }
         }
+        if let requiredFile = option.requiredFile {
+            let directory = gameDirectory ?? configured.workingDirectory ?? configured.executable.deletingLastPathComponent()
+            let file = directory.appending(path: requiredFile)
+            guard fileManager.isReadableFile(atPath: file.path) else {
+                throw NSError(
+                    domain: "Boreal.GraphicsAPI", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "\(option.api.displayName) requires the shader library \(requiredFile), which is missing or unreadable at \(file.path). Select DirectX 9 for this installation."]
+                )
+            }
+        }
         return configured
     }
 }
@@ -56,9 +85,7 @@ nonisolated enum RendererPolicy {
         let candidates: [WineGraphicsBackend]
         switch api {
         case .directX9:
-            // The maintained macOS DXVK package supports D3D10/11. Do not
-            // advertise historical D9VK behavior that the package omits.
-            candidates = [.wineD3D]
+            candidates = [.d9vk, .wineD3D]
         case .directX10, .directX11:
             candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
         case .directX12:
@@ -69,6 +96,7 @@ nonisolated enum RendererPolicy {
         return candidates.first { backend in
             switch backend {
             case .dxvk: features?.dxvk == true
+            case .d9vk: features?.d9vk == true
             case .d3dMetal: features?.d3dmetal == true
             case .dxmt: features?.dxmt == true
             case .wineD3D: true
