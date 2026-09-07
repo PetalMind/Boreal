@@ -1101,7 +1101,10 @@ final class BorealStore {
             var value = metadata
             value.id = storeGames[existingIndex].id
             value.preserveMeasuredActivity(from: storeGames[existingIndex])
-            value.preservePresentationMetadata(from: storeGames[existingIndex])
+            // The rename resolved a new presentation identity. Do not merge
+            // the old artwork back into the fresh metadata: artworkPath is
+            // preferred by GameArtworkView and could otherwise keep showing
+            // the cover belonging to the previous title.
             value.isInstalled = storeGames[existingIndex].isInstalled
             value.installPath = storeGames[existingIndex].installPath
             value.installedPlatform = storeGames[existingIndex].installedPlatform
