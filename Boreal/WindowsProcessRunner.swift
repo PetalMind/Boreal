@@ -29,6 +29,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     private let processExecutor: any ProcessExecuting
     private let probeObservationWindow: Duration
     private var executorIDs: [UUID: UUID] = [:]
+    private var directDrawRestorations: [UUID: DirectDrawShimRestoration] = [:]
 
     init(processExecutor: any ProcessExecuting, probeObservationWindow: Duration = .milliseconds(250)) {
         self.processExecutor = processExecutor
@@ -53,8 +54,15 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             let bounds = CGDisplayBounds(candidate)
             return CGDisplayIsOnline(candidate) != 0 && !bounds.isEmpty ? candidate : nil
         } ?? CGMainDisplayID()
+        var launchPlan = plan
+        if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: plan.executable) {
+            // The virtual explorer desktop keeps the legacy DirectDraw
+            // frontbuffer alive but does not expose the resulting window on
+            // this runtime. Let Heroes 3 create its own Wine window instead.
+            launchPlan.overlayCompatibleFullscreen = false
+        }
         let wineArguments = WineLaunchArguments.make(
-            for: plan,
+            for: launchPlan,
             environmentID: environment.id,
             displayWidth: Int(CGDisplayBounds(displayID).width),
             displayHeight: Int(CGDisplayBounds(displayID).height)
@@ -71,6 +79,15 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             try "d3d9.presentInterval = 0\ndxvk.tearFree = True\nd3d9.maxFrameLatency = 1\nd3d9.forceAspectRatio = \"16:9\"\n"
                 .write(to: configuration, atomically: true, encoding: .utf8)
             processEnvironment["DXVK_CONFIG_FILE"] = configuration.path
+        }
+        if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: plan.executable) {
+            // Heroes 3 uses DirectDraw for its 2D surfaces and Bink videos.
+            // WineD3D's GL/Vulkan paths leave its palettized menu surfaces
+            // partially composed on this runtime. GDI preserves the old
+            // DirectDraw blit and palette semantics needed by the menu/video
+            // frontbuffer.
+            // Keep this renderer override scoped to Heroes 3 only.
+            processEnvironment["WINED3D_RENDERER"] = "gdi"
         }
         // The managed environment always owns these values. Provider metadata
         // cannot redirect a launch into another prefix or runtime search path.
@@ -93,16 +110,33 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             stdoutLog: environment.logsURL.appending(path: "\(stem).stdout.log"),
             stderrLog: environment.logsURL.appending(path: "\(stem).stderr.log")
         )
-        let receipt = try await processExecutor.launch(request)
-        executorIDs[sessionID] = receipt.id
-        return WindowsProcessSession(id: sessionID, environmentID: environment.id, launcherPID: receipt.pid, startedAt: receipt.startedAt, stdoutLog: receipt.stdoutLog, stderrLog: receipt.stderrLog)
+        var directDrawRestoration: DirectDrawShimRestoration?
+        do {
+            directDrawRestoration = try Heroes3DirectDrawCompatibility.prepareIfNeeded(
+                executable: plan.executable,
+                environment: environment
+            )
+            let receipt = try await processExecutor.launch(request)
+            executorIDs[sessionID] = receipt.id
+            if let directDrawRestoration {
+                directDrawRestorations[sessionID] = directDrawRestoration
+            }
+            return WindowsProcessSession(id: sessionID, environmentID: environment.id, launcherPID: receipt.pid, startedAt: receipt.startedAt, stdoutLog: receipt.stdoutLog, stderrLog: receipt.stderrLog)
+        } catch {
+            if let directDrawRestoration { try? Heroes3DirectDrawCompatibility.restore(directDrawRestoration) }
+            throw error
+        }
     }
 
     func waitForExit(_ session: WindowsProcessSession) async throws -> ProcessExecutionResult {
         guard let id = executorIDs[session.id] else { throw ProcessRunnerError.sessionNotFound(session.id) }
-        let result = try await processExecutor.waitForExit(id)
-        executorIDs[session.id] = nil
-        return result
+        defer {
+            executorIDs[session.id] = nil
+            if let restoration = directDrawRestorations.removeValue(forKey: session.id) {
+                try? Heroes3DirectDrawCompatibility.restore(restoration)
+            }
+        }
+        return try await processExecutor.waitForExit(id)
     }
 
     func state(of session: WindowsProcessSession) async throws -> ProcessExecutionState {
@@ -178,6 +212,10 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         try await forceQuitEnvironment(environment: environment, runtime: runtime)
         if let processID = executorIDs[session.id] {
             try await processExecutor.forceTerminate(processID)
+            _ = try? await processExecutor.waitForExit(processID)
+        }
+        if let restoration = directDrawRestorations.removeValue(forKey: session.id) {
+            try? Heroes3DirectDrawCompatibility.restore(restoration)
         }
     }
 

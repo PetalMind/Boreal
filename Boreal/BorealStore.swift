@@ -2862,8 +2862,16 @@ final class BorealStore {
                 throw InstallerServiceError.noRuntimeAvailable
             }
             var profile = compatibilityProfile(for: applications[index])
-            if profile.graphicsAPI == nil {
-                let executable = URL(fileURLWithPath: applications[index].executablePath)
+            let executable = URL(fileURLWithPath: applications[index].executablePath)
+            if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: executable) {
+                // Heroes 3 Complete ships DDrawCompat as xdd.dll. It crashes
+                // under this Wine WoW64 runtime, while Wine's builtin
+                // DirectDraw path is stable for the game's PE32 executable.
+                profile.graphicsBackend = .wineD3D
+                profile.graphicsAPI = .automatic
+                applications[index].compatibilityProfile = profile
+                applications[index].graphics = profile.graphicsBackend.displayName
+            } else if profile.graphicsAPI == nil {
                 profile.graphicsAPI = await Task.detached(priority: .utility) {
                     GraphicsAPIDetector.detect(executable: executable)
                 }.value
