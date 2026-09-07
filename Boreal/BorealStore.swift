@@ -618,6 +618,8 @@ final class BorealStore {
     }
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
 
+    var managedStorageLayout: BorealStorageLayout { storageLayout }
+
     func refreshGameDiskStorage(for game: StoreLibraryGame) {
         let gameID = game.id
         let gamePath = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }

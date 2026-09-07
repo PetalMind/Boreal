@@ -148,6 +148,353 @@ nonisolated struct BorealStorageLayout: Sendable {
     var gamesURL: URL { rootURL.appending(path: "Games", directoryHint: .isDirectory) }
 }
 
+nonisolated enum BorealStorageCategory: String, CaseIterable, Hashable, Identifiable, Sendable {
+    case games
+    case environments
+    case runtimes
+    case caches
+    case downloads
+    case logs
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .games: "Games"
+        case .environments: "Environments"
+        case .runtimes: "Runtimes"
+        case .caches: "Caches"
+        case .downloads: "Downloads"
+        case .logs: "Diagnostics & Logs"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .games: "Installed game files measured at their actual locations."
+        case .environments: "Wine prefixes and environment configuration."
+        case .runtimes: "Installed compatibility runtimes and their components."
+        case .caches: "Regeneratable shader and metadata data."
+        case .downloads: "Downloaded installers and transfer data."
+        case .logs: "Environment and diagnostic logs."
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .games: "gamecontroller.fill"
+        case .environments: "externaldrive.fill"
+        case .runtimes: "gearshape.2.fill"
+        case .caches: "sparkles"
+        case .downloads: "arrow.down.circle.fill"
+        case .logs: "doc.text.magnifyingglass"
+        }
+    }
+}
+
+nonisolated enum BorealCleanupRisk: String, Sendable {
+    case safe
+    case regeneratable
+    case destructive
+
+    var title: String {
+        switch self {
+        case .safe: "Safe"
+        case .regeneratable: "Regeneratable"
+        case .destructive: "Destructive"
+        }
+    }
+}
+
+nonisolated struct BorealStorageItem: Identifiable, Sendable {
+    let category: BorealStorageCategory
+    let name: String
+    let detail: String?
+    let bytes: Int64
+    let risk: BorealCleanupRisk
+    let isEstimated: Bool
+    let location: URL?
+
+    var id: String { "\(category.rawValue):\(location?.standardizedFileURL.path ?? name)" }
+}
+
+nonisolated struct BorealStorageReport: Sendable {
+    let scannedAt: Date
+    let items: [BorealStorageItem]
+
+    var totalBytes: Int64 { items.reduce(0) { $0 + $1.bytes } }
+
+    func items(for category: BorealStorageCategory) -> [BorealStorageItem] {
+        items.filter { $0.category == category }.sorted {
+            if $0.bytes != $1.bytes { return $0.bytes > $1.bytes }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func bytes(for category: BorealStorageCategory) -> Int64 {
+        items(for: category).reduce(0) { $0 + $1.bytes }
+    }
+}
+
+/// Measures only paths Boreal already owns or has recorded in its library.
+/// The scanner is deliberately read-only; cleanup remains a separate action.
+nonisolated enum BorealStorageScanner {
+    static func scan(
+        layout: BorealStorageLayout,
+        applications: [WindowsApplication],
+        storeGames: [StoreLibraryGame],
+        environments: [WindowsEnvironment]
+    ) -> BorealStorageReport {
+        let fileManager = FileManager.default
+        var measurements: [BorealStorageItem] = []
+        var gameRoots: [URL] = []
+
+        for game in storeGames where game.isInstalled {
+            guard let installPath = game.installPath else { continue }
+            let root = URL(fileURLWithPath: installPath, isDirectory: true).standardizedFileURL
+            guard appendIfNew(root, to: &gameRoots) else { continue }
+            let shaderRoots = shaderPaths(gameURL: root, prefixURL: nil, applicationSupportURL: layout.rootURL)
+            let downloadRoots = downloadPaths(in: [root])
+            let measuredBytes = size(of: root, excluding: shaderRoots + downloadRoots, fileManager: fileManager)
+            let bytes = measuredBytes ?? game.storageBytes ?? 0
+            guard bytes > 0 else { continue }
+            measurements.append(BorealStorageItem(
+                category: .games,
+                name: game.name,
+                detail: game.provider.rawValue,
+                bytes: bytes,
+                risk: .destructive,
+                isEstimated: measuredBytes == nil,
+                location: root
+            ))
+        }
+
+        let linkedGameKeys = Set(storeGames.filter { $0.isInstalled }.map { "\($0.provider.rawValue):\($0.externalID)" })
+        for application in applications where !application.isSteamRuntimeHost && !application.usesStoreMetadataOnly {
+            let key = application.storeProvider.map { "\($0.rawValue):\(application.storeExternalID ?? "")" }
+            guard key == nil || !linkedGameKeys.contains(key ?? "") else { continue }
+            guard application.storageBytes > 0 else { continue }
+            measurements.append(BorealStorageItem(
+                category: .games,
+                name: application.name,
+                detail: "Installed application",
+                bytes: application.storageBytes,
+                risk: .destructive,
+                isEstimated: true,
+                location: URL(fileURLWithPath: application.executablePath).deletingLastPathComponent()
+            ))
+        }
+
+        var environmentRoots: [URL] = []
+        var environmentLogRoots: [URL] = []
+        for environment in environments {
+            let root = environment.rootPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? layout.environmentsURL.appending(path: environment.id.uuidString, directoryHint: .isDirectory)
+            let standardizedRoot = root.standardizedFileURL
+            guard appendIfNew(standardizedRoot, to: &environmentRoots) else { continue }
+            let logs = environment.logsPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? standardizedRoot.appending(path: "Logs", directoryHint: .isDirectory)
+            _ = appendIfNew(logs.standardizedFileURL, to: &environmentLogRoots)
+            let shaderRoots = shaderPaths(gameURL: nil, prefixURL: environment.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }, applicationSupportURL: layout.rootURL)
+            let measuredBytes = size(of: standardizedRoot, excluding: shaderRoots + [logs], fileManager: fileManager)
+            let bytes = measuredBytes ?? environment.storageBytes
+            guard bytes > 0 else { continue }
+            let applicationCount = applicationCount(in: environment.id, applications: applications)
+            measurements.append(BorealStorageItem(
+                category: .environments,
+                name: environment.name,
+                detail: "\(applicationCount) \(applicationCount == 1 ? "application" : "applications")",
+                bytes: bytes,
+                risk: .destructive,
+                isEstimated: measuredBytes == nil,
+                location: standardizedRoot
+            ))
+        }
+
+        let runtimeRoots = runtimeDirectories(in: layout.runtimesURL, fileManager: fileManager)
+        var runtimeIDsInUse: [String: Int] = [:]
+        for environment in environments {
+            if let runtimeID = environment.runtimeID { runtimeIDsInUse[runtimeID, default: 0] += 1 }
+        }
+        for root in runtimeRoots {
+            let manifestURL = root.appending(path: "installed-runtime.json")
+            let runtime = try? JSONDecoder().decode(InstalledRuntime.self, from: Data(contentsOf: manifestURL))
+            let runtimeID = runtime?.id ?? root.lastPathComponent
+            let name = runtime?.displayName ?? root.lastPathComponent
+            let usedBy = runtimeIDsInUse[runtimeID] ?? 0
+            let detail = usedBy > 0 ? "Used by \(usedBy) \(usedBy == 1 ? "environment" : "environments")" : "Not used by an environment"
+            let downloads = downloadPaths(in: [root])
+            let measuredBytes = size(of: root, excluding: downloads, fileManager: fileManager)
+            let bytes = measuredBytes ?? 0
+            guard bytes > 0 else { continue }
+            measurements.append(BorealStorageItem(
+                category: .runtimes,
+                name: name,
+                detail: detail,
+                bytes: bytes,
+                risk: .destructive,
+                isEstimated: false,
+                location: root
+            ))
+        }
+
+        let downloadRoots = uniqueURLs([
+            layout.rootURL.appending(path: "Downloads", directoryHint: .isDirectory),
+            layout.rootURL.appending(path: ".downloads", directoryHint: .isDirectory),
+            layout.runtimesURL.appending(path: ".downloads", directoryHint: .isDirectory)
+        ])
+        for root in downloadRoots {
+            guard let bytes = size(of: root, excluding: [], fileManager: fileManager), bytes > 0 else { continue }
+            measurements.append(BorealStorageItem(
+                category: .downloads,
+                name: downloadTitle(for: root),
+                detail: "Downloaded files",
+                bytes: bytes,
+                risk: .safe,
+                isEstimated: false,
+                location: root
+            ))
+        }
+
+        let knownInstallerPaths = uniqueURLs(applications.compactMap { application in
+            guard application.installerPath.hasPrefix("/") else { return nil }
+            return URL(fileURLWithPath: application.installerPath).standardizedFileURL
+        })
+        for installer in knownInstallerPaths {
+            guard fileManager.fileExists(atPath: installer.path), let bytes = fileSize(of: installer, fileManager: fileManager), bytes > 0 else { continue }
+            measurements.append(BorealStorageItem(
+                category: .downloads,
+                name: installer.deletingPathExtension().lastPathComponent,
+                detail: "Installer",
+                bytes: bytes,
+                risk: .safe,
+                isEstimated: false,
+                location: installer
+            ))
+        }
+
+        measurements.append(contentsOf: cacheMeasurements(layout: layout, gameRoots: gameRoots, environments: environments, fileManager: fileManager))
+
+        for logs in environmentLogRoots {
+            guard let bytes = size(of: logs, excluding: [], fileManager: fileManager), bytes > 0 else { continue }
+            let environmentName = environments.first {
+                let path = $0.logsPath ?? layout.environmentsURL.appending(path: $0.id.uuidString).appending(path: "Logs").path
+                return URL(fileURLWithPath: path).standardizedFileURL == logs
+            }?.name
+            measurements.append(BorealStorageItem(
+                category: .logs,
+                name: environmentName.map { "\($0) logs" } ?? "Environment logs",
+                detail: "Environment diagnostics",
+                bytes: bytes,
+                risk: .safe,
+                isEstimated: false,
+                location: logs
+            ))
+        }
+
+        return BorealStorageReport(scannedAt: .now, items: deduplicated(measurements))
+    }
+
+    private static func cacheMeasurements(
+        layout: BorealStorageLayout,
+        gameRoots: [URL],
+        environments: [WindowsEnvironment],
+        fileManager: FileManager
+    ) -> [BorealStorageItem] {
+        var result: [BorealStorageItem] = []
+        var paths: [URL] = []
+        for root in gameRoots {
+            paths.append(contentsOf: shaderPaths(gameURL: root, prefixURL: nil, applicationSupportURL: layout.rootURL))
+        }
+        for environment in environments {
+            let prefix = environment.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            paths.append(contentsOf: shaderPaths(gameURL: nil, prefixURL: prefix, applicationSupportURL: layout.rootURL))
+        }
+        for path in uniqueURLs(paths) {
+            guard let bytes = size(of: path, excluding: [], fileManager: fileManager), bytes > 0 else { continue }
+            result.append(BorealStorageItem(category: .caches, name: "Shader cache", detail: path.deletingLastPathComponent().lastPathComponent, bytes: bytes, risk: .regeneratable, isEstimated: false, location: path))
+        }
+
+        let discoveryFiles = [
+            layout.rootURL.appending(path: "Discovery/applegamingwiki.json"),
+            layout.rootURL.appending(path: "Discovery/applegamingwiki-metadata.json"),
+            layout.rootURL.appending(path: "Discovery/applegamingwiki-unavailable.json"),
+            layout.rootURL.appending(path: "Discovery/itad-prices.json")
+        ]
+        let discoveryBytes = discoveryFiles.compactMap { fileSize(of: $0, fileManager: fileManager) }.reduce(0, +)
+        if discoveryBytes > 0 {
+            result.append(BorealStorageItem(category: .caches, name: "Metadata cache", detail: "Discovery and price data", bytes: discoveryBytes, risk: .regeneratable, isEstimated: false, location: layout.rootURL.appending(path: "Discovery")))
+        }
+        return result
+    }
+
+    private static func shaderPaths(gameURL: URL?, prefixURL: URL?, applicationSupportURL: URL) -> [URL] {
+        let report = GameDiskStorage.report(gameURL: gameURL, prefixURL: prefixURL, applicationSupportURL: applicationSupportURL)
+        return report.item(.shaders)?.paths ?? []
+    }
+
+    private static func runtimeDirectories(in root: URL, fileManager: FileManager) -> [URL] {
+        (try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]))?.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        } ?? []
+    }
+
+    private static func downloadPaths(in roots: [URL]) -> [URL] {
+        roots.flatMap { root in
+            [root.appending(path: "Downloads", directoryHint: .isDirectory), root.appending(path: ".downloads", directoryHint: .isDirectory)]
+        }
+    }
+
+    private static func applicationCount(in environmentID: UUID, applications: [WindowsApplication]) -> Int {
+        applications.filter { $0.environmentID == environmentID && !$0.isSteamRuntimeHost }.count
+    }
+
+    private static func appendIfNew(_ url: URL, to urls: inout [URL]) -> Bool {
+        let standardized = url.standardizedFileURL
+        guard !urls.contains(where: { $0.standardizedFileURL == standardized }) else { return false }
+        urls.append(standardized)
+        return true
+    }
+
+    private static func downloadTitle(for root: URL) -> String {
+        if root.path.contains("Runtimes") { return "Runtime installers" }
+        return "Downloaded installers"
+    }
+
+    private static func size(of root: URL, excluding excluded: [URL], fileManager: FileManager) -> Int64? {
+        guard fileManager.fileExists(atPath: root.path) else { return nil }
+        let excluded = uniqueURLs(excluded).map(\.standardizedFileURL)
+        if let file = fileSize(of: root, fileManager: fileManager) { return file }
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey], options: [.skipsPackageDescendants], errorHandler: { _, _ in true }) else { return nil }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            let standardized = url.standardizedFileURL
+            if excluded.contains(where: { standardized.path == $0.path || standardized.path.hasPrefix($0.path + "/") }) {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { enumerator.skipDescendants() }
+                continue
+            }
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]), values.isRegularFile == true else { continue }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0)
+        }
+        return total > 0 ? total : nil
+    }
+
+    private static func fileSize(of url: URL, fileManager: FileManager) -> Int64? {
+        guard fileManager.fileExists(atPath: url.path), let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]), values.isRegularFile == true else { return nil }
+        return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0)
+    }
+
+    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    private static func deduplicated(_ items: [BorealStorageItem]) -> [BorealStorageItem] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.id).inserted }
+    }
+}
+
 nonisolated enum BorealStorageSchema {
     static let current = 1
 }
