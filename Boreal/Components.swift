@@ -122,7 +122,7 @@ struct GameArtworkView: View {
     }
 
     @ViewBuilder private var artwork: some View {
-        if let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
+        if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
             Image(nsImage: image).resizable().scaledToFill()
         } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in
@@ -148,6 +148,25 @@ struct GameArtworkView: View {
             Text(game.provider.rawValue.uppercased()).font(.caption2).fontWeight(.bold).tracking(1.4)
         }
         .foregroundStyle(.white.opacity(0.9))
+    }
+}
+
+@MainActor
+enum ArtworkImageCache {
+    private static let images = NSCache<NSString, NSImage>()
+
+    static func image(at path: String) -> NSImage? {
+        let key = path as NSString
+        if let image = images.object(forKey: key) { return image }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        images.setObject(image, forKey: key, cost: imageCost(image))
+        images.totalCostLimit = 192 * 1_024 * 1_024
+        return image
+    }
+
+    private static func imageCost(_ image: NSImage) -> Int {
+        guard let representation = image.representations.first else { return 0 }
+        return representation.pixelsWide * representation.pixelsHigh * 4
     }
 }
 

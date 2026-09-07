@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import AppKit
+import ImageIO
 
 // MARK: - AppleGamingWiki catalog
 
@@ -185,6 +187,7 @@ nonisolated enum AppleGamingWikiDiscoveryState: Equatable, Sendable {
 
 nonisolated protocol DiscoveryCatalogLoading: Sendable {
     func loadCatalog(forceRefresh: Bool) async throws -> AppleGamingWikiCatalog
+    func cachedMetadata(for games: [AppleGamingWikiGame]) async -> [String: DiscoveryGameMetadata]
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata?
     func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog
     func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame]
@@ -192,6 +195,10 @@ nonisolated protocol DiscoveryCatalogLoading: Sendable {
 }
 
 extension DiscoveryCatalogLoading {
+    func cachedMetadata(for games: [AppleGamingWikiGame]) async -> [String: DiscoveryGameMetadata] {
+        _ = games
+        return [:]
+    }
     func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame] { [] }
     func searchMacGames(developer: String) async throws -> [AppleGamingWikiGame] { [] }
     func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog { catalog }
@@ -213,6 +220,79 @@ nonisolated enum AppleGamingWikiDiscoveryError: LocalizedError, Sendable {
         case .invalidHTML: "AppleGamingWiki changed the format of its public game list."
         case .emptyCatalog: "AppleGamingWiki returned no game records."
         }
+    }
+}
+
+// MARK: - GoG Revived public catalog
+
+nonisolated struct GOGRevivedEntry: Codable, Hashable, Sendable, Identifiable {
+    var title: String
+    var pageURL: String
+    var version: String?
+    var platforms: [String]
+    var year: Int?
+    var size: String?
+    var isRecent: Bool
+
+    var id: String { pageURL }
+}
+
+nonisolated protocol GOGRevivedCatalogLoading: Sendable {
+    func lookup(named title: String) async throws -> GOGRevivedEntry?
+}
+
+actor GOGRevivedCatalogService: GOGRevivedCatalogLoading {
+    private let session: URLSession
+
+    init(applicationSupportURL: URL? = nil, session: URLSession = .shared) {
+        self.session = session
+        _ = applicationSupportURL
+    }
+
+    func lookup(named title: String) async throws -> GOGRevivedEntry? {
+        guard var components = URLComponents(string: "https://gog-rev.com/search") else { return nil }
+        components.queryItems = [URLQueryItem(name: "q", value: title)]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 25
+        request.setValue("Boreal/1.0 (title availability lookup)", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw AppleGamingWikiDiscoveryError.invalidResponse }
+        let html = String(decoding: data, as: UTF8.self)
+        guard let json = AppleGamingWikiDiscoveryService.firstMatch(#"const initialGames = (\[.*?\]);"#, in: html),
+              let jsonData = json.data(using: .utf8),
+              let games = try? JSONDecoder().decode([SearchGame].self, from: jsonData) else {
+            throw AppleGamingWikiDiscoveryError.invalidHTML
+        }
+        let requestedKey = Self.normalizedTitle(title)
+        guard let game = games.first(where: { Self.normalizedTitle($0.title) == requestedKey }) else { return nil }
+        return GOGRevivedEntry(
+            title: game.title,
+            pageURL: "https://gog-rev.com/games/\(game.slug)",
+            version: game.currentVersion,
+            platforms: [game.platforms.windows ? "Windows" : nil, game.platforms.macos ? "macOS" : nil, game.platforms.linux ? "Linux" : nil].compactMap { $0 },
+            year: game.releaseTimestamp.map { Calendar(identifier: .gregorian).component(.year, from: Date(timeIntervalSince1970: TimeInterval($0))) },
+            size: game.downloadSizeBadge,
+            isRecent: false
+        )
+    }
+
+    private struct SearchGame: Decodable {
+        struct Platforms: Decodable { let windows: Bool; let macos: Bool; let linux: Bool }
+        let slug: String
+        let title: String
+        let currentVersion: String?
+        let downloadSizeBadge: String?
+        let releaseTimestamp: Int?
+        let platforms: Platforms
+    }
+
+    private static func normalizedTitle(_ value: String) -> String {
+        var value = " " + value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")).lowercased() + " "
+        for (roman, number) in [(" viii ", " 8 "), (" vii ", " 7 "), (" vi ", " 6 "), (" v ", " 5 "), (" iv ", " 4 "), (" iii ", " 3 "), (" ii ", " 2 "), (" i ", " 1 ")] {
+            value = value.replacingOccurrences(of: roman, with: number)
+        }
+        return value.filter { $0.isLetter || $0.isNumber }
     }
 }
 
@@ -248,6 +328,8 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
     private let unavailableMetadataCacheURL: URL?
     private var metadataCache: [String: DiscoveryGameMetadata]?
     private var unavailableMetadataCache: [String: Date]?
+    private var metadataCacheWriteTask: Task<Void, Never>?
+    private var unavailableMetadataCacheWriteTask: Task<Void, Never>?
 
     init(applicationSupportURL: URL? = nil, session: URLSession = .shared) {
         self.session = session
@@ -289,6 +371,13 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
             cached.sourceNotice = "Sources unavailable. Showing the last saved catalog."
             return cached
         }
+    }
+
+    func cachedMetadata(for games: [AppleGamingWikiGame]) async -> [String: DiscoveryGameMetadata] {
+        if metadataCache == nil { metadataCache = readMetadataCache() }
+        let cutoff = Date.now.addingTimeInterval(-Self.cacheLifetime)
+        let requested = Set(games.map(\.id))
+        return metadataCache?.filter { requested.contains($0.key) && $0.value.fetchedAt >= cutoff } ?? [:]
     }
 
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata? {
@@ -346,15 +435,33 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
     private func cache(_ metadata: DiscoveryGameMetadata, for id: String) {
         metadataCache?[id] = metadata
         unavailableMetadataCache?.removeValue(forKey: id)
-        writeMetadataCache()
-        writeUnavailableMetadataCache()
+        scheduleMetadataCacheWrite()
+        scheduleUnavailableMetadataCacheWrite()
     }
 
     private func cachedOrMarkUnavailable(_ id: String) -> DiscoveryGameMetadata? {
         if let cached = metadataCache?[id] { return cached }
         unavailableMetadataCache?[id] = .now
-        writeUnavailableMetadataCache()
+        scheduleUnavailableMetadataCacheWrite()
         return nil
+    }
+
+    private func scheduleMetadataCacheWrite() {
+        metadataCacheWriteTask?.cancel()
+        metadataCacheWriteTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            await self?.writeMetadataCache()
+        }
+    }
+
+    private func scheduleUnavailableMetadataCacheWrite() {
+        unavailableMetadataCacheWriteTask?.cancel()
+        unavailableMetadataCacheWriteTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            await self?.writeUnavailableMetadataCache()
+        }
     }
 
     private func fetchCatalog() async throws -> AppleGamingWikiCatalog {
@@ -612,16 +719,25 @@ extension AppleGamingWikiDiscoveryService {
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let html = root["results_html"] as? String,
               let total = root["total_count"] as? Int else { throw AppleGamingWikiDiscoveryError.invalidResponse }
-        let games = Self.parseSteamGames(html)
-        guard !games.isEmpty || offset >= total else { throw AppleGamingWikiDiscoveryError.emptyCatalog }
-        return SteamPage(games: games, offset: offset + games.count, total: total)
+        let rows = Self.steamResultRows(in: html)
+        let games = Self.parseSteamGames(rows)
+        guard !rows.isEmpty || offset >= total else { throw AppleGamingWikiDiscoveryError.emptyCatalog }
+        return SteamPage(games: games, offset: min(total, offset + rows.count), total: total)
     }
 
     static func parseSteamGames(_ html: String) -> [AppleGamingWikiGame] {
+        parseSteamGames(steamResultRows(in: html))
+    }
+
+    private static func steamResultRows(in html: String) -> [String] {
+        matches(#"(<a\s[^>]*class="search_result_row.*?</a>)"#, in: html)
+    }
+
+    private static func parseSteamGames(_ rows: [String]) -> [AppleGamingWikiGame] {
         let tags: [String: String] = Bundle.main.url(forResource: "DiscoveryTags", withExtension: "json")
             .flatMap { try? Data(contentsOf: $0) }
             .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
-        return matches(#"(<a\s[^>]*class="search_result_row.*?</a>)"#, in: html).compactMap { row in
+        return rows.compactMap { row in
             guard let id = firstMatch(#"data-ds-appid="(\d+)""#, in: row),
                   let title = firstMatch(#"<span class="title">(.*?)</span>"#, in: row),
                   row.contains("platform_img mac") else { return nil }
@@ -638,20 +754,31 @@ extension AppleGamingWikiDiscoveryService {
 
     static func merge(_ existing: [AppleGamingWikiGame], _ incoming: [AppleGamingWikiGame]) -> [AppleGamingWikiGame] {
         var result = existing
-        var indices = Dictionary(result.enumerated().map { ($0.element.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")), $0.offset) }, uniquingKeysWith: { first, _ in first })
+        var steamIndices = Dictionary(
+            result.enumerated().compactMap { item in item.element.steamAppID.map { ($0, item.offset) } },
+            uniquingKeysWith: { first, _ in first }
+        )
         for game in incoming {
-            let key = game.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            if let index = indices[key] {
+            let titleKey = normalizedTitle(game.title)
+            let titleMatches = result.indices.filter { normalizedTitle(result[$0].title) == titleKey }
+            let index = game.steamAppID.flatMap { steamIndices[$0] }
+                ?? (titleMatches.count == 1 && result[titleMatches[0]].steamAppID == nil ? titleMatches[0] : nil)
+            if let index {
                 result[index].steamAppID = game.steamAppID ?? result[index].steamAppID
                 result[index].coverURL = game.coverURL ?? result[index].coverURL
                 result[index].genres = game.genres ?? result[index].genres
                 result[index].macOSStoreSupport = game.macOSStoreSupport ?? result[index].macOSStoreSupport
+                if let steamAppID = result[index].steamAppID { steamIndices[steamAppID] = index }
             } else {
-                indices[key] = result.count
+                if let steamAppID = game.steamAppID { steamIndices[steamAppID] = result.count }
                 result.append(game)
             }
         }
         return result
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
     func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame] {
@@ -663,7 +790,10 @@ extension AppleGamingWikiDiscoveryService {
     }
 
     func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog {
-        let page = try await fetchSteamPage(offset: catalog.steamOffset ?? 0)
+        let currentOffset = catalog.steamOffset ?? 0
+        if let total = catalog.steamTotal, currentOffset >= total { return catalog }
+        let page = try await fetchSteamPage(offset: currentOffset)
+        guard page.offset > currentOffset else { throw AppleGamingWikiDiscoveryError.emptyCatalog }
         var result = catalog
         result.games = Self.merge(catalog.games, page.games)
         result.steamOffset = page.offset
@@ -746,6 +876,9 @@ struct DiscoveryView: View {
                         if case .failed(let message) = store.discoveryState {
                             Label(message, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange)
                         }
+                        if case .failed(let message) = store.discoveryPaginationState {
+                            Label(message, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange)
+                        }
                         if searchText.isEmpty {
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
@@ -789,7 +922,10 @@ struct DiscoveryView: View {
         }
         .task(id: searchText) {
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !query.isEmpty else { return }
+            guard !query.isEmpty else {
+                store.clearDiscoverySearch()
+                return
+            }
             do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
             await store.searchDiscoveryGames(query)
         }
@@ -947,10 +1083,10 @@ struct DiscoveryView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? 0) {
-                Button(store.discoveryState == .loading ? "Loading…" : "Load more macOS games from Steam") {
+                Button(store.discoveryPaginationState == .loading ? "Loading…" : "Load more macOS games from Steam") {
                     store.loadMoreDiscoveryGames()
                 }
-                .disabled(store.discoveryState == .loading)
+                .disabled(store.discoveryState == .loading || store.discoveryPaginationState == .loading)
             }
             if let total = catalog.steamTotal {
                 Text("Steam: \((catalog.steamOffset ?? 0).formatted()) of \(total.formatted()) listings loaded. Search also checks the live macOS catalog.")
@@ -1155,6 +1291,8 @@ private struct DiscoveryArtwork: View {
     let title: String
     let isLoading: Bool
     let height: CGFloat
+    @State private var loadedImage: NSImage?
+    @State private var attemptedLoad = false
 
     var body: some View {
         ZStack {
@@ -1163,19 +1301,10 @@ private struct DiscoveryArtwork: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            if let imageURL, let url = URL(string: imageURL) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .empty:
-                        placeholder.overlay { ProgressView().tint(.white) }
-                    case .failure:
-                        fallbackImage
-                    @unknown default:
-                        placeholder
-                    }
-                }
+            if let loadedImage {
+                Image(nsImage: loadedImage).resizable().scaledToFill()
+            } else if imageURL != nil && !attemptedLoad {
+                placeholder.overlay { ProgressView().tint(.white) }
             } else if isLoading {
                 placeholder.overlay { ProgressView().tint(.white) }
             } else {
@@ -1186,17 +1315,19 @@ private struct DiscoveryArtwork: View {
         .frame(height: height)
         .clipped()
         .accessibilityLabel("Cover for \(title)")
-    }
-
-    @ViewBuilder private var fallbackImage: some View {
-        if let fallbackImageURL, fallbackImageURL != imageURL, let url = URL(string: fallbackImageURL) {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                placeholder
+        .task(id: "\(imageURL ?? "")|\(fallbackImageURL ?? "")") {
+            loadedImage = nil
+            attemptedLoad = false
+            for candidate in [imageURL, fallbackImageURL].compactMap({ $0 }).uniqued() {
+                guard let url = URL(string: candidate) else { continue }
+                if let image = await DiscoveryImagePipeline.shared.image(for: url, maxPixelSize: 560) {
+                    guard !Task.isCancelled else { return }
+                    loadedImage = image
+                    attemptedLoad = true
+                    return
+                }
             }
-        } else {
-            placeholder
+            attemptedLoad = true
         }
     }
 
@@ -1211,6 +1342,56 @@ private struct DiscoveryArtwork: View {
                 .padding(.horizontal, 18)
         }
         .foregroundStyle(.white.opacity(0.88))
+    }
+}
+
+private actor DiscoveryImagePipeline {
+    static let shared = DiscoveryImagePipeline()
+
+    private let cache: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>()
+        cache.countLimit = 100
+        cache.totalCostLimit = 96 * 1_024 * 1_024
+        return cache
+    }()
+    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+
+    func image(for url: URL, maxPixelSize: Int) async -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        if let task = inFlight[url] { return await task.value }
+
+        let task = Task.detached(priority: .utility) { () -> NSImage? in
+            var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
+            request.setValue("image/*", forHTTPHeaderField: "Accept")
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+            return NSImage(cgImage: thumbnail, size: .zero)
+        }
+        inFlight[url] = task
+        let image = await task.value
+        inFlight[url] = nil
+        if let image {
+            let representation = image.representations.first
+            let width = representation?.pixelsWide ?? Int(image.size.width)
+            let height = representation?.pixelsHigh ?? Int(image.size.height)
+            cache.setObject(image, forKey: url as NSURL, cost: max(1, width * height * 4))
+        }
+        return image
+    }
+}
+
+private extension Sequence where Element: Hashable {
+    func uniqued() -> [Element] {
+        var seen: Set<Element> = []
+        return filter { seen.insert($0).inserted }
     }
 }
 

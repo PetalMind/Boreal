@@ -148,6 +148,7 @@ actor ITADPriceService: DiscoveryPricingLoading {
     private let session: URLSession
     private let cacheURL: URL?
     private var cache: [String: DiscoveryPriceSummary]?
+    private var cacheWriteTask: Task<Void, Never>?
 
     init(applicationSupportURL: URL? = nil, session: URLSession = .shared) {
         self.session = session
@@ -176,7 +177,7 @@ actor ITADPriceService: DiscoveryPricingLoading {
             fetchedAt: .now
         )
         cache?[cacheKey] = summary
-        writeCache()
+        scheduleCacheWrite()
         return summary
     }
 
@@ -278,6 +279,15 @@ actor ITADPriceService: DiscoveryPricingLoading {
             try encoder.encode(cache).write(to: cacheURL, options: .atomic)
         } catch {
             // Prices remain available for the current session when persistence is unavailable.
+        }
+    }
+
+    private func scheduleCacheWrite() {
+        cacheWriteTask?.cancel()
+        cacheWriteTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            await self?.writeCache()
         }
     }
 }

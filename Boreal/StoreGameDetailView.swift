@@ -38,6 +38,8 @@ struct StoreGameDetailView: View {
     @State private var priceHistoryRange: DiscoveryPriceHistoryRange = .threeMonths
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
+    @State private var gogRevivedEntry: GOGRevivedEntry?
+    @State private var gogRevivedLookupInProgress = false
 
     private var currentGame: StoreLibraryGame {
         let linkedGame: StoreLibraryGame? = linkedApplication.flatMap { application in
@@ -128,8 +130,22 @@ struct StoreGameDetailView: View {
         .sheet(item: $compatibilityApplication) { application in
             WineCompatibilityConfigurator(application: store.application(id: application.id) ?? application)
         }
+        .sheet(item: $selectedMedia) { selection in
+            StoreMediaViewer(selection: selection, game: currentGame) {
+                selectedMedia = nil
+            }
+            .frame(minWidth: 960, minHeight: 800)
+            .presentationBackground(.clear)
+        }
         .task(id: game.id) {
             store.refreshSteamMetadataIfNeeded(for: game)
+        }
+        .task(id: "gog-revived-\(game.id.uuidString)") {
+            guard discoveryGame != nil else { return }
+            gogRevivedEntry = nil
+            gogRevivedLookupInProgress = true
+            gogRevivedEntry = await store.lookupGOGRevived(named: currentGame.name)
+            gogRevivedLookupInProgress = false
         }
         .task(id: game.id) {
             await store.loadSteamCurrentPlayerCountIfNeeded(for: game.id)
@@ -173,13 +189,6 @@ struct StoreGameDetailView: View {
             .disabled(renameValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
             Text("Boreal will search Steam, Epic Games and GOG for artwork, description and other game details.")
-        }
-        .overlay {
-            if let selection = selectedMedia {
-                StoreMediaViewer(selection: selection, game: currentGame) {
-                    selectedMedia = nil
-                }
-            }
         }
     }
 
@@ -701,6 +710,21 @@ struct StoreGameDetailView: View {
                 metric("Developer", value: developer, symbol: "person.2")
             }
             metric("Source", value: currentGame.provider.rawValue, symbol: "bag")
+            if let entry = gogRevivedEntry, let url = URL(string: entry.pageURL) {
+                Divider()
+                Link(destination: url) {
+                    Label("Open on GoG Revived", systemImage: "arrow.up.right.square")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(BorealSecondaryActionButtonStyle())
+                .help("GoG Revived lists this title as \(entry.title).")
+            } else if gogRevivedLookupInProgress {
+                Divider()
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking GoG Revived…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -2361,23 +2385,19 @@ private struct StoreMediaViewer: View {
     }
 
     private var modalPanel: some View {
-        ZStack(alignment: .top) {
-            Rectangle().fill(.clear)
+        VStack(spacing: 0) {
             header
                 .frame(width: 910, height: 76)
             mediaStage
                 .frame(width: 910, height: 430)
-                .offset(y: 76)
             metadata
                 .frame(width: 910, height: 50)
-                .offset(y: 506)
             Divider()
                 .opacity(0.42)
                 .padding(.horizontal, 28)
-                .offset(y: 556)
+                .frame(width: 910, height: 1)
             filmstrip
                 .frame(width: 910, height: 125)
-                .offset(y: 557)
         }
         .frame(width: 910, height: 682)
         .background {

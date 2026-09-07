@@ -59,6 +59,7 @@ final class BorealStore {
     var runtimeComponentUpdateError: String?
     var discoverySearchMessage: String?
     private var discoverySearchResults: [AppleGamingWikiGame] = []
+    private var discoverySearchQuery = ""
     var discoveryProducerResults: [AppleGamingWikiGame] = []
     var discoveryProducerSearchState: AppleGamingWikiDiscoveryState = .idle
     private var discoveryProducerQuery = ""
@@ -67,6 +68,7 @@ final class BorealStore {
     private let discoveryPriceGate = StoreSizeEstimateGate(limit: 4)
     var discoveryCatalog: AppleGamingWikiCatalog?
     var discoveryState: AppleGamingWikiDiscoveryState = .idle
+    var discoveryPaginationState: AppleGamingWikiDiscoveryState = .idle
     var discoveryMetadata: [String: DiscoveryGameMetadata] = [:]
     var discoveryPriceSummaries: [String: DiscoveryPriceSummary] = [:]
     var environmentDependencyStatuses: [UUID: [RuntimeDependencyStatus]] = [:]
@@ -101,6 +103,9 @@ final class BorealStore {
     private var isRunningAutomaticLibraryRefresh = false
     private var isEnrichingInstalledApplicationMetadata = false
     private var discoveryLoadTask: Task<Void, Never>?
+    private var discoveryPaginationTask: Task<Void, Never>?
+    private var discoveryEnrichmentTask: Task<Void, Never>?
+    private var discoverySourceCatalog: AppleGamingWikiCatalog?
     private var discoveryMetadataLoads: Set<String> = []
     private var unavailableDiscoveryMetadata: Set<String> = []
     private var discoveryPriceLoads: Set<String> = []
@@ -216,7 +221,8 @@ final class BorealStore {
 
     func loadDiscoveryCatalog() {
         guard discoveryState != .loading else { return }
-        if discoveryCatalog == nil { discoveryCatalog = AppleGamingWikiDiscoveryService.bundledCatalog() }
+        discoveryPaginationTask?.cancel()
+        discoveryPaginationState = .idle
         discoveryState = .loading
         discoveryLoadTask?.cancel()
         discoveryLoadTask = Task { [weak self] in
@@ -224,6 +230,9 @@ final class BorealStore {
             do {
                 let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: false)
                 guard !Task.isCancelled else { return }
+                let cachedMetadata = await services.discoveryCatalog.cachedMetadata(for: catalog.games)
+                guard !Task.isCancelled else { return }
+                discoveryMetadata.merge(cachedMetadata) { current, _ in current }
                 applyDiscoveryCatalog(catalog)
                 discoveryState = .loaded
             } catch {
@@ -236,6 +245,8 @@ final class BorealStore {
     func refreshDiscoveryCatalog() {
         guard discoveryState != .loading else { return }
         unavailableDiscoveryMetadata.removeAll()
+        discoveryPaginationTask?.cancel()
+        discoveryPaginationState = .idle
         discoveryState = .loading
         discoveryLoadTask?.cancel()
         discoveryLoadTask = Task { [weak self] in
@@ -243,6 +254,9 @@ final class BorealStore {
             do {
                 let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: true)
                 guard !Task.isCancelled else { return }
+                let cachedMetadata = await services.discoveryCatalog.cachedMetadata(for: catalog.games)
+                guard !Task.isCancelled else { return }
+                discoveryMetadata.merge(cachedMetadata) { current, _ in current }
                 applyDiscoveryCatalog(catalog)
                 discoveryState = .loaded
             } catch {
@@ -250,6 +264,10 @@ final class BorealStore {
                 discoveryState = .failed(error.localizedDescription)
             }
         }
+    }
+
+    func lookupGOGRevived(named title: String) async -> GOGRevivedEntry? {
+        try? await services.gogRevivedCatalog.lookup(named: title)
     }
 
     func loadDiscoveryMetadata(for game: AppleGamingWikiGame) {
@@ -265,11 +283,7 @@ final class BorealStore {
             if let metadata {
                 unavailableDiscoveryMetadata.remove(game.id)
                 discoveryMetadata[game.id] = metadata
-                if let index = discoveryCatalog?.games.firstIndex(where: { $0.id == game.id }) {
-                    discoveryCatalog?.games[index].steamAppID = metadata.steamAppID ?? game.steamAppID
-                    discoveryCatalog?.games[index].genres = game.genres?.isEmpty == false ? game.genres : metadata.genres
-                    discoveryCatalog?.games[index].coverURL = metadata.coverImageURL ?? game.coverURL
-                }
+                scheduleDiscoveryCatalogEnrichment()
             } else {
                 unavailableDiscoveryMetadata.insert(game.id)
             }
@@ -279,31 +293,53 @@ final class BorealStore {
     }
 
     func loadMoreDiscoveryGames() {
-        guard discoveryState != .loading, let catalog = discoveryCatalog else { return }
-        discoveryState = .loading
-        discoveryLoadTask = Task {
+        guard discoveryState != .loading,
+              discoveryPaginationState != .loading,
+              let catalog = discoverySourceCatalog ?? discoveryCatalog,
+              (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? .max) else { return }
+        discoveryPaginationState = .loading
+        discoveryPaginationTask?.cancel()
+        discoveryPaginationTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 let loaded = try await services.discoveryCatalog.loadMoreSteam(in: catalog)
+                guard !Task.isCancelled else { return }
                 applyDiscoveryCatalog(loaded)
-                discoveryState = .loaded
+                discoveryPaginationState = .loaded
             } catch {
-                discoveryState = .failed("Steam catalog could not be loaded: \(error.localizedDescription). Try again.")
+                guard !Task.isCancelled else { return }
+                discoveryPaginationState = .failed("Steam catalog could not be loaded: \(error.localizedDescription). Try again.")
             }
         }
     }
 
     func searchDiscoveryGames(_ query: String) async {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            clearDiscoverySearch()
+            return
+        }
+        discoverySearchQuery = query
         discoverySearchMessage = "Searching the live Steam macOS catalog…"
         do {
             let games = try await services.discoveryCatalog.searchMacGames(named: query)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, discoverySearchQuery == query else { return }
             discoverySearchResults = games
-            if let catalog = discoveryCatalog { applyDiscoveryCatalog(catalog) }
+            rebuildDiscoveryCatalog()
             discoverySearchMessage = "\(games.count) macOS results from Steam; combined with local compatibility records."
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, discoverySearchQuery == query else { return }
+            discoverySearchResults = []
+            rebuildDiscoveryCatalog()
             discoverySearchMessage = "Live Steam search is unavailable. Showing matches in the saved catalog."
         }
+    }
+
+    func clearDiscoverySearch() {
+        discoverySearchQuery = ""
+        discoverySearchResults = []
+        discoverySearchMessage = nil
+        rebuildDiscoveryCatalog()
     }
 
     func searchDiscoveryGames(developer: String) async {
@@ -335,8 +371,13 @@ final class BorealStore {
     }
 
     private func applyDiscoveryCatalog(_ catalog: AppleGamingWikiCatalog) {
-        var value = catalog
-        value.games = AppleGamingWikiDiscoveryService.merge(catalog.games, discoverySearchResults).map { game in
+        discoverySourceCatalog = catalog
+        rebuildDiscoveryCatalog()
+    }
+
+    private func rebuildDiscoveryCatalog() {
+        guard var value = discoverySourceCatalog else { return }
+        value.games = AppleGamingWikiDiscoveryService.merge(value.games, discoverySearchResults).map { game in
             guard let metadata = discoveryMetadata[game.id] else { return game }
             var enriched = game
             enriched.steamAppID = metadata.steamAppID ?? game.steamAppID
@@ -345,6 +386,15 @@ final class BorealStore {
             return enriched
         }
         discoveryCatalog = value
+    }
+
+    private func scheduleDiscoveryCatalogEnrichment() {
+        discoveryEnrichmentTask?.cancel()
+        discoveryEnrichmentTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            self?.rebuildDiscoveryCatalog()
+        }
     }
 
     func isDiscoveryGameSaved(_ game: AppleGamingWikiGame) -> Bool {
