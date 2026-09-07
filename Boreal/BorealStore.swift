@@ -59,6 +59,9 @@ final class BorealStore {
     var runtimeComponentUpdateError: String?
     var discoverySearchMessage: String?
     private var discoverySearchResults: [AppleGamingWikiGame] = []
+    var discoveryProducerResults: [AppleGamingWikiGame] = []
+    var discoveryProducerSearchState: AppleGamingWikiDiscoveryState = .idle
+    private var discoveryProducerQuery = ""
     var savedDiscoveryGames: [AppleGamingWikiGame] = []
     private let discoveryMetadataGate = StoreSizeEstimateGate(limit: 4)
     private let discoveryPriceGate = StoreSizeEstimateGate(limit: 4)
@@ -301,6 +304,34 @@ final class BorealStore {
             guard !Task.isCancelled else { return }
             discoverySearchMessage = "Live Steam search is unavailable. Showing matches in the saved catalog."
         }
+    }
+
+    func searchDiscoveryGames(developer: String) async {
+        let developer = developer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !developer.isEmpty else {
+            discoveryProducerQuery = ""
+            discoveryProducerResults = []
+            discoveryProducerSearchState = .idle
+            return
+        }
+        discoveryProducerQuery = developer
+        discoveryProducerSearchState = .loading
+        do {
+            let games = try await services.discoveryCatalog.searchMacGames(developer: developer)
+            guard !Task.isCancelled, discoveryProducerQuery == developer else { return }
+            discoveryProducerResults = games
+            discoveryProducerSearchState = .loaded
+        } catch {
+            guard !Task.isCancelled, discoveryProducerQuery == developer else { return }
+            discoveryProducerResults = []
+            discoveryProducerSearchState = .failed("Discovery games by this developer could not be loaded.")
+        }
+    }
+
+    func discoveryGames(developer: String) -> [AppleGamingWikiGame] {
+        discoveryProducerQuery == developer.trimmingCharacters(in: .whitespacesAndNewlines)
+            ? discoveryProducerResults
+            : []
     }
 
     private func applyDiscoveryCatalog(_ catalog: AppleGamingWikiCatalog) {
@@ -679,9 +710,9 @@ final class BorealStore {
                 if let preferredBackend = builtIn.preferredBackend {
                     profile.graphicsBackend = preferredBackend
                 }
-            }
-            if let overlayCompatibleFullscreen = builtIn.overlayCompatibleFullscreen {
-                profile.overlayCompatibleFullscreen = overlayCompatibleFullscreen
+                if let overlayCompatibleFullscreen = builtIn.overlayCompatibleFullscreen {
+                    profile.overlayCompatibleFullscreen = overlayCompatibleFullscreen
+                }
             }
         }
         if environment(id: application.environmentID)?.architecture == "32-bit" {
@@ -713,15 +744,51 @@ final class BorealStore {
             return compatibleRuntimes.contains { $0.features?.dxvk == true } ? nil : "No installed Wine runtime contains the DXVK component package."
         case .d9vk:
             return compatibleRuntimes.contains { $0.features?.d9vk == true } ? nil : "No installed Wine runtime contains the D9VK component package."
+        case .vkd3d:
+            return compatibleRuntimes.contains { $0.features?.vkd3d == true } ? nil : "No installed Wine runtime contains the VKD3D-Proton component package."
         case .automatic, .wineD3D:
             return nil
         }
     }
 
-    func updateCompatibilityProfile(for applicationID: UUID, profile: WineCompatibilityProfile) {
+    func compatibilityRuntimeFeatures(
+        for application: WindowsApplication,
+        backend: WineGraphicsBackend
+    ) -> RuntimeFeatures? {
+        let currentRuntimeID = environment(id: application.environmentID)?.runtimeID
+        let requiredEngine = backend.requiredEngine
+        let installed = runtimeStatuses.filter { status in
+            status.source == .installed && status.state == .installed
+                && (requiredEngine == nil || status.engine == requiredEngine)
+        }
+        let supportsBackend: (RuntimeStatus) -> Bool = { status in
+            switch backend {
+            case .d3dMetal: status.features?.d3dmetal == true
+            case .dxmt: status.features?.dxmt == true
+            case .dxvk: status.features?.dxvk == true
+            case .d9vk: status.features?.d9vk == true
+            case .vkd3d: status.features?.vkd3d == true
+            case .automatic, .wineD3D: true
+            }
+        }
+        if let current = installed.first(where: { $0.id == currentRuntimeID && supportsBackend($0) }) {
+            return current.features
+        }
+        return installed.first(where: supportsBackend)?.features
+    }
+
+    func updateCompatibilityProfile(for applicationID: UUID, profile requestedProfile: WineCompatibilityProfile) {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }),
               applications[index].status != .running,
               !applications[index].status.isBusy else { return }
+        var profile = requestedProfile
+        if let features = compatibilityRuntimeFeatures(for: applications[index], backend: profile.graphicsBackend) {
+            if !features.esync { profile.esyncEnabled = false }
+            if !features.msync { profile.msyncEnabled = false }
+            if !features.fullscreenFSR { profile.fullscreenFSREnabled = false }
+            if !features.wineBusControllerMapping { profile.forceXInput = false }
+            if !features.dgVoodoo2 { profile.legacyWrapper = .none }
+        }
         let previousProfile = applications[index].resolvedCompatibilityProfile
         let previousWindowsVersion = applications[index].windowsVersion
         let previousGraphics = applications[index].graphics
@@ -738,6 +805,7 @@ final class BorealStore {
         case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true
         case .dxvk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxvk == true
         case .d9vk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.d9vk == true
+        case .vkd3d: currentRuntimeSupportsBackend = currentRuntimeFeatures?.vkd3d == true
         case .automatic, .wineD3D: currentRuntimeSupportsBackend = true
         }
         let requiresRecreation = previousProfile.architecture != profile.architecture
@@ -2435,6 +2503,7 @@ final class BorealStore {
             case .dxmt: return $0.features?.dxmt == true
             case .dxvk: return $0.features?.dxvk == true
             case .d9vk: return $0.features?.d9vk == true
+            case .vkd3d: return $0.features?.vkd3d == true
             case .automatic, .wineD3D: return true
             }
         }) {

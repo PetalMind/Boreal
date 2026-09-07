@@ -24,7 +24,7 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
             preferredBackend: .d9vk,
-            overlayCompatibleFullscreen: false
+            overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(
             provider: .gog,
@@ -36,7 +36,7 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
             preferredBackend: .d9vk,
-            overlayCompatibleFullscreen: false
+            overlayCompatibleFullscreen: true
         )
     ]
 
@@ -89,7 +89,7 @@ nonisolated enum RendererPolicy {
         case .directX10, .directX11:
             candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
         case .directX12:
-            candidates = [.d3dMetal, .wineD3D]
+            candidates = [.d3dMetal, .vkd3d, .wineD3D]
         case .automatic:
             candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
         }
@@ -97,6 +97,7 @@ nonisolated enum RendererPolicy {
             switch backend {
             case .dxvk: features?.dxvk == true
             case .d9vk: features?.d9vk == true
+            case .vkd3d: features?.vkd3d == true
             case .d3dMetal: features?.d3dmetal == true
             case .dxmt: features?.dxmt == true
             case .wineD3D: true

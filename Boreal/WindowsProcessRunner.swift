@@ -61,6 +61,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime) == .d9vk,
+           plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
+            let configuration = environment.rootURL.appending(path: "Darksiders2-d9vk.conf")
+            // Darksiders II renders its 3D scene correctly at ultrawide
+            // resolutions, but its minimap markers are positioned against the
+            // full 21:9 surface instead of the circular map. Expose only 16:9
+            // D3D9 modes so fullscreen keeps the HUD geometry intact.
+            try "d3d9.presentInterval = 0\ndxvk.tearFree = True\nd3d9.maxFrameLatency = 1\nd3d9.forceAspectRatio = \"16:9\"\n"
+                .write(to: configuration, atomically: true, encoding: .utf8)
+            processEnvironment["DXVK_CONFIG_FILE"] = configuration.path
+        }
         // The managed environment always owns these values. Provider metadata
         // cannot redirect a launch into another prefix or runtime search path.
         processEnvironment["WINEPREFIX"] = environment.prefixURL.path
@@ -204,9 +215,12 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             // any value inherited from Boreal's parent process.
             values.removeValue(forKey: "WINEARCH")
         }
-        values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
-        values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
-        values.merge(environment.configuration.graphicsConfiguration.environment) { _, configured in configured }
+        values.removeValue(forKey: "WINEESYNC")
+        values.removeValue(forKey: "WINEMSYNC")
+        values.removeValue(forKey: "WINE_FULLSCREEN_FSR")
+        if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
+        if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
+        values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime) == .d9vk {
             // MoltenVK dynamically grows exhausted descriptor pools. Its warning
             // for every allocation can otherwise write megabytes per minute.
@@ -215,7 +229,9 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // winebus can use its bundled SDL backend to expose macOS controllers
         // as Windows HID/XInput devices. These also keep hot-plug events alive
         // after the Wine window becomes the foreground application.
-        values = ControllerWineSupport.applyingEnvironment(to: values)
+        if runtime.features?.wineBusControllerMapping == true {
+            values = ControllerWineSupport.applyingEnvironment(to: values)
+        }
         // Prefix registry state owns renderer overrides. Clear only inherited
         // parent state here; a per-game launch plan may intentionally add a
         // legacy-wrapper override after this base environment is built.

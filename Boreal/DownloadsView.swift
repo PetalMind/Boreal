@@ -346,6 +346,7 @@ struct DownloadsView: View {
                         Menu {
                             Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
                             Button("Install D9VK") { store.downloadGraphicsComponent(.d9vk, into: runtime.id) }
+                            Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: runtime.id) }
                             Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
                             Divider()
                             Menu("Advanced") {

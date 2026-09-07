@@ -1042,7 +1042,11 @@ struct BorealTests {
                 wineMono: false,
                 wineGecko: false,
                 d3dmetal: false,
-                dxmt: false
+                dxmt: false,
+                esync: true,
+                msync: true,
+                fullscreenFSR: true,
+                wineBusControllerMapping: true
             )
         )
     }

@@ -373,7 +373,8 @@ struct ContentView: View {
                 syncSteamAction: { store.syncSteamLibrary() },
                 importAction: { installCandidate = InstallCandidate(url: $0) },
                 selectAction: { libraryPath.append(.application($0)) },
-                selectStoreGameAction: { libraryPath.append(.storeGame($0)) }
+                selectStoreGameAction: { libraryPath.append(.storeGame($0)) },
+                selectDiscoveryGameAction: { libraryPath.append(.discoveryGame($0)) }
             )
             .searchable(text: $searchText, placement: .toolbar, prompt: "Search Library")
         case .accounts: AccountsView()
@@ -396,7 +397,7 @@ struct ContentView: View {
                        let game = store.storeGames.first(where: {
                            $0.provider == provider && $0.externalID == externalID
                        }) {
-                        StoreGameDetailView(game: game)
+                        StoreGameDetailView(game: game, onSelectProducer: showProducer)
                             .navigationTitle(app.name)
                     } else {
                         AppDetailView(app: app) { libraryPath.removeAll() }
@@ -408,21 +409,24 @@ struct ContentView: View {
                 }
             case .storeGame(let id):
                 if let game = store.storeGame(id: id) {
-                    StoreGameDetailView(game: game) { producer in
-                        libraryProducerFilter = producer
-                        libraryPath.removeAll()
-                    }
+                    StoreGameDetailView(game: game, onSelectProducer: showProducer)
                         .navigationTitle(store.linkedApplication(for: game)?.name ?? game.name)
                 } else {
                     ContentUnavailableView("Game Not Found", systemImage: "questionmark.app")
                         .navigationTitle("Game")
                 }
             case .discoveryGame(let game):
-                DiscoveryGameDetailView(game: game)
+                DiscoveryGameDetailView(game: game, onSelectProducer: showProducer)
                     .navigationTitle(game.title)
             }
         }
         .frame(minWidth: 640, minHeight: 500)
+    }
+
+    private func showProducer(_ producer: String) {
+        libraryProducerFilter = producer
+        selection = .library
+        libraryPath.removeAll()
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {

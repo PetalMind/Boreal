@@ -188,10 +188,12 @@ nonisolated protocol DiscoveryCatalogLoading: Sendable {
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata?
     func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog
     func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame]
+    func searchMacGames(developer: String) async throws -> [AppleGamingWikiGame]
 }
 
 extension DiscoveryCatalogLoading {
     func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame] { [] }
+    func searchMacGames(developer: String) async throws -> [AppleGamingWikiGame] { [] }
     func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog { catalog }
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata? {
         _ = game
@@ -593,7 +595,7 @@ extension AppleGamingWikiDiscoveryService {
         var total: Int
     }
 
-    private func fetchSteamPage(offset: Int, query: String? = nil) async throws -> SteamPage {
+    private func fetchSteamPage(offset: Int, query: String? = nil, developer: String? = nil) async throws -> SteamPage {
         var components = URLComponents(string: "https://store.steampowered.com/search/results/")!
         components.queryItems = [
             .init(name: "start", value: String(offset)), .init(name: "count", value: "100"),
@@ -601,6 +603,7 @@ extension AppleGamingWikiDiscoveryService {
             .init(name: "infinite", value: "1"), .init(name: "l", value: "english")
         ]
         if let query { components.queryItems?.append(.init(name: "term", value: query)) }
+        if let developer { components.queryItems?.append(.init(name: "developer", value: developer)) }
         guard let url = components.url else { throw AppleGamingWikiDiscoveryError.invalidResponse }
         var request = URLRequest(url: url)
         request.timeoutInterval = 25
@@ -653,6 +656,10 @@ extension AppleGamingWikiDiscoveryService {
 
     func searchMacGames(named query: String) async throws -> [AppleGamingWikiGame] {
         try await fetchSteamPage(offset: 0, query: query).games
+    }
+
+    func searchMacGames(developer: String) async throws -> [AppleGamingWikiGame] {
+        try await fetchSteamPage(offset: 0, developer: developer).games
     }
 
     func loadMoreSteam(in catalog: AppleGamingWikiCatalog) async throws -> AppleGamingWikiCatalog {
@@ -1227,13 +1234,14 @@ private struct DiscoveryRatingLabel: View {
 struct DiscoveryGameDetailView: View {
     @Environment(BorealStore.self) private var store
     let game: AppleGamingWikiGame
+    var onSelectProducer: (String) -> Void = { _ in }
     @State private var details: StoreLibraryGame?
     @State private var finishedLoading = false
 
     var body: some View {
         Group {
             if let details {
-                StoreGameDetailView(game: details, discoveryGame: game)
+                StoreGameDetailView(game: details, discoveryGame: game, onSelectProducer: onSelectProducer)
             } else if finishedLoading {
                 ContentUnavailableView(
                     "Game details unavailable",

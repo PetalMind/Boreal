@@ -63,6 +63,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
     case dxmt
     case dxvk
     case d9vk
+    case vkd3d
     case wineD3D
 
     var id: String { rawValue }
@@ -73,6 +74,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         case .dxmt: "DXMT"
         case .dxvk: "DXVK"
         case .d9vk: "D9VK"
+        case .vkd3d: "VKD3D-Proton"
         case .wineD3D: "Wine (WineD3D)"
         }
     }
@@ -83,6 +85,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         case .dxmt: "Metal-based Direct3D 11 translation. Requires a runtime package containing DXMT."
         case .dxvk: "Vulkan-based Direct3D 10–11 translation using the managed macOS package. Direct3D 9 uses WineD3D."
         case .d9vk: "Vulkan-based Direct3D 9 translation using the managed macOS package."
+        case .vkd3d: "Vulkan-based Direct3D 12 translation using VKD3D-Proton."
         case .wineD3D: "Wine's built-in OpenGL renderer and the safest fallback."
         }
     }
@@ -90,7 +93,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         switch self {
         case .automatic: nil
         case .d3dMetal: .gamePortingToolkit
-        case .dxmt, .dxvk, .d9vk, .wineD3D: .wine
+        case .dxmt, .dxvk, .d9vk, .vkd3d, .wineD3D: .wine
         }
     }
 }

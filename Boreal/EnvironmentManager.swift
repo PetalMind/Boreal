@@ -147,38 +147,44 @@ actor EnvironmentManager: EnvironmentManaging {
         // Prefixes imported from older Wine builds may explicitly disable the
         // SDL winebus backend. Normalize the documented WineBus switches so a
         // controller is published through HID, DirectInput and XInput.
-        for (name, value) in [
-            ("Enable SDL", "1"),
-            ("Map Controllers", environment.configuration.forceXInput ? "1" : "0"),
-            ("Split Controllers", "0"),
-            ("DisableHidraw", "0")
-        ] {
-            try await runConfigurationCommand(
-                executable: runtime.wineExecutable,
-                arguments: [
-                    "reg", "add", #"HKLM\System\CurrentControlSet\Services\WineBus"#,
-                    "/v", name, "/t", "REG_DWORD", "/d", value, "/f"
-                ],
-                logName: "wine-controller-\(name.replacingOccurrences(of: " ", with: "-").lowercased())",
-                environment: environment,
-                runtime: runtime
-            )
+        if runtime.features?.wineBusControllerMapping == true {
+            for (name, value) in [
+                ("Enable SDL", "1"),
+                ("Map Controllers", environment.configuration.forceXInput ? "1" : "0"),
+                ("Split Controllers", "0"),
+                ("DisableHidraw", "0")
+            ] {
+                try await runConfigurationCommand(
+                    executable: runtime.wineExecutable,
+                    arguments: [
+                        "reg", "add", #"HKLM\System\CurrentControlSet\Services\WineBus"#,
+                        "/v", name, "/t", "REG_DWORD", "/d", value, "/f"
+                    ],
+                    logName: "wine-controller-\(name.replacingOccurrences(of: " ", with: "-").lowercased())",
+                    environment: environment,
+                    runtime: runtime
+                )
+            }
         }
 
         try await applyGraphicsBackend(environment, runtime: runtime)
     }
 
     private func applyGraphicsBackend(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
-        let overrideNames = ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "dxgi"]
+        let overrideNames = ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi"]
         for name in overrideNames {
-            try await runConfigurationCommand(
-                executable: runtime.wineExecutable,
-                arguments: ["reg", "delete", #"HKCU\Software\Wine\DllOverrides"#, "/v", name, "/f"],
-                logName: "graphics-reset-\(name)",
-                environment: environment,
-                runtime: runtime,
-                allowsFailure: true
-            )
+            // Older Wine tools wrote forced-native overrides with a leading
+            // asterisk. Clear both forms before selecting a prefix backend.
+            for registryName in [name, "*\(name)"] {
+                try await runConfigurationCommand(
+                    executable: runtime.wineExecutable,
+                    arguments: ["reg", "delete", #"HKCU\Software\Wine\DllOverrides"#, "/v", registryName, "/f"],
+                    logName: "graphics-reset-\(registryName.replacingOccurrences(of: "*", with: "star-"))",
+                    environment: environment,
+                    runtime: runtime,
+                    allowsFailure: true
+                )
+            }
         }
         do {
             let activation = try graphicsBackendManager.activate(
@@ -361,10 +367,15 @@ actor EnvironmentManager: EnvironmentManaging {
             // reject a forced 32-bit prefix. Remove an inherited value as well.
             values.removeValue(forKey: "WINEARCH")
         }
-        values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0"
-        values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0"
-        values.merge(environment.configuration.graphicsConfiguration.environment) { _, configured in configured }
-        values = ControllerWineSupport.applyingEnvironment(to: values)
+        values.removeValue(forKey: "WINEESYNC")
+        values.removeValue(forKey: "WINEMSYNC")
+        values.removeValue(forKey: "WINE_FULLSCREEN_FSR")
+        if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
+        if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
+        values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
+        if runtime.features?.wineBusControllerMapping == true {
+            values = ControllerWineSupport.applyingEnvironment(to: values)
+        }
         values.removeValue(forKey: "WINEDLLOVERRIDES")
         values["WINEDEBUG"] = values["WINEDEBUG"] ?? "-all"
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")

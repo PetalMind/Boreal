@@ -403,6 +403,7 @@ struct LibraryView: View {
     let importAction: (URL) -> Void
     let selectAction: (UUID) -> Void
     let selectStoreGameAction: (UUID) -> Void
+    let selectDiscoveryGameAction: (AppleGamingWikiGame) -> Void
     @AppStorage("developerMode") private var developerMode = false
     @State private var removeCandidate: WindowsApplication?
     @State private var uninstallCandidate: StoreLibraryGame?
@@ -457,11 +458,22 @@ struct LibraryView: View {
             || favoritesOnly
     }
 
+    private var discoveryProducerGames: [AppleGamingWikiGame] {
+        guard !producerFilter.isEmpty else { return [] }
+        let ownedSteamIDs = Set(store.storeGames.filter { $0.provider == .steam }.map(\.externalID))
+        let ownedNames = Set(allItems.map { normalizedName($0.name) })
+        return store.discoveryGames(developer: producerFilter).filter { game in
+            if let steamAppID = game.steamAppID, ownedSteamIDs.contains(steamAppID) { return false }
+            return !ownedNames.contains(normalizedName(game.title))
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if showsSavedDiscoveryGames { SavedDiscoveryGamesView(searchText: searchText) }
             if !allItems.isEmpty { quickFilters }
             if !activeFilters.isEmpty { activeFilterBar }
+            if !producerFilter.isEmpty { discoveryProducerSection }
             Group {
                 if allItems.isEmpty && showsSavedDiscoveryGames {
                     Spacer()
@@ -475,6 +487,9 @@ struct LibraryView: View {
                     table
                 }
             }
+        }
+        .task(id: producerFilter) {
+            await store.searchDiscoveryGames(developer: producerFilter)
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first, ["exe", "msi"].contains(url.pathExtension.lowercased()) else { return false }
@@ -503,6 +518,39 @@ struct LibraryView: View {
         } message: {
             Text("The installed game files and its Boreal environment will be removed.")
         }
+    }
+
+    @ViewBuilder private var discoveryProducerSection: some View {
+        if !discoveryProducerGames.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("More from \(producerFilter) in Discovery").font(.headline)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        ForEach(discoveryProducerGames) { game in
+                            DiscoveryGameTile(game: game, horizontal: true) {
+                                selectDiscoveryGameAction(game)
+                            }
+                            .frame(width: 320)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+        } else if store.discoveryProducerSearchState == .loading {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Looking for more games by \(producerFilter) in Discovery…")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func normalizedName(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var quickFilters: some View {

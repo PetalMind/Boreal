@@ -146,8 +146,10 @@ actor RuntimeManager: RuntimeManaging {
         case .dxvk: repository = "Gcenx/DXVK-macOS"
         case .d9vk: repository = "Sikarugir-App/d9vk"
         case .dxmt: repository = "3Shain/dxmt"
+        case .vkd3d:
+            return try await downloadAndInstallComponent(.vkd3d, into: runtimeID)
         default:
-            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK and D9VK can be installed as optional components.")
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK, D9VK and VKD3D-Proton can be installed as optional components.")
         }
         let releasePath = backend == .d9vk ? "releases?per_page=1" : "releases/latest"
         guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/\(releasePath)") else {
@@ -353,7 +355,7 @@ actor RuntimeManager: RuntimeManaging {
         }
         let required = backend == .dxmt
             ? Set(["dxgi.dll", "d3d11.dll"])
-            : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["d3d10core.dll", "d3d11.dll"])
+            : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["dxgi.dll", "d3d10core.dll", "d3d11.dll"])
         let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
         guard required.isSubset(of: names) else {
             throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
@@ -1182,10 +1184,20 @@ actor RuntimeManager: RuntimeManaging {
             dxmt: false
         )
         if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
-        features.dxmt = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT").path)
-        features.dxvk = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXVK").path)
-        features.d9vk = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/D9VK").path)
-        features.vkd3d = fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/VKD3D").path)
+        features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll"], in: runtime)
+        features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["dxgi.dll", "d3d10core.dll", "d3d11.dll"], in: runtime)
+        features.d9vk = hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
+        features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
+        features.esync = runtimePayloadContains("WINEESYNC", in: runtime)
+        features.msync = runtimePayloadContains("WINEMSYNC", in: runtime)
+        features.fullscreenFSR = runtimePayloadContains("WINE_FULLSCREEN_FSR", in: runtime)
+        let wineRoot = copiedApp.appending(path: "Contents/Resources/wine", directoryHint: .isDirectory)
+        let hasWineBus = ["lib/wine/x86_64-windows/winebus.sys", "lib/wine/i386-windows/winebus.sys"]
+            .contains { fileManager.fileExists(atPath: wineRoot.appending(path: $0).path) }
+        let hasSDL = ["lib/libSDL2-2.0.0.dylib", "lib/libSDL3.0.dylib", "lib/libSDL3.dylib"]
+            .contains { fileManager.fileExists(atPath: wineRoot.appending(path: $0).path) }
+        features.wineBusControllerMapping = hasWineBus && hasSDL
+        features.dgVoodoo2 = hasValidDGvoodooComponent(in: runtime)
         return InstalledRuntime(
             id: runtime.id,
             displayName: runtime.displayName,
@@ -1200,6 +1212,55 @@ actor RuntimeManager: RuntimeManaging {
             engine: runtime.engine,
             features: features
         )
+    }
+
+    private func hasGraphicsComponent(
+        _ directoryName: String,
+        requiredX64: Set<String>,
+        in runtime: InstalledRuntime
+    ) -> Bool {
+        let root = runtime.rootURL
+            .appending(path: "GraphicsComponents/\(directoryName)/x64", directoryHint: .isDirectory)
+        guard let files = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+            return false
+        }
+        let names = Set(files.map { $0.lastPathComponent.lowercased() })
+        return requiredX64.isSubset(of: names)
+    }
+
+    private func runtimePayloadContains(_ marker: String, in runtime: InstalledRuntime) -> Bool {
+        let wineRoot = runtime.rootURL.appending(path: "Runtime/Wine.app/Contents/Resources/wine", directoryHint: .isDirectory)
+        let candidates = [
+            wineRoot.appending(path: "bin/wineserver"),
+            wineRoot.appending(path: "lib/wine/x86_64-unix/ntdll.so"),
+            wineRoot.appending(path: "lib/wine/x86_32on64-unix/ntdll.so"),
+            wineRoot.appending(path: "lib/wine/i386-unix/ntdll.so")
+        ]
+        let needle = Data(marker.utf8)
+        return candidates.contains { url in
+            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return false }
+            return data.range(of: needle) != nil
+        }
+    }
+
+    private func hasValidDGvoodooComponent(in runtime: InstalledRuntime) -> Bool {
+        let roots = [
+            runtime.rootURL.appending(path: "GraphicsComponents/dgVoodoo2", directoryHint: .isDirectory),
+            runtime.rootURL.appending(path: "Support/Graphics/dgVoodoo2", directoryHint: .isDirectory)
+        ]
+        return roots.contains { root in
+            let manifest = root.appending(path: "manifest.json")
+            guard let data = try? Data(contentsOf: manifest),
+                  let descriptor = try? JSONDecoder().decode(LegacyWrapperComponentManifest.self, from: data),
+                  descriptor.id.caseInsensitiveCompare(LegacyGraphicsWrapper.dgVoodoo2.rawValue) == .orderedSame else {
+                return false
+            }
+            return descriptor.architectures.contains { architecture in
+                descriptor.supportedAPIs.contains { api in
+                    fileManager.fileExists(atPath: root.appending(path: "\(architecture)/\(api.libraryName).dll").path)
+                }
+            }
+        }
     }
 
     private func localRuntimeID(name: String, version: String, architecture: RuntimeArchitecture) -> String {

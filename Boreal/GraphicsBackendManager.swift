@@ -37,7 +37,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
     }
 
     private var fileManager: FileManager { .default }
-    private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll"])
+    private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll"])
 
     func resolve(
         _ requested: WineGraphicsBackend,
@@ -57,7 +57,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         var configuration = environment.configuration.graphicsConfiguration
         configuration.backend = requested
         let backend = configuration.resolvedBackend(runtime: runtime)
-        guard backend == .dxmt || backend == .dxvk || backend == .d9vk else {
+        guard backend == .dxmt || backend == .dxvk || backend == .d9vk || backend == .vkd3d else {
             return GraphicsBackendActivation(backend: backend, dllOverrides: [])
         }
 
@@ -147,12 +147,19 @@ nonisolated struct GraphicsBackendManager: Sendable {
         case .dxmt: runtime.features?.dxmt == true
         case .dxvk: runtime.features?.dxvk == true
         case .d9vk: runtime.features?.d9vk == true
+        case .vkd3d: runtime.features?.vkd3d == true
         default: true
         }
     }
 
     private func componentRoot(for backend: WineGraphicsBackend, runtime: InstalledRuntime) -> URL? {
-        let folder = backend == .dxmt ? "DXMT" : backend == .d9vk ? "D9VK" : "DXVK"
+        let folder: String
+        switch backend {
+        case .dxmt: folder = "DXMT"
+        case .d9vk: folder = "D9VK"
+        case .vkd3d: folder = "VKD3D"
+        default: folder = "DXVK"
+        }
         return [
             runtime.rootURL.appending(path: "GraphicsComponents/\(folder)", directoryHint: .isDirectory),
             runtime.rootURL.appending(path: "Support/Graphics/\(folder)", directoryHint: .isDirectory)

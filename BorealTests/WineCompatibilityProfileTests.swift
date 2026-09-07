@@ -8,12 +8,12 @@ struct WineCompatibilityProfileTests {
             root: FileManager.default.temporaryDirectory,
             features: RuntimeFeatures(
                 wow64: true, wineMono: false, wineGecko: false,
-                d3dmetal: false, dxmt: true, dxvk: true
+                d3dmetal: false, dxmt: true, dxvk: true, vkd3d: true
             )
         )
 
         #expect(RendererPolicy.preferredBackend(for: .directX11, runtime: runtime) == .dxvk)
-        #expect(RendererPolicy.preferredBackend(for: .directX12, runtime: runtime) == .wineD3D)
+        #expect(RendererPolicy.preferredBackend(for: .directX12, runtime: runtime) == .vkd3d)
         #expect(RendererPolicy.preferredBackend(for: .directX9, runtime: runtime) == .wineD3D)
     }
 
@@ -51,6 +51,7 @@ struct WineCompatibilityProfileTests {
             .dxmt,
             .dxvk,
             .d9vk,
+            .vkd3d,
             .wineD3D
         ])
     }
@@ -120,6 +121,45 @@ struct WineCompatibilityProfileTests {
 
         #expect(try String(contentsOf: publishedPrefix.appending(path: "drive_c/windows/system32/dxgi.dll"), encoding: .utf8) == "wine")
         #expect(!fileManager.fileExists(atPath: environmentRoot.appending(path: ".graphics-backend.json").path))
+    }
+
+    @Test func vkd3dActivationInstallsDirectX12LibrariesAndOverrides() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-vkd3d-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let component = root.appending(path: "runtime/GraphicsComponents/VKD3D/x64", directoryHint: .isDirectory)
+        let system32 = root.appending(path: "environment/prefix/drive_c/windows/system32", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: component, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: system32, withIntermediateDirectories: true)
+        try Data("vkd3d".utf8).write(to: component.appending(path: "d3d12.dll"))
+        try Data("vkd3d-core".utf8).write(to: component.appending(path: "d3d12core.dll"))
+        let runtimeRoot = root.appending(path: "runtime", directoryHint: .isDirectory)
+        let runtime = InstalledRuntime(
+            id: "test-vkd3d", displayName: "Test VKD3D", wineVersion: "test",
+            rootURL: runtimeRoot, wineExecutable: runtimeRoot.appending(path: "wine"),
+            wineServerExecutable: runtimeRoot.appending(path: "wineserver"),
+            wineBootExecutable: runtimeRoot.appending(path: "wineboot"), architecture: .arm64,
+            requirements: [],
+            features: RuntimeFeatures(
+                wow64: true, wineMono: false, wineGecko: false,
+                d3dmetal: false, dxmt: false, vkd3d: true
+            )
+        )
+        let environmentRoot = root.appending(path: "environment", directoryHint: .isDirectory)
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "VKD3D"),
+            runtimeID: runtime.id, rootURL: environmentRoot,
+            prefixURL: environmentRoot.appending(path: "prefix", directoryHint: .isDirectory),
+            logsURL: environmentRoot.appending(path: "Logs", directoryHint: .isDirectory), state: .ready
+        )
+
+        let activation = try GraphicsBackendManager().activate(.vkd3d, in: environment, runtime: runtime)
+
+        #expect(activation.backend == .vkd3d)
+        #expect(activation.dllOverrides == ["d3d12", "d3d12core"])
+        #expect(try String(contentsOf: system32.appending(path: "d3d12.dll"), encoding: .utf8) == "vkd3d")
+        #expect(try String(contentsOf: system32.appending(path: "d3d12core.dll"), encoding: .utf8) == "vkd3d-core")
     }
 
     @Test func everyWindowsApplicationCanPersistAnyGraphicsAPIChoice() throws {

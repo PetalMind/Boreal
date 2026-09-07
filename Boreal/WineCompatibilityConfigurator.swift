@@ -82,8 +82,13 @@ struct WineCompatibilityConfigurator: View {
                 Section("Display") {
                     Toggle("High-resolution rendering (Retina)", isOn: $profile.retinaModeEnabled)
                     Toggle("Fullscreen upscaling (FSR)", isOn: $profile.fullscreenFSREnabled)
+                        .disabled(runtimeFeatures?.fullscreenFSR != true)
                     Text("Retina gives a sharper image. FSR can improve performance when playing fullscreen at a lower resolution; runtime support is required.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if runtimeFeatures?.fullscreenFSR != true {
+                        Label("The selected runtime does not implement WINE_FULLSCREEN_FSR.", systemImage: "nosign")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     Toggle("Keep Boreal overlay visible", isOn: $profile.overlayCompatibleFullscreen)
                     Text("Uses a borderless fullscreen window so the game does not cover the overlay.")
                         .font(.caption)
@@ -128,6 +133,7 @@ struct WineCompatibilityConfigurator: View {
                         .font(.caption).foregroundStyle(.secondary)
 
                     Toggle("Xbox controller compatibility", isOn: $profile.forceXInput)
+                        .disabled(runtimeFeatures?.wineBusControllerMapping != true)
                     Text("Presents the controller as an Xbox 360 controller. Restart the entire Wine session after changing this.")
                         .font(.caption).foregroundStyle(.secondary)
 
@@ -159,7 +165,11 @@ struct WineCompatibilityConfigurator: View {
                                 Text(wrapper.displayName).tag(wrapper)
                             }
                         }
-                        .disabled(usesSharedSteamEnvironment)
+                        .disabled(usesSharedSteamEnvironment || runtimeFeatures?.dgVoodoo2 != true)
+                        if runtimeFeatures?.dgVoodoo2 != true {
+                            Text("dgVoodoo2 is unavailable because the selected runtime does not contain a valid component package.")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                         if profile.legacyWrapper == .dgVoodoo2 {
                             Picker("Older graphics API", selection: $profile.legacyGraphicsAPI) {
                                 ForEach(LegacyGraphicsAPI.allCases) { api in
@@ -176,9 +186,15 @@ struct WineCompatibilityConfigurator: View {
 
                     DisclosureGroup("Performance") {
                         Toggle("ESync", isOn: $profile.esyncEnabled)
+                            .disabled(runtimeFeatures?.esync != true)
                         Toggle("MSync", isOn: $profile.msyncEnabled)
+                            .disabled(runtimeFeatures?.msync != true)
                         Text("These options can reduce CPU overhead. Support depends on the Wine runtime.")
                             .font(.caption).foregroundStyle(.secondary)
+                        if runtimeFeatures?.esync != true || runtimeFeatures?.msync != true {
+                            Text("Unavailable switches are not exported to Wine. ESync: \(runtimeFeatures?.esync == true ? "supported" : "unavailable") · MSync: \(runtimeFeatures?.msync == true ? "supported" : "unavailable")")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                     }
 
                     DisclosureGroup("Launch and diagnostics") {
@@ -281,6 +297,10 @@ struct WineCompatibilityConfigurator: View {
         store.graphicsBackendIssue(profile.graphicsBackend, for: application)
     }
 
+    private var runtimeFeatures: RuntimeFeatures? {
+        store.compatibilityRuntimeFeatures(for: application, backend: profile.graphicsBackend)
+    }
+
     private func backendLabel(_ backend: WineGraphicsBackend) -> String {
         store.graphicsBackendIssue(backend, for: application) == nil
             ? backend.displayName
@@ -310,6 +330,7 @@ struct WineCompatibilityConfigurator: View {
         case .dxmt: "Runs DirectX 11 using Metal. Requires DXMT support."
         case .dxvk: "Runs DirectX 10 and 11 using Vulkan. DirectX 9 uses WineD3D."
         case .d9vk: "Runs DirectX 9 using Vulkan. Requires the D9VK component."
+        case .vkd3d: "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton."
         case .wineD3D: "A fallback to try if other renderers cause graphics problems."
         }
     }

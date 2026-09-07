@@ -61,8 +61,9 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
         return result
     }
 
-    var environment: [String: String] {
-        ["WINE_FULLSCREEN_FSR": fullscreenFSREnabled ? "1" : "0"]
+    func environment(runtime: InstalledRuntime) -> [String: String] {
+        guard runtime.features?.fullscreenFSR == true else { return [:] }
+        return ["WINE_FULLSCREEN_FSR": fullscreenFSREnabled ? "1" : "0"]
     }
 }
 
@@ -75,13 +76,19 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var dxvk: Bool = false
     var d9vk: Bool = false
     var vkd3d: Bool = false
+    var esync: Bool = false
+    var msync: Bool = false
+    var fullscreenFSR: Bool = false
+    var wineBusControllerMapping: Bool = false
+    var dgVoodoo2: Bool = false
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d, graphicsCapabilities
+        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
+        case esync, msync, fullscreenFSR, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, vkd3d: Bool = false) {
+    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
         self.wineMono = wineMono
         self.wineGecko = wineGecko
@@ -89,6 +96,11 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         self.dxmt = dxmt
         self.dxvk = dxvk
         self.vkd3d = vkd3d
+        self.esync = esync
+        self.msync = msync
+        self.fullscreenFSR = fullscreenFSR
+        self.wineBusControllerMapping = wineBusControllerMapping
+        self.dgVoodoo2 = dgVoodoo2
     }
 
     init(from decoder: Decoder) throws {
@@ -101,6 +113,11 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         dxvk = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
         d9vk = try values.decodeIfPresent(Bool.self, forKey: .d9vk) ?? false
         vkd3d = try values.decodeIfPresent(Bool.self, forKey: .vkd3d) ?? false
+        esync = try values.decodeIfPresent(Bool.self, forKey: .esync) ?? false
+        msync = try values.decodeIfPresent(Bool.self, forKey: .msync) ?? false
+        fullscreenFSR = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSR) ?? false
+        wineBusControllerMapping = try values.decodeIfPresent(Bool.self, forKey: .wineBusControllerMapping) ?? false
+        dgVoodoo2 = try values.decodeIfPresent(Bool.self, forKey: .dgVoodoo2) ?? false
         graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
     }
 }
