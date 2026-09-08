@@ -2101,7 +2101,9 @@ private struct StoreGameInstallationSheet: View {
                 Text("Boreal will download the native Mac release. The Windows/Wine version is used only when a native release is unavailable.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if game.provider == .steam {
+            }
+
+            if game.provider == .steam {
                 Label("Steam for Windows manages this installation", systemImage: "gamecontroller.fill")
                     .font(.headline)
                 Text("Boreal will install Valve’s Windows Steam client in its own Wine prefix. Sign in and choose the game’s library in Steam; Boreal will launch the game through that client.")
@@ -2151,10 +2153,7 @@ private struct StoreGameInstallationSheet: View {
     }
 
     private var destinationIsUsable: Bool {
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory)
-        if exists { return isDirectory.boolValue && FileManager.default.isWritableFile(atPath: destination.path) }
-        return FileManager.default.isWritableFile(atPath: capacityProbeURL.path)
+        BorealStore.gameInstallationDestinationIsAvailable(destination)
     }
 
     private var formattedDownloadSize: String {

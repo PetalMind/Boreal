@@ -41,7 +41,7 @@ struct WineCompatibilityConfigurator: View {
             Form {
                 Section {
                     HStack {
-                        presetButton("Recommended", symbol: "wand.and.stars", profile: .default)
+                        presetButton("Recommended", symbol: "wand.and.stars", profile: recommendedProfile)
                         presetButton("Older game", symbol: "clock.arrow.circlepath", profile: olderGameProfile)
                         presetButton("Performance", symbol: "gauge.with.dots.needle.67percent", profile: performanceProfile)
                     }
@@ -262,6 +262,19 @@ struct WineCompatibilityConfigurator: View {
             msyncEnabled: false,
             retinaModeEnabled: false
         )
+    }
+
+    private var recommendedProfile: WineCompatibilityProfile {
+        var value = WineCompatibilityProfile.default
+        guard let graphicsProfile else { return value }
+        value.graphicsAPI = graphicsProfile.defaultAPI
+        if let preferredBackend = graphicsProfile.preferredBackend {
+            value.graphicsBackend = preferredBackend
+        }
+        if let overlayCompatibleFullscreen = graphicsProfile.overlayCompatibleFullscreen {
+            value.overlayCompatibleFullscreen = overlayCompatibleFullscreen
+        }
+        return value
     }
 
     private var performanceProfile: WineCompatibilityProfile {

@@ -123,13 +123,28 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
 }
 
 nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case dxmt
     case dxvk
     case d9vk
     case vkd3d
 
     var id: String { rawValue }
-    var displayName: String { self == .dxvk ? "DXVK" : self == .d9vk ? "D9VK" : "VKD3D-Proton" }
-    var directoryName: String { self == .dxvk ? "DXVK" : self == .d9vk ? "D9VK" : "VKD3D" }
+    var displayName: String {
+        switch self {
+        case .dxmt: "DXMT"
+        case .dxvk: "DXVK"
+        case .d9vk: "D9VK"
+        case .vkd3d: "VKD3D-Proton"
+        }
+    }
+    var directoryName: String {
+        switch self {
+        case .dxmt: "DXMT"
+        case .dxvk: "DXVK"
+        case .d9vk: "D9VK"
+        case .vkd3d: "VKD3D"
+        }
+    }
 }
 
 /// Windows redistributables belong to a mutable game environment, never to
@@ -556,6 +571,7 @@ nonisolated protocol RuntimeManaging: Sendable {
 nonisolated extension RuntimeManaging {
     func componentUpdates() async throws -> [RuntimeComponentUpdate] { [] }
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
+        if component == .dxmt { return try await downloadAndInstallGraphicsComponent(.dxmt, into: runtimeID) }
         if component == .dxvk { return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID) }
         if component == .d9vk { return try await downloadAndInstallGraphicsComponent(.d9vk, into: runtimeID) }
         throw CocoaError(.featureUnsupported)

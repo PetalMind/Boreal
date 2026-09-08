@@ -370,9 +370,19 @@ actor EnvironmentManager: EnvironmentManaging {
         values.removeValue(forKey: "WINEESYNC")
         values.removeValue(forKey: "WINEMSYNC")
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR")
+        values.removeValue(forKey: "WINEDLLPATH")
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
         values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
+        if environment.configuration.graphicsBackend == .dxmt {
+            let dxmtUnixLibraries = runtime.rootURL.appending(
+                path: "GraphicsComponents/DXMT/x64-unix",
+                directoryHint: .isDirectory
+            )
+            if fileManager.fileExists(atPath: dxmtUnixLibraries.appending(path: "winemetal.so").path) {
+                values["WINEDLLPATH"] = dxmtUnixLibraries.path
+            }
+        }
         if runtime.features?.wineBusControllerMapping == true {
             values = ControllerWineSupport.applyingEnvironment(to: values)
         }

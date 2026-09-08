@@ -37,7 +37,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
     }
 
     private var fileManager: FileManager { .default }
-    private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll"])
+    private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "winemetal.dll"])
 
     func resolve(
         _ requested: WineGraphicsBackend,
@@ -63,6 +63,10 @@ nonisolated struct GraphicsBackendManager: Sendable {
 
         guard supports(backend, runtime: runtime), let componentRoot = componentRoot(for: backend, runtime: runtime) else {
             throw GraphicsBackendManagerError.componentPackageMissing(backend)
+        }
+        if backend == .dxmt,
+           !fileManager.fileExists(atPath: componentRoot.appending(path: "x64-unix/winemetal.so").path) {
+            throw GraphicsBackendManagerError.componentPackageEmpty(backend)
         }
         let candidates = try componentFiles(in: componentRoot, environment: environment)
         guard !candidates.isEmpty else { throw GraphicsBackendManagerError.componentPackageEmpty(backend) }
@@ -97,7 +101,9 @@ nonisolated struct GraphicsBackendManager: Sendable {
             throw error
         }
 
-        let overrides = Array(Set(installed.map { $0.destination.deletingPathExtension().lastPathComponent })).sorted()
+        let overrides = Array(Set(installed.map { $0.destination.deletingPathExtension().lastPathComponent }))
+            .filter { $0.caseInsensitiveCompare("winemetal") != .orderedSame }
+            .sorted()
         return GraphicsBackendActivation(backend: backend, dllOverrides: overrides)
     }
 

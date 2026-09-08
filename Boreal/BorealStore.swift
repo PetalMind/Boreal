@@ -74,6 +74,7 @@ final class BorealStore {
     var environmentDependencyStatuses: [UUID: [RuntimeDependencyStatus]] = [:]
     var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
     var diskStorageOperationIDs: Set<UUID> = []
+    var gameRelocationProgress: String?
     private let storageURL: URL
     private let storageLayout: BorealStorageLayout
     private let libraryRepository: LibraryRepository
@@ -113,6 +114,7 @@ final class BorealStore {
     private var loadedDiscoveryOffers: Set<String> = []
 
     nonisolated static let automaticLibraryRefreshInterval: TimeInterval = 8 * 60 * 60
+    nonisolated static let gameInstallationRootDefaultsKey = "gameInstallationRootPath"
 
     init(storageURL: URL? = nil, services: BorealServices? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -2056,6 +2058,15 @@ final class BorealStore {
     ) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider), storeGameOperations[key] == nil else { return }
+        guard Self.gameInstallationDestinationIsAvailable(destinationRoot) else {
+            presentedIssue = BorealIssue(
+                title: "The game location is unavailable",
+                stage: "Preparing the installation destination.",
+                recovery: "Connect the selected disk or choose another game installation location in Settings → Storage.",
+                technicalDetails: destinationRoot.path
+            )
+            return
+        }
         let token = UUID()
         let previousRecord = storeDownloadRecords[key]
         var initialProgress = initialDownloadProgress(
@@ -3574,7 +3585,13 @@ final class BorealStore {
         }
         for update in runtimeComponentUpdates where update.state == .available {
             guard !activeRuntimes.values.contains(where: { $0.id == update.runtimeID }) else { continue }
-            let key = update.component == .dxvk ? "automaticDXVKUpdates" : "automaticVKD3DUpdates"
+            let key: String?
+            switch update.component {
+            case .dxvk: key = "automaticDXVKUpdates"
+            case .vkd3d: key = "automaticVKD3DUpdates"
+            case .dxmt, .d9vk: key = nil
+            }
+            guard let key else { continue }
             guard defaults.object(forKey: key) == nil || defaults.bool(forKey: key) else { continue }
             do {
                 _ = try await services.runtimeManager.downloadAndInstallComponent(update.component, into: update.runtimeID)
@@ -3741,8 +3758,160 @@ final class BorealStore {
     }
 
     func defaultGameInstallationRoot(for provider: GameLibraryProvider) -> URL {
-        storageURL.deletingLastPathComponent()
-            .appending(path: "Games/\(provider == .epic ? "Epic" : provider.rawValue)", directoryHint: .isDirectory)
+        gameInstallationBaseRoot
+            .appending(path: provider == .epic ? "Epic" : provider.rawValue, directoryHint: .isDirectory)
+    }
+
+    var gameInstallationBaseRoot: URL {
+        if let path = UserDefaults.standard.string(forKey: Self.gameInstallationRootDefaultsKey),
+           !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        return storageURL.deletingLastPathComponent()
+            .appending(path: "Games", directoryHint: .isDirectory)
+    }
+
+    nonisolated static func gameInstallationDestinationIsAvailable(_ url: URL) -> Bool {
+        let standardized = url.standardizedFileURL
+        let components = standardized.pathComponents
+        if components.count >= 3, components[1] == "Volumes" {
+            let volumeRoot = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+                .appending(path: components[2], directoryHint: .isDirectory)
+            guard FileManager.default.fileExists(atPath: volumeRoot.path) else { return false }
+        }
+
+        var candidate = standardized
+        while !FileManager.default.fileExists(atPath: candidate.path), candidate.path != "/" {
+            candidate.deleteLastPathComponent()
+        }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+            && FileManager.default.isWritableFile(atPath: candidate.path)
+    }
+
+    var gamesNeedingRelocation: [StoreLibraryGame] {
+        storeGames.filter { game in
+            guard game.isInstalled, [.epic, .gog].contains(game.provider), let path = game.installPath else { return false }
+            let destination = defaultGameInstallationRoot(for: game.provider).standardizedFileURL.path
+            let installed = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+            return installed != destination && !installed.hasPrefix(destination + "/")
+        }
+    }
+
+    func moveInstalledGamesToPreferredLocation() {
+        guard gameRelocationProgress == nil else { return }
+        let games = gamesNeedingRelocation
+        guard !games.isEmpty else { return }
+        let references = Set(games.map(\.storeReference))
+        let busyApplication = applications.contains {
+            guard let provider = $0.storeProvider, let externalID = $0.storeExternalID else { return false }
+            return references.contains(StoreReference(provider: provider, externalID: externalID))
+                && ($0.status == .running || $0.status.isBusy)
+        }
+        let busyDownload = games.contains { storeGameOperations[storeOperationKey(for: $0)] != nil }
+        guard !busyApplication, !busyDownload else {
+            presentedIssue = BorealIssue(
+                title: "Games are currently in use",
+                stage: "Preparing to move installed games.",
+                recovery: "Close the affected games and wait for their downloads or updates to finish, then try again.",
+                technicalDetails: "Affected games: \(games.map(\.name).joined(separator: ", "))"
+            )
+            return
+        }
+        let roots = Set(games.map { defaultGameInstallationRoot(for: $0.provider) })
+        guard roots.allSatisfy(Self.gameInstallationDestinationIsAvailable) else {
+            presentedIssue = BorealIssue(
+                title: "The new game location is unavailable",
+                stage: "Preparing to move installed games.",
+                recovery: "Connect the selected disk or choose another location.",
+                technicalDetails: gameInstallationBaseRoot.path
+            )
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                for (offset, game) in games.enumerated() {
+                    gameRelocationProgress = "Moving \(game.name) (\(offset + 1) of \(games.count))…"
+                    try await moveInstalledGame(game)
+                }
+                gameRelocationProgress = nil
+                SoundService.shared.play(.confirmation)
+            } catch {
+                gameRelocationProgress = nil
+                present(error, title: "Games couldn’t be moved", stage: "Moving installed games to the new location")
+            }
+        }
+    }
+
+    private func moveInstalledGame(_ game: StoreLibraryGame) async throws {
+        guard let index = storeGames.firstIndex(where: { $0.id == game.id }),
+              let oldPath = game.installPath else { return }
+        let oldURL = URL(fileURLWithPath: oldPath, isDirectory: true).standardizedFileURL
+        let newURL: URL
+        switch game.provider {
+        case .epic:
+            newURL = try await services.epicLibrary.moveInstallation(
+                appID: game.externalID,
+                destinationRoot: defaultGameInstallationRoot(for: .epic)
+            )
+        case .gog:
+            let root = defaultGameInstallationRoot(for: .gog)
+            newURL = try await Task.detached(priority: .utility) {
+                try Self.moveGOGInstallation(game, from: oldURL, destinationRoot: root)
+            }.value
+        default:
+            return
+        }
+        replaceInstallationPath(from: oldURL, to: newURL, gameIndex: index)
+        save()
+        refreshGameDiskStorage(for: storeGames[index])
+    }
+
+    nonisolated private static func moveGOGInstallation(
+        _ game: StoreLibraryGame,
+        from installationURL: URL,
+        destinationRoot root: URL
+    ) throws -> URL {
+        var container = installationURL
+        while container.path != "/", container.lastPathComponent != game.externalID {
+            container.deleteLastPathComponent()
+        }
+        if container.lastPathComponent != game.externalID { container = installationURL }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let destination = root.appending(path: game.externalID, directoryHint: .isDirectory)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        let staging = root.appending(path: ".moving-\(game.id.uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.copyItem(at: container, to: staging)
+        do {
+            try FileManager.default.moveItem(at: staging, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
+        // The complete copy is already published. If deleting the source fails,
+        // keep both copies rather than risking the only valid installation.
+        try? FileManager.default.removeItem(at: container)
+        let relativeSuffix = installationURL.path.dropFirst(container.path.count)
+        return URL(fileURLWithPath: destination.path + relativeSuffix, isDirectory: true)
+    }
+
+    private func replaceInstallationPath(from oldURL: URL, to newURL: URL, gameIndex: Int) {
+        let oldPath = oldURL.path
+        let newPath = newURL.path
+        storeGames[gameIndex].installPath = newPath
+        storeGames[gameIndex].storageBytes = GameStorage.allocatedSize(of: newURL)
+        for index in applications.indices {
+            guard applications[index].storeProvider == storeGames[gameIndex].provider,
+                  applications[index].storeExternalID == storeGames[gameIndex].externalID else { continue }
+            if applications[index].executablePath == oldPath || applications[index].executablePath.hasPrefix(oldPath + "/") {
+                applications[index].executablePath = newPath + applications[index].executablePath.dropFirst(oldPath.count)
+            }
+        }
     }
 
     private func updateStoreDownload(_ progress: StoreGameOperationProgress, key: String, token: UUID) {

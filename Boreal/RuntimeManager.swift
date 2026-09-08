@@ -169,12 +169,15 @@ actor RuntimeManager: RuntimeManaging {
         let asset = release.assets.first {
             let name = $0.name.lowercased()
             return name.hasSuffix(".tar.gz")
-                && ((backend == .dxvk || backend == .d9vk) ? !name.contains("builtin") : name.contains("builtin"))
+                && ((backend == .dxvk || backend == .d9vk) ? !name.contains("builtin") : !name.contains("builtin"))
                 && !name.contains("debug")
         } ?? release.assets.first {
             let name = $0.name.lowercased()
             return name.hasSuffix(".zip") && !name.contains("debug")
-                && ((backend != .dxvk && backend != .d9vk) || !name.contains("builtin"))
+                && ((backend != .dxmt && backend != .dxvk && backend != .d9vk) || !name.contains("builtin"))
+        } ?? release.assets.first {
+            let name = $0.name.lowercased()
+            return backend == .dxmt && name.hasSuffix(".tar.gz") && name.contains("builtin") && !name.contains("debug")
         }
         guard let asset,
               asset.browserDownloadURL.scheme == "https",
@@ -204,8 +207,14 @@ actor RuntimeManager: RuntimeManaging {
         }
         try await extractGraphicsArchive(archive, to: extracted)
         let installed = try await installGraphicsComponent(backend, from: extracted, into: runtimeID)
-        if backend == .dxvk || backend == .d9vk {
-            try recordComponentReceipt(backend == .d9vk ? .d9vk : .dxvk, version: release.tagName, repository: repository, in: installed)
+        let component: RuntimeComponent? = switch backend {
+        case .dxmt: .dxmt
+        case .dxvk: .dxvk
+        case .d9vk: .d9vk
+        default: nil
+        }
+        if let component {
+            try recordComponentReceipt(component, version: release.tagName, repository: repository, in: installed)
         }
         return installed
     }
@@ -240,6 +249,9 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
+        if component == .dxmt {
+            return try await downloadAndInstallGraphicsComponent(.dxmt, into: runtimeID)
+        }
         if component == .dxvk {
             return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID)
         }
@@ -343,6 +355,9 @@ actor RuntimeManager: RuntimeManaging {
         }
         defer { if let extractionRoot { try? fileManager.removeItem(at: extractionRoot) } }
         let discovered = try discoverGraphicsLibraries(in: packageRoot, backend: backend)
+        let discoveredUnix = backend == .dxmt
+            ? try discoverDXMTUnixLibraries(in: packageRoot)
+            : []
         if backend == .dxvk || backend == .d9vk {
             for library in discovered {
                 try GraphicsBackendManager.validateNativeDXVKLibrary(library.url)
@@ -354,11 +369,14 @@ actor RuntimeManager: RuntimeManaging {
             )
         }
         let required = backend == .dxmt
-            ? Set(["dxgi.dll", "d3d11.dll"])
+            ? Set(["dxgi.dll", "d3d11.dll", "winemetal.dll"])
             : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["dxgi.dll", "d3d10core.dll", "d3d11.dll"])
         let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
         guard required.isSubset(of: names) else {
             throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
+        }
+        if backend == .dxmt, discoveredUnix.isEmpty {
+            throw RuntimeManagerError.localRuntimeInvalid("The DXMT package is incomplete. Required 64-bit Unix library: winemetal.so.")
         }
 
         let componentName = backend == .dxmt ? "DXMT" : backend == .d9vk ? "D9VK" : "DXVK"
@@ -374,6 +392,13 @@ actor RuntimeManager: RuntimeManaging {
                 let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
                 try fileManager.copyItem(at: library.url, to: folder.appending(path: library.url.lastPathComponent.lowercased()))
+            }
+            if backend == .dxmt {
+                let unixFolder = staging.appending(path: "x64-unix", directoryHint: .isDirectory)
+                try fileManager.createDirectory(at: unixFolder, withIntermediateDirectories: true)
+                for library in discoveredUnix {
+                    try fileManager.copyItem(at: library, to: unixFolder.appending(path: "winemetal.so"))
+                }
             }
             if fileManager.fileExists(atPath: destination.path) { try fileManager.moveItem(at: destination, to: backup) }
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -394,6 +419,9 @@ actor RuntimeManager: RuntimeManaging {
             )
             try makeEncoder().encode(runtime)
                 .write(to: runtime.rootURL.appending(path: "installed-runtime.json"), options: .atomic)
+            if backend == .dxmt {
+                try recordComponentReceipt(.dxmt, version: "imported", repository: "local-import", in: runtime)
+            }
             try? fileManager.removeItem(at: backup)
             try makeImmutable(runtime.rootURL)
             return runtime
@@ -1029,7 +1057,13 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     private func latestRelease(for component: RuntimeComponent) async throws -> GitHubRelease {
-        let repository = component == .dxvk ? "Gcenx/DXVK-macOS" : component == .d9vk ? "Sikarugir-App/d9vk" : "HansKristian-Work/vkd3d-proton"
+        let repository: String
+        switch component {
+        case .dxmt: repository = "3Shain/dxmt"
+        case .dxvk: repository = "Gcenx/DXVK-macOS"
+        case .d9vk: repository = "Sikarugir-App/d9vk"
+        case .vkd3d: repository = "HansKristian-Work/vkd3d-proton"
+        }
         let releasePath = component == .d9vk ? "releases?per_page=1" : "releases/latest"
         guard let url = URL(string: "https://api.github.com/repos/\(repository)/\(releasePath)") else {
             throw RuntimeManagerError.invalidManifest
@@ -1132,12 +1166,30 @@ actor RuntimeManager: RuntimeManaging {
         backend: WineGraphicsBackend
     ) throws -> [GraphicsLibrary] {
         let supported: Set<String> = backend == .d9vk ? ["d3d9.dll"] : backend == .dxmt
-            ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+            ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll"]
             : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
         return try discoverComponentLibraries(in: root, names: supported).sorted {
             if $0.architecture != $1.architecture { return String(describing: $0.architecture) < String(describing: $1.architecture) }
             return $0.url.lastPathComponent < $1.url.lastPathComponent
         }
+    }
+
+    private func discoverDXMTUnixLibraries(in root: URL) throws -> [URL] {
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+        let matches = try enumerator.compactMap { item -> URL? in
+            guard let url = item as? URL,
+                  url.lastPathComponent.caseInsensitiveCompare("winemetal.so") == .orderedSame else { return nil }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            return values.isRegularFile == true && values.isSymbolicLink != true ? url : nil
+        }
+        if let x64 = matches.first(where: { $0.path.contains("/x86_64-unix/") }) {
+            return [x64]
+        }
+        return matches.first.map { [$0] } ?? []
     }
 
     private func detectEngine(app: URL, name: String) -> RuntimeEngine {
@@ -1184,7 +1236,8 @@ actor RuntimeManager: RuntimeManaging {
             dxmt: false
         )
         if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
-        features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll"], in: runtime)
+        features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
+            && fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix/winemetal.so").path)
         features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["dxgi.dll", "d3d10core.dll", "d3d11.dll"], in: runtime)
         features.d9vk = hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)

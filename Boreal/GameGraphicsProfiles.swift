@@ -4,6 +4,21 @@ nonisolated enum GameGraphicsProfiles {
     static let builtIn: [GameGraphicsProfile] = [
         GameGraphicsProfile(
             provider: .steam,
+            externalID: "1593500",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX11, arguments: [])
+            ],
+            // God of War's D3D11 shaders use atomic results whose unused
+            // components must stay undefined. DXMT 0.40 and newer fixed the
+            // translation path that made those components visible as white
+            // flickering pixels on character materials.
+            preferredBackend: .dxmt,
+            overlayCompatibleFullscreen: true
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
             externalID: "475150",
             availableAPIs: [.directX11, .directX9],
             defaultAPI: .directX11,

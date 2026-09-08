@@ -31,11 +31,18 @@ nonisolated protocol EpicLibraryProviding: Sendable {
     func update(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func verify(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func uninstall(appID: String) async throws
+    func moveInstallation(appID: String, destinationRoot: URL) async throws -> URL
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
 
 extension EpicLibraryProviding {
+    func moveInstallation(appID: String, destinationRoot: URL) async throws -> URL {
+        _ = appID
+        _ = destinationRoot
+        throw CocoaError(.featureUnsupported)
+    }
+
     func update(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         _ = appID
         _ = progress
@@ -309,6 +316,19 @@ actor LegendaryEpicService: EpicLibraryProviding {
         guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
         guard Self.isSafeAppID(appID) else { throw LegendaryEpicError.invalidLibraryResponse }
         _ = try await run(["-y", "uninstall", appID])
+    }
+
+    func moveInstallation(appID: String, destinationRoot: URL) async throws -> URL {
+        guard readUserData() != nil else { throw LegendaryEpicError.notAuthenticated }
+        guard Self.isSafeAppID(appID) else { throw LegendaryEpicError.invalidLibraryResponse }
+        try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        _ = try await run(["-y", "move", appID, destinationRoot.path])
+        let data = try await run(["list-installed", "--json", "--show-dirs"])
+        guard let installed = try? JSONDecoder().decode([InstalledGame].self, from: data),
+              let path = installed.first(where: { $0.appName == appID })?.installPath else {
+            throw LegendaryEpicError.invalidLibraryResponse
+        }
+        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
     func update(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {

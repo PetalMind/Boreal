@@ -3,6 +3,7 @@ import SwiftUI
 
 struct StorageSettingsView: View {
     @Environment(BorealStore.self) private var store
+    @AppStorage(BorealStore.gameInstallationRootDefaultsKey) private var customGameLocation = ""
     @State private var report: BorealStorageReport?
     @State private var isScanning = false
 
@@ -11,6 +12,7 @@ struct StorageSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
+                gameLocationCard
                 overviewCard
                 if let report {
                     categoryCards(report)
@@ -26,6 +28,83 @@ struct StorageSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await scan() }
+    }
+
+    private var gameLocationCard: some View {
+        let location = store.gameInstallationBaseRoot
+        return SettingsCard(
+            "Game installation location",
+            subtitle: "Choose where new Epic and GOG games are stored.",
+            symbol: "externaldrive.fill"
+        ) {
+            HStack(spacing: 12) {
+                Image(systemName: locationIsAvailable ? "externaldrive.fill.badge.checkmark" : "externaldrive.badge.exclamationmark")
+                    .foregroundStyle(locationIsAvailable ? .green : .orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(location.lastPathComponent)
+                        .fontWeight(.medium)
+                    Text(location.path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    if !locationIsAvailable {
+                        Text("This location is unavailable. Connect the disk before installing a game.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Spacer(minLength: 12)
+                Button("Choose…") { chooseGameLocation() }
+                    .buttonStyle(.borderedProminent)
+                Button("Use Default") {
+                    customGameLocation = ""
+                }
+                .buttonStyle(.bordered)
+                .disabled(!hasCustomGameLocation)
+            }
+            Text("Boreal creates separate Epic and GOG folders here. Steam games use the library selected inside Steam.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !store.gamesNeedingRelocation.isEmpty || store.gameRelocationProgress != nil {
+                Divider()
+                HStack {
+                    if let progress = store.gameRelocationProgress {
+                        ProgressView().controlSize(.small)
+                        Text(progress).foregroundStyle(.secondary)
+                    } else {
+                        Text("\(store.gamesNeedingRelocation.count) installed game(s) are still in the previous location.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Move") { store.moveInstalledGamesToPreferredLocation() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.gameRelocationProgress != nil || !locationIsAvailable)
+                }
+            }
+        }
+    }
+
+    private var hasCustomGameLocation: Bool {
+        !customGameLocation.isEmpty
+    }
+
+    private var locationIsAvailable: Bool {
+        BorealStore.gameInstallationDestinationIsAvailable(store.gameInstallationBaseRoot)
+    }
+
+    private func chooseGameLocation() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Game Installation Location"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = store.gameInstallationBaseRoot
+        if panel.runModal() == .OK, let selected = panel.url {
+            customGameLocation = selected.standardizedFileURL.path
+        }
     }
 
     private var overviewCard: some View {
@@ -44,7 +123,7 @@ struct StorageSettingsView: View {
                         Text("Last scanned")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(report.scannedAt, style: .relative)
+                        Text(report.scannedAt.formatted(date: .abbreviated, time: .shortened))
                             .font(.callout.monospacedDigit())
                     }
                 }

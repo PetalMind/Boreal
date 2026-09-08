@@ -44,6 +44,24 @@ struct WineCompatibilityProfileTests {
         #expect(profile?.launchOption(for: .directX11)?.arguments == ["-dx11"])
     }
 
+    @Test func godOfWarProfileUsesDXMTForItsDirectX11ShaderPath() {
+        let application = WindowsApplication(
+            name: "God of War",
+            publisher: "Santa Monica Studio",
+            executablePath: "/tmp/GoW.exe",
+            installerPath: "existing-installation",
+            environmentID: UUID(),
+            storeProvider: .steam,
+            storeExternalID: "1593500"
+        )
+
+        let profile = GameGraphicsProfiles.profile(for: application)
+        #expect(profile?.defaultAPI == .directX11)
+        #expect(profile?.availableAPIs == [.directX11])
+        #expect(profile?.preferredBackend == .dxmt)
+        #expect(profile?.launchOption(for: .directX11)?.arguments.isEmpty == true)
+    }
+
     @Test func graphicsBackendChoicesIncludeEverySupportedRenderer() {
         #expect(WineGraphicsBackend.allCases == [
             .automatic,
