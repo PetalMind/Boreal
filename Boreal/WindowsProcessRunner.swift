@@ -6,10 +6,12 @@ nonisolated enum WineLaunchArguments {
         for plan: WindowsLaunchPlan,
         environmentID: UUID,
         displayWidth: Int,
-        displayHeight: Int
+        displayHeight: Int,
+        prefixURL: URL? = nil
     ) -> [String] {
+        let executablePath = prefixURL.map { windowsPath(for: plan.executable, prefixURL: $0) } ?? plan.executable.path
         if plan.executable.pathExtension.lowercased() == "msi" {
-            return ["msiexec", "/i", plan.executable.path] + plan.arguments
+            return ["msiexec", "/i", executablePath] + plan.arguments
         }
         guard plan.overlayCompatibleFullscreen else {
             return [plan.executable.path] + plan.arguments
@@ -20,8 +22,27 @@ nonisolated enum WineLaunchArguments {
         return [
             "explorer",
             "/desktop=\(desktopName),\(width)x\(height)",
-            plan.executable.path,
+            executablePath,
         ] + plan.arguments
+    }
+
+    private static func windowsPath(for executable: URL, prefixURL: URL) -> String {
+        let executablePath = executable.standardizedFileURL.path
+        let driveCPath = prefixURL.appending(path: "drive_c", directoryHint: .isDirectory).standardizedFileURL.path
+        let separator = "\\"
+
+        if executablePath == driveCPath {
+            return "C:\\"
+        }
+        if executablePath.hasPrefix(driveCPath + "/") {
+            let relativePath = String(executablePath.dropFirst(driveCPath.count + 1))
+            return "C:\\" + relativePath.replacingOccurrences(of: "/", with: separator)
+        }
+
+        // Wine's default Z: drive maps to the macOS filesystem root. This is
+        // required for imported games that remain outside the managed prefix.
+        let absolutePath = executablePath.hasPrefix("/") ? String(executablePath.dropFirst()) : executablePath
+        return "Z:\\" + absolutePath.replacingOccurrences(of: "/", with: separator)
     }
 }
 
@@ -65,7 +86,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             for: launchPlan,
             environmentID: environment.id,
             displayWidth: Int(CGDisplayBounds(displayID).width),
-            displayHeight: Int(CGDisplayBounds(displayID).height)
+            displayHeight: Int(CGDisplayBounds(displayID).height),
+            prefixURL: environment.prefixURL
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }

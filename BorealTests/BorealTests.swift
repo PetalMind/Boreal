@@ -788,20 +788,38 @@ struct BorealTests {
             overlayCompatibleFullscreen: true
         )
 
+        let prefixURL = URL(fileURLWithPath: "/Boreal/Environments/test/prefix", isDirectory: true)
         let arguments = WineLaunchArguments.make(
             for: plan,
             environmentID: environmentID,
             displayWidth: 2560,
-            displayHeight: 1440
+            displayHeight: 1440,
+            prefixURL: prefixURL
         )
 
         #expect(arguments == [
             "explorer",
             "/desktop=Boreal-000000,2560x1440",
-            executable.path,
+            "Z:\\Games\\Darksiders II\\Darksiders2.exe",
             "-dx11",
         ])
         #expect(plan.environment["WINEDLLOVERRIDES"] == "d3d11=n,b")
+
+        let inPrefixExecutable = prefixURL.appending(path: "drive_c/Games/Darksiders2.exe")
+        let inPrefixPlan = WindowsLaunchPlan(
+            executable: inPrefixExecutable,
+            arguments: [],
+            environment: [:],
+            workingDirectory: inPrefixExecutable.deletingLastPathComponent(),
+            overlayCompatibleFullscreen: true
+        )
+        #expect(WineLaunchArguments.make(
+            for: inPrefixPlan,
+            environmentID: environmentID,
+            displayWidth: 1280,
+            displayHeight: 720,
+            prefixURL: prefixURL
+        )[2] == "C:\\Games\\Darksiders2.exe")
     }
 
     @Test func libraryProjectionSearchesMetadataAndCombinesFilterCategories() {

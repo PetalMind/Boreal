@@ -155,6 +155,35 @@ nonisolated enum ExecutableDiscovery {
         }
     }
 
+    /// Returns the real game executable when the selected file is a vendor
+    /// launcher redirector. Some Rockstar Steam installs expose
+    /// `PlayGTA*.exe` as the visible entry point, but that file only tries to
+    /// open Rockstar Games Launcher. Boreal does not install that launcher in
+    /// an imported game prefix, so prefer the game-owned executable instead.
+    static func preferredLaunchExecutable(
+        for primaryExecutable: URL,
+        searchRoot: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> URL {
+        let primary = primaryExecutable.standardizedFileURL
+        guard isLauncherRedirector(at: primary, fileManager: fileManager) else { return primary }
+
+        let primaryStem = primary.deletingPathExtension().lastPathComponent
+        let candidates = auxiliaryExecutables(
+            for: primary,
+            searchRoot: searchRoot,
+            fileManager: fileManager
+        )
+        .filter { $0.role == .alternate }
+        .map { URL(fileURLWithPath: $0.executablePath).standardizedFileURL }
+        .filter { fileManager.fileExists(atPath: $0.path) }
+
+        return candidates.max {
+            directExecutableScore($0, primaryStem: primaryStem, fileManager: fileManager)
+                < directExecutableScore($1, primaryStem: primaryStem, fileManager: fileManager)
+        } ?? primary
+    }
+
     private static func auxiliaryRole(for url: URL, primaryStem: String) -> AuxiliaryExecutableRole? {
         let stem = url.deletingPathExtension().lastPathComponent
         let words = Set(normalizedWords(stem))
@@ -187,6 +216,31 @@ nonisolated enum ExecutableDiscovery {
         case .alternate: return "Run \(url.lastPathComponent)"
         case .tool: return "Run Tool (\(url.lastPathComponent))"
         }
+    }
+
+    private static func isLauncherRedirector(at url: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.isReadableFile(atPath: url.path),
+              let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 8 * 1_024 * 1_024) else { return false }
+        let contents = String(decoding: data, as: UTF8.self).lowercased()
+        return contents.contains("launcher redirector")
+            || (contents.contains("rockstar games") && contents.contains("redirector"))
+    }
+
+    private static func directExecutableScore(
+        _ candidate: URL,
+        primaryStem: String,
+        fileManager: FileManager
+    ) -> Int {
+        let primaryName = normalizedWords(primaryStem).joined()
+        let candidateName = normalizedWords(candidate.deletingPathExtension().lastPathComponent).joined()
+        var score = 0
+        if !candidateName.isEmpty && primaryName.contains(candidateName) { score += 100 }
+        if candidate.path.lowercased().contains("/binaries/win64/") { score += 25 }
+        if candidate.path.lowercased().contains("/gameface/") { score += 15 }
+        if peSubsystem(at: candidate, fileManager: fileManager) == 2 { score += 10 }
+        return score
     }
 
     private static func auxiliaryPriority(_ role: AuxiliaryExecutableRole) -> Int {
@@ -321,8 +375,9 @@ nonisolated enum ExecutableDiscovery {
     }
 
     /// Returns the PE subsystem value (2 = Windows GUI, 3 = console).
-    private static func peSubsystem(at url: URL) -> UInt16? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    private static func peSubsystem(at url: URL, fileManager: FileManager = .default) -> UInt16? {
+        guard fileManager.isReadableFile(atPath: url.path),
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let dosHeader = try? handle.read(upToCount: 64),
               dosHeader.count >= 64,

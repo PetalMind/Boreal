@@ -115,6 +115,26 @@ struct ExecutableDiscoveryTests {
         #expect(!actions.map(\.executablePath).contains { $0.hasSuffix("helper.exe") })
     }
 
+    @Test func replacesRockstarLauncherRedirectorWithDirectGameExecutable() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory.appending(path: "boreal-rockstar-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: directory) }
+        let binaries = directory.appending(path: "Gameface/Binaries/Win64", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: binaries, withIntermediateDirectories: true)
+
+        let redirector = directory.appending(path: "PlayGTASanAndreas.exe")
+        try Data("Rockstar Games Launcher Redirector".utf8).write(to: redirector)
+        let directGame = binaries.appending(path: "SanAndreas.exe")
+        try Data([0x4d, 0x5a]).write(to: directGame)
+
+        let resolved = ExecutableDiscovery.preferredLaunchExecutable(
+            for: redirector,
+            searchRoot: directory
+        )
+
+        #expect(resolved == directGame.standardizedFileURL)
+    }
+
     private func snapshot(
         _ entries: [ExecutableSnapshotEntry],
         capturedAt: Date? = nil

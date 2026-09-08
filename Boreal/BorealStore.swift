@@ -185,6 +185,7 @@ final class BorealStore {
         }
         if !recoveryAppIDs.isEmpty { Task { [weak self] in await self?.recoverPersistedSessions(appIDs: recoveryAppIDs) } }
         Task {
+            await normalizeLauncherRedirectors()
             await refreshRuntimeStatuses()
             await refreshMissingAuxiliaryExecutables()
             await enrichInstalledApplicationMetadata()
@@ -2875,6 +2876,32 @@ final class BorealStore {
         save()
     }
 
+    private func normalizeLauncherRedirectors() async {
+        let candidates = applications.compactMap { application -> (UUID, URL, URL)? in
+            guard !application.isSteamRuntimeHost, !application.isInstallerOnly else { return nil }
+            let primary = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+            return (application.id, primary, auxiliarySearchRoot(for: application))
+        }
+        let replacements = await Task.detached(priority: .utility) {
+            candidates.compactMap { applicationID, primary, searchRoot -> (UUID, URL)? in
+                let preferred = ExecutableDiscovery.preferredLaunchExecutable(
+                    for: primary,
+                    searchRoot: searchRoot
+                )
+                return preferred == primary ? nil : (applicationID, preferred)
+            }
+        }.value
+        guard !replacements.isEmpty else { return }
+
+        for (applicationID, executable) in replacements {
+            guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { continue }
+            applications[index].executablePath = executable.path
+            applications[index].auxiliaryExecutables = nil
+            applications[index].lastResult = "Direct game executable selected: \(executable.lastPathComponent)"
+        }
+        save()
+    }
+
     private func runAuxiliaryExecutableAsync(_ requestedAction: AuxiliaryExecutable, for applicationID: UUID) async {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
         let application = applications[index]
@@ -3015,7 +3042,17 @@ final class BorealStore {
                 throw InstallerServiceError.noRuntimeAvailable
             }
             var profile = compatibilityProfile(for: applications[index])
-            let executable = URL(fileURLWithPath: applications[index].executablePath)
+            let configuredExecutable = URL(fileURLWithPath: applications[index].executablePath)
+            let executable = ExecutableDiscovery.preferredLaunchExecutable(
+                for: configuredExecutable,
+                searchRoot: auxiliarySearchRoot(for: applications[index])
+            )
+            if executable != configuredExecutable {
+                applications[index].executablePath = executable.path
+                applications[index].auxiliaryExecutables = nil
+                applications[index].lastResult = "Using direct game executable \(executable.lastPathComponent)"
+                save()
+            }
             if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: executable) {
                 // Heroes 3 Complete ships DDrawCompat as xdd.dll. It crashes
                 // under this Wine WoW64 runtime, while Wine's builtin
