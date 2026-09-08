@@ -11,6 +11,7 @@ game_root="${1:A}"
 win64_root="$game_root/Gameface/Binaries/Win64"
 cleo_root="$win64_root/CLEO"
 script_source="${0:A:h}/sa_target_focus.js"
+config_source="${0:A:h}/SA_TargetFocus.ini"
 
 if [[ ! -f "$win64_root/SanAndreas.exe" ]]; then
   print -u2 "SanAndreas.exe was not found in $win64_root"
@@ -32,6 +33,11 @@ if [[ ! -f "$cleo_root/CLEO_PLUGINS/ImGuiReduxWin64.cleo" ]]; then
   exit 69
 fi
 
+if [[ ! -f "$cleo_root/CLEO_PLUGINS/IniFiles64.cleo" ]]; then
+  print -u2 "IniFiles64.cleo is not installed in $cleo_root/CLEO_PLUGINS"
+  exit 69
+fi
+
 mkdir -p "$cleo_root"
 destination="$cleo_root/sa_target_focus.js"
 
@@ -42,5 +48,10 @@ if [[ -e "$destination" ]] && ! cmp -s "$script_source" "$destination"; then
 fi
 
 cp "$script_source" "$destination"
+config_destination="$cleo_root/SA_TargetFocus.ini"
+if [[ ! -e "$config_destination" ]]; then
+  cp "$config_source" "$config_destination"
+  print "Default configuration installed at $config_destination"
+fi
 print "SA Target Focus installed at $destination"
 print "Start GTA SA Definitive Edition, hold Right Mouse Button or LT, and press F6 for settings."
