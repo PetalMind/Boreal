@@ -50,7 +50,7 @@ chmod +x install.sh
 ./install.sh "/path/to/GTA San Andreas - The Definitive Edition"
 ```
 
-The installer verifies `SanAndreas.exe`, `version.dll`, CLEO Redux, ImGuiRedux and IniFiles before copying `sa_target_focus.js`. It also installs the default `SA_TargetFocus.ini` only when no user configuration exists. If a different installed copy exists, it creates a timestamped backup first.
+The installer verifies `SanAndreas.exe`, `version.dll`, CLEO Redux, ImGuiRedux and IniFiles before copying `sa_target_focus[fs].js`. The `[fs]` suffix grants this script the file-system permission required by IniFiles while leaving the global CLEO permission setting unchanged. It also installs the default `SA_TargetFocus.ini` only when no user configuration exists. If a different installed copy exists, it creates a timestamped backup first.
 
 The default `Balanced` profile is intentionally usable without tuning:
 

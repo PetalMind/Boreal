@@ -39,7 +39,14 @@ if [[ ! -f "$cleo_root/CLEO_PLUGINS/IniFiles64.cleo" ]]; then
 fi
 
 mkdir -p "$cleo_root"
-destination="$cleo_root/sa_target_focus.js"
+destination="$cleo_root/sa_target_focus[fs].js"
+legacy_destination="$cleo_root/sa_target_focus.js"
+
+if [[ -e "$legacy_destination" ]]; then
+  legacy_backup="$legacy_destination.backup-$(date +%Y%m%d-%H%M%S)"
+  mv "$legacy_destination" "$legacy_backup"
+  print "Previous permission-less script moved to $legacy_backup"
+fi
 
 if [[ -e "$destination" ]] && ! cmp -s "$script_source" "$destination"; then
   backup="$destination.backup-$(date +%Y%m%d-%H%M%S)"

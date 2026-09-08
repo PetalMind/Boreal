@@ -46,6 +46,7 @@ const HUD_LOCKED = 2;
 const MODE_FREE_AIM = 0;
 const MODE_SOFT_LOCK = 1;
 const MODE_CLASSIC_LOCK_ON = 2;
+const CAMERA_MODE_AIMING = 5;
 
 const player = new Player(PLAYER_ID);
 
@@ -161,6 +162,7 @@ let candidateHandles = [];
 let lastCandidateScanAt = 0;
 let configDirty = false;
 let configSaveDueAt = 0;
+let configPersistenceUnavailable = false;
 let lastFrameAt = Date.now();
 let lastDiagnostics = {
   target: null,
@@ -497,6 +499,7 @@ function settingsFingerprint() {
 
 function loadConfig() {
   if (typeof IniFile === "undefined" || typeof IniFile.ReadInt !== "function") {
+    configPersistenceUnavailable = true;
     log("SA Target Focus: IniFiles plugin unavailable; using session defaults.");
     return;
   }
@@ -539,17 +542,24 @@ function loadConfig() {
     clampConfigValues();
     log("SA Target Focus config loaded from " + CONFIG_PATH);
   } catch (error) {
+    configPersistenceUnavailable = true;
     log("SA Target Focus: config load failed; using defaults.");
   }
 }
 
 function saveConfigIfDue(now) {
-  if (!configDirty || now < configSaveDueAt) return;
+  if (configPersistenceUnavailable || !configDirty || now < configSaveDueAt) return;
   saveConfig();
 }
 
 function saveConfig() {
-  if (typeof IniFile === "undefined" || typeof IniFile.WriteInt !== "function") return;
+  if (configPersistenceUnavailable) return;
+  if (typeof IniFile === "undefined" || typeof IniFile.WriteInt !== "function") {
+    configPersistenceUnavailable = true;
+    configDirty = false;
+    configSaveDueAt = 0;
+    return;
+  }
 
   clampConfigValues();
   try {
@@ -581,6 +591,9 @@ function saveConfig() {
     configDirty = false;
     configSaveDueAt = 0;
   } catch (error) {
+    configPersistenceUnavailable = true;
+    configDirty = false;
+    configSaveDueAt = 0;
     log("SA Target Focus: config save failed; continuing without persistence.");
   }
 }
@@ -1067,9 +1080,10 @@ function applySoftLock(candidate, camera, aimInput) {
   // The regular aiming camera can overwrite POINT_CAMERA_AT_POINT unless it
   // has first been switched to an aiming/scriptable camera. Anchor the camera
   // to the selected ped once per lock, then apply the configured soft blend.
-  // CameraMode.AimWeapon is 53 in the SA DE definitions.
+  // SA DE's CameraMode.Aiming enum is 5. Passing the classic/native-looking
+  // value 53 here is invalid and can crash the game when a target is acquired.
   if (cameraAnchorTarget !== focusTarget) {
-    safeNative("POINT_CAMERA_AT_CHAR", focusTarget, 53, 0);
+    safeNative("POINT_CAMERA_AT_CHAR", focusTarget, CAMERA_MODE_AIMING, 0);
     cameraAnchorTarget = focusTarget;
   }
 
@@ -1078,17 +1092,6 @@ function applySoftLock(candidate, camera, aimInput) {
 
   const blended = lerpVector(currentPoint, candidate.aimPoint, correction);
   safeNative("POINT_CAMERA_AT_POINT", blended.x, blended.y, blended.z, 0);
-  safeNative(
-    "CAMERA_SET_VECTOR_TRACK",
-    camera.position.x,
-    camera.position.y,
-    camera.position.z,
-    blended.x,
-    blended.y,
-    blended.z,
-    16,
-    false
-  );
   focusWasApplied = true;
   lastDiagnostics.correction = correction;
 }
