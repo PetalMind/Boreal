@@ -15,7 +15,13 @@ nonisolated enum GameGraphicsProfiles {
             // translation path that made those components visible as white
             // flickering pixels on character materials.
             preferredBackend: .dxmt,
-            overlayCompatibleFullscreen: true
+            overlayCompatibleFullscreen: true,
+            // These are DXMT's per-process shader translation workarounds for
+            // the remaining God of War artifacts. Keep them scoped to this
+            // game; applying them globally would change unrelated D3D11 games.
+            launchEnvironment: [
+                "DXMT_CONFIG": "d3d11.sampleNaNToZero=True;d3d11.defuseFma=True;dxmt.shaderMetalVersion=310;"
+            ]
         ),
         GameGraphicsProfile(
             provider: .steam,
@@ -90,6 +96,20 @@ nonisolated enum GameGraphicsProfiles {
                 )
             }
         }
+        return configured
+    }
+
+    static func applying(
+        _ profile: GameGraphicsProfile?,
+        backend: WineGraphicsBackend,
+        to plan: WindowsLaunchPlan
+    ) -> WindowsLaunchPlan {
+        guard let preferredBackend = profile?.preferredBackend,
+              preferredBackend == backend,
+              let launchEnvironment = profile?.launchEnvironment,
+              !launchEnvironment.isEmpty else { return plan }
+        var configured = plan
+        configured.environment.merge(launchEnvironment) { _, profileValue in profileValue }
         return configured
     }
 }

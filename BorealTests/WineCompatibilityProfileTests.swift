@@ -60,6 +60,32 @@ struct WineCompatibilityProfileTests {
         #expect(profile?.availableAPIs == [.directX11])
         #expect(profile?.preferredBackend == .dxmt)
         #expect(profile?.launchOption(for: .directX11)?.arguments.isEmpty == true)
+        #expect(profile?.launchEnvironment?["DXMT_CONFIG"] == "d3d11.sampleNaNToZero=True;d3d11.defuseFma=True;dxmt.shaderMetalVersion=310;")
+    }
+
+    @Test func godOfWarShaderWorkaroundsStayScopedToDXMTLaunches() {
+        let application = WindowsApplication(
+            name: "God of War",
+            publisher: "Santa Monica Studio",
+            executablePath: "/tmp/GoW.exe",
+            installerPath: "existing-installation",
+            environmentID: UUID(),
+            storeProvider: .steam,
+            storeExternalID: "1593500"
+        )
+        let profile = GameGraphicsProfiles.profile(for: application)
+        let plan = WindowsLaunchPlan(
+            executable: URL(fileURLWithPath: "/tmp/GoW.exe"),
+            arguments: [],
+            environment: [:],
+            workingDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        let dxmtPlan = GameGraphicsProfiles.applying(profile, backend: .dxmt, to: plan)
+        let d3dMetalPlan = GameGraphicsProfiles.applying(profile, backend: .d3dMetal, to: plan)
+
+        #expect(dxmtPlan.environment["DXMT_CONFIG"]?.contains("sampleNaNToZero=True") == true)
+        #expect(d3dMetalPlan.environment["DXMT_CONFIG"] == nil)
     }
 
     @Test func graphicsBackendChoicesIncludeEverySupportedRenderer() {

@@ -185,6 +185,10 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     var launchOptions: [GraphicsAPILaunchOption]
     var preferredBackend: WineGraphicsBackend? = nil
     var overlayCompatibleFullscreen: Bool? = nil
+    // Optional so profiles persisted by older Boreal versions remain
+    // decodable. These values are merged into the launch plan only when the
+    // selected compatibility backend matches the profile's intended backend.
+    var launchEnvironment: [String: String]? = nil
 
     func launchOption(for api: GraphicsAPI) -> GraphicsAPILaunchOption? {
         launchOptions.first { $0.api == api }

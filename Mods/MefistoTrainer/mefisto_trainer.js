@@ -64,17 +64,23 @@ while (true) {
   }
   f5WasDown = f5Down;
 
+  const gameIsPlaying = player.isPlaying();
+  if (!gameIsPlaying) {
+    menuVisible = false;
+  }
+  const trainerVisible = menuVisible && gameIsPlaying;
+
   // Keep the cursor state and all interactive widgets in the same ImGuiRedux
   // frame. Separate frames can submit different input/cursor state and make
   // the pointer jump, disappear or stop clicking under Wine.
   ImGui.BeginFrame("MEFISTO_TRAINER_WINDOW");
-  ImGui.SetCursorVisible(menuVisible);
+  ImGui.SetCursorVisible(trainerVisible);
 
-  if (player.isPlaying()) {
+  if (gameIsPlaying) {
     const actor = player.getChar();
     applyPersistentOptions(actor);
 
-    if (menuVisible) {
+    if (trainerVisible) {
       drawTrainerWindow(actor);
     }
   }
@@ -83,8 +89,10 @@ while (true) {
 }
 
 function drawTrainerWindow(actor) {
-  ImGui.SetNextWindowPos(28, 90, 2);
-  ImGui.SetNextWindowSize(500, 560, 2);
+  // Keep the window large enough for the longest sections and force the
+  // dimensions on every frame so an older cached size cannot clip the menu.
+  ImGui.SetNextWindowPos(24, 24, 1);
+  ImGui.SetNextWindowSize(760, 680, 1);
   // Do not copy the delayed Begin() return value back into menuVisible. The
   // trainer is closed with F5, so its visibility has one authoritative state.
   ImGui.Begin("MEFISTO TRAINER", true, false, true, false, false);

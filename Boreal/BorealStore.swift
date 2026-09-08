@@ -3124,6 +3124,11 @@ final class BorealStore {
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
                 configuredPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
                 configuredPlan.overlayDisplayID = profile.overlayDisplayID
+                configuredPlan = GameGraphicsProfiles.applying(
+                    graphicsProfile,
+                    backend: profile.graphicsBackend,
+                    to: configuredPlan
+                )
                 if provider != .steam {
                     let graphicsPlan = try graphicsCompatibilityManager.apply(
                         configuration: profile,
@@ -3149,6 +3154,11 @@ final class BorealStore {
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
                 configuredPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
                 configuredPlan.overlayDisplayID = profile.overlayDisplayID
+                configuredPlan = GameGraphicsProfiles.applying(
+                    graphicsProfile,
+                    backend: profile.graphicsBackend,
+                    to: configuredPlan
+                )
                 let graphicsPlan = try graphicsCompatibilityManager.apply(
                     configuration: profile,
                     application: applications[index],

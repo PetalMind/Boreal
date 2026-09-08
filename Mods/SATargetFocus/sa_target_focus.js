@@ -1,4 +1,4 @@
-/// <reference path="./.config/sa_unreal.d.ts" />
+/// <reference path="./.config/sa.d.ts" />
 
 // SA Target Focus for GTA San Andreas: The Definitive Edition.
 // Requires CLEO Redux 1.5+ and ImGuiReduxWin64.
@@ -7,6 +7,8 @@
 // player's aim input, or teleports the crosshair to a bone. The camera target
 // is blended a little towards a visible hostile ped while the aim button is
 // held, so the player remains in control.
+
+log("SA Target Focus initializing. Host: " + HOST);
 
 if (HOST !== "sa_unreal") {
   exit("SA Target Focus supports only GTA San Andreas: The Definitive Edition.");
