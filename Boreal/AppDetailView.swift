@@ -21,6 +21,11 @@ struct AppDetailView: View {
                         Text(app.name).font(.largeTitle).fontWeight(.semibold)
                         Text(app.publisher).foregroundStyle(.secondary)
                         ApplicationStatusLabel(status: app.status)
+                        if app.isInstallerOnly {
+                            Label("Installer only", systemImage: "shippingbox.fill")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.orange)
+                        }
                         HStack(spacing: 12) {
                             primaryAction
                                 .buttonStyle(.borderedProminent).controlSize(.large)
@@ -102,7 +107,7 @@ struct AppDetailView: View {
                         DetailRow(title: "Windows version", value: app.windowsVersion, symbol: "rectangle.on.rectangle")
                         DetailRow(title: "Graphics", value: app.graphics, symbol: "display")
                         DetailRow(title: "Environment", value: store.environment(id: app.environmentID)?.name ?? "Unavailable", symbol: "externaldrive")
-                        DetailRow(title: "Executable", value: URL(fileURLWithPath: app.executablePath).lastPathComponent, symbol: "doc.badge.gearshape")
+                        DetailRow(title: app.isInstallerOnly ? "Installer" : "Executable", value: URL(fileURLWithPath: app.executablePath).lastPathComponent, symbol: app.isInstallerOnly ? "shippingbox" : "doc.badge.gearshape")
                         ForEach(store.auxiliaryExecutables(for: app)) { action in
                             DetailRow(
                                 title: action.role.displayName,
@@ -166,7 +171,7 @@ struct AppDetailView: View {
         case .unavailable:
             Button("Unavailable", systemImage: "xmark.circle") { }.disabled(true)
         case .ready:
-            Button("Open", systemImage: "play.fill") { store.toggleRunning(app.id) }
+            Button(app.isInstallerOnly ? "Run Installer" : "Open", systemImage: "play.fill") { store.toggleRunning(app.id) }
                 .keyboardShortcut(.defaultAction)
         }
     }

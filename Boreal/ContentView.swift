@@ -177,7 +177,9 @@ struct ContentView: View {
 
     private var runningOverlayGames: [OverlayGame] {
         store.applications.compactMap { application in
-            guard application.status == .running, !application.isSteamRuntimeHost else { return nil }
+            guard application.status == .running,
+                  !application.isSteamRuntimeHost,
+                  !application.isInstallerOnly else { return nil }
             return OverlayGame(
                 id: application.id,
                 name: application.name,

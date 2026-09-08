@@ -201,6 +201,17 @@ final class BorealStore {
               !applications[index].isSteamRuntimeHost,
               (applications[index].storeProvider == nil || applications[index].usesStoreMetadataOnly) else { return }
 
+        if applications[index].isInstallerOnly {
+            applications[index].name = name
+            applications[index].publisher = "Game installer"
+            applications[index].lastResult = "Installer renamed"
+            if let environmentIndex = environments.firstIndex(where: { $0.id == applications[index].environmentID }) {
+                environments[environmentIndex].name = name
+            }
+            save()
+            return
+        }
+
         applications[index].name = name
         applications[index].publisher = "Windows application"
         applications[index].storeProvider = nil
@@ -617,6 +628,8 @@ final class BorealStore {
         }
     }
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
+
+    var managedStorageLayout: BorealStorageLayout { storageLayout }
 
     func refreshGameDiskStorage(for game: StoreLibraryGame) {
         let gameID = game.id
@@ -1090,6 +1103,73 @@ final class BorealStore {
         }
     }
 
+    /// Registers a selected installer as an installer-only Library entry and
+    /// launches it directly. No game executable discovery or first-launch
+    /// verification is performed in this path.
+    func runInstallerOnly(_ candidate: InstallCandidate, runtimeEngine: RuntimeEngine) async -> UUID? {
+        SoundService.shared.play(.installationStarted)
+        installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
+        do {
+            let commit = try await services.installer.launchInstaller(
+                candidate.url,
+                name: candidate.name,
+                preferredEngine: runtimeEngine
+            ) { [weak self] stage in
+                await self?.updateInstallation(stage)
+            }
+            let managed = commit.environment
+            let environment = WindowsEnvironment(
+                id: managed.id,
+                name: managed.configuration.name,
+                windowsVersion: WineWindowsVersion(rawValue: managed.configuration.windowsVersion)?.displayName ?? "Windows 11",
+                architecture: managed.configuration.architecture == "win64" ? "64-bit" : "32-bit",
+                runtime: commit.runtime.runtimeDescription,
+                graphics: commit.runtime.graphicsName,
+                runtimeID: commit.runtime.id,
+                rootPath: managed.rootURL.path,
+                prefixPath: managed.prefixURL.path,
+                logsPath: managed.logsURL.path
+            )
+            let app = WindowsApplication(
+                name: candidate.name,
+                publisher: "Game installer",
+                executablePath: candidate.url.path,
+                installerPath: candidate.url.path,
+                environmentID: environment.id,
+                status: .running,
+                graphics: commit.runtime.graphicsName,
+                lastOpened: .now,
+                iconSymbol: "shippingbox.fill",
+                lastResult: "Installer launched with \(commit.runtime.resolvedEngine.displayName)",
+                applicationRole: .installer
+            )
+            environments.append(environment)
+            applications.append(app)
+            activeSessions[app.id] = commit.installerSession
+            performanceLogURLs[app.id] = commit.installerSession.stderrLog
+            activeEnvironments[app.id] = managed
+            activeRuntimes[app.id] = commit.runtime
+            installation.completedStages = [.preparingRuntime, .creatingEnvironment, .startingInstaller]
+            installation.stage = .startingInstaller
+            installation.state = .succeeded(app.id)
+            save()
+            SoundService.shared.play(.installationCompleted)
+            monitorLauncher(session: commit.installerSession, appID: app.id)
+            monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
+            await refreshRuntimeStatuses()
+            return app.id
+        } catch is CancellationError {
+            installation = InstallationProgress(state: .cancelled)
+            return nil
+        } catch {
+            installation.state = .failed
+            installation.failureMessage = error.localizedDescription
+            installation.rollbackCompleted = installation.stage != .preparingRuntime
+            SoundService.shared.play(.error)
+            return nil
+        }
+    }
+
     private func matchStoreMetadata(for rawNames: [String]) async -> StoreLibraryGame? {
         let names = rawNames.map(Self.storeSearchTitle).filter { !$0.isEmpty }
         for name in names {
@@ -1172,6 +1252,7 @@ final class BorealStore {
         defer { isEnrichingInstalledApplicationMetadata = false }
         let candidates = applications.filter {
             guard !$0.isSteamRuntimeHost else { return false }
+            guard !$0.isInstallerOnly else { return false }
             if $0.storeProvider == nil && $0.storeExternalID == nil { return true }
             guard $0.usesStoreMetadataOnly,
                   let provider = $0.storeProvider,
@@ -1227,6 +1308,21 @@ final class BorealStore {
         installationTask = Task { [weak self] in
             guard let self else { return nil }
             let result = await self.install(candidate)
+            if self.installationToken == token {
+                self.installationTask = nil
+                self.installationToken = nil
+            }
+            return result
+        }
+    }
+
+    func beginInstallerLaunch(_ candidate: InstallCandidate, runtimeEngine: RuntimeEngine) {
+        guard installationTask == nil else { return }
+        let token = UUID()
+        installationToken = token
+        installationTask = Task { [weak self] in
+            guard let self else { return nil }
+            let result = await self.runInstallerOnly(candidate, runtimeEngine: runtimeEngine)
             if self.installationToken == token {
                 self.installationTask = nil
                 self.installationToken = nil
@@ -2757,7 +2853,8 @@ final class BorealStore {
 
     private func refreshAuxiliaryExecutables(for applicationID: UUID, searchRoot: URL? = nil) async {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }),
-              !applications[index].isSteamRuntimeHost else { return }
+              !applications[index].isSteamRuntimeHost,
+              !applications[index].isInstallerOnly else { return }
         let primary = URL(fileURLWithPath: applications[index].executablePath)
         let root = searchRoot ?? auxiliarySearchRoot(for: applications[index])
         let actions = await Task.detached {
@@ -2769,7 +2866,7 @@ final class BorealStore {
 
     private func refreshMissingAuxiliaryExecutables() async {
         let applicationIDs = applications.filter {
-            $0.auxiliaryExecutables == nil && !$0.isSteamRuntimeHost
+            $0.auxiliaryExecutables == nil && !$0.isSteamRuntimeHost && !$0.isInstallerOnly
         }.map(\.id)
         guard !applicationIDs.isEmpty else { return }
         for applicationID in applicationIDs {
@@ -2892,15 +2989,18 @@ final class BorealStore {
             || applications[index].usesStoreMetadataOnly
         let refreshesExecutableAtLaunch = !usesExistingExecutable && [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
         guard refreshesExecutableAtLaunch || FileManager.default.fileExists(atPath: applications[index].executablePath) else {
+            let itemType = applications[index].isInstallerOnly ? "installer" : "application executable"
             applications[index].status = .unavailable
             applications[index].lastResult = "Executable unavailable"
             applications[index].lastFailureStage = "Checking application files"
-            applications[index].lastErrorDetail = "The configured executable no longer exists at \(applications[index].executablePath)."
+            applications[index].lastErrorDetail = "The configured \(itemType) no longer exists at \(applications[index].executablePath)."
             save()
             presentedIssue = BorealIssue(
                 title: "\(applications[index].name) is unavailable",
-                stage: "Boreal couldn’t find the configured application executable.",
-                recovery: "Reinstall the application to create a complete environment.",
+                stage: "Boreal couldn’t find the configured \(itemType).",
+                recovery: applications[index].isInstallerOnly
+                    ? "Choose the installer again if you want to create a new installer environment."
+                    : "Reinstall the application to create a complete environment.",
                 technicalDetails: applications[index].executablePath
             )
             return
@@ -3016,11 +3116,13 @@ final class BorealStore {
             SoundService.shared.play(.launch)
             activeSessions[id] = session
             beginPlaySession(appID: id)
-            ControllerManager.shared.activate(
-                for: id,
-                profileName: applications[index].name,
-                keyboardMappingEnabled: !profile.disableSteamInputEquivalent
-            )
+            if !applications[index].isInstallerOnly {
+                ControllerManager.shared.activate(
+                    for: id,
+                    profileName: applications[index].name,
+                    keyboardMappingEnabled: !profile.disableSteamInputEquivalent
+                )
+            }
             performanceLogURLs[id] = session.stderrLog
             activeEnvironments[id] = managed
             activeRuntimes[id] = runtime
@@ -3076,17 +3178,20 @@ final class BorealStore {
                 unexpectedLauncherFailures.insert(appID)
                 applications[index].lastResult = "Exited unexpectedly"
                 applications[index].lastExitCode = result.exitCode
-                applications[index].lastFailureStage = "Running application"
+                applications[index].lastFailureStage = applications[index].isInstallerOnly ? "Running installer" : "Running application"
                 applications[index].lastErrorDetail = "The application process exited with code \(result.exitCode)."
             } else {
-                applications[index].lastResult = wasRequested ? "Launcher stopped" : "Launcher exited normally"
+                applications[index].lastResult = applications[index].isInstallerOnly
+                    ? (wasRequested ? "Installer stopped" : "Installer exited normally")
+                    : (wasRequested ? "Launcher stopped" : "Launcher exited normally")
                 applications[index].lastExitCode = result?.exitCode
             }
             activeSessions[appID] = nil
             save()
             if !wasRequested,
                let application = application(id: appID),
-               !application.usesSharedSteamEnvironment {
+               !application.usesSharedSteamEnvironment,
+               !application.isInstallerOnly {
                 schedulePrimaryProcessExit(appID: appID)
             }
         }
@@ -3159,11 +3264,13 @@ final class BorealStore {
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 beginPlaySession(appID: appID)
-                ControllerManager.shared.activate(
-                    for: appID,
-                    profileName: app.name,
-                    keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
-                )
+                if !app.isInstallerOnly {
+                    ControllerManager.shared.activate(
+                        for: appID,
+                        profileName: app.name,
+                        keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
+                    )
+                }
                 save()
                 monitorEnvironmentSession(environment: managed, runtime: installedRuntime, appID: appID)
             case .inactive:

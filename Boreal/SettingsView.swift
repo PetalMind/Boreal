@@ -91,6 +91,7 @@ struct BorealSettingsView: View {
     @ViewBuilder private var settingsContent: some View {
         switch selection {
         case .general: GeneralSettingsView()
+        case .storage: StorageSettingsView()
         case .runtime: RuntimeSettingsView()
         case .controllers: ControllerSettingsView()
         case .fullscreen: ConsoleModeSettingsView()
@@ -156,13 +157,14 @@ struct SettingsRow<Content: View>: View {
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
-    case general, runtime, controllers, fullscreen, overlay, advanced
+    case general, storage, runtime, controllers, fullscreen, overlay, advanced
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .general: "General"
+        case .storage: "Storage"
         case .runtime: "Runtime"
         case .controllers: "Controllers"
         case .fullscreen: "Fullscreen"
@@ -174,6 +176,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: "Updates, sound, discovery prices"
+        case .storage: "Games, environments and caches"
         case .runtime: "Wine and graphics components"
         case .controllers: "Mapping and input behavior"
         case .fullscreen: "Controller-first interface"
@@ -185,6 +188,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape.fill"
+        case .storage: "internaldrive.fill"
         case .runtime: "gearshape.2.fill"
         case .controllers: "gamecontroller.fill"
         case .fullscreen: "rectangle.inset.filled"

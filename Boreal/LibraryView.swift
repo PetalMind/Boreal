@@ -113,6 +113,7 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     let subtitle: String
     let producer: String?
     let source: LibrarySourceFilter
+    let isInstallerOnly: Bool
     let installed: Bool
     let readyToPlay: Bool
     let running: Bool
@@ -133,7 +134,7 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     }
 
     var searchText: String {
-        [name, subtitle, source.title, installed ? "installed" : "not installed", readyToPlay ? "ready to play" : "", needsAttention ? "needs attention" : "", compatibility.rawValue, statusText]
+        [name, subtitle, source.title, isInstallerOnly ? "installer" : "", installed ? "installed" : "not installed", readyToPlay ? "ready to play" : "", needsAttention ? "needs attention" : "", compatibility.rawValue, statusText]
             .joined(separator: " ")
     }
 }
@@ -158,16 +159,19 @@ nonisolated enum LibraryProjector {
         }.map { app in
             LibraryItem(
                 id: .application(app.id), kind: .application(app), name: app.name, subtitle: app.publisher, producer: app.publisher,
-                source: app.usesStoreMetadataOnly ? .boreal : (app.storeProvider.map(source) ?? .boreal),
+                source: app.isInstallerOnly ? .boreal : (app.usesStoreMetadataOnly ? .boreal : (app.storeProvider.map(source) ?? .boreal)),
+                isInstallerOnly: app.isInstallerOnly,
                 installed: app.status != .unavailable,
-                readyToPlay: app.status == .ready || app.status == .running,
+                readyToPlay: !app.isInstallerOnly && (app.status == .ready || app.status == .running),
                 running: app.status == .running,
                 needsAttention: app.status == .needsAttention || app.status == .unavailable,
                 lastUsed: app.lastOpened, playtimeMinutes: nil, storageBytes: app.storageBytes > 0 ? app.storageBytes : nil,
                 storageIsEstimate: false,
                 supportsNativeMacOS: false,
                 compatibility: app.compatibility,
-                statusText: app.status.rawValue
+                statusText: app.isInstallerOnly
+                    ? (app.status == .running ? "Installer running" : (app.status == .ready ? "Installer ready" : app.status.rawValue))
+                    : app.status.rawValue
             )
         }
         // Store metadata remains the canonical presentation after installation.
@@ -197,6 +201,7 @@ nonisolated enum LibraryProjector {
                 subtitle: game.developer ?? game.provider.rawValue,
                 producer: game.developer,
                 source: linkedApp?.usesStoreMetadataOnly == true ? .boreal : source(game.provider),
+                isInstallerOnly: false,
                 installed: installed, readyToPlay: ready, running: running, needsAttention: attention,
                 lastUsed: usableLinkedApp?.lastOpened ?? game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
                 storageBytes: storageBytes,
@@ -1170,6 +1175,7 @@ struct LibraryView: View {
     private func quickActionTitle(_ item: LibraryItem) -> String {
         if item.running { return "Stop" }
         if item.needsAttention { return "Details" }
+        if item.isInstallerOnly { return "Run Installer" }
         if item.readyToPlay { return "Play" }
         if item.installed { return "Prepare" }
         return "Install"
@@ -1178,6 +1184,7 @@ struct LibraryView: View {
     private func quickActionSymbol(_ item: LibraryItem) -> String {
         if item.running { return "stop.fill" }
         if item.needsAttention { return "exclamationmark.triangle.fill" }
+        if item.isInstallerOnly { return "shippingbox.fill" }
         if item.readyToPlay { return "play.fill" }
         if item.installed { return "wand.and.stars" }
         return "arrow.down.circle.fill"
@@ -1186,6 +1193,7 @@ struct LibraryView: View {
     private func statusSymbol(_ item: LibraryItem) -> String {
         if item.needsAttention { return "exclamationmark.triangle.fill" }
         if item.running { return "circle.fill" }
+        if item.isInstallerOnly { return "shippingbox.fill" }
         if item.readyToPlay { return "play.circle.fill" }
         if item.installed { return "checkmark.circle.fill" }
         return "icloud.and.arrow.down"
@@ -1223,7 +1231,7 @@ struct LibraryView: View {
         } else if app.status == .needsAttention {
             Button("Try Again", systemImage: "arrow.clockwise") { store.retry(app.id) }
         } else {
-            Button("Open", systemImage: "play.fill") { store.toggleRunning(app.id) }
+            Button(app.isInstallerOnly ? "Run Installer" : "Open", systemImage: "play.fill") { store.toggleRunning(app.id) }
                 .disabled(app.status.isBusy || app.status == .unavailable)
         }
         Divider()

@@ -22,6 +22,7 @@ struct ConsoleModeView: View {
 
     private var items: [LibraryItem] {
         LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames)
+            .filter { !$0.isInstallerOnly }
             .filter { item in
                 switch section {
                 case .installed: item.installed

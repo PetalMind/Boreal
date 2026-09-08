@@ -219,6 +219,21 @@ nonisolated enum AuxiliaryExecutableRole: String, Codable, Hashable, Sendable {
     }
 }
 
+/// Describes what Boreal owns as a Library entry. Installer-only entries are
+/// deliberately not treated as games: they are just a persistent way to run a
+/// user-selected Windows installer inside a managed environment.
+nonisolated enum WindowsApplicationRole: String, Codable, Hashable, Sendable {
+    case game
+    case installer
+
+    var displayName: String {
+        switch self {
+        case .game: "Game"
+        case .installer: "Installer only"
+        }
+    }
+}
+
 /// A secondary entry point that belongs to the same installed game and must
 /// run in that game's managed Windows environment.
 nonisolated struct AuxiliaryExecutable: Codable, Hashable, Sendable, Identifiable {
@@ -337,8 +352,12 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var compatibilityProfile: WineCompatibilityProfile?
     /// Optional keeps library files written by older Boreal builds decodable.
     var auxiliaryExecutables: [AuxiliaryExecutable]?
+    /// Optional keeps older persisted applications as normal game entries.
+    var applicationRole: WindowsApplicationRole? = nil
 
     var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
+    var resolvedApplicationRole: WindowsApplicationRole { applicationRole ?? .game }
+    var isInstallerOnly: Bool { resolvedApplicationRole == .installer }
     var usesStoreMetadataOnly: Bool { storeMetadataOnly == true }
     var usesSharedSteamEnvironment: Bool {
         (storeProvider == .steam && !usesStoreMetadataOnly) || isSteamRuntimeHost
@@ -935,6 +954,9 @@ struct InstallCandidate: Identifiable, Hashable, Sendable {
     let url: URL
     var name: String { url.deletingPathExtension().lastPathComponent }
     var fileType: String { url.pathExtension.uppercased() }
+    var recommendedRuntimeEngine: RuntimeEngine {
+        WindowsExecutableArchitecture.inspect(url) == .x86_64 ? .gamePortingToolkit : .wine
+    }
 }
 
 nonisolated enum GameStorage {

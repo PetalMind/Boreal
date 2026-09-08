@@ -16,7 +16,7 @@ nonisolated enum RuntimeChannel: String, Codable, Sendable {
 }
 nonisolated enum RuntimeRequirement: String, Codable, Sendable, Hashable { case rosetta2, gStreamerFramework }
 nonisolated enum RuntimeOrigin: String, Codable, Sendable, Hashable { case catalog, localImport }
-nonisolated enum RuntimeEngine: String, Codable, Sendable, Hashable {
+nonisolated enum RuntimeEngine: String, Codable, Sendable, Hashable, CaseIterable {
     case wine
     case gamePortingToolkit
 

@@ -8,14 +8,22 @@ nonisolated struct InstallationCommit: Sendable {
     let installerResult: ProcessExecutionResult
 }
 
+nonisolated struct InstallerLaunchCommit: Sendable {
+    let environment: ManagedBorealEnvironment
+    let runtime: InstalledRuntime
+    let installerSession: WindowsProcessSession
+}
+
 nonisolated enum InstallerServiceError: LocalizedError, Sendable {
     case noRuntimeAvailable
+    case invalidInstaller(URL)
     case executableNotDiscovered
     case firstLaunchFailed(Int32)
 
     var errorDescription: String? {
         switch self {
         case .noRuntimeAvailable: "No compatible Boreal Runtime is available. Install a verified runtime first."
+        case .invalidInstaller(let url): "The selected installer is not a readable .exe or .msi file: \(url.path)."
         case .executableNotDiscovered: "The installer finished, but Boreal couldn’t find an application executable."
         case .firstLaunchFailed(let code): "The application exited unexpectedly during its first launch (exit code \(code))."
         }
@@ -24,6 +32,23 @@ nonisolated enum InstallerServiceError: LocalizedError, Sendable {
 
 nonisolated protocol Installing: Sendable {
     func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit
+    func launchInstaller(
+        _ installer: URL,
+        name: String,
+        preferredEngine: RuntimeEngine,
+        progress: @escaping @Sendable (InstallationStage) async -> Void
+    ) async throws -> InstallerLaunchCommit
+}
+
+extension Installing {
+    func launchInstaller(
+        _ installer: URL,
+        name: String,
+        preferredEngine: RuntimeEngine,
+        progress: @escaping @Sendable (InstallationStage) async -> Void
+    ) async throws -> InstallerLaunchCommit {
+        throw InstallerServiceError.noRuntimeAvailable
+    }
 }
 
 extension RuntimeManaging {
@@ -133,6 +158,55 @@ actor InstallerService: Installing {
             await progress(.committing)
             return InstallationCommit(environment: environment, runtime: runtime, executable: executable, firstLaunch: firstLaunch, installerResult: installerResult)
         } catch {
+            try? await environmentManager.remove(environment)
+            throw error
+        }
+    }
+
+    /// Prepares only the compatibility environment and launches the selected
+    /// installer. It intentionally does not inspect the prefix for a game,
+    /// launch a detected executable, or commit a game record.
+    func launchInstaller(
+        _ installer: URL,
+        name: String,
+        preferredEngine: RuntimeEngine,
+        progress: @escaping @Sendable (InstallationStage) async -> Void
+    ) async throws -> InstallerLaunchCommit {
+        let isRegularFile = (try? installer.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        let extensionIsSupported = ["exe", "msi"].contains(installer.pathExtension.lowercased())
+        guard isRegularFile, extensionIsSupported else {
+            throw InstallerServiceError.invalidInstaller(installer)
+        }
+
+        await progress(.preparingRuntime)
+        let installerArchitecture = WindowsExecutableArchitecture.inspect(installer)
+        let environmentArchitecture = installerArchitecture == .x86 ? "win32" : "win64"
+        let runtime = try await readyRuntime(preferredEngine: preferredEngine)
+        await progress(.creatingEnvironment)
+        let environment = try await environmentManager.create(
+            configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture),
+            runtime: runtime
+        )
+        var installerSession: WindowsProcessSession?
+        do {
+            try await environmentManager.initialize(environment, runtime: runtime)
+            await progress(.startingInstaller)
+            installerSession = try await processRunner.run(
+                executable: installer,
+                arguments: [],
+                environment: environment,
+                runtime: runtime
+            )
+            try Task.checkCancellation()
+            return InstallerLaunchCommit(
+                environment: environment,
+                runtime: runtime,
+                installerSession: installerSession!
+            )
+        } catch {
+            if let installerSession {
+                try? await processRunner.stopApplication(installerSession)
+            }
             try? await environmentManager.remove(environment)
             throw error
         }
