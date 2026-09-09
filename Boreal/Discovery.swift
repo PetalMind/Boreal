@@ -1208,7 +1208,7 @@ struct DiscoveryView: View {
             case .wine: [game.wine]
             case .parallels: [game.parallels]
             case .all: [game.crossover, game.wine, game.parallels]
-            case .rosetta2, .perfect: []
+            case .native, .rosetta2, .perfect: []
             }
         case .forYou, .all: game.availableRatings.map(\.rating)
         }
