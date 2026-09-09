@@ -1,6 +1,214 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "" : {
+
+    },
+    "·" : {
+
+    },
+    "%@  ·  DISCOVERY" : {
+
+    },
+    "%@  ·  IN YOUR LIBRARY" : {
+
+    },
+    "%@ – %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ – %2$@"
+          }
+        }
+      }
+    },
+    "%@ · %lld %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$lld %3$@"
+          }
+        }
+      }
+    },
+    "%@ · Connected" : {
+
+    },
+    "%@ %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@"
+          }
+        }
+      }
+    },
+    "%@ %@ · %@ · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@ · %3$@ · %4$@"
+          }
+        }
+      }
+    },
+    "%@ %@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@, %3$@"
+          }
+        }
+      }
+    },
+    "%@ %lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$lld of %3$lld"
+          }
+        }
+      }
+    },
+    "%@ apps" : {
+
+    },
+    "%@ couldn’t open" : {
+
+    },
+    "%@ games" : {
+
+    },
+    "%@ games imported" : {
+
+    },
+    "%@ min" : {
+
+    },
+    "%@ setup file" : {
+
+    },
+    "%@, %@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@, %3$@"
+          }
+        }
+      }
+    },
+    "%@, %lld items" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$lld items"
+          }
+        }
+      }
+    },
+    "%@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "%@%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@"
+          }
+        }
+      }
+    },
+    "%lld" : {
+
+    },
+    "%lld / %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld / %2$lld"
+          }
+        }
+      }
+    },
+    "%lld days" : {
+
+    },
+    "%lld games" : {
+
+    },
+    "%lld games, %lld native, %lld compatibility unknown" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld games, %2$lld native, %3$lld compatibility unknown"
+          }
+        }
+      }
+    },
+    "%lld installed game(s) are still in the previous location." : {
+
+    },
+    "%lld sessions" : {
+
+    },
+    "%lld%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld%2$@"
+          }
+        }
+      }
+    },
+    "%lld%%" : {
+
+    },
+    "%lldD" : {
+
+    },
+    "⌘⌥I" : {
+
+    },
+    "⌘⌥O" : {
+
+    },
+    "1 year" : {
+
+    },
+    "1Y" : {
+
+    },
+    "32-bit Windows game · Wine with WoW64 required" : {
+
+    },
+    "64-bit Windows game · Wine or GPTK can be prepared" : {
+
+    },
+    "A little activity" : {
+
+    },
+    "A macOS listing does not confirm Apple Silicon or current macOS compatibility. ‘Playable’ requires a Perfect or Playable community rating; reaching a menu is insufficient." : {
+
+    },
     "About Boreal" : {
       "comment" : "Label for the application information section.",
       "extractionState" : "manual",
@@ -18,6 +226,21 @@
           }
         }
       }
+    },
+    "Accessibility permission is required" : {
+
+    },
+    "ACCOUNTS" : {
+
+    },
+    "Action" : {
+
+    },
+    "Activity" : {
+
+    },
+    "Activity is measured while %@ is launched through Boreal. Offline play and other launchers may not be included." : {
+
     },
     "Add" : {
       "comment" : "Menu for adding games or environments.",
@@ -37,6 +260,45 @@
         }
       }
     },
+    "Add %@ to Favorites" : {
+
+    },
+    "Add an IsThereAnyDeal API key in Settings → General to load offers." : {
+
+    },
+    "Add an IsThereAnyDeal API key in Settings → General to load prices." : {
+
+    },
+    "Add an IsThereAnyDeal API key in Settings to load prices." : {
+
+    },
+    "Add Favorite" : {
+
+    },
+    "Add to Favorites" : {
+
+    },
+    "Add to Library" : {
+
+    },
+    "Advanced" : {
+
+    },
+    "Advanced sensitivity, response curves, anti-deadzone and axis inversion are not connected to the current input backend yet." : {
+
+    },
+    "After Epic signs you in, copy the authorizationCode value from the JSON page and paste it here. It is exchanged once by Legendary and is not saved by Boreal." : {
+
+    },
+    "After GOG signs you in, copy the final page URL or its code value and paste it here. Boreal gives the one-time code directly to heroic-gogdl; your password and browser session remain with GOG." : {
+
+    },
+    "All your games in one place" : {
+
+    },
+    "App" : {
+
+    },
     "App Not Found" : {
       "comment" : "Empty state when an application route no longer exists.",
       "extractionState" : "manual",
@@ -54,6 +316,51 @@
           }
         }
       }
+    },
+    "AppleGamingWiki ratings are community data and do not replace a Boreal-tested profile." : {
+
+    },
+    "Application and environment data" : {
+
+    },
+    "Apply" : {
+
+    },
+    "Architecture" : {
+
+    },
+    "Ask to enter when a controller connects" : {
+
+    },
+    "Automatic (main display)" : {
+
+    },
+    "Availability" : {
+
+    },
+    "Available to import · %@" : {
+
+    },
+    "B Back" : {
+
+    },
+    "Back to %@" : {
+
+    },
+    "Based on AppleGamingWiki community reports." : {
+
+    },
+    "Based on community compatibility reports." : {
+
+    },
+    "Battle.net, Ubisoft Connect and EA app do not have direct account integration in Boreal. You can import a Windows installer and run it in a compatible environment." : {
+
+    },
+    "Best price" : {
+
+    },
+    "Boreal" : {
+
     },
     "BOREAL" : {
       "comment" : "Boreal product name.",
@@ -73,6 +380,93 @@
         }
       }
     },
+    "Boreal can send mapped input to games" : {
+
+    },
+    "Boreal could not match %@ to an unambiguous store record." : {
+
+    },
+    "Boreal couldn't find a compatible runtime." : {
+
+    },
+    "Boreal creates an isolated environment for every app by default." : {
+      "comment" : "A description of the default behavior of Boreal.",
+      "isCommentAutoGenerated" : true
+    },
+    "Boreal creates separate Epic and GOG folders here. Steam games use the library selected inside Steam." : {
+
+    },
+    "Boreal did not find an unambiguous macOS/Wine compatibility result for this title." : {
+
+    },
+    "Boreal does not expose this control until it can be applied reliably to the active controller and game session." : {
+
+    },
+    "Boreal found %@ %@. It can copy and validate this %@ installation as an isolated, read-only runtime snapshot." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Boreal found %1$@ %2$@. It can copy and validate this %3$@ installation as an isolated, read-only runtime snapshot."
+          }
+        }
+      }
+    },
+    "Boreal keeps this game’s prefix minimal and installs components only when they are required or you choose them." : {
+
+    },
+    "Boreal prepared the Windows environment, but the application exited unexpectedly." : {
+
+    },
+    "Boreal Quick Menu" : {
+
+    },
+    "Boreal records elapsed time while a managed game session is active. These statistics use locally recorded sessions; store-reported playtime can differ. Sessions interrupted when Boreal closes may be incomplete." : {
+
+    },
+    "Boreal Runtime Required" : {
+
+    },
+    "Boreal will create a dedicated game folder inside this location." : {
+
+    },
+    "Boreal will delete heroic-gogdl’s local GOG tokens and remove GOG titles from this Library. Downloaded game files are kept." : {
+
+    },
+    "Boreal will delete Legendary’s local Epic credentials and remove Epic titles from this Library. Downloaded game files are kept." : {
+
+    },
+    "Boreal will download the native Mac release. The Windows/Wine version is used only when a native release is unavailable." : {
+
+    },
+    "Boreal will install Valve’s Windows Steam client in its own Wine prefix. Sign in and choose the game’s library in Steam; Boreal will launch the game through that client." : {
+
+    },
+    "Boreal will launch this file directly. It will not detect a game, start a first launch, or install a native macOS version." : {
+
+    },
+    "Boreal will search Steam, Epic Games and GOG for artwork, description and other game details." : {
+
+    },
+    "Boreal-managed data" : {
+
+    },
+    "Bottom left" : {
+
+    },
+    "Bottom right" : {
+      "comment" : "A label for the bottom right position of the performance overlay.",
+      "isCommentAutoGenerated" : true
+    },
+    "Browse" : {
+
+    },
+    "Browse compatibility reports and choose the best available way to play before adding games to your library." : {
+
+    },
+    "Cache may rebuild during gameplay. Temporary stutter is expected." : {
+
+    },
     "Cancel" : {
       "comment" : "Generic cancel action.",
       "extractionState" : "manual",
@@ -91,6 +485,60 @@
         }
       }
     },
+    "Cancel Installation" : {
+
+    },
+    "Change these only to solve a specific problem with this game." : {
+
+    },
+    "Changing architecture rebuilds the Windows environment. Your game files stay in place." : {
+
+    },
+    "Check Again" : {
+
+    },
+    "Check for updates" : {
+
+    },
+    "Check for Updates" : {
+
+    },
+    "Checking for Boreal Runtime…" : {
+
+    },
+    "Checking GOG Revived…" : {
+
+    },
+    "Choose a starting point, then adjust the settings below. Presets replace all settings in this dialog." : {
+
+    },
+    "Choose an action with the D-pad and press A." : {
+
+    },
+    "Choose which screen the borderless game window uses." : {
+
+    },
+    "Choose Windows installer…" : {
+
+    },
+    "Choose…" : {
+
+    },
+    "Clear" : {
+
+    },
+    "Clear %@?" : {
+
+    },
+    "Clear All" : {
+
+    },
+    "Clear Filters" : {
+
+    },
+    "Clear Search and Filters" : {
+
+    },
     "Close" : {
       "comment" : "Generic close action.",
       "extractionState" : "manual",
@@ -108,6 +556,125 @@
           }
         }
       }
+    },
+    "Close memory-heavy applications" : {
+
+    },
+    "Compatibility" : {
+
+    },
+    "Compatibility %@, %lld games" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Compatibility %1$@, %2$lld games"
+          }
+        }
+      }
+    },
+    "Compatibility fix" : {
+
+    },
+    "Compatibility reports: AppleGamingWiki. Store metadata and artwork: Steam. Price data: IsThereAnyDeal when configured." : {
+
+    },
+    "Compatibility runtimes shared by Windows games." : {
+
+    },
+    "Compatibility settings" : {
+
+    },
+    "Compatibility Settings…" : {
+
+    },
+    "Compatibility unknown" : {
+
+    },
+    "Completed" : {
+
+    },
+    "Components" : {
+
+    },
+    "Components depend on the Boreal Runtime.\nInstall it to continue." : {
+
+    },
+    "Configuration" : {
+
+    },
+    "Configuration selected automatically" : {
+
+    },
+    "Configuration verified by Boreal." : {
+
+    },
+    "Configure" : {
+
+    },
+    "Configure Wine…" : {
+
+    },
+    "Connect" : {
+
+    },
+    "Connect a controller in System Settings. Boreal will update this screen automatically." : {
+
+    },
+    "Connect your game libraries" : {
+
+    },
+    "Connect your stores to build a unified library, manage installations and launch your games with Boreal." : {
+
+    },
+    "Connected" : {
+
+    },
+    "Connecting your libraries" : {
+
+    },
+    "Console mode switches Boreal to fullscreen and makes the library easier to control with a controller." : {
+
+    },
+    "Continue" : {
+
+    },
+    "Continue %@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Continue %1$@, %2$@"
+          }
+        }
+      }
+    },
+    "CONTINUE PLAYING" : {
+
+    },
+    "Controller" : {
+
+    },
+    "Controller detected" : {
+
+    },
+    "Controller mapping" : {
+
+    },
+    "Controller mode" : {
+
+    },
+    "Controller Settings" : {
+
+    },
+    "Cover for %@" : {
+
+    },
+    "CPU" : {
+
+    },
+    "CPU segment" : {
+
     },
     "Create" : {
       "comment" : "Create environment action.",
@@ -163,6 +730,12 @@
         }
       }
     },
+    "Create Environment" : {
+
+    },
+    "Current" : {
+
+    },
     "Customize Boreal to fit your workflow." : {
       "comment" : "Subtitle shown at the top of the settings window.",
       "extractionState" : "manual",
@@ -199,6 +772,24 @@
         }
       }
     },
+    "Data sources" : {
+
+    },
+    "Date" : {
+
+    },
+    "Delete" : {
+
+    },
+    "Details" : {
+
+    },
+    "Detected from store metadata before download. Boreal will verify the installed executable again before creating its runtime environment." : {
+
+    },
+    "dgVoodoo2 is unavailable because the selected runtime does not contain a valid component package." : {
+
+    },
     "Diagnostic" : {
       "comment" : "Overlay information level.",
       "extractionState" : "manual",
@@ -216,6 +807,39 @@
           }
         }
       }
+    },
+    "DirectX version" : {
+
+    },
+    "Disable keyboard mapping" : {
+
+    },
+    "Disconnect" : {
+
+    },
+    "Disconnect Epic Games?" : {
+
+    },
+    "Disconnect GOG?" : {
+
+    },
+    "Disconnect…" : {
+
+    },
+    "DISCOVER" : {
+
+    },
+    "Discover games for your Mac" : {
+
+    },
+    "Discover games, compare compatibility reports and choose a setup for your Mac." : {
+
+    },
+    "Dismiss Status" : {
+
+    },
+    "Display" : {
+
     },
     "Done" : {
       "comment" : "Generic completion action.",
@@ -235,6 +859,121 @@
         }
       }
     },
+    "Download" : {
+
+    },
+    "Download and Install" : {
+
+    },
+    "Download Native Version" : {
+
+    },
+    "Download Queue" : {
+
+    },
+    "Downloads" : {
+
+    },
+    "Duration" : {
+
+    },
+    "e.g. -windowed -novsync" : {
+
+    },
+    "Enable keyboard mapping for Windows games" : {
+      "comment" : "A toggle that enables or disables keyboard mapping for Windows games.",
+      "isCommentAutoGenerated" : true
+    },
+    "End time" : {
+
+    },
+    "Environment" : {
+
+    },
+    "Epic helper documentation" : {
+
+    },
+    "ESync" : {
+
+    },
+    "Every 2 seconds" : {
+
+    },
+    "Every 5 seconds" : {
+
+    },
+    "Every second" : {
+
+    },
+    "Exit" : {
+
+    },
+    "Filters" : {
+
+    },
+    "Find games that work on your Mac" : {
+
+    },
+    "Find setup guidance and provider documentation." : {
+
+    },
+    "Find the best way to play" : {
+
+    },
+    "Finish Epic sign-in" : {
+
+    },
+    "Finish GOG sign-in" : {
+
+    },
+    "First launch verified" : {
+
+    },
+    "For older games that use DirectDraw or early Direct3D. Leave disabled unless needed." : {
+
+    },
+    "Force Quit" : {
+
+    },
+    "Fullscreen (⌘↩)" : {
+
+    },
+    "Fullscreen settings" : {
+
+    },
+    "Fullscreen upscaling (FSR)" : {
+
+    },
+    "Game" : {
+
+    },
+    "Game %@, session duration %@" : {
+      "comment" : "A label that combines the game name and session duration.",
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Game %1$@, session duration %2$@"
+          }
+        }
+      }
+    },
+    "Game Actions" : {
+
+    },
+    "Game details unavailable" : {
+
+    },
+    "Game display" : {
+
+    },
+    "Game Downloads" : {
+
+    },
+    "Game name" : {
+
+    },
     "Game Not Found" : {
       "comment" : "Empty state when a game route no longer exists.",
       "extractionState" : "manual",
@@ -252,6 +991,42 @@
           }
         }
       }
+    },
+    "Game Options" : {
+
+    },
+    "Game Porting Toolkit (D3DMetal)" : {
+
+    },
+    "games" : {
+
+    },
+    "Games and apps you mark with a heart will appear here." : {
+
+    },
+    "Games started from Steam, Epic Games, or GOG will appear here with their current status and controls." : {
+
+    },
+    "GOG helper documentation" : {
+
+    },
+    "GOG Revived lists this title as %@." : {
+
+    },
+    "GOG Revived status unavailable" : {
+
+    },
+    "GPU" : {
+
+    },
+    "GPU segment" : {
+
+    },
+    "Graphics" : {
+
+    },
+    "Graphics renderer" : {
+
     },
     "Grid" : {
       "comment" : "Library grid view command.",
@@ -271,6 +1046,49 @@
         }
       }
     },
+    "Group by: %@" : {
+      "comment" : "A button that opens a menu that lets the user sort the library in different ways.",
+      "isCommentAutoGenerated" : true
+    },
+    "Hide Details" : {
+
+    },
+    "Hide overlay" : {
+
+    },
+    "Hide overlay with Command Option O" : {
+
+    },
+    "High-resolution rendering (Retina)" : {
+
+    },
+    "Historical low" : {
+
+    },
+    "History provided by IsThereAnyDeal." : {
+
+    },
+    "Image" : {
+
+    },
+    "Image unavailable" : {
+
+    },
+    "Import" : {
+
+    },
+    "Import %@" : {
+
+    },
+    "Import D9VK Package…" : {
+
+    },
+    "Import DXMT Package…" : {
+
+    },
+    "Import DXVK Package…" : {
+
+    },
     "Import Steam Library" : {
       "comment" : "Action that imports the Steam library.",
       "extractionState" : "manual",
@@ -288,6 +1106,24 @@
           }
         }
       }
+    },
+    "Import your Steam Library or install a Windows app." : {
+
+    },
+    "Importing %@ Library" : {
+
+    },
+    "In Library" : {
+
+    },
+    "Incomplete environment removed" : {
+
+    },
+    "Install" : {
+
+    },
+    "Install %@" : {
+
     },
     "Install a Windows app" : {
       "comment" : "Help text for the add menu.",
@@ -325,6 +1161,33 @@
         }
       }
     },
+    "Install and add to Library" : {
+
+    },
+    "Install App" : {
+
+    },
+    "Install D9VK" : {
+
+    },
+    "Install DXMT" : {
+
+    },
+    "Install DXVK" : {
+
+    },
+    "Install Patch or DLC…" : {
+
+    },
+    "Install Required Dependencies" : {
+
+    },
+    "Install Runtime" : {
+
+    },
+    "Install VKD3D-Proton" : {
+
+    },
     "Install Windows App…" : {
       "comment" : "Action that imports a Windows executable or installer.",
       "extractionState" : "manual",
@@ -342,6 +1205,69 @@
           }
         }
       }
+    },
+    "Install Windows Version" : {
+
+    },
+    "Installation Details" : {
+
+    },
+    "Installation location" : {
+
+    },
+    "Installed" : {
+
+    },
+    "Installer launch cancelled" : {
+
+    },
+    "Installer launched" : {
+
+    },
+    "Installer only" : {
+
+    },
+    "Isolated Windows environment" : {
+
+    },
+    "Jump Back In" : {
+
+    },
+    "Keep Boreal overlay visible" : {
+
+    },
+    "Keep TV mode enabled" : {
+
+    },
+    "Last %lld samples" : {
+
+    },
+    "Last scanned" : {
+
+    },
+    "Last Used" : {
+
+    },
+    "Last week: %@" : {
+
+    },
+    "Latest helper message" : {
+
+    },
+    "Launch and diagnostics" : {
+
+    },
+    "Launch arguments" : {
+
+    },
+    "Learn more" : {
+
+    },
+    "Library imported · Sign-in managed by Steam" : {
+
+    },
+    "Link your accounts to import your games and keep them in sync." : {
+
     },
     "List" : {
       "comment" : "Library list view command.",
@@ -361,6 +1287,73 @@
         }
       }
     },
+    "Live controller" : {
+
+    },
+    "Live input on %@" : {
+
+    },
+    "Loading catalog…" : {
+
+    },
+    "Loading current offers…" : {
+
+    },
+    "Loading details from Steam and compatibility sources…" : {
+
+    },
+    "Loading more games…" : {
+
+    },
+    "Loading offers…" : {
+
+    },
+    "Loading price history…" : {
+
+    },
+    "Loading price…" : {
+
+    },
+    "Locate installed game…" : {
+
+    },
+    "Locate Installed Game…" : {
+
+    },
+    "Location" : {
+
+    },
+    "Looking for more games by %@ in Discovery…" : {
+
+    },
+    "Low %@" : {
+
+    },
+    "Mac Compatibility" : {
+
+    },
+    "Mac compatibility through Wine: %@" : {
+
+    },
+    "Manage" : {
+
+    },
+    "Manage files" : {
+
+    },
+    "Manage graphics translation components" : {
+      "comment" : "A contextual menu that allows the user to install or uninstall graphics translation components.",
+      "isCommentAutoGenerated" : true
+    },
+    "Managed location" : {
+
+    },
+    "Media" : {
+
+    },
+    "Memory pressure detected" : {
+
+    },
     "Minimal" : {
       "comment" : "Minimal overlay information level.",
       "extractionState" : "manual",
@@ -378,6 +1371,27 @@
           }
         }
       }
+    },
+    "Minutes" : {
+
+    },
+    "More actions" : {
+
+    },
+    "More activity" : {
+
+    },
+    "More from %@ in Discovery" : {
+
+    },
+    "Move" : {
+
+    },
+    "Move a stick or press a button" : {
+
+    },
+    "MSync" : {
+
     },
     "Name" : {
       "comment" : "Name field for a new environment.",
@@ -397,6 +1411,27 @@
         }
       }
     },
+    "Native" : {
+
+    },
+    "Native controller support remains available. Mapping is applied only to active game sessions." : {
+
+    },
+    "Native macOS" : {
+
+    },
+    "Native macOS version" : {
+
+    },
+    "Natywna" : {
+
+    },
+    "Natywna wersja macOS" : {
+
+    },
+    "Needs Attention" : {
+
+    },
     "New Environment" : {
       "comment" : "Title of the new environment dialog.",
       "extractionState" : "manual",
@@ -414,6 +1449,114 @@
           }
         }
       }
+    },
+    "Next media" : {
+
+    },
+    "No active downloads." : {
+
+    },
+    "No activity" : {
+
+    },
+    "No community reports available." : {
+
+    },
+    "No compatibility reports" : {
+
+    },
+    "No controller connected" : {
+
+    },
+    "No controller detected" : {
+
+    },
+    "No current offer was found." : {
+
+    },
+    "No current offers found." : {
+
+    },
+    "No description provided by this store." : {
+
+    },
+    "No Environments" : {
+
+    },
+    "No Favorites Yet" : {
+
+    },
+    "No game detection or native installation" : {
+
+    },
+    "No Game Downloads" : {
+
+    },
+    "No games found" : {
+
+    },
+    "No games rated %@" : {
+
+    },
+    "No items from %@" : {
+
+    },
+    "No items match “%@” and the selected filters." : {
+
+    },
+    "No items match the selected filters." : {
+
+    },
+    "No Matching Items" : {
+
+    },
+    "No measured data in this category." : {
+
+    },
+    "No other games are waiting." : {
+
+    },
+    "No partial installation was left behind." : {
+
+    },
+    "No price history is available for this period." : {
+
+    },
+    "No scan has been completed yet." : {
+
+    },
+    "No sessions recorded yet. Launch this game through Boreal to start tracking activity." : {
+
+    },
+    "No unambiguous compatibility result found." : {
+
+    },
+    "Not available yet" : {
+
+    },
+    "Not connected" : {
+
+    },
+    "Not installed" : {
+
+    },
+    "Not listed on GOG Revived" : {
+
+    },
+    "Not now" : {
+
+    },
+    "Nothing here yet." : {
+
+    },
+    "Offer links and price data are provided by IsThereAnyDeal." : {
+
+    },
+    "Older games" : {
+
+    },
+    "Older graphics API" : {
+
     },
     "One library. Every world." : {
       "comment" : "Boreal product tagline.",
@@ -433,6 +1576,57 @@
         }
       }
     },
+    "Only entries with community compatibility reports. These are not tests performed by Boreal." : {
+
+    },
+    "Open" : {
+
+    },
+    "Open C: Drive" : {
+
+    },
+    "Open compatibility documentation ↗" : {
+
+    },
+    "Open connection guide ↗" : {
+
+    },
+    "Open Downloads Folder" : {
+
+    },
+    "Open game folder" : {
+
+    },
+    "Open in Steam" : {
+
+    },
+    "Open installation folder" : {
+
+    },
+    "Open on GOG Revived" : {
+
+    },
+    "Open Overlay" : {
+
+    },
+    "Open permission prompt" : {
+
+    },
+    "Open Sign-in" : {
+
+    },
+    "Open Steam store page" : {
+
+    },
+    "Open Steam to sign in" : {
+
+    },
+    "Open Windows Steam Installer" : {
+
+    },
+    "Other stores & launchers" : {
+
+    },
     "Overlay Information Level" : {
       "comment" : "Menu containing overlay information levels.",
       "extractionState" : "manual",
@@ -450,6 +1644,259 @@
           }
         }
       }
+    },
+    "Passwords and browser cookies stay with the provider. Local authorization credentials are managed by the store helpers." : {
+
+    },
+    "Pause" : {
+
+    },
+    "Pause All" : {
+
+    },
+    "Pause and keep downloaded files" : {
+
+    },
+    "Paused" : {
+
+    },
+    "Per-game XInput and duplicate-input controls are available from each game's Compatibility Settings." : {
+
+    },
+    "Performance" : {
+
+    },
+    "Period" : {
+
+    },
+    "Platform unknown" : {
+
+    },
+    "Play" : {
+
+    },
+    "Play or pause video" : {
+
+    },
+    "Playing now" : {
+
+    },
+    "PLAYING NOW" : {
+
+    },
+    "Playtime" : {
+
+    },
+    "Prepare to Play" : {
+
+    },
+    "Preparing…" : {
+
+    },
+    "Presents the controller as an Xbox 360 controller. Restart the entire Wine session after changing this." : {
+
+    },
+    "Previous media" : {
+
+    },
+    "Price" : {
+
+    },
+    "Price data is currently unavailable." : {
+
+    },
+    "Price unavailable" : {
+
+    },
+    "Prices provided by IsThereAnyDeal." : {
+
+    },
+    "Questions?" : {
+
+    },
+    "Queue" : {
+
+    },
+    "Queued" : {
+
+    },
+    "Quick setup" : {
+
+    },
+    "Read more" : {
+
+    },
+    "Ready" : {
+
+    },
+    "Rebuild" : {
+
+    },
+    "Recent activity" : {
+
+    },
+    "Recommended for your Mac" : {
+
+    },
+    "Recommended: %@" : {
+
+    },
+    "Recreate Environment with GPTK" : {
+
+    },
+    "Refresh" : {
+
+    },
+    "Refresh %@ Library" : {
+
+    },
+    "Refresh Discovery" : {
+
+    },
+    "Refresh Library" : {
+
+    },
+    "Refresh this library every 8 hours while Boreal is running." : {
+
+    },
+    "Refresh Windows Steam Status" : {
+
+    },
+    "Remove" : {
+
+    },
+    "Remove %@ filter" : {
+
+    },
+    "Remove %@ from Favorites" : {
+
+    },
+    "Remove %@?" : {
+
+    },
+    "Remove App and Environment" : {
+
+    },
+    "Remove App…" : {
+
+    },
+    "Remove Favorite" : {
+
+    },
+    "Remove from Favorites" : {
+
+    },
+    "Remove from Queue" : {
+
+    },
+    "Remove from saved games" : {
+
+    },
+    "Remove…" : {
+
+    },
+    "Rename" : {
+
+    },
+    "Rename Game" : {
+
+    },
+    "Rename Game…" : {
+
+    },
+    "Reported via %@" : {
+
+    },
+    "Reset" : {
+
+    },
+    "Reset filters" : {
+
+    },
+    "Restore default mapping" : {
+
+    },
+    "Restore defaults" : {
+
+    },
+    "Resume" : {
+
+    },
+    "Resume All" : {
+
+    },
+    "Resume Download" : {
+
+    },
+    "Resume installation" : {
+
+    },
+    "Retina gives a sharper image. FSR can improve performance when playing fullscreen at a lower resolution; runtime support is required." : {
+
+    },
+    "Retry" : {
+
+    },
+    "Return after a game exits while a controller is connected" : {
+
+    },
+    "Reveal Environment in Finder" : {
+
+    },
+    "Run Installer" : {
+
+    },
+    "Run installer only" : {
+
+    },
+    "Run with" : {
+
+    },
+    "Running" : {
+
+    },
+    "Runs with %@" : {
+
+    },
+    "Runtime" : {
+
+    },
+    "Runtime Unavailable" : {
+
+    },
+    "Save changes" : {
+
+    },
+    "Save to your library" : {
+
+    },
+    "Saved from Discovery" : {
+
+    },
+    "Scan Storage" : {
+
+    },
+    "Scanning Boreal-managed locations…" : {
+
+    },
+    "Screenshot Unavailable" : {
+
+    },
+    "Segment" : {
+      "comment" : "Label for the series dimension in a performance chart.",
+      "isCommentAutoGenerated" : true
+    },
+    "Select a running game to manage it here." : {
+
+    },
+    "Selected date" : {
+
+    },
+    "Session" : {
+
+    },
+    "Setting up Boreal" : {
+
     },
     "Settings" : {
       "comment" : "Settings window title.",
@@ -469,6 +1916,63 @@
         }
       }
     },
+    "Shader Cache" : {
+
+    },
+    "Show %@ games" : {
+
+    },
+    "Show %@ items" : {
+
+    },
+    "Show all games by %@" : {
+
+    },
+    "Show Details" : {
+
+    },
+    "Show Game Files" : {
+
+    },
+    "Show in Finder" : {
+
+    },
+    "Show less" : {
+
+    },
+    "Showing the 8 largest locations." : {
+
+    },
+    "Showing the last saved catalog." : {
+
+    },
+    "Sign in using the Steam app" : {
+
+    },
+    "Some activity" : {
+
+    },
+    "Sort by: %@" : {
+
+    },
+    "Sort, group, and filter the Library" : {
+
+    },
+    "Sort: %@" : {
+
+    },
+    "Source" : {
+
+    },
+    "Speed" : {
+
+    },
+    "Speed history will appear when the transfer starts" : {
+
+    },
+    "Stage: %@" : {
+
+    },
     "Standard" : {
       "comment" : "Standard overlay information level.",
       "extractionState" : "manual",
@@ -486,6 +1990,106 @@
           }
         }
       }
+    },
+    "Start console mode" : {
+
+    },
+    "Start console mode?" : {
+      "comment" : "A confirmation prompt for starting console mode.",
+      "isCommentAutoGenerated" : true
+    },
+    "Start time" : {
+
+    },
+    "Starting…" : {
+
+    },
+    "Status" : {
+
+    },
+    "Status: %@" : {
+
+    },
+    "Steam" : {
+
+    },
+    "Steam for Windows manages this installation" : {
+
+    },
+    "Steam shares its Windows environment across games. Architecture, graphics renderer and older-game fixes are managed there." : {
+
+    },
+    "Steam uses the account signed in to the Steam app. For GOG and Epic, choose Connect and complete sign-in in your browser, then paste the one-time code into Boreal." : {
+
+    },
+    "Stick deadzone" : {
+
+    },
+    "Stop" : {
+
+    },
+    "Stop Game" : {
+
+    },
+    "Stops Boreal from turning controller buttons into keyboard presses. Steam Input is unchanged." : {
+
+    },
+    "Storage has not been scanned yet." : {
+
+    },
+    "Store" : {
+
+    },
+    "Store unknown" : {
+
+    },
+    "Strongest available compatibility reports for this Mac." : {
+
+    },
+    "Sync automatically" : {
+
+    },
+    "System-wide driver allocation in shared RAM, not dedicated VRAM or game-only usage." : {
+
+    },
+    "Test Controller" : {
+
+    },
+    "Tested compatibility only" : {
+
+    },
+    "The installed game files and its Boreal environment will be removed." : {
+
+    },
+    "The original app stays unchanged. Boreal validates the copy and runs an isolated Windows-environment smoke test before making it available." : {
+
+    },
+    "The selected runtime does not implement WINE_FULLSCREEN_FSR." : {
+
+    },
+    "The store did not publish enough information to distinguish a 32-bit game from a 64-bit game. Boreal will inspect the executable after installation." : {
+
+    },
+    "These options can reduce CPU overhead. Support depends on the Wine runtime." : {
+
+    },
+    "This compatibility estimate is not a guarantee for Boreal's Wine configuration." : {
+
+    },
+    "This location is unavailable. Connect the disk before installing a game." : {
+
+    },
+    "This removes only data Boreal identified as disposable. Game files and the Windows prefix are not touched." : {
+
+    },
+    "This removes the app from Boreal. The original setup file is not deleted." : {
+
+    },
+    "Time" : {
+
+    },
+    "Toggle fullscreen" : {
+
     },
     "Toggle Game Overlay" : {
       "comment" : "Menu action for showing or hiding the game overlay.",
@@ -505,6 +2109,21 @@
         }
       }
     },
+    "Top left" : {
+
+    },
+    "Top right" : {
+
+    },
+    "Transfer Activity" : {
+
+    },
+    "Try %@ Installation Again" : {
+
+    },
+    "Try again" : {
+
+    },
     "Try Again" : {
       "comment" : "Generic retry action.",
       "extractionState" : "manual",
@@ -523,6 +2142,105 @@
         }
       }
     },
+    "Try another search or reset your filters." : {
+
+    },
+    "Try Preparation Again" : {
+
+    },
+    "Try Windows Installation Again" : {
+
+    },
+    "Turn off console mode" : {
+      "comment" : "Turn off console mode",
+      "isCommentAutoGenerated" : true
+    },
+    "Turn on console mode" : {
+
+    },
+    "Unavailable" : {
+
+    },
+    "Unavailable switches are not exported to Wine. ESync: %@ · MSync: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Unavailable switches are not exported to Wine. ESync: %1$@ · MSync: %2$@"
+          }
+        }
+      }
+    },
+    "Uninstall %@?" : {
+
+    },
+    "Uninstall Game" : {
+
+    },
+    "Uninstall…" : {
+
+    },
+    "Update" : {
+
+    },
+    "Updated %@" : {
+
+    },
+    "Use Default" : {
+
+    },
+    "Use Existing Game…" : {
+
+    },
+    "Use Game Porting Toolkit" : {
+
+    },
+    "Use Installed Wine" : {
+
+    },
+    "Use Manage to refresh or disconnect an account. Automatic sync refreshes enabled libraries every 8 hours while Boreal is running, or after the next launch when overdue." : {
+
+    },
+    "Use your controller to navigate.\nA Select · B Back · Y More options" : {
+
+    },
+    "Uses a borderless fullscreen window so the game does not cover the overlay." : {
+
+    },
+    "Uses dgVoodoo2 for the selected graphics API. Requires a runtime that includes dgVoodoo2." : {
+
+    },
+    "Validated" : {
+
+    },
+    "Verbose logging can create large log files. Enable it only while diagnosing a problem." : {
+
+    },
+    "Verbose Wine logging" : {
+
+    },
+    "Verified" : {
+
+    },
+    "Verify game files" : {
+
+    },
+    "Verify Game Files" : {
+
+    },
+    "Version %@ (Build %@)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Version %1$@ (Build %2$@)"
+          }
+        }
+      }
+    },
+    "Video" : {
+
+    },
     "View" : {
       "comment" : "Application menu containing view commands.",
       "extractionState" : "manual",
@@ -540,7 +2258,87 @@
           }
         }
       }
+    },
+    "View details" : {
+
+    },
+    "View game" : {
+      "comment" : "A label for viewing a game.",
+      "isCommentAutoGenerated" : true
+    },
+    "View in Library" : {
+
+    },
+    "View Logs" : {
+
+    },
+    "View offer" : {
+
+    },
+    "View Options" : {
+
+    },
+    "View Options %lld" : {
+
+    },
+    "View Steam store page" : {
+
+    },
+    "View Steam Store Page" : {
+
+    },
+    "Waiting" : {
+
+    },
+    "Welcome to Boreal Fullscreen" : {
+      "comment" : "A welcome message for users who first open the app.",
+      "isCommentAutoGenerated" : true
+    },
+    "Windows" : {
+
+    },
+    "Windows apps. At home on your Mac." : {
+
+    },
+    "Windows architecture unknown" : {
+
+    },
+    "Windows environment" : {
+
+    },
+    "Windows version" : {
+
+    },
+    "Windows version can run through Boreal compatibility" : {
+
+    },
+    "Windows via Boreal" : {
+
+    },
+    "Wine · %@" : {
+
+    },
+    "Wine (WineD3D)" : {
+
+    },
+    "Wine compatibility" : {
+
+    },
+    "X %@" : {
+
+    },
+    "Xbox controller compatibility" : {
+
+    },
+    "Y %@" : {
+
+    },
+    "You can also drop an .exe or .msi file here" : {
+
+    },
+    "Your most recent games" : {
+
     }
   },
-  "version" : "1.0"
+  "version" : "1.1"
 }
