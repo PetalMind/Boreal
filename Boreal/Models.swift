@@ -3,6 +3,16 @@ import Foundation
 nonisolated enum CompatibilityRating: String, Codable, CaseIterable, Sendable {
     case excellent = "Excellent", good = "Good", limited = "Limited", unknown = "Unknown", unsupported = "Unsupported"
 
+    var localizedTitle: LocalizedStringResource {
+        switch self {
+        case .excellent: .Compatibility.excellentTitle
+        case .good: .Compatibility.goodTitle
+        case .limited: .Compatibility.limitedTitle
+        case .unknown: .Compatibility.unknownTitle
+        case .unsupported: .Compatibility.unsupportedTitle
+        }
+    }
+
     var symbol: String {
         switch self {
         case .excellent: "checkmark.seal.fill"
@@ -261,7 +271,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var graphicsAPI: GraphicsAPI? = nil
     var esyncEnabled = true
     var msyncEnabled = true
-    var retinaModeEnabled = true
+    var retinaModeEnabled = false
     var fullscreenFSREnabled = false
     var overlayCompatibleFullscreen = true
     /// Selected CoreGraphics display ID for the Wine desktop; nil follows the main display.
@@ -322,7 +332,7 @@ extension WineCompatibilityProfile {
         graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI)
         esyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? true
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
-        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true
+        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? false
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
         overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? true
         overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
@@ -687,6 +697,24 @@ nonisolated enum CompatibilityTier: String, Codable, Hashable, Sendable {
         }
     }
 
+    var localizedTitle: LocalizedStringResource {
+        switch self {
+        case .native: .Compatibility.nativeTitle
+        case .platinum: .Compatibility.platinumTitle
+        case .gold: .Compatibility.goldTitle
+        case .silver: .Compatibility.silverTitle
+        case .bronze: .Compatibility.bronzeTitle
+        case .borked: .Compatibility.borkedTitle
+        case .pending: .Compatibility.pendingTitle
+        case .unknown: .Compatibility.unknownTitle
+        case .runsGreat: .Compatibility.runsGreatTitle
+        case .runsWell: .Compatibility.runsWellTitle
+        case .limitedFunctionality: .Compatibility.limitedFunctionalityTitle
+        case .installsButDoesNotRun: .Compatibility.installsButDoesNotRunTitle
+        case .willNotInstall: .Compatibility.willNotInstallTitle
+        }
+    }
+
     var rating: CompatibilityRating {
         switch self {
         case .native, .platinum, .runsGreat: .excellent
@@ -962,8 +990,13 @@ struct InstallCandidate: Identifiable, Hashable, Sendable {
     let url: URL
     var name: String { url.deletingPathExtension().lastPathComponent }
     var fileType: String { url.pathExtension.uppercased() }
+    var canBeRegisteredAsExistingGame: Bool {
+        url.pathExtension.caseInsensitiveCompare("exe") == .orderedSame
+            && FileManager.default.fileExists(atPath: url.path)
+            && ExecutableDiscovery.isEligibleExecutablePath(url.lastPathComponent)
+    }
     var recommendedRuntimeEngine: RuntimeEngine {
-        WindowsExecutableArchitecture.inspect(url) == .x86_64 ? .gamePortingToolkit : .wine
+        UnityIL2CPPRuntimeCompatibility.recommendedRuntimeEngine(for: url)
     }
 }
 

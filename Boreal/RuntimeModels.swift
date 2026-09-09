@@ -289,6 +289,34 @@ nonisolated enum WindowsExecutableArchitecture: Equatable, Sendable {
     }
 }
 
+/// Modern Unity IL2CPP builds depend on Windows Runtime API-set imports that
+/// are not available in the legacy GPTK runtime shipped with older Boreal
+/// installations. Route these builds through the maintained Wine runtime.
+nonisolated enum UnityIL2CPPRuntimeCompatibility {
+    static func requiresModernWine(at executable: URL, fileManager: FileManager = .default) -> Bool {
+        guard WindowsExecutableArchitecture.inspect(executable) == .x86_64 else { return false }
+        let gameDirectory = executable.deletingLastPathComponent()
+        return fileManager.fileExists(atPath: gameDirectory.appending(path: "GameAssembly.dll").path)
+            && fileManager.fileExists(atPath: gameDirectory.appending(path: "UnityPlayer.dll").path)
+    }
+
+    static func recommendedRuntimeEngine(for executable: URL) -> RuntimeEngine {
+        if requiresModernWine(at: executable) { return .wine }
+        return WindowsExecutableArchitecture.inspect(executable) == .x86_64 ? .gamePortingToolkit : .wine
+    }
+
+    static func recommendedGraphicsAPI(for executable: URL, fileManager: FileManager = .default) -> GraphicsAPI? {
+        // This UnityPlayer build contains the D3D11 graphics entry point.
+        // D3D12 strings are also present for optional Unity code paths, so
+        // raw string detection in the main executable must not select D3D12.
+        guard requiresModernWine(at: executable, fileManager: fileManager) else { return nil }
+        let unityPlayer = executable.deletingLastPathComponent().appending(path: "UnityPlayer.dll")
+        guard let data = try? Data(contentsOf: unityPlayer, options: [.mappedIfSafe]) else { return nil }
+        let text = String(decoding: data, as: UTF8.self).lowercased()
+        return text.contains("d3d11.dll") ? .directX11 : nil
+    }
+}
+
 nonisolated struct RuntimeArtifact: Codable, Sendable, Hashable {
     let url: URL
     let sha256: String

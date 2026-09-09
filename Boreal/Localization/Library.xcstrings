@@ -1,0 +1,252 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "overviewTab": {"comment": "Product detail overview tab.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Overview"}}, "pl": {"stringUnit": {"state": "translated", "value": "Przegląd"}}}, "extractionState": "manual"},
+    "compatibilityTab": {"comment": "Product detail compatibility tab.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Compatibility"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zgodność"}}}, "extractionState": "manual"},
+    "offersTab": {"comment": "Product detail offers tab.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Offers"}}, "pl": {"stringUnit": {"state": "translated", "value": "Oferty"}}}, "extractionState": "manual"},
+    "activityTab": {"comment": "Product detail activity tab.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Activity"}}, "pl": {"stringUnit": {"state": "translated", "value": "Aktywność"}}}, "extractionState": "manual"},
+    "filesTab": {"comment": "Product detail files tab.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Files"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pliki"}}}, "extractionState": "manual"},
+    "importedGames": {"comment": "Product hero source label for imported games.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Imported Games"}}, "pl": {"stringUnit": {"state": "translated", "value": "Gry zaimportowane"}}}, "extractionState": "manual"},
+    "inYourLibrary": {"comment": "Product hero library status label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "IN YOUR LIBRARY"}}, "pl": {"stringUnit": {"state": "translated", "value": "W BIBLIOTECE"}}}, "extractionState": "manual"},
+    "discoveryLabel": {"comment": "Product hero discovery status label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "DISCOVERY"}}, "pl": {"stringUnit": {"state": "translated", "value": "ODKRYWANIE"}}}, "extractionState": "manual"},
+    "compatibilityLabel": {"comment": "Compatibility badge suffix.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "compatibility"}}, "pl": {"stringUnit": {"state": "translated", "value": "zgodność"}}}, "extractionState": "manual"},
+    "imageUnavailable": {"comment": "Fallback shown when product artwork is unavailable.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Image unavailable"}}, "pl": {"stringUnit": {"state": "translated", "value": "Obraz niedostępny"}}}, "extractionState": "manual"},
+    "priceTitle": {"comment": "Product price card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Price"}}, "pl": {"stringUnit": {"state": "translated", "value": "Cena"}}}, "extractionState": "manual"},
+    "viewOffers": {"comment": "Action that opens product offers.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "View offers"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż oferty"}}}, "extractionState": "manual"},
+    "noCurrentOffers": {"comment": "Shown when no current product offers are available.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No current offers found."}}, "pl": {"stringUnit": {"state": "translated", "value": "Nie znaleziono aktualnych ofert."}}}, "extractionState": "manual"},
+    "lowPrice": {"comment": "Historical low price label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Low"}}, "pl": {"stringUnit": {"state": "translated", "value": "Najniższa"}}}, "extractionState": "manual"},
+    "loadingCurrentOffers": {"comment": "Loading state for current product offers.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Loading current offers…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ładowanie aktualnych ofert…"}}}, "extractionState": "manual"},
+    "loadingOffers": {"comment": "Loading state for the offers list.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Loading offers…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ładowanie ofert…"}}}, "extractionState": "manual"},
+    "priceDataUnavailable": {"comment": "Shown when product price data cannot be loaded.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Price data is currently unavailable."}}, "pl": {"stringUnit": {"state": "translated", "value": "Dane cenowe są obecnie niedostępne."}}}, "extractionState": "manual"},
+    "priceAPIKeyForPrices": {"comment": "Configuration guidance for loading product prices.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Add an IsThereAnyDeal API key in Settings → General to load prices."}}, "pl": {"stringUnit": {"state": "translated", "value": "Dodaj klucz API IsThereAnyDeal w Ustawienia → Ogólne, aby wczytać ceny."}}}, "extractionState": "manual"},
+    "priceAPIKeyForOffers": {"comment": "Configuration guidance for loading product offers.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Add an IsThereAnyDeal API key in Settings → General to load offers."}}, "pl": {"stringUnit": {"state": "translated", "value": "Dodaj klucz API IsThereAnyDeal w Ustawienia → Ogólne, aby wczytać oferty."}}}, "extractionState": "manual"},
+    "pricesByItad": {"comment": "Product price data attribution.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Prices provided by IsThereAnyDeal."}}, "pl": {"stringUnit": {"state": "translated", "value": "Ceny dostarcza IsThereAnyDeal."}}}, "extractionState": "manual"},
+    "offersTitle": {"comment": "Product offers card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Offers"}}, "pl": {"stringUnit": {"state": "translated", "value": "Oferty"}}}, "extractionState": "manual"},
+    "bestPrice": {"comment": "Best product offer label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Best price"}}, "pl": {"stringUnit": {"state": "translated", "value": "Najlepsza cena"}}}, "extractionState": "manual"},
+    "historicalLow": {"comment": "Historical low product price label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Historical low"}}, "pl": {"stringUnit": {"state": "translated", "value": "Historyczne minimum"}}}, "extractionState": "manual"},
+    "offerLinksByItad": {"comment": "Product offer data attribution.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Offer links and price data are provided by IsThereAnyDeal."}}, "pl": {"stringUnit": {"state": "translated", "value": "Linki do ofert i dane cenowe dostarcza IsThereAnyDeal."}}}, "extractionState": "manual"},
+    "viewOffer": {"comment": "Action that opens one product offer.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "View offer"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż ofertę"}}}, "extractionState": "manual"},
+    "priceHistoryTitle": {"comment": "Product price history card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Price history"}}, "pl": {"stringUnit": {"state": "translated", "value": "Historia cen"}}}, "extractionState": "manual"},
+    "period": {"comment": "Price history period picker label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Period"}}, "pl": {"stringUnit": {"state": "translated", "value": "Okres"}}}, "extractionState": "manual"},
+    "loadingPriceHistory": {"comment": "Loading state for product price history.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Loading price history…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ładowanie historii cen…"}}}, "extractionState": "manual"},
+    "noPriceHistory": {"comment": "Shown when no product price history is available.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No price history is available for this period."}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak historii cen dla tego okresu."}}}, "extractionState": "manual"},
+    "historyByItad": {"comment": "Product price history attribution.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "History provided by IsThereAnyDeal."}}, "pl": {"stringUnit": {"state": "translated", "value": "Historię dostarcza IsThereAnyDeal."}}}, "extractionState": "manual"},
+    "date": {"comment": "Price history chart date axis label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Date"}}, "pl": {"stringUnit": {"state": "translated", "value": "Data"}}}, "extractionState": "manual"},
+    "price": {"comment": "Price history chart price axis label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Price"}}, "pl": {"stringUnit": {"state": "translated", "value": "Cena"}}}, "extractionState": "manual"},
+    "store": {"comment": "Price history chart store legend label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Store"}}, "pl": {"stringUnit": {"state": "translated", "value": "Sklep"}}}, "extractionState": "manual"},
+    "dependenciesTitle": {"comment": "Product dependency card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Dependencies"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zależności"}}}, "extractionState": "manual"},
+    "dependenciesDescription": {"comment": "Product dependency card explanation.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Boreal keeps this game’s prefix minimal and installs components only when they are required or you choose them."}}, "pl": {"stringUnit": {"state": "translated", "value": "Boreal utrzymuje prefix tej gry w minimalnym stanie i instaluje komponenty tylko wtedy, gdy są wymagane lub je wybierzesz."}}}, "extractionState": "manual"},
+    "required": {"comment": "Required dependency group label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Required"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wymagane"}}}, "extractionState": "manual"},
+    "recommendedForGame": {"comment": "Recommended dependency group label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Recommended for this game"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zalecane dla tej gry"}}}, "extractionState": "manual"},
+    "optional": {"comment": "Optional dependency group label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Optional"}}, "pl": {"stringUnit": {"state": "translated", "value": "Opcjonalne"}}}, "extractionState": "manual"},
+    "installRequiredDependencies": {"comment": "Action that installs required product dependencies.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Install Required Dependencies"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zainstaluj wymagane zależności"}}}, "extractionState": "manual"},
+    "installed": {"comment": "Installed product/dependency status.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Installed"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zainstalowano"}}}, "extractionState": "manual"},
+    "retry": {"comment": "Action that retries a failed dependency installation.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Retry"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ponów"}}}, "extractionState": "manual"},
+    "install": {"comment": "Action that installs a product or dependency.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Install"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zainstaluj"}}}, "extractionState": "manual"},
+    "gameSetupTitle": {"comment": "Product game setup card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Game setup"}}, "pl": {"stringUnit": {"state": "translated", "value": "Konfiguracja gry"}}}, "extractionState": "manual"},
+    "runtime": {"comment": "Runtime metric label on the product card.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Runtime"}}, "pl": {"stringUnit": {"state": "translated", "value": "Środowisko"}}}, "extractionState": "manual"},
+    "graphics": {"comment": "Graphics metric label on the product card.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Graphics"}}, "pl": {"stringUnit": {"state": "translated", "value": "Grafika"}}}, "extractionState": "manual"},
+    "windowsVersion": {"comment": "Windows version metric label on the product card.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Windows version"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wersja Windows"}}}, "extractionState": "manual"},
+    "components": {"comment": "Components metric/action label on the product card.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Components"}}, "pl": {"stringUnit": {"state": "translated", "value": "Komponenty"}}}, "extractionState": "manual"},
+    "noneRequired": {"comment": "Product setup state when no components are required.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "None required"}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak wymaganych"}}}, "extractionState": "manual"},
+    "ready": {"comment": "Product setup ready state.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Ready"}}, "pl": {"stringUnit": {"state": "translated", "value": "Gotowe"}}}, "extractionState": "manual"},
+    "requiresAttention": {"comment": "Product setup attention state.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Requires attention"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wymaga uwagi"}}}, "extractionState": "manual"},
+    "configure": {"comment": "Action that opens product configuration.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Configure"}}, "pl": {"stringUnit": {"state": "translated", "value": "Konfiguruj"}}}, "extractionState": "manual"},
+    "compatibilityTitle": {"comment": "Product compatibility card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Compatibility"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zgodność"}}}, "extractionState": "manual"},
+    "basedOnAppleGamingWiki": {"comment": "Product compatibility data attribution.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Based on AppleGamingWiki community reports."}}, "pl": {"stringUnit": {"state": "translated", "value": "Na podstawie raportów społeczności AppleGamingWiki."}}}, "extractionState": "manual"},
+    "noCommunityReports": {"comment": "Shown when product compatibility has no community reports.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No community reports available."}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak raportów społeczności."}}}, "extractionState": "manual"},
+    "basedOnCommunityReports": {"comment": "Product compatibility data attribution.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Based on community compatibility reports."}}, "pl": {"stringUnit": {"state": "translated", "value": "Na podstawie raportów społeczności dotyczących zgodności."}}}, "extractionState": "manual"},
+    "viewDetails": {"comment": "Action that opens product compatibility details.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "View details"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż szczegóły"}}}, "extractionState": "manual"},
+    "community": {"comment": "Compatibility community metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Community"}}, "pl": {"stringUnit": {"state": "translated", "value": "Społeczność"}}}, "extractionState": "manual"},
+    "noReports": {"comment": "Compatibility metric fallback.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No reports"}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak raportów"}}}, "extractionState": "manual"},
+    "aboutThisGameTitle": {"comment": "Product description card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "About this game"}}, "pl": {"stringUnit": {"state": "translated", "value": "O tej grze"}}}, "extractionState": "manual"},
+    "showLess": {"comment": "Action that collapses the product description.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Show less"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż mniej"}}}, "extractionState": "manual"},
+    "readMore": {"comment": "Action that expands the product description.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Read more"}}, "pl": {"stringUnit": {"state": "translated", "value": "Czytaj więcej"}}}, "extractionState": "manual"},
+    "noStoreDescription": {"comment": "Shown when the product store has no description.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No description provided by this store."}}, "pl": {"stringUnit": {"state": "translated", "value": "Ten sklep nie udostępnia opisu."}}}, "extractionState": "manual"},
+    "developer": {"comment": "Product developer metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Developer"}}, "pl": {"stringUnit": {"state": "translated", "value": "Deweloper"}}}, "extractionState": "manual"},
+    "source": {"comment": "Product source metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Source"}}, "pl": {"stringUnit": {"state": "translated", "value": "Źródło"}}}, "extractionState": "manual"},
+    "openOnGogRevived": {"comment": "Action that opens the product on GOG Revived.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Open on GOG Revived"}}, "pl": {"stringUnit": {"state": "translated", "value": "Otwórz w GOG Revived"}}}, "extractionState": "manual"},
+    "checkingGogRevived": {"comment": "Loading state for GOG Revived product lookup.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Checking GOG Revived…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Sprawdzanie GOG Revived…"}}}, "extractionState": "manual"},
+    "notListedOnGogRevived": {"comment": "Shown when the product is not listed on GOG Revived.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Not listed on GOG Revived"}}, "pl": {"stringUnit": {"state": "translated", "value": "Nie ma na liście GOG Revived"}}}, "extractionState": "manual"},
+    "gogStatusUnavailable": {"comment": "Shown when GOG Revived status cannot be loaded.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "GOG Revived status unavailable"}}, "pl": {"stringUnit": {"state": "translated", "value": "Status GOG Revived niedostępny"}}}, "extractionState": "manual"},
+    "mediaTitle": {"comment": "Product media card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Media"}}, "pl": {"stringUnit": {"state": "translated", "value": "Materiały"}}}, "extractionState": "manual"},
+    "viewAllMedia": {"comment": "Action that opens all product media.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "View all media"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż wszystkie materiały"}}}, "extractionState": "manual"},
+    "installationTitle": {"comment": "Product installation card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Installation"}}, "pl": {"stringUnit": {"state": "translated", "value": "Instalacja"}}}, "extractionState": "manual"},
+    "notInstalled": {"comment": "Product installation status when not installed.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Not installed"}}, "pl": {"stringUnit": {"state": "translated", "value": "Nie zainstalowano"}}}, "extractionState": "manual"},
+    "onDisk": {"comment": "Product storage metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "On disk"}}, "pl": {"stringUnit": {"state": "translated", "value": "Na dysku"}}}, "extractionState": "manual"},
+    "requiredSpace": {"comment": "Product required storage metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Required space"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wymagane miejsce"}}}, "extractionState": "manual"},
+    "notProvided": {"comment": "Product metric fallback when data is not provided.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Not provided"}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak danych"}}}, "extractionState": "manual"},
+    "prefix": {"comment": "Product Wine prefix metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Prefix"}}, "pl": {"stringUnit": {"state": "translated", "value": "Prefix"}}}, "extractionState": "manual"},
+    "location": {"comment": "Product installation location metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Location"}}, "pl": {"stringUnit": {"state": "translated", "value": "Lokalizacja"}}}, "extractionState": "manual"},
+    "download": {"comment": "Product download metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Download"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pobieranie"}}}, "extractionState": "manual"},
+    "manageFiles": {"comment": "Action that opens product files.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Manage files"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zarządzaj plikami"}}}, "extractionState": "manual"},
+    "environmentTitle": {"comment": "Product environment card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Environment"}}, "pl": {"stringUnit": {"state": "translated", "value": "Środowisko"}}}, "extractionState": "manual"},
+    "architecture": {"comment": "Product environment architecture metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Architecture"}}, "pl": {"stringUnit": {"state": "translated", "value": "Architektura"}}}, "extractionState": "manual"},
+    "actionsTitle": {"comment": "Product actions card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Actions"}}, "pl": {"stringUnit": {"state": "translated", "value": "Akcje"}}}, "extractionState": "manual"},
+    "openGameFolder": {"comment": "Action that opens the product folder.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Open game folder"}}, "pl": {"stringUnit": {"state": "translated", "value": "Otwórz folder gry"}}}, "extractionState": "manual"},
+    "locateInstalledGame": {"comment": "Action that locates an installed product.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Locate installed game…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zlokalizuj zainstalowaną grę…"}}}, "extractionState": "manual"},
+    "viewSteamStorePage": {"comment": "Action that opens the product Steam page.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "View Steam store page"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż stronę gry w Steam"}}}, "extractionState": "manual"},
+    "checkForUpdates": {"comment": "Action that checks a product for updates.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Check for updates"}}, "pl": {"stringUnit": {"state": "translated", "value": "Sprawdź aktualizacje"}}}, "extractionState": "manual"},
+    "verifyGameFiles": {"comment": "Action that verifies product files.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Verify game files"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zweryfikuj pliki gry"}}}, "extractionState": "manual"},
+    "uninstall": {"comment": "Action that uninstalls a product.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Uninstall…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Odinstaluj…"}}}, "extractionState": "manual"},
+    "openInstallationFolder": {"comment": "Action that opens the product installation folder.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Open installation folder"}}, "pl": {"stringUnit": {"state": "translated", "value": "Otwórz folder instalacji"}}}, "extractionState": "manual"},
+    "executable": {"comment": "Product executable metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Executable"}}, "pl": {"stringUnit": {"state": "translated", "value": "Plik wykonywalny"}}}, "extractionState": "manual"},
+    "diskUsageTitle": {"comment": "Product disk usage card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Disk usage"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wykorzystanie dysku"}}}, "extractionState": "manual"},
+    "shaderCache": {"comment": "Product shader cache title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Shader Cache"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pamięć podręczna shaderów"}}}, "extractionState": "manual"},
+    "cacheWarning": {"comment": "Product shader cache warning.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Cache may rebuild during gameplay. Temporary stutter is expected."}}, "pl": {"stringUnit": {"state": "translated", "value": "Pamięć podręczna może odbudować się podczas gry. Możliwe są chwilowe przycięcia."}}}, "extractionState": "manual"},
+    "clear": {"comment": "Action that clears product cached data.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Clear"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wyczyść"}}}, "extractionState": "manual"},
+    "rebuild": {"comment": "Action that rebuilds product cached data.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Rebuild"}}, "pl": {"stringUnit": {"state": "translated", "value": "Odbuduj"}}}, "extractionState": "manual"},
+    "addToLibrary": {"comment": "Action that adds a product to the library.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Add to Library"}}, "pl": {"stringUnit": {"state": "translated", "value": "Dodaj do biblioteki"}}}, "extractionState": "manual"},
+    "play": {"comment": "Action that launches a product.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Play"}}, "pl": {"stringUnit": {"state": "translated", "value": "Graj"}}}, "extractionState": "manual"},
+    "installNativeMacVersion": {"comment": "Action that installs a native macOS product version.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Install Native macOS Version"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zainstaluj natywną wersję macOS"}}}, "extractionState": "manual"},
+    "installWindowsVersion": {"comment": "Action that installs a Windows product version.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Install Windows Version"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zainstaluj wersję Windows"}}}, "extractionState": "manual"},
+    "openInSteam": {"comment": "Action that opens a product in Steam.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Open in Steam"}}, "pl": {"stringUnit": {"state": "translated", "value": "Otwórz w Steam"}}}, "extractionState": "manual"},
+    "playtime": {"comment": "Product playtime metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Playtime"}}, "pl": {"stringUnit": {"state": "translated", "value": "Czas gry"}}}, "extractionState": "manual"},
+    "lastPlayed": {"comment": "Product last played metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Last played"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ostatnio grano"}}}, "extractionState": "manual"},
+    "nativeMacOS": {"comment": "Product compatibility value for a native macOS version.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Native macOS"}}, "pl": {"stringUnit": {"state": "translated", "value": "Natywna wersja macOS"}}}, "extractionState": "manual"},
+    "notPlayed": {"comment": "Product playtime value when no play session is recorded.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Not played"}}, "pl": {"stringUnit": {"state": "translated", "value": "Nie uruchomiono"}}}, "extractionState": "manual"},
+    "playingNow": {"comment": "Product playtime value while the game is running.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Playing now"}}, "pl": {"stringUnit": {"state": "translated", "value": "Gra jest uruchomiona"}}}, "extractionState": "manual"},
+    "never": {"comment": "Product last played value when no launch is recorded.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Never"}}, "pl": {"stringUnit": {"state": "translated", "value": "Nigdy"}}}, "extractionState": "manual"},
+    "notConfigured": {"comment": "Product compatibility fallback when no environment is configured.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Not configured"}}, "pl": {"stringUnit": {"state": "translated", "value": "Nie skonfigurowano"}}}, "extractionState": "manual"},
+    "unavailable": {"comment": "Product metric fallback when data is unavailable.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Unavailable"}}, "pl": {"stringUnit": {"state": "translated", "value": "Niedostępne"}}}, "extractionState": "manual"},
+    "renameGame": {"comment": "Action that renames an imported product.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Rename Game…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zmień nazwę gry…"}}}, "extractionState": "manual"},
+    "compatibilitySettings": {"comment": "Action that opens product compatibility settings.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Compatibility Settings…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ustawienia zgodności…"}}}, "extractionState": "manual"},
+    "installPatchOrDLC": {"comment": "Action that installs a product patch or DLC.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Install Patch or DLC…"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zainstaluj patch lub DLC…"}}}, "extractionState": "manual"},
+    "gameActions": {"comment": "Product auxiliary actions menu section.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Game Actions"}}, "pl": {"stringUnit": {"state": "translated", "value": "Akcje gry"}}}, "extractionState": "manual"},
+    "showGameFiles": {"comment": "Action that opens product files.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Show Game Files"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pokaż pliki gry"}}}, "extractionState": "manual"},
+    "moreActions": {"comment": "Accessibility label for the product actions menu.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "More actions"}}, "pl": {"stringUnit": {"state": "translated", "value": "Więcej akcji"}}}, "extractionState": "manual"},
+    "prepareToPlay": {"comment": "Product action that prepares the game environment.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Prepare to Play"}}, "pl": {"stringUnit": {"state": "translated", "value": "Przygotuj do gry"}}}, "extractionState": "manual"},
+    "gamePortingToolkitD3DMetal": {"comment": "Runtime option in the product preparation menu.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Game Porting Toolkit (D3DMetal)"}}, "pl": {"stringUnit": {"state": "translated", "value": "Game Porting Toolkit (D3DMetal)"}}}, "extractionState": "manual"},
+    "wineWineD3D": {"comment": "Runtime option in the product preparation menu.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Wine (WineD3D)"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wine (WineD3D)"}}}, "extractionState": "manual"},
+    "removeDownloads": {"comment": "Action that removes downloaded product data.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Remove Downloads"}}, "pl": {"stringUnit": {"state": "translated", "value": "Usuń pobrane dane"}}}, "extractionState": "manual"},
+    "deleteOldSnapshots": {"comment": "Action that deletes old product snapshots.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Delete Old Snapshots"}}, "pl": {"stringUnit": {"state": "translated", "value": "Usuń stare migawki"}}}, "extractionState": "manual"},
+    "gameFiles": {"comment": "Product game files disk usage label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Game files"}}, "pl": {"stringUnit": {"state": "translated", "value": "Pliki gry"}}}, "extractionState": "manual"},
+    "shaders": {"comment": "Product shader disk usage label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Shaders"}}, "pl": {"stringUnit": {"state": "translated", "value": "Shadery"}}}, "extractionState": "manual"},
+    "snapshots": {"comment": "Product snapshots disk usage label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Snapshots"}}, "pl": {"stringUnit": {"state": "translated", "value": "Migawki"}}}, "extractionState": "manual"},
+    "macCompatibility": {"comment": "Product compatibility section title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Mac Compatibility"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zgodność z Mac"}}}, "extractionState": "manual"},
+    "wineCompatibility": {"comment": "Wine compatibility metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Wine compatibility"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zgodność z Wine"}}}, "extractionState": "manual"},
+    "appleGamingWikiDisclaimer": {"comment": "Compatibility source disclaimer.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "AppleGamingWiki ratings are community data and do not replace a Boreal-tested profile."}}, "pl": {"stringUnit": {"state": "translated", "value": "Oceny AppleGamingWiki pochodzą od społeczności i nie zastępują profilu przetestowanego przez Boreal."}}}, "extractionState": "manual"},
+    "wineCompatibilityDisclaimer": {"comment": "Wine compatibility estimate disclaimer.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "This compatibility estimate is not a guarantee for Boreal's Wine configuration."}}, "pl": {"stringUnit": {"state": "translated", "value": "Ta szacunkowa ocena zgodności nie jest gwarancją działania w konfiguracji Wine programu Boreal."}}}, "extractionState": "manual"},
+    "noCompatibilityReports": {"comment": "Shown when no compatibility reports are available.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No compatibility reports"}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak raportów zgodności"}}}, "extractionState": "manual"},
+    "noCompatibilityResult": {"comment": "Description shown when compatibility cannot be determined.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Boreal did not find an unambiguous macOS/Wine compatibility result for this title."}}, "pl": {"stringUnit": {"state": "translated", "value": "Boreal nie znalazł jednoznacznego wyniku zgodności macOS/Wine dla tego tytułu."}}}, "extractionState": "manual"},
+    "totalPlaytime": {"comment": "Activity dashboard total playtime metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Total playtime"}}, "pl": {"stringUnit": {"state": "translated", "value": "Łączny czas gry"}}}, "extractionState": "manual"},
+    "sessions": {"comment": "Activity dashboard session count label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Sessions"}}, "pl": {"stringUnit": {"state": "translated", "value": "Sesje"}}}, "extractionState": "manual"},
+    "averageSession": {"comment": "Activity dashboard average session metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Average session"}}, "pl": {"stringUnit": {"state": "translated", "value": "Średnia sesja"}}}, "extractionState": "manual"},
+    "longestSession": {"comment": "Activity dashboard longest session metric label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Longest session"}}, "pl": {"stringUnit": {"state": "translated", "value": "Najdłuższa sesja"}}}, "extractionState": "manual"},
+    "trackedByBoreal": {"comment": "Activity tracking information card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Tracked by Boreal"}}, "pl": {"stringUnit": {"state": "translated", "value": "Śledzone przez Boreal"}}}, "extractionState": "manual"},
+    "activityTrackingDescription": {"comment": "Short explanation of how product activity is measured.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Activity is measured while this game is launched through Boreal. Offline play and other launchers may not be included."}}, "pl": {"stringUnit": {"state": "translated", "value": "Aktywność jest mierzona, gdy ta gra jest uruchamiana przez Boreal. Gra offline i inne programy uruchamiające mogą nie być uwzględniane."}}}, "extractionState": "manual"},
+    "learnMore": {"comment": "Action that opens activity tracking details.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Learn more"}}, "pl": {"stringUnit": {"state": "translated", "value": "Dowiedz się więcej"}}}, "extractionState": "manual"},
+    "activityTrackingDetails": {"comment": "Detailed explanation of locally recorded product activity.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Boreal records elapsed time while a managed game session is active. These statistics use locally recorded sessions; store-reported playtime can differ. Sessions interrupted when Boreal closes may be incomplete."}}, "pl": {"stringUnit": {"state": "translated", "value": "Boreal rejestruje czas, gdy zarządzana sesja gry jest aktywna. Statystyki korzystają z sesji zapisanych lokalnie, więc czas raportowany przez sklep może się różnić. Sesje przerwane po zamknięciu Boreal mogą być niepełne."}}}, "extractionState": "manual"},
+    "thisWeek": {"comment": "Activity dashboard current week card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "This week"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ten tydzień"}}}, "extractionState": "manual"},
+    "lastWeek": {"comment": "Activity dashboard previous week label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Last week"}}, "pl": {"stringUnit": {"state": "translated", "value": "Zeszły tydzień"}}}, "extractionState": "manual"},
+    "playtimeOverTime": {"comment": "Activity chart title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Playtime over time"}}, "pl": {"stringUnit": {"state": "translated", "value": "Czas gry w czasie"}}}, "extractionState": "manual"},
+    "minutes": {"comment": "Activity chart Y-axis label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Minutes"}}, "pl": {"stringUnit": {"state": "translated", "value": "Minuty"}}}, "extractionState": "manual"},
+    "minutesShort": {"comment": "Short activity chart minutes unit.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "min"}}, "pl": {"stringUnit": {"state": "translated", "value": "min"}}}, "extractionState": "manual"},
+    "selectedDate": {"comment": "Activity chart selected date label.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Selected date"}}, "pl": {"stringUnit": {"state": "translated", "value": "Wybrana data"}}}, "extractionState": "manual"},
+    "activityHeatmap": {"comment": "Activity heatmap card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Activity heatmap"}}, "pl": {"stringUnit": {"state": "translated", "value": "Mapa aktywności"}}}, "extractionState": "manual"},
+    "noActivity": {"comment": "Activity heatmap legend for no activity.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No activity"}}, "pl": {"stringUnit": {"state": "translated", "value": "Brak aktywności"}}}, "extractionState": "manual"},
+    "littleActivity": {"comment": "Activity heatmap legend for a little activity.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "A little activity"}}, "pl": {"stringUnit": {"state": "translated", "value": "Niewielka aktywność"}}}, "extractionState": "manual"},
+    "someActivity": {"comment": "Activity heatmap legend for some activity.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Some activity"}}, "pl": {"stringUnit": {"state": "translated", "value": "Trochę aktywności"}}}, "extractionState": "manual"},
+    "moreActivity": {"comment": "Activity heatmap legend for more activity.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "More activity"}}, "pl": {"stringUnit": {"state": "translated", "value": "Więcej aktywności"}}}, "extractionState": "manual"},
+    "sessionHistory": {"comment": "Activity session history card title.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Session history"}}, "pl": {"stringUnit": {"state": "translated", "value": "Historia sesji"}}}, "extractionState": "manual"},
+    "noSessionsDescription": {"comment": "Activity empty state description.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No sessions recorded yet. Launch this game through Boreal to start tracking activity."}}, "pl": {"stringUnit": {"state": "translated", "value": "Nie zarejestrowano jeszcze żadnych sesji. Uruchom tę grę przez Boreal, aby rozpocząć śledzenie aktywności."}}}, "extractionState": "manual"},
+    "startTime": {"comment": "Activity session history start time column.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Start time"}}, "pl": {"stringUnit": {"state": "translated", "value": "Czas rozpoczęcia"}}}, "extractionState": "manual"},
+    "endTime": {"comment": "Activity session history end time column.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "End time"}}, "pl": {"stringUnit": {"state": "translated", "value": "Czas zakończenia"}}}, "extractionState": "manual"},
+    "duration": {"comment": "Activity session history duration column.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Duration"}}, "pl": {"stringUnit": {"state": "translated", "value": "Czas trwania"}}}, "extractionState": "manual"},
+    "status": {"comment": "Activity session history status column.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Status"}}, "pl": {"stringUnit": {"state": "translated", "value": "Status"}}}, "extractionState": "manual"},
+    "completed": {"comment": "Activity session status when a session has ended.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Completed"}}, "pl": {"stringUnit": {"state": "translated", "value": "Ukończono"}}}, "extractionState": "manual"},
+    "hoursShort": {"comment": "Short localized hours unit used in playtime values.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "h"}}, "pl": {"stringUnit": {"state": "translated", "value": "godz."}}}, "extractionState": "manual"},
+    "secondsShort": {"comment": "Short localized seconds unit used in playtime values.", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "sec"}}, "pl": {"stringUnit": {"state": "translated", "value": "s"}}}, "extractionState": "manual"},
+    "emptyDescription": {
+      "comment": "Empty library guidance.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import your Steam Library or install a Windows app."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zaimportuj bibliotekę Steam lub zainstaluj aplikację Windows."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "emptyTitle": {
+      "comment": "Empty library title.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All your games in one place"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wszystkie gry w jednym miejscu"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "gameCount": {
+      "comment": "Number of games shown in the library.",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld game"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld games"
+                }
+              }
+            }
+          }
+        },
+        "pl": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld gra"
+                }
+              },
+              "few": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld gry"
+                }
+              },
+              "many": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld gier"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld gier"
+                }
+              }
+            }
+          }
+        }
+      },
+      "extractionState": "manual"
+    }
+  },
+  "version": "1.0"
+}

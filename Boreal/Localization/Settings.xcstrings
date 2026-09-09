@@ -1,0 +1,1734 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "advancedSubtitle": {
+      "comment": "Settings navigation subtitle for developer settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer settings"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ustawienia deweloperskie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "advancedTitle": {
+      "comment": "Settings navigation title for developer settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Advanced"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zaawansowane"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "apiKeyLabel": {
+      "comment": "Label for the IsThereAnyDeal API key field.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API key"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klucz API"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "apiKeyPlaceholder": {
+      "comment": "Placeholder for the IsThereAnyDeal API key field.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IsThereAnyDeal API key"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klucz API IsThereAnyDeal"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "authenticationLabel": {
+      "comment": "Settings row showing the price service authentication method.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uwierzytelnianie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "authenticationValue": {
+      "comment": "Authentication method value.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API Key"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klucz API"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "completedDownloadsLabel": {
+      "comment": "Sound setting for completed downloads.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed downloads"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zakończone pobieranie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controllersSubtitle": {
+      "comment": "Settings navigation subtitle for controller settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mapping and input behavior"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mapowanie i działanie wejścia"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controllersTitle": {
+      "comment": "Settings navigation title for controller settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controllers"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kontrolery"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "discoveryPricesSubtitle": {
+      "comment": "Settings card subtitle for price data.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect IsThereAnyDeal price data."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Połącz dane cenowe IsThereAnyDeal."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "discoveryPricesTitle": {
+      "comment": "Settings card title for price data.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discovery Prices"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ceny w Odkrywaj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "errorsAndWarningsLabel": {
+      "comment": "Sound setting for errors and warnings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Errors and warnings"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Błędy i ostrzeżenia"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "fullscreenSubtitle": {
+      "comment": "Settings navigation subtitle for fullscreen mode.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controller-first interface"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interfejs sterowany kontrolerem"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "fullscreenTitle": {
+      "comment": "Settings navigation title for fullscreen mode.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fullscreen"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pełny ekran"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "generalSubtitle": {
+      "comment": "Settings navigation subtitle for general settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updates, sound, discovery prices"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktualizacje, dźwięk i ceny"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "generalTitle": {
+      "comment": "Settings navigation title for general settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "General"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ogólne"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "graphicsComponentsSubtitle": {
+      "comment": "Settings card subtitle for graphics components.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep installed translation layers current."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dbaj o aktualność zainstalowanych warstw translacji."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "graphicsComponentsTitle": {
+      "comment": "Settings card title for graphics components.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graphics Components"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Komponenty graficzne"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "installationsLabel": {
+      "comment": "Sound setting for installations.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installations"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instalacje"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "languageCardSubtitle": {
+      "comment": "Settings card subtitle for the app language picker.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the language used by Boreal."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybierz język używany przez Boreal."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "languageCardTitle": {
+      "comment": "Settings card title for the app language picker.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Language"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Język"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "languageEnglish": {
+      "comment": "App language option.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "English"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "English"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "languagePolish": {
+      "comment": "App language option.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Polski"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Polski"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "languageSystem": {
+      "comment": "App language option that follows the macOS language.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Default"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Domyślny systemowy"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "languageTitle": {
+      "comment": "Settings row label for the app language picker.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Language"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Język"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeSubtitle": {
+      "comment": "Settings navigation subtitle for the runtime settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine and graphics components"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine i komponenty graficzne"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeTitle": {
+      "comment": "Settings navigation title for the runtime settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowisko uruchomieniowe"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "soundSubtitle": {
+      "comment": "Settings card subtitle for sound preferences.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose when Boreal plays interface sounds."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybierz, kiedy Boreal odtwarza dźwięki interfejsu."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "soundTitle": {
+      "comment": "Settings card title for sound preferences.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sound"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dźwięk"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageSubtitle": {
+      "comment": "Settings navigation subtitle for storage settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Games, environments and caches"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gry, środowiska i pamięci podręczne"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageTitle": {
+      "comment": "Settings navigation title for storage settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pamięć"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "updatesSubtitle": {
+      "comment": "Settings card subtitle for update and installer preferences.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Control automatic updates and downloaded files."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kontroluj automatyczne aktualizacje i pobrane pliki."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "updatesTitle": {
+      "comment": "Settings card title for update and installer preferences.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updates & Installers"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktualizacje i instalatory"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "aB": {
+      "comment": "Fullscreen controller select and back shortcut.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A / B"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A / B"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "automaticDXVKUpdatesLabel": {
+      "comment": "Automatic DXVK update setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update DXVK automatically"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktualizuj DXVK automatycznie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "automaticRuntimeUpdatesLabel": {
+      "comment": "Automatic runtime update setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update runtimes automatically"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktualizuj środowiska automatycznie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "automaticUpdatesLabel": {
+      "comment": "Automatic application update setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for updates automatically"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sprawdzaj aktualizacje automatycznie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "automaticVKD3DUpdatesLabel": {
+      "comment": "Automatic VKD3D-Proton update setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update VKD3D-Proton automatically"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktualizuj VKD3D-Proton automatycznie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "borealRuntimeSubtitle": {
+      "comment": "Settings card subtitle for the Boreal runtime.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage the Windows compatibility runtime."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zarządzaj środowiskiem zgodności Windows."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "borealRuntimeTitle": {
+      "comment": "Settings card title for the Boreal runtime.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boreal Runtime"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowisko Boreal"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "consoleModeAutoEnterLabel": {
+      "comment": "Setting controlling the controller connection prompt.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask when a controller connects"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pytaj po podłączeniu kontrolera"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "consoleModeLabel": {
+      "comment": "Setting enabling Boreal fullscreen or TV mode.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Boreal Fullscreen / TV mode"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Używaj trybu pełnoekranowego / TV Boreal"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "consoleModeReturnLabel": {
+      "comment": "Setting controlling return to fullscreen mode after a game exits.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Return after a game exits"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wracaj po zamknięciu gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controllerFirstSubtitle": {
+      "comment": "Settings card subtitle for the controller-first interface.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure Boreal's fullscreen experience."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skonfiguruj pełnoekranowy interfejs Boreal."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controllerFirstTitle": {
+      "comment": "Settings card title for the controller-first interface.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controller-first Interface"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interfejs sterowany kontrolerem"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controlsSubtitle": {
+      "comment": "Settings card subtitle for fullscreen controls.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controller shortcuts used in fullscreen mode."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skróty kontrolera używane w trybie pełnoekranowym."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controlsTitle": {
+      "comment": "Settings card title for fullscreen controls.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controls"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sterowanie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "developerModeLabel": {
+      "comment": "Developer mode toggle.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer Mode"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tryb deweloperski"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "developerSettingsSubtitle": {
+      "comment": "Settings card subtitle for developer settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reveal runtime internals, logs and environment variables."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż szczegóły runtime'u, logi i zmienne środowiskowe."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "developerSettingsTitle": {
+      "comment": "Settings card title for developer settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer Settings"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ustawienia deweloperskie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "dPadLeftStick": {
+      "comment": "Fullscreen controller navigation shortcut.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "D-pad / left stick"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Krzyżak / lewy drążek"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "gameMenuLabel": {
+      "comment": "Fullscreen controller shortcut for the game menu.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Game menu"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Menu gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "interfaceSoundsLabel": {
+      "comment": "Sound setting for interface sounds.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface sounds"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dźwięki interfejsu"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "isoCodePlaceholder": {
+      "comment": "Placeholder for the two-letter store country code.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ISO code"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kod ISO"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "itadAppPageLabel": {
+      "comment": "Settings row linking to the IsThereAnyDeal app page.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ITAD app page"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Strona aplikacji ITAD"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "keepInstallersLabel": {
+      "comment": "Setting controlling whether downloaded installers are kept.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep downloaded installers"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zachowuj pobrane instalatory"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "navigateLabel": {
+      "comment": "Fullscreen controller navigation action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Navigate"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nawigacja"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "overlaySubtitle": {
+      "comment": "Settings navigation subtitle for the performance overlay.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In-game performance display"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wydajność wyświetlana w grze"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "overlayTitle": {
+      "comment": "Settings navigation title for the performance overlay.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Overlay"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nakładka"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "registerAPIKey": {
+      "comment": "Link to register an IsThereAnyDeal API key.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Register an API key ↗"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zarejestruj klucz API ↗"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "selectBackLabel": {
+      "comment": "Fullscreen controller select and back shortcut.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select / Back"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybór / Wstecz"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "soundVolumeLabel": {
+      "comment": "Sound volume setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sound volume"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Głośność dźwięku"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storeCountryLabel": {
+      "comment": "Settings row for the external price service country.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Store country"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kraj sklepu"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "cycleInformationLevelLabel": {
+      "comment": "Overlay shortcut setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cycle information level"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zmień poziom informacji"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "gameInstallationLocationSubtitle": {
+      "comment": "Settings card subtitle for the game installation location.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose where new Epic and GOG games are stored."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybierz miejsce zapisu nowych gier Epic i GOG."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "gameInstallationLocationTitle": {
+      "comment": "Settings card title for the game installation location.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Game installation location"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Miejsce instalacji gier"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "informationLevelLabel": {
+      "comment": "Overlay information level setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Information level"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poziom informacji"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "performanceOverlaySubtitle": {
+      "comment": "Settings card subtitle for the performance overlay.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose what Boreal shows over a running game."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybierz informacje wyświetlane nad uruchomioną grą."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "performanceOverlayTitle": {
+      "comment": "Settings card title for the performance overlay.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Performance Overlay"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nakładka wydajności"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "refreshRateLabel": {
+      "comment": "Overlay refresh rate setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh rate"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Częstotliwość odświeżania"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "scanningStorageSubtitle": {
+      "comment": "Settings card subtitle while storage is being scanned.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading only locations already managed or recorded by Boreal."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odczytywane są wyłącznie lokalizacje zarządzane lub zapisane przez Boreal."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "scanningStorageTitle": {
+      "comment": "Settings card title while storage is being scanned.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning Storage"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skanowanie pamięci"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "screenPositionLabel": {
+      "comment": "Overlay screen position setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen position"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Położenie na ekranie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "shortcutsSubtitle": {
+      "comment": "Settings card subtitle for overlay shortcuts.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Existing keyboard shortcuts for the overlay."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Istniejące skróty klawiaturowe nakładki."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "shortcutsTitle": {
+      "comment": "Settings card title for overlay shortcuts.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcuts"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skróty"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "showOrHideLabel": {
+      "comment": "Overlay show or hide shortcut setting.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show or hide"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż lub ukryj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "showOverlayLabel": {
+      "comment": "Setting enabling the performance overlay.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show overlay while a game is running"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokazuj nakładkę podczas gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageCachesSubtitle": {
+      "comment": "Storage category subtitle for caches.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regeneratable shader and metadata data."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odtwarzalne dane shaderów i metadanych."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageCachesTitle": {
+      "comment": "Storage category title for caches.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caches"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pamięci podręczne"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageDownloadsSubtitle": {
+      "comment": "Storage category subtitle for downloads.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloaded installers and transfer data."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobrane instalatory i dane transferu."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageDownloadsTitle": {
+      "comment": "Storage category title for downloads.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloads"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobrane dane"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageEmptySubtitle": {
+      "comment": "Settings card subtitle before the first storage scan.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan to measure Boreal-managed files."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wykonaj skan, aby zmierzyć pliki zarządzane przez Boreal."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageEmptyTitle": {
+      "comment": "Settings card title before the first storage scan.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pamięć"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageEnvironmentsSubtitle": {
+      "comment": "Storage category subtitle for Windows environments.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine prefixes and environment configuration."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prefiksy Wine i konfiguracja środowisk."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageEnvironmentsTitle": {
+      "comment": "Storage category title for Windows environments.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Environments"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowiska"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageGamesSubtitle": {
+      "comment": "Storage category subtitle for game files.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed game files measured at their actual locations."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zainstalowane pliki gier zmierzone w ich rzeczywistych lokalizacjach."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageGamesTitle": {
+      "comment": "Storage category title for game files.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Games"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageLogsSubtitle": {
+      "comment": "Storage category subtitle for diagnostics and logs.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Environment and diagnostic logs."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Logi środowiska i diagnostyki."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageLogsTitle": {
+      "comment": "Storage category title for diagnostics and logs.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics & Logs"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostyka i logi"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageOverviewSubtitle": {
+      "comment": "Settings card subtitle for the storage overview.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "See what Boreal is using without touching game data or prefixes."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sprawdź użycie pamięci przez Boreal bez dotykania danych gier ani prefiksów."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageOverviewTitle": {
+      "comment": "Settings card title for the storage overview.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pamięć"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageRuntimesSubtitle": {
+      "comment": "Storage category subtitle for compatibility runtimes.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed compatibility runtimes and their components."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zainstalowane środowiska zgodności i ich komponenty."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageRuntimesTitle": {
+      "comment": "Storage category title for compatibility runtimes.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtimes"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowiska uruchomieniowe"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageSafetySubtitle": {
+      "comment": "Settings card subtitle for storage cleanup safety.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The report separates data by the consequence of removing it."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raport rozdziela dane według skutków ich usunięcia."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "storageSafetyTitle": {
+      "comment": "Settings card title for storage cleanup safety.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage safety"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bezpieczeństwo pamięci"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "yButton": {
+      "comment": "Fullscreen controller shortcut for the game menu.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Y"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Y"
+          }
+        }
+      },
+      "extractionState": "manual"
+    }
+  },
+  "version": "1.0"
+}

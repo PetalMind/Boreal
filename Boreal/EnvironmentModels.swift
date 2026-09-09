@@ -29,7 +29,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var graphicsAPI: GraphicsAPI = .automatic
     var esyncEnabled: Bool = true
     var msyncEnabled: Bool = true
-    var retinaModeEnabled: Bool = true
+    var retinaModeEnabled: Bool = false
     var fullscreenFSREnabled: Bool = false
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
@@ -46,7 +46,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.graphicsAPI = profile?.graphicsAPI ?? .automatic
         self.esyncEnabled = profile?.esyncEnabled ?? true
         self.msyncEnabled = profile?.msyncEnabled ?? true
-        self.retinaModeEnabled = profile?.retinaModeEnabled ?? true
+        self.retinaModeEnabled = profile?.retinaModeEnabled ?? false
         self.fullscreenFSREnabled = profile?.fullscreenFSREnabled ?? false
         self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
         self.forceXInput = profile?.forceXInput ?? true
@@ -66,7 +66,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI) ?? .automatic
         esyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? true
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
-        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true
+        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? false
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true

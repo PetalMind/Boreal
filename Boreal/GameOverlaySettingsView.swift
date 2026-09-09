@@ -9,10 +9,10 @@ struct GameOverlaySettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                SettingsCard("Performance Overlay", subtitle: "Choose what Boreal shows over a running game.", symbol: "gauge.with.dots.needle.67percent") {
-                    SettingsRow("Show overlay while a game is running") { Toggle("", isOn: $isEnabled).labelsHidden() }
+                SettingsCard(.Settings.performanceOverlayTitle, subtitle: .Settings.performanceOverlaySubtitle, symbol: "gauge.with.dots.needle.67percent") {
+                    SettingsRow(.Settings.showOverlayLabel) { Toggle("", isOn: $isEnabled).labelsHidden() }
                     Divider()
-                    SettingsRow("Information level") {
+                    SettingsRow(.Settings.informationLevelLabel) {
                         Picker("", selection: $detailLevel) {
                             Text("Minimal").tag(GameOverlayDetailLevel.minimal.rawValue)
                             Text("Standard").tag(GameOverlayDetailLevel.standard.rawValue)
@@ -23,7 +23,7 @@ struct GameOverlaySettingsView: View {
                         .frame(width: 260)
                     }
                     Divider()
-                    SettingsRow("Screen position") {
+                    SettingsRow(.Settings.screenPositionLabel) {
                         Picker("", selection: $position) {
                             Text("Top left").tag("topLeft")
                             Text("Top right").tag("topRight")
@@ -34,7 +34,7 @@ struct GameOverlaySettingsView: View {
                         .frame(width: 260)
                     }
                     Divider()
-                    SettingsRow("Refresh rate") {
+                    SettingsRow(.Settings.refreshRateLabel) {
                         Picker("", selection: $refreshInterval) {
                             Text("Every second").tag(1.0)
                             Text("Every 2 seconds").tag(2.0)
@@ -44,10 +44,10 @@ struct GameOverlaySettingsView: View {
                         .frame(width: 260)
                     }
                 }
-                SettingsCard("Shortcuts", subtitle: "Existing keyboard shortcuts for the overlay.", symbol: "command") {
-                    SettingsRow("Show or hide") { Text("⌘⌥O").foregroundStyle(.secondary) }
+                SettingsCard(.Settings.shortcutsTitle, subtitle: .Settings.shortcutsSubtitle, symbol: "command") {
+                    SettingsRow(.Settings.showOrHideLabel) { Text("⌘⌥O").foregroundStyle(.secondary) }
                     Divider()
-                    SettingsRow("Cycle information level") { Text("⌘⌥I").foregroundStyle(.secondary) }
+                    SettingsRow(.Settings.cycleInformationLevelLabel) { Text("⌘⌥I").foregroundStyle(.secondary) }
                 }
             }
             .padding(.horizontal, 32).padding(.bottom, 28)

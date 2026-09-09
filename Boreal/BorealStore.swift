@@ -149,7 +149,14 @@ final class BorealStore {
         }
         var didNormalizeApplicationState = false
         for index in applications.indices {
-            let application = applications[index]
+            var application = applications[index]
+            if let gogIdentity = GOGInstalledGameDetector.detect(
+                executable: URL(fileURLWithPath: application.executablePath)
+            ), application.storeProvider != .gog || application.storeExternalID != gogIdentity.externalID {
+                adoptGOGInstallationIdentity(gogIdentity, forApplicationAt: index)
+                application = applications[index]
+                didNormalizeApplicationState = true
+            }
             if application.isSteamRuntimeHost, application.storeProvider == .steam {
                 // Older builds used the host record as a fake game record. Keep
                 // the installed bottle, but detach the host from any AppID so it
@@ -585,6 +592,10 @@ final class BorealStore {
 
     func runAuxiliaryExecutable(_ action: AuxiliaryExecutable, for applicationID: UUID) {
         Task { await runAuxiliaryExecutableAsync(action, for: applicationID) }
+    }
+
+    func runWindowsInstaller(_ installer: URL, for applicationID: UUID) {
+        Task { await runWindowsInstallerAsync(installer, for: applicationID) }
     }
 
     func toggleFavorite(key: String) {
@@ -1031,7 +1042,13 @@ final class BorealStore {
         }
     }
 
-    private func recreateStandaloneEnvironment(_ applicationID: UUID, profile: WineCompatibilityProfile, previousProfile: WineCompatibilityProfile, engine: RuntimeEngine) {
+    private func recreateStandaloneEnvironment(
+        _ applicationID: UUID,
+        profile: WineCompatibilityProfile,
+        previousProfile: WineCompatibilityProfile,
+        engine: RuntimeEngine,
+        launchWhenReady: Bool = false
+    ) {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
         let oldEnvironmentID = applications[index].environmentID
         let executable = URL(fileURLWithPath: applications[index].executablePath)
@@ -1087,6 +1104,9 @@ final class BorealStore {
                     environments.removeAll { $0.id == oldEnvironmentID }
                     save()
                 }
+                if launchWhenReady {
+                    await toggleRunningAsync(applicationID)
+                }
             } catch {
                 let diagnostics = await preserveDiagnosticsAndRemoveFailedEnvironment(replacement)
                 if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
@@ -1134,6 +1154,7 @@ final class BorealStore {
                 commit.executable.deletingPathExtension().lastPathComponent,
                 commit.executable.deletingLastPathComponent().lastPathComponent,
             ])
+            let gogIdentity = GOGInstalledGameDetector.detect(executable: commit.executable)
             let app = WindowsApplication(
                 name: metadata?.name ?? candidate.name,
                 publisher: metadata?.developer ?? "Windows application",
@@ -1146,9 +1167,9 @@ final class BorealStore {
                 lastOpened: .now,
                 iconSymbol: symbol(for: candidate.name),
                 lastResult: "First launch verified",
-                storeProvider: metadata?.provider,
-                storeExternalID: metadata?.externalID,
-                storeMetadataOnly: metadata == nil ? nil : true,
+                storeProvider: gogIdentity == nil ? metadata?.provider : .gog,
+                storeExternalID: gogIdentity?.externalID ?? metadata?.externalID,
+                storeMetadataOnly: metadata == nil && gogIdentity == nil ? nil : true,
                 communityCompatibility: communityProfile
             )
             environments.append(environment)
@@ -1160,6 +1181,9 @@ final class BorealStore {
                 if !storeGames.contains(where: { $0.provider == metadata.provider && $0.externalID == metadata.externalID }) {
                     storeGames.append(metadata)
                 }
+            }
+            if let gogIdentity, let appIndex = applications.indices.last {
+                adoptGOGInstallationIdentity(gogIdentity, forApplicationAt: appIndex)
             }
             await refreshAuxiliaryExecutables(for: app.id)
             activeSessions[app.id] = commit.firstLaunch
@@ -1374,6 +1398,53 @@ final class BorealStore {
             changed = true
         }
         if changed { save() }
+    }
+
+    private func adoptGOGInstallationIdentity(
+        _ identity: GOGInstalledGameIdentity,
+        forApplicationAt applicationIndex: Int
+    ) {
+        guard applications.indices.contains(applicationIndex) else { return }
+        let previousReference = applications[applicationIndex].storeReference
+        applications[applicationIndex].storeProvider = .gog
+        applications[applicationIndex].storeExternalID = identity.externalID
+        applications[applicationIndex].storeMetadataOnly = true
+        applications[applicationIndex].lastResult = "Recognized installed GOG game"
+
+        if let existingIndex = storeGames.firstIndex(where: {
+            $0.provider == .gog && $0.externalID == identity.externalID
+        }) {
+            storeGames[existingIndex].isInstalled = true
+            storeGames[existingIndex].installPath = identity.installationURL.path
+            storeGames[existingIndex].installedPlatform = .windows
+            storeGames[existingIndex].storageBytes = applications[applicationIndex].storageBytes
+            return
+        }
+
+        let presentation = previousReference.flatMap { reference in
+            storeGames.first { $0.storeReference == reference }
+        }
+        storeGames.append(StoreLibraryGame(
+            provider: .gog,
+            externalID: identity.externalID,
+            name: identity.name ?? applications[applicationIndex].name,
+            developer: presentation?.developer ?? applications[applicationIndex].publisher,
+            summary: presentation?.summary,
+            artworkPath: presentation?.artworkPath,
+            portraitImageURL: presentation?.portraitImageURL,
+            headerImageURL: presentation?.headerImageURL,
+            backgroundImageURL: presentation?.backgroundImageURL,
+            screenshotURLs: presentation?.screenshotURLs,
+            videos: presentation?.videos,
+            storeRating: presentation?.storeRating,
+            supportsWindows: true,
+            supportsNativeMacOS: false,
+            isInstalled: true,
+            installPath: identity.installationURL.path,
+            installedPlatform: .windows,
+            storageBytes: applications[applicationIndex].storageBytes,
+            compatibility: presentation?.compatibility
+        ))
     }
 
     nonisolated static func storeSearchTitle(from installerName: String) -> String {
@@ -1998,8 +2069,9 @@ final class BorealStore {
         }
 
         let name = selected.deletingPathExtension().lastPathComponent
+        let gogIdentity = GOGInstalledGameDetector.detect(executable: selected)
         let architecture = WindowsExecutableArchitecture.inspect(selected)
-        let engine: RuntimeEngine = architecture == .x86_64 ? .gamePortingToolkit : .wine
+        let engine = UnityIL2CPPRuntimeCompatibility.recommendedRuntimeEngine(for: selected)
         let environmentArchitecture = architecture == .x86 ? "win32" : "win64"
         SoundService.shared.play(.installationStarted)
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
@@ -2014,9 +2086,11 @@ final class BorealStore {
                     runtime: runtime
                 )
                 createdEnvironment = managed
+                // Adding an already installed game must only prepare the
+                // environment. Its executable is registered below and is
+                // launched only through the Library Play action.
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 try Task.checkCancellation()
-                await updateInstallation(.verifyingFirstLaunch)
                 let communityProfile: CommunityCompatibility? = nil
                 let environment = WindowsEnvironment(
                     id: managed.id,
@@ -2041,14 +2115,20 @@ final class BorealStore {
                     storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
                     iconSymbol: symbol(for: name),
                     lastResult: "Existing installation added",
+                    storeProvider: gogIdentity.map { _ in .gog },
+                    storeExternalID: gogIdentity?.externalID,
+                    storeMetadataOnly: gogIdentity == nil ? nil : true,
                     communityCompatibility: communityProfile
                 )
                 environments.append(environment)
                 applications.append(app)
+                if let gogIdentity, let appIndex = applications.indices.last {
+                    adoptGOGInstallationIdentity(gogIdentity, forApplicationAt: appIndex)
+                }
                 await refreshAuxiliaryExecutables(for: app.id)
                 await updateInstallation(.committing)
                 save()
-                installation.completedStages = Set(InstallationStage.allCases)
+                installation.completedStages = [.preparingRuntime, .creatingEnvironment, .committing]
                 installation.state = .succeeded(app.id)
                 SoundService.shared.play(.installationCompleted)
                 installationTask = nil
@@ -3339,6 +3419,79 @@ final class BorealStore {
         }
     }
 
+    private func runWindowsInstallerAsync(_ requestedInstaller: URL, for applicationID: UUID) async {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        let application = applications[index]
+        guard !application.isInstallerOnly,
+              !application.isSteamRuntimeHost,
+              application.status != .running,
+              !application.status.isBusy else { return }
+
+        let installer = requestedInstaller.standardizedFileURL
+        let supportedExtensions = ["exe", "msi"]
+        guard supportedExtensions.contains(installer.pathExtension.lowercased()),
+              (try? installer.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            presentedIssue = BorealIssue(
+                title: "This Windows installer can’t be opened",
+                stage: "Validating the selected patch or DLC installer.",
+                recovery: "Choose a Windows installer in .exe or .msi format.",
+                technicalDetails: installer.path
+            )
+            return
+        }
+
+        do {
+            guard let environmentRecord = environment(id: application.environmentID),
+                  var managed = managedEnvironment(from: environmentRecord),
+                  let runtime = try await runtime(for: environmentRecord) else {
+                throw InstallerServiceError.noRuntimeAvailable
+            }
+            let launchProfile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+                application.resolvedCompatibilityProfile,
+                for: application
+            )
+            managed.configuration = EnvironmentConfiguration(
+                name: environmentRecord.name,
+                profile: launchProfile
+            )
+            try await services.environmentManager.configure(managed, runtime: runtime)
+            let session = try await services.processRunner.run(
+                plan: WindowsLaunchPlan(
+                    executable: installer,
+                    arguments: [],
+                    environment: [:],
+                    workingDirectory: installer.deletingLastPathComponent()
+                ),
+                environment: managed,
+                runtime: runtime
+            )
+            if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[currentIndex].lastResult = "Running \(installer.lastPathComponent)"
+                applications[currentIndex].lastErrorDetail = nil
+                save()
+            }
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let result = try await services.processRunner.waitForExit(session)
+                    guard let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+                    applications[currentIndex].lastResult = result.exitCode == 0
+                        ? "\(installer.lastPathComponent) completed"
+                        : "\(installer.lastPathComponent) exited with code \(result.exitCode)"
+                    save()
+                } catch {
+                    // The external installer does not own the game lifecycle.
+                }
+            }
+        } catch {
+            present(
+                error,
+                title: "\(installer.lastPathComponent) couldn’t open",
+                stage: "Starting the installer in \(application.name)’s Windows environment"
+            )
+        }
+    }
+
     private func toggleRunningAsync(_ id: UUID) async {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
@@ -3442,6 +3595,36 @@ final class BorealStore {
                 applications[index].executablePath = executable.path
                 applications[index].auxiliaryExecutables = nil
                 applications[index].lastResult = "Using direct game executable \(executable.lastPathComponent)"
+                save()
+            }
+            let isUnityIL2CPP = UnityIL2CPPRuntimeCompatibility.requiresModernWine(at: executable)
+            if runtime.resolvedEngine == .gamePortingToolkit, isUnityIL2CPP {
+                let previousProfile = profile
+                profile.graphicsBackend = .automatic
+                if let recommendedGraphicsAPI = UnityIL2CPPRuntimeCompatibility.recommendedGraphicsAPI(for: executable) {
+                    profile.graphicsAPI = recommendedGraphicsAPI
+                }
+                applications[index].compatibilityProfile = profile
+                applications[index].lastResult = "Rebuilding the Unity IL2CPP environment with Wine"
+                applications[index].lastErrorDetail = nil
+                save()
+                recreateStandaloneEnvironment(
+                    applications[index].id,
+                    profile: profile,
+                    previousProfile: previousProfile,
+                    engine: .wine,
+                    launchWhenReady: true
+                )
+                return
+            }
+            if isUnityIL2CPP,
+               let recommendedGraphicsAPI = UnityIL2CPPRuntimeCompatibility.recommendedGraphicsAPI(for: executable),
+               profile.graphicsBackend != .automatic || profile.graphicsAPI != recommendedGraphicsAPI {
+                profile.graphicsBackend = .automatic
+                profile.graphicsAPI = recommendedGraphicsAPI
+                applications[index].compatibilityProfile = profile
+                applications[index].lastResult = "Using DirectX 11 with the compatible Wine graphics backend"
+                applications[index].lastErrorDetail = nil
                 save()
             }
             if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: executable) {

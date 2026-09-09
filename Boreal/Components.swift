@@ -218,7 +218,10 @@ struct StoreRatingBadge: View {
 
 struct CompatibilityLabel: View {
     let rating: CompatibilityRating
-    var body: some View { Label(rating.rawValue, systemImage: rating.symbol).foregroundStyle(color) }
+    var body: some View {
+        Label { Text(rating.localizedTitle) } icon: { Image(systemName: rating.symbol) }
+            .foregroundStyle(color)
+    }
     private var color: Color {
         switch rating {
         case .excellent: .green
@@ -235,7 +238,18 @@ struct MacCompatibilityBadge: View {
     var compact = false
 
     var body: some View {
-        Label(compact ? rating.rawValue : "Mac via Wine: \(rating.rawValue)", systemImage: rating.symbol)
+        Label {
+            if compact {
+                Text(rating.localizedTitle)
+            } else {
+                HStack(spacing: 4) {
+                    Text(.Compatibility.macViaWine)
+                    Text(rating.localizedTitle)
+                }
+            }
+        } icon: {
+            Image(systemName: rating.symbol)
+        }
             .font(compact ? .caption2.weight(.semibold) : .callout.weight(.semibold))
             .foregroundStyle(color)
             .padding(.horizontal, compact ? 7 : 9)
@@ -243,7 +257,7 @@ struct MacCompatibilityBadge: View {
             .background(.ultraThinMaterial, in: Capsule())
             .overlay { Capsule().stroke(color.opacity(0.45), lineWidth: 1) }
             .shadow(color: .black.opacity(compact ? 0.25 : 0), radius: 5, y: 2)
-            .accessibilityLabel("Mac compatibility through Wine: \(rating.rawValue)")
+            .accessibilityLabel(Text("\(String(localized: .Compatibility.macViaWine)): \(String(localized: rating.localizedTitle))"))
     }
 
     private var color: Color {
