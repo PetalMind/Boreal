@@ -169,7 +169,7 @@ actor RuntimeManager: RuntimeManaging {
         let asset = release.assets.first {
             let name = $0.name.lowercased()
             return name.hasSuffix(".tar.gz")
-                && ((backend == .dxvk || backend == .d9vk) ? !name.contains("builtin") : !name.contains("builtin"))
+                && !name.contains("builtin")
                 && !name.contains("debug")
         } ?? release.assets.first {
             let name = $0.name.lowercased()
@@ -368,9 +368,11 @@ actor RuntimeManager: RuntimeManaging {
                 "The selected package does not contain compiled \(backend.displayName) DLLs. Choose a release/build artifact, not the project source folder."
             )
         }
+        // The macOS DXVK repack intentionally omits d3d9.dll and dxgi.dll;
+        // those APIs remain provided by Wine's builtin implementation.
         let required = backend == .dxmt
             ? Set(["dxgi.dll", "d3d11.dll", "winemetal.dll"])
-            : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["dxgi.dll", "d3d10core.dll", "d3d11.dll"])
+            : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["d3d10core.dll", "d3d11.dll"])
         let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
         guard required.isSubset(of: names) else {
             throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
@@ -1238,7 +1240,7 @@ actor RuntimeManager: RuntimeManaging {
         if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
         features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
             && fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix/winemetal.so").path)
-        features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["dxgi.dll", "d3d10core.dll", "d3d11.dll"], in: runtime)
+        features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["d3d10core.dll", "d3d11.dll"], in: runtime)
         features.d9vk = hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
         features.esync = runtimePayloadContains("WINEESYNC", in: runtime)
