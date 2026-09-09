@@ -68,7 +68,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
            !fileManager.fileExists(atPath: componentRoot.appending(path: "x64-unix/winemetal.so").path) {
             throw GraphicsBackendManagerError.componentPackageEmpty(backend)
         }
-        let candidates = try componentFiles(in: componentRoot, environment: environment)
+        let candidates = try componentFiles(in: componentRoot, environment: environment, runtime: runtime)
         guard !candidates.isEmpty else { throw GraphicsBackendManagerError.componentPackageEmpty(backend) }
         if backend == .dxvk || backend == .d9vk {
             for (source, _) in candidates {
@@ -174,12 +174,27 @@ nonisolated struct GraphicsBackendManager: Sendable {
 
     private func componentFiles(
         in root: URL,
-        environment: ManagedBorealEnvironment
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
     ) throws -> [(URL, URL)] {
-        let is64Bit = environment.configuration.architecture == WinePrefixArchitecture.win64.rawValue
-        let layouts: [(String, String)] = is64Bit
-            ? [("x64", "system32"), ("x32", "syswow64")]
-            : [("x32", "system32")]
+        let layouts: [(String, String)]
+        switch WinePrefixMode.resolve(
+            requestedArchitecture: environment.configuration.architecture,
+            runtimeSupportsWoW64: runtime.features?.wow64 == true
+        ) {
+        case .wow64:
+            // A modern WoW64 prefix keeps 64-bit DLLs in system32 and
+            // 32-bit DLLs in syswow64. A requested 32-bit application still
+            // uses the combined prefix; do not put an x32 renderer over the
+            // 64-bit system32 copy.
+            layouts = environment.configuration.architecture == WinePrefixArchitecture.win64.rawValue
+                ? [("x64", "system32"), ("x32", "syswow64")]
+                : [("x32", "syswow64")]
+        case .legacyWin32:
+            layouts = [("x32", "system32")]
+        case .legacyWin64:
+            layouts = [("x64", "system32")]
+        }
         var result: [(URL, URL)] = []
         for (sourceFolder, windowsFolder) in layouts {
             let sourceRoot = root.appending(path: sourceFolder, directoryHint: .isDirectory)

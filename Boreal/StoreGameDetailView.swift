@@ -38,8 +38,6 @@ struct StoreGameDetailView: View {
     @State private var priceHistoryRange: DiscoveryPriceHistoryRange = .threeMonths
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
-    @State private var gogRevivedEntry: GOGRevivedEntry?
-    @State private var gogRevivedLookupInProgress = false
 
     private var currentGame: StoreLibraryGame {
         let linkedGame: StoreLibraryGame? = linkedApplication.flatMap { application in
@@ -141,11 +139,8 @@ struct StoreGameDetailView: View {
             store.refreshSteamMetadataIfNeeded(for: game)
         }
         .task(id: "gog-revived-\(game.id.uuidString)") {
-            guard discoveryGame != nil else { return }
-            gogRevivedEntry = nil
-            gogRevivedLookupInProgress = true
-            gogRevivedEntry = await store.lookupGOGRevived(named: currentGame.name)
-            gogRevivedLookupInProgress = false
+            guard let discoveryGame else { return }
+            await store.ensureGOGRevivedAvailability(for: discoveryGame)
         }
         .task(id: game.id) {
             await store.loadSteamCurrentPlayerCountIfNeeded(for: game.id)
@@ -710,19 +705,32 @@ struct StoreGameDetailView: View {
                 metric("Developer", value: developer, symbol: "person.2")
             }
             metric("Source", value: currentGame.provider.rawValue, symbol: "bag")
-            if let entry = gogRevivedEntry, let url = URL(string: entry.pageURL) {
-                Divider()
-                Link(destination: url) {
-                    Label("Open on GoG Revived", systemImage: "arrow.up.right.square")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(BorealSecondaryActionButtonStyle())
-                .help("GoG Revived lists this title as \(entry.title).")
-            } else if gogRevivedLookupInProgress {
-                Divider()
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Checking GoG Revived…").font(.caption).foregroundStyle(.secondary)
+            if let discoveryGame {
+                switch store.gogRevivedAvailability(for: discoveryGame) {
+                case .available(let entry):
+                    if let url = URL(string: entry.pageURL) {
+                        Divider()
+                        Link(destination: url) {
+                            Label("Open on GOG Revived", systemImage: "arrow.up.right.square")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(BorealSecondaryActionButtonStyle())
+                        .help("GOG Revived lists this title as \(entry.title).")
+                    }
+                case .unknown, .checking:
+                    Divider()
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Checking GOG Revived…").font(.caption).foregroundStyle(.secondary)
+                    }
+                case .notFound:
+                    Divider()
+                    Label("Not listed on GOG Revived", systemImage: "minus.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .unavailable:
+                    Divider()
+                    Label("GOG Revived status unavailable", systemImage: "questionmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
                 }
             }
         }

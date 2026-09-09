@@ -1,253 +1,218 @@
 /// <reference path="./.config/sa.d.ts" />
 
-// Mefisto Trainer for GTA San Andreas: The Definitive Edition.
-// Requires CLEO Redux 1.5+ and ImGuiReduxWin64.
+import { itemCatalog, namesFor, vehicleCatalog } from "./MefistoTrainer/catalog.mjs";
+import { ItemSpawner } from "./MefistoTrainer/item_spawner.mjs";
+import { VehicleSpawner } from "./MefistoTrainer/vehicle_spawner.mjs";
 
-if (HOST !== "sa_unreal") {
-  exit("Mefisto Trainer supports only GTA San Andreas: The Definitive Edition.");
-}
+if (HOST !== "sa_unreal") exit("Mefisto Trainer supports only GTA San Andreas: The Definitive Edition.");
 
-const VK_F5 = 116;
-const PLAYER_ID = 0;
-const player = new Player(PLAYER_ID);
-
-const weapons = [
-  { name: "Brass Knuckles", id: 1 },
-  { name: "Baseball Bat", id: 5 },
-  { name: "Pistol", id: 22 },
-  { name: "Silenced Pistol", id: 23 },
-  { name: "Desert Eagle", id: 24 },
-  { name: "Shotgun", id: 25 },
-  { name: "Sawed-Off Shotgun", id: 26 },
-  { name: "Combat Shotgun", id: 27 },
-  { name: "Micro SMG", id: 28 },
-  { name: "SMG", id: 29 },
-  { name: "AK-47", id: 30 },
-  { name: "M4", id: 31 },
-  { name: "Rifle", id: 33 },
-  { name: "Sniper Rifle", id: 34 },
-  { name: "Rocket Launcher", id: 35 },
-];
-
-const weaponNames = weapons.map((weapon) => weapon.name).join(",");
+const player = new Player(0);
+const items = new ItemSpawner();
+const vehicles = new VehicleSpawner();
+// ImGuiRedux color arguments are normalized floats, not 0-255 channel values.
+const accent = [0.27, 0.67, 1.0, 1.0];
 const weatherNames = "Extra Sunny,Sunny,Cloudy,Rainy,Foggy,Sandstorm";
 const weatherIds = [0, 1, 2, 8, 9, 19];
+const navigation = [
+  ["[P]", "Player", "player"], ["[W]", "Weapons", "weapons"], ["[V]", "Vehicles", "vehicles"],
+  ["[O]", "World", "world"], ["[T]", "Teleport", "teleport"], ["[C]", "Time & Weather", "world"],
+  ["[C]", "Camera"], ["[A]", "Target Focus"], ["[...]", "Misc"], ["[D]", "Developer"], ["[S]", "Settings"],
+];
+const filters = [
+  ["All", "all"], ["Favorites", "favorites"], ["Recent", "recent"], ["Cars", "cars"],
+  ["Sports", "sports"], ["Bikes", "bikes"], ["Off-road", "off-road"], ["Aircraft", "aircraft"],
+  ["Boats", "boats"], ["Emergency", "service"], ["Unique", "unique"],
+];
 
-let menuVisible = false;
-let f5WasDown = false;
-let activeTab = 0;
-let godMode = false;
-let infiniteArmor = false;
-let infiniteSprint = false;
-let neverWanted = false;
-let infiniteAmmo = false;
-let vehicleInvincible = false;
-let wantedLevel = 0;
-let ammoAmount = 500;
-let selectedWeapon = 10;
-let selectedWeather = 1;
-let selectedHour = 12;
-let selectedMinute = 0;
-let freezeTime = false;
-let savedPosition = null;
+let menuVisible = false, active = "vehicles";
+let godMode = false, infiniteArmor = false, infiniteSprint = false, neverWanted = false;
+let infiniteAmmo = false, vehicleInvincible = false, wantedLevel = 0, ammo = 500;
+let selectedWeapon = 0, selectedVehicleId = 411, filter = "all", search = "";
+let selectedWeather = 1, hour = 12, minute = 0, freezeTime = false, savedPosition = null;
+let recentIds = [], toast = "", toastUntil = 0;
+const favorites = new Set(vehicleCatalog.filter((v) => v.favorite).map((v) => v.id));
 
 log("Mefisto Trainer loaded. Press F5 to open the menu.");
-
 while (true) {
   wait(0);
-
-  // Treat F5 as a key press, not as a held state. Otherwise one physical
-  // press toggles the menu repeatedly while the key remains down.
-  const f5Down = Pad.IsKeyDown(VK_F5);
-  if (f5Down && !f5WasDown) {
+  if (Pad.IsKeyPressed(116)) {
     menuVisible = !menuVisible;
+    log("Mefisto Trainer F5 toggle: " + (menuVisible ? "open" : "closed"));
   }
-  f5WasDown = f5Down;
-
-  const gameIsPlaying = player.isPlaying();
-  if (!gameIsPlaying) {
-    menuVisible = false;
-  }
-  const trainerVisible = menuVisible && gameIsPlaying;
-
-  // Keep the cursor state and all interactive widgets in the same ImGuiRedux
-  // frame. Separate frames can submit different input/cursor state and make
-  // the pointer jump, disappear or stop clicking under Wine.
+  const playing = player.isPlaying();
+  if (!playing) menuVisible = false;
+  const visible = menuVisible && playing;
   ImGui.BeginFrame("MEFISTO_TRAINER_WINDOW");
-  ImGui.SetCursorVisible(trainerVisible);
-
-  if (gameIsPlaying) {
+  ImGui.SetCursorVisible(visible);
+  if (playing) {
     const actor = player.getChar();
     applyPersistentOptions(actor);
-
-    if (trainerVisible) {
-      drawTrainerWindow(actor);
-    }
+    if (visible) drawWindow(actor);
   }
-
   ImGui.EndFrame();
 }
 
-function drawTrainerWindow(actor) {
-  // Keep the window large enough for the longest sections and force the
-  // dimensions on every frame so an older cached size cannot clip the menu.
-  ImGui.SetNextWindowPos(24, 24, 1);
-  ImGui.SetNextWindowSize(760, 680, 1);
-  // Do not copy the delayed Begin() return value back into menuVisible. The
-  // trainer is closed with F5, so its visibility has one authoritative state.
-  ImGui.Begin("MEFISTO TRAINER", true, false, true, false, false);
-
-  ImGui.TextColored("MEFISTO", 52, 199, 89, 255);
-  ImGui.SameLine();
-  ImGui.TextDisabled("San Andreas: Definitive Edition  |  F5 close");
-  ImGui.Separator();
-  ImGui.Spacing();
-
-  activeTab = ImGui.Tabs("MefistoTabs", "Player,Weapons,Vehicle,World,Teleport");
-  ImGui.Spacing();
-  ImGui.BeginChild("MefistoContent");
-
-  if (activeTab === 0) drawPlayerSection(actor);
-  if (activeTab === 1) drawWeaponsSection(actor);
-  if (activeTab === 2) drawVehicleSection(actor);
-  if (activeTab === 3) drawWorldSection();
-  if (activeTab === 4) drawTeleportSection(actor);
-
+function drawWindow(actor) {
+  const size = ImGui.GetDisplaySize();
+  const width = Math.floor(size.width * 0.75), height = Math.floor(size.height * 0.75);
+  ImGui.SetNextWindowPos(Math.floor((size.width - width) / 2), Math.floor((size.height - height) / 2), 1);
+  ImGui.SetNextWindowSize(width, height, 1);
+  ImGui.SetNextWindowTransparency(0.94);
+  ImGui.Begin("MEFISTO TRAINER", true, true, true, false, false);
+  const childHeight = Math.max(360, height - 62);
+  ImGui.BeginChildEx("MefistoSidebar", 236, childHeight, true, 0);
+  drawSidebar();
   ImGui.EndChild();
+  ImGui.SameLine();
+  ImGui.BeginChildEx("MefistoContent", Math.max(420, width - 566), childHeight, true, 0);
+  drawContent(actor);
+  ImGui.EndChild();
+  ImGui.SameLine();
+  ImGui.BeginChildEx("MefistoDetails", 314, childHeight, true, 0);
+  drawDetails(actor);
+  ImGui.EndChild();
+  ImGui.TextDisabled("ENTER  Select    ESC  Back    F  Favorite    R  Spawn Options    F5  Close");
+  ImGui.SameLine();
+  ImGui.TextDisabled("Mefisto Trainer v1.0");
   ImGui.End();
 }
 
-function drawPlayerSection(actor) {
-  ImGui.Text("PLAYER");
-  ImGui.TextDisabled("Health, stamina and police response");
-  ImGui.Separator();
-  ImGui.Spacing();
-
-  godMode = ImGui.Checkbox("God Mode", godMode);
-  infiniteArmor = ImGui.Checkbox("Infinite Armor", infiniteArmor);
-  infiniteSprint = ImGui.Checkbox("Infinite Sprint", infiniteSprint);
-  neverWanted = ImGui.Checkbox("Never Wanted", neverWanted);
-  ImGui.Spacing();
-  wantedLevel = ImGui.SliderInt("Wanted Level", wantedLevel, 0, 6);
-  if (ImGui.Button("Apply Wanted Level", 180, 28)) {
-    if (wantedLevel === 0) player.clearWantedLevel();
-    else player.alterWantedLevel(wantedLevel);
-  }
-  ImGui.SameLine();
-  if (ImGui.Button("Restore Health & Armor", 220, 28)) {
-    actor.setHealth(100);
-    actor.addArmor(100);
-  }
+function drawSidebar() {
+  ImGui.TextColored("MEFISTO", 0.92, 0.94, 0.97, 1.0);
+  ImGui.TextColored("TRAINER", accent[0], accent[1], accent[2], 1.0);
+  ImGui.TextDisabled("GTA SAN ANDREAS");
+  ImGui.TextDisabled("DEFINITIVE EDITION");
+  ImGui.Spacing(); ImGui.Separator(); ImGui.Spacing();
+  navigation.forEach((entry) => {
+    if (!entry[2]) { ImGui.TextDisabled(entry[0] + "  " + entry[1]); return; }
+    const selected = active === entry[2];
+    const label = (selected ? "| " : "  ") + entry[0] + "  " + entry[1];
+    if (selected) ImGui.ButtonColored(label, accent[0], accent[1], accent[2], 0.88, 218, 28);
+    else if (ImGui.Selectable(label, false)) active = entry[2];
+  });
+  ImGui.Spacing(); ImGui.TextDisabled("F5  Close trainer");
 }
 
-function drawWeaponsSection(actor) {
-  ImGui.Text("WEAPONS");
-  ImGui.TextDisabled("Give a weapon and configure ammunition");
-  ImGui.Separator();
-  ImGui.Spacing();
-
-  selectedWeapon = ImGui.ComboBox("Weapon", weaponNames, selectedWeapon);
-  ammoAmount = ImGui.SliderInt("Ammo", ammoAmount, 50, 9999);
-  infiniteAmmo = ImGui.Checkbox("Infinite Ammo", infiniteAmmo);
-  ImGui.Spacing();
-  if (ImGui.Button("Give Weapon", 160, 28)) {
-    const weapon = weapons[selectedWeapon];
-    actor.giveWeapon(weapon.id, ammoAmount);
-    actor.setCurrentWeapon(weapon.id);
-  }
+function drawContent(actor) {
+  if (active === "vehicles") drawVehicles(actor);
+  if (active === "player") drawPlayer(actor);
+  if (active === "weapons") drawWeapons(actor);
+  if (active === "world") drawWorld();
+  if (active === "teleport") drawTeleport(actor);
 }
 
-function drawVehicleSection(actor) {
-  ImGui.Text("VEHICLE");
-  ImGui.TextDisabled("Options apply to the current vehicle");
-  ImGui.Separator();
+function header(title, subtitle) {
+  ImGui.Text(title); ImGui.TextDisabled(subtitle); ImGui.Spacing();
+}
+
+function drawVehicles(actor) {
+  header("Vehicles", "Spawn any vehicle in the game");
+  search = ImGui.InputText("Search vehicles...");
+  if (search === undefined) search = "";
   ImGui.Spacing();
+  filters.forEach((f, i) => {
+    if (i) ImGui.SameLine();
+    if (filter === f[1]) ImGui.ButtonColored(f[0], accent[0], accent[1], accent[2], 0.88, 78, 25);
+    else if (ImGui.Button(f[0], 78, 25)) filter = f[1];
+  });
+  ImGui.Separator(); ImGui.Spacing();
+  const list = filteredVehicles();
+  if (!list.length) { ImGui.TextDisabled("No vehicles match this search."); return; }
+  if (!list.some((v) => v.id === selectedVehicleId)) selectedVehicleId = list[0].id;
+  ImGui.Columns(4);
+  list.forEach((v) => {
+    const selected = v.id === selectedVehicleId;
+    if (ImGui.ButtonColored(v.name, selected ? accent[0] : 0.11, selected ? accent[1] : 0.13, selected ? accent[2] : 0.16, 0.96, 136, 58)) selectedVehicleId = v.id;
+    ImGui.TextDisabled(v.category);
+    if (ImGui.Button("Favorite##favorite_" + v.id, 72, 22)) toggleFavorite(v.id);
+    ImGui.NextColumn();
+  });
+  ImGui.Columns(1);
+}
 
-  if (!actor.isInAnyCar()) {
-    ImGui.TextColored("Enter a vehicle to use these options.", 235, 166, 52, 255);
-    return;
-  }
+function filteredVehicles() {
+  const q = (search || "").toLowerCase().trim();
+  return vehicleCatalog.filter((v) => {
+    if (q && !(v.name + " " + v.model + " " + v.tags.join(" ")).toLowerCase().includes(q)) return false;
+    if (filter === "favorites") return favorites.has(v.id);
+    if (filter === "recent") return recentIds.includes(v.id);
+    if (filter === "off-road") return v.category === "utility";
+    if (filter === "unique") return ["other", "trailers", "trains", "rc"].includes(v.category);
+    return filter === "all" || v.category === filter;
+  });
+}
 
+function drawDetails(actor) {
+  if (active !== "vehicles") { ImGui.TextDisabled("Details"); ImGui.Separator(); ImGui.TextDisabled("Select Vehicles to inspect a catalog entry."); return; }
+  const v = vehicleCatalog.find((entry) => entry.id === selectedVehicleId) || vehicleCatalog[0];
+  ImGui.Text(v.name + (favorites.has(v.id) ? "  [Favorite]" : ""));
+  if (ImGui.Button("Favorite##detail_favorite", 90, 22)) toggleFavorite(v.id);
+  ImGui.Spacing();
+  ImGui.ButtonColored("Vehicle Preview", 0.14, 0.16, 0.20, 0.96, 280, 82);
+  ImGui.TextCentered(v.name);
+  ImGui.Spacing();
+  detail("Model ID", String(v.id)); detail("Category", v.category); detail("Type", v.category === "boats" ? "Boat" : v.category === "aircraft" ? "Aircraft" : "Vehicle"); detail("Model", v.model);
+  ImGui.Spacing();
+  if (ImGui.ButtonColored("Spawn", accent[0], accent[1], accent[2], 0.88, 280, 38)) spawn(v, actor);
+  if (ImGui.Button("Spawn & Enter", 280, 28)) spawn(v, actor);
+  if (ImGui.Button("Replace Current Vehicle", 280, 28)) spawn(v, actor);
+  if (ImGui.Button("Customize", 280, 28)) notify("Vehicle customization is unavailable in this build.");
+  ImGui.Spacing();
+  ImGui.Text("Current Vehicle");
   vehicleInvincible = ImGui.Checkbox("Invincible Vehicle", vehicleInvincible);
-  const vehicle = actor.storeCarIsInNoSave();
-
-  if (ImGui.Button("Repair Vehicle", 180, 28)) {
-    vehicle.fix();
-    vehicle.setHealth(1000);
+  if (actor.isInAnyCar() && ImGui.Button("Repair Current Vehicle", 280, 28)) {
+    const currentVehicle = actor.storeCarIsInNoSave();
+    currentVehicle.fix();
+    currentVehicle.setHealth(1000);
+    notify("Current vehicle repaired.");
   }
+  if (toast && Date.now() < toastUntil) ImGui.TextDisabled(toast);
 }
 
-function drawWorldSection() {
-  ImGui.Text("WORLD");
-  ImGui.TextDisabled("Weather and clock controls");
-  ImGui.Separator();
-  ImGui.Spacing();
+function detail(label, value) { ImGui.TextDisabled(label); ImGui.SameLine(); ImGui.Text(value); }
+function toggleFavorite(id) { if (favorites.has(id)) favorites.delete(id); else favorites.add(id); }
+function notify(message) { toast = message; toastUntil = Date.now() + 2000; }
+function spawn(v, actor) { const result = vehicles.spawn(v, actor); recentIds = [v.id, ...recentIds.filter((id) => id !== v.id)].slice(0, 12); notify(result.message); }
 
-  selectedWeather = ImGui.ComboBox("Weather", weatherNames, selectedWeather);
-  if (ImGui.Button("Apply Weather", 160, 28)) {
-    Weather.ForceNow(weatherIds[selectedWeather]);
-  }
+function drawPlayer(actor) {
+  header("Player", "Personal abilities and police response");
+  godMode = ImGui.Checkbox("God Mode", godMode); infiniteArmor = ImGui.Checkbox("Infinite Armor", infiniteArmor);
+  infiniteSprint = ImGui.Checkbox("Infinite Sprint", infiniteSprint); neverWanted = ImGui.Checkbox("Never Wanted", neverWanted);
+  ImGui.Spacing(); wantedLevel = ImGui.SliderInt("Wanted Level", wantedLevel, 0, 6);
+  if (ImGui.Button("Apply Wanted Level", 180, 28)) { if (wantedLevel === 0) player.clearWantedLevel(); else player.alterWantedLevel(wantedLevel); }
   ImGui.SameLine();
-  if (ImGui.Button("Release Weather", 160, 28)) {
-    Weather.Release();
-  }
-
-  selectedHour = ImGui.SliderInt("Hour", selectedHour, 0, 23);
-  selectedMinute = ImGui.SliderInt("Minute", selectedMinute, 0, 59);
-  freezeTime = ImGui.Checkbox("Freeze Time", freezeTime);
-  if (ImGui.Button("Apply Time", 160, 28)) {
-    Clock.SetTimeOfDay(selectedHour, selectedMinute);
-  }
+  if (ImGui.Button("Restore Health & Armor", 220, 28)) { actor.setHealth(100); actor.addArmor(100); }
 }
 
-function drawTeleportSection(actor) {
-  ImGui.Text("TELEPORT");
-  ImGui.TextDisabled("City shortcuts and one temporary position");
-  ImGui.Separator();
-  ImGui.Spacing();
+function drawWeapons(actor) {
+  header("Weapons", "Give weapons and configure ammunition");
+  ["All", "Melee", "Pistols", "Shotguns", "SMGs", "Rifles", "Heavy", "Explosives"].forEach((name, i) => { if (i) ImGui.SameLine(); ImGui.Button(name, 82, 25); });
+  ImGui.Spacing(); selectedWeapon = ImGui.ComboBox("Weapon", namesFor(itemCatalog), selectedWeapon);
+  ammo = ImGui.SliderInt("Ammo", ammo, 50, 9999); infiniteAmmo = ImGui.Checkbox("Infinite Ammo", infiniteAmmo);
+  if (ImGui.ButtonColored("Give", accent[0], accent[1], accent[2], 0.88, 180, 34)) { items.give(itemCatalog[selectedWeapon], actor, ammo); notify("Weapon given."); }
+  ImGui.SameLine(); if (ImGui.Button("Give & Equip", 180, 34)) items.give(itemCatalog[selectedWeapon], actor, ammo);
+}
 
-  if (ImGui.Button("Grove Street", 160, 28)) actor.setCoordinates(2491.2, -1668.0, 13.3);
-  ImGui.SameLine();
-  if (ImGui.Button("Los Santos Airport", 160, 28)) actor.setCoordinates(1687.0, -2334.0, 13.5);
-  if (ImGui.Button("San Fierro", 160, 28)) actor.setCoordinates(-1985.0, 138.0, 27.7);
-  ImGui.SameLine();
-  if (ImGui.Button("Las Venturas", 160, 28)) actor.setCoordinates(1699.0, 1447.0, 10.8);
+function drawWorld() {
+  header("Time & Weather", "Control the world without leaving the game");
+  ImGui.Text("Time"); hour = ImGui.SliderInt("Hour", hour, 0, 23); minute = ImGui.SliderInt("Minute", minute, 0, 59); freezeTime = ImGui.Checkbox("Freeze Time", freezeTime);
+  if (ImGui.Button("Apply Time", 180, 30)) Clock.SetTimeOfDay(hour, minute);
+  ImGui.Spacing(); ImGui.Text("Weather"); selectedWeather = ImGui.ComboBox("Weather", weatherNames, selectedWeather);
+  if (ImGui.ButtonColored("Apply Weather", accent[0], accent[1], accent[2], 0.88, 180, 30)) Weather.ForceNow(weatherIds[selectedWeather]);
+  ImGui.SameLine(); if (ImGui.Button("Release Weather", 180, 30)) Weather.Release();
+}
 
-  ImGui.Spacing();
-  if (ImGui.Button("Save Current Position", 200, 28)) {
-    savedPosition = actor.getCoordinates();
-  }
-  ImGui.SameLine();
-  if (savedPosition && ImGui.Button("Restore Saved Position", 200, 28)) {
-    actor.setCoordinates(savedPosition.x, savedPosition.y, savedPosition.z);
-  }
+function drawTeleport(actor) {
+  header("Teleport", "Move between known locations or save a position");
+  [["Grove Street", 2491.2, -1668.0, 13.3], ["San Fierro", -1985.0, 138.0, 27.7], ["Las Venturas", 1699.0, 1447.0, 10.8], ["Los Santos Airport", 1687.0, -2334.0, 13.5]].forEach((l) => { if (ImGui.Button(l[0], 190, 30)) actor.setCoordinates(l[1], l[2], l[3]); });
+  ImGui.Spacing(); if (ImGui.Button("Save Current Position", 220, 30)) savedPosition = actor.getCoordinates(); ImGui.SameLine();
+  if (savedPosition && ImGui.Button("Restore Saved Position", 220, 30)) actor.setCoordinates(savedPosition.x, savedPosition.y, savedPosition.z);
 }
 
 function applyPersistentOptions(actor) {
-  player.setNeverGetsTired(infiniteSprint);
-  actor.setProofs(godMode, godMode, godMode, godMode, godMode);
-
-  if (godMode && actor.getHealth() < 100) actor.setHealth(100);
-  if (infiniteArmor && actor.getArmor() < 100) actor.addArmor(100);
-  if (neverWanted) player.clearWantedLevel();
-
-  if (infiniteAmmo) {
-    const weapon = actor.getCurrentWeapon();
-    if (weapon > 0) actor.setAmmo(weapon, 9999);
-  }
-
-  if (actor.isInAnyCar()) {
-    const vehicle = actor.storeCarIsInNoSave();
-    vehicle.setProofs(
-      vehicleInvincible,
-      vehicleInvincible,
-      vehicleInvincible,
-      vehicleInvincible,
-      vehicleInvincible
-    );
-    if (vehicleInvincible && vehicle.getHealth() < 1000) vehicle.setHealth(1000);
-  }
-
-  // Keep the in-game clock fixed without pausing simulation, physics or AI.
-  if (freezeTime) Clock.SetTimeOfDay(selectedHour, selectedMinute);
+  player.setNeverGetsTired(infiniteSprint); actor.setProofs(godMode, godMode, godMode, godMode, godMode);
+  if (godMode && actor.getHealth() < 100) actor.setHealth(100); if (infiniteArmor && actor.getArmor() < 100) actor.addArmor(100); if (neverWanted) player.clearWantedLevel();
+  if (infiniteAmmo) { const weapon = actor.getCurrentWeapon(); if (weapon > 0) actor.setAmmo(weapon, 9999); }
+  if (actor.isInAnyCar()) { const vehicle = actor.storeCarIsInNoSave(); vehicle.setProofs(vehicleInvincible, vehicleInvincible, vehicleInvincible, vehicleInvincible, vehicleInvincible); if (vehicleInvincible && vehicle.getHealth() < 1000) vehicle.setHealth(1000); }
+  if (freezeTime) Clock.SetTimeOfDay(hour, minute);
 }

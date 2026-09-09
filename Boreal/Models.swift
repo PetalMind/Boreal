@@ -184,6 +184,10 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     var defaultAPI: GraphicsAPI
     var launchOptions: [GraphicsAPILaunchOption]
     var preferredBackend: WineGraphicsBackend? = nil
+    /// Some games have a renderer that is known to fail during a specific
+    /// launch phase on the supported Wine runtime. When set, the profile is
+    /// applied even if an older persisted profile selected another backend.
+    var enforcedBackend: WineGraphicsBackend? = nil
     var overlayCompatibleFullscreen: Bool? = nil
     // Optional so profiles persisted by older Boreal versions remain
     // decodable. These values are merged into the launch plan only when the

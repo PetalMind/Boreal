@@ -28,6 +28,47 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
     var overlayDisplayID: UInt32? = nil
 }
 
+nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
+    case steamAppIDFileUnavailable(URL, underlying: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .steamAppIDFileUnavailable(let url, let underlying):
+            "Boreal couldn’t prepare Torchlight II for direct launch. The file \(url.path) could not be written: \(underlying)"
+        }
+    }
+}
+
+/// Applies compatibility files that are required by a game's own startup
+/// code when the game is launched outside its original store client.
+nonisolated enum GameLaunchCompatibility {
+    private static let torchlightAppID = "200710"
+
+    static func prepare(application: WindowsApplication) throws {
+        guard application.usesStoreMetadataOnly,
+              application.storeProvider == .steam,
+              application.storeExternalID == torchlightAppID else { return }
+
+        let executable = URL(fileURLWithPath: application.executablePath)
+        guard executable.lastPathComponent.caseInsensitiveCompare("Torchlight2.exe") == .orderedSame else { return }
+
+        let appIDFile = executable.deletingLastPathComponent().appending(path: "steam_appid.txt")
+        let expected = Data("\(torchlightAppID)\n".utf8)
+        if let existing = try? Data(contentsOf: appIDFile), existing == expected {
+            return
+        }
+
+        do {
+            try expected.write(to: appIDFile, options: .atomic)
+        } catch {
+            throw GameLaunchCompatibilityError.steamAppIDFileUnavailable(
+                appIDFile,
+                underlying: error.localizedDescription
+            )
+        }
+    }
+}
+
 nonisolated struct ProcessLaunchRequest: Sendable {
     let executable: URL
     var arguments: [String] = []

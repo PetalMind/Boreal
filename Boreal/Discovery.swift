@@ -237,6 +237,14 @@ nonisolated struct GOGRevivedEntry: Codable, Hashable, Sendable, Identifiable {
     var id: String { pageURL }
 }
 
+nonisolated enum GOGRevivedAvailability: Equatable, Sendable {
+    case unknown
+    case checking
+    case available(GOGRevivedEntry)
+    case notFound
+    case unavailable
+}
+
 nonisolated protocol GOGRevivedCatalogLoading: Sendable {
     func lookup(named title: String) async throws -> GOGRevivedEntry?
 }
@@ -1191,10 +1199,12 @@ struct DiscoveryGameTile: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.09)))
         .task(id: "\(game.id)-\(itadAPIKey)-\(itadCountryCode)") {
             async let metadata: Void = store.ensureDiscoveryMetadata(for: game)
+            async let gogRevived: Void = store.ensureGOGRevivedAvailability(for: game)
             if !itadAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 await store.ensureDiscoveryPrice(for: game)
             }
             await metadata
+            await gogRevived
         }
     }
 
@@ -1220,6 +1230,7 @@ struct DiscoveryGameTile: View {
             Label(game.bestMethod == "Unverified" ? game.bestRating.rawValue : game.bestMethod, systemImage: "circle.fill")
                 .font(horizontal ? .caption : .system(size: 10)).foregroundStyle(game.isNative ? .green : game.bestRating.color)
                 .padding(.horizontal, 7).padding(.vertical, 4).background((game.isNative ? Color.green : game.bestRating.color).opacity(0.1), in: Capsule())
+            gogRevivedAvailability
             discoveryPrice
             HStack {
                 if let id = game.steamAppID ?? metadata?.steamAppID, let url = URL(string: "https://store.steampowered.com/app/\(id)/") {
@@ -1231,6 +1242,27 @@ struct DiscoveryGameTile: View {
                     .help(store.isDiscoveryGameSaved(game) ? "Remove from saved games" : "Save to your library")
             }
         }.frame(maxWidth: .infinity, minHeight: horizontal ? 100 : 132, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var gogRevivedAvailability: some View {
+        Group {
+            switch store.gogRevivedAvailability(for: game) {
+            case .available:
+                Label("Available on GOG Revived", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .notFound:
+                Label("Not listed on GOG Revived", systemImage: "minus.circle")
+                    .foregroundStyle(.secondary)
+            case .unknown, .checking:
+                Label("Checking GOG Revived…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
+            case .unavailable:
+                Label("GOG Revived status unavailable", systemImage: "questionmark.circle")
+                    .foregroundStyle(.orange)
+            }
+        }
+        .font(horizontal ? Font.caption : Font.caption2)
+        .lineLimit(1)
     }
 
     @ViewBuilder private var discoveryPrice: some View {

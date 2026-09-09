@@ -17,7 +17,10 @@ struct WineCompatibilityConfigurator: View {
 
     init(application: WindowsApplication) {
         self.application = application
-        _profile = State(initialValue: application.resolvedCompatibilityProfile)
+        _profile = State(initialValue: GameGraphicsProfiles.effectiveCompatibilityProfile(
+            application.resolvedCompatibilityProfile,
+            for: application
+        ))
         _detectedGraphicsAPI = State(initialValue: nil)
     }
 
@@ -70,7 +73,7 @@ struct WineCompatibilityConfigurator: View {
                             Text(backendLabel(backend)).tag(backend)
                         }
                     }
-                    .disabled(usesSharedSteamEnvironment)
+                    .disabled(usesSharedSteamEnvironment || graphicsProfile?.enforcedBackend != nil)
                     Text(graphicsBackendExplanation)
                         .font(.caption).foregroundStyle(.secondary)
                     if let issue = graphicsBackendIssue {
@@ -337,14 +340,17 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var graphicsBackendExplanation: String {
+        if graphicsProfile?.enforcedBackend != nil {
+            return "WineD3D is enforced for Torchlight II because D9VK fails while entering the game world on this Wine/Vulkan runtime."
+        }
         switch profile.graphicsBackend {
-        case .automatic: "Chooses an available renderer for this game."
-        case .d3dMetal: "For DirectX 11 and 12. Requires Game Porting Toolkit."
-        case .dxmt: "Runs DirectX 11 using Metal. Requires DXMT support."
-        case .dxvk: "Runs DirectX 10 and 11 using Vulkan. DirectX 9 uses WineD3D."
-        case .d9vk: "Runs DirectX 9 using Vulkan. Requires the D9VK component."
-        case .vkd3d: "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton."
-        case .wineD3D: "A fallback to try if other renderers cause graphics problems."
+        case .automatic: return "Chooses an available renderer for this game."
+        case .d3dMetal: return "For DirectX 11 and 12. Requires Game Porting Toolkit."
+        case .dxmt: return "Runs DirectX 11 using Metal. Requires DXMT support."
+        case .dxvk: return "Runs DirectX 10 and 11 using Vulkan. DirectX 9 uses WineD3D."
+        case .d9vk: return "Runs DirectX 9 using Vulkan. Requires the D9VK component."
+        case .vkd3d: return "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton."
+        case .wineD3D: return "A fallback to try if other renderers cause graphics problems."
         }
     }
 

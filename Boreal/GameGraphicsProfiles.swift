@@ -35,6 +35,21 @@ nonisolated enum GameGraphicsProfiles {
         ),
         GameGraphicsProfile(
             provider: .steam,
+            externalID: "200710",
+            availableAPIs: [.directX9],
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            // Torchlight II reaches its world renderer through D3D9. On the
+            // current Wine/MoltenVK path, D9VK fails buffer creation during
+            // that transition, while WineD3D is the compatible fallback.
+            preferredBackend: .wineD3D,
+            enforcedBackend: .wineD3D,
+            overlayCompatibleFullscreen: true
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
             externalID: "388410",
             availableAPIs: [.directX11, .directX9],
             // The original Deathinitive release starts in D3D9. The optional
@@ -65,6 +80,19 @@ nonisolated enum GameGraphicsProfiles {
         guard let provider = application.storeProvider,
               let externalID = application.storeExternalID else { return nil }
         return builtIn.first { $0.provider == provider && $0.externalID == externalID }
+    }
+
+    static func effectiveCompatibilityProfile(
+        _ currentProfile: WineCompatibilityProfile,
+        for application: WindowsApplication
+    ) -> WineCompatibilityProfile {
+        guard application.usesStoreMetadataOnly,
+              let builtIn = profile(for: application),
+              let enforcedBackend = builtIn.enforcedBackend else { return currentProfile }
+        var effective = currentProfile
+        effective.graphicsAPI = builtIn.defaultAPI
+        effective.graphicsBackend = enforcedBackend
+        return effective
     }
 
     static func applying(

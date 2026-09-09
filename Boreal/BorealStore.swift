@@ -71,6 +71,7 @@ final class BorealStore {
     var discoveryPaginationState: AppleGamingWikiDiscoveryState = .idle
     var discoveryMetadata: [String: DiscoveryGameMetadata] = [:]
     var discoveryPriceSummaries: [String: DiscoveryPriceSummary] = [:]
+    var discoveryGOGRevivedAvailability: [String: GOGRevivedAvailability] = [:]
     var environmentDependencyStatuses: [UUID: [RuntimeDependencyStatus]] = [:]
     var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
     var diskStorageOperationIDs: Set<UUID> = []
@@ -112,6 +113,7 @@ final class BorealStore {
     private var discoveryPriceLoads: Set<String> = []
     private var discoveryOffersLoads: Set<String> = []
     private var loadedDiscoveryOffers: Set<String> = []
+    private var discoveryGOGRevivedLoads: Set<String> = []
 
     nonisolated static let automaticLibraryRefreshInterval: TimeInterval = 8 * 60 * 60
     nonisolated static let gameInstallationRootDefaultsKey = "gameInstallationRootPath"
@@ -280,8 +282,29 @@ final class BorealStore {
         }
     }
 
-    func lookupGOGRevived(named title: String) async -> GOGRevivedEntry? {
-        try? await services.gogRevivedCatalog.lookup(named: title)
+    func gogRevivedAvailability(for game: AppleGamingWikiGame) -> GOGRevivedAvailability {
+        discoveryGOGRevivedAvailability[game.id] ?? .unknown
+    }
+
+    func ensureGOGRevivedAvailability(for game: AppleGamingWikiGame) async {
+        guard discoveryGOGRevivedAvailability[game.id] == nil,
+              discoveryGOGRevivedLoads.insert(game.id).inserted else { return }
+        discoveryGOGRevivedAvailability[game.id] = .checking
+        defer {
+            discoveryGOGRevivedLoads.remove(game.id)
+            if Task.isCancelled, discoveryGOGRevivedAvailability[game.id] == .checking {
+                discoveryGOGRevivedAvailability.removeValue(forKey: game.id)
+            }
+        }
+
+        do {
+            let entry = try await services.gogRevivedCatalog.lookup(named: game.title)
+            guard !Task.isCancelled else { return }
+            discoveryGOGRevivedAvailability[game.id] = entry.map(GOGRevivedAvailability.available) ?? .notFound
+        } catch {
+            guard !Task.isCancelled else { return }
+            discoveryGOGRevivedAvailability[game.id] = .unavailable
+        }
     }
 
     func loadDiscoveryMetadata(for game: AppleGamingWikiGame) {
@@ -769,9 +792,12 @@ final class BorealStore {
     }
 
     func compatibilityProfile(for application: WindowsApplication) -> WineCompatibilityProfile {
-        var profile = application.compatibilityProfile ?? application.resolvedCompatibilityProfile
+        var profile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            application.compatibilityProfile ?? application.resolvedCompatibilityProfile,
+            for: application
+        )
         if let builtIn = GameGraphicsProfiles.profile(for: application) {
-            if application.compatibilityProfile == nil {
+            if builtIn.enforcedBackend == nil, application.compatibilityProfile == nil {
                 profile.graphicsAPI = builtIn.defaultAPI
                 if let preferredBackend = builtIn.preferredBackend {
                     profile.graphicsBackend = preferredBackend
@@ -847,7 +873,10 @@ final class BorealStore {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }),
               applications[index].status != .running,
               !applications[index].status.isBusy else { return }
-        var profile = requestedProfile
+        var profile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            requestedProfile,
+            for: applications[index]
+        )
         if let features = compatibilityRuntimeFeatures(for: applications[index], backend: profile.graphicsBackend) {
             if !features.esync { profile.esyncEnabled = false }
             if !features.msync { profile.msyncEnabled = false }
@@ -2943,10 +2972,15 @@ final class BorealStore {
                   let runtime = try await runtime(for: environmentRecord) else {
                 throw InstallerServiceError.noRuntimeAvailable
             }
+            let launchProfile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+                application.resolvedCompatibilityProfile,
+                for: application
+            )
             managed.configuration = EnvironmentConfiguration(
                 name: environmentRecord.name,
-                profile: application.resolvedCompatibilityProfile
+                profile: launchProfile
             )
+            try GameLaunchCompatibility.prepare(application: application)
             try await services.environmentManager.configure(managed, runtime: runtime)
             let session = try await services.processRunner.run(
                 plan: WindowsLaunchPlan(
@@ -3053,6 +3087,13 @@ final class BorealStore {
                 throw InstallerServiceError.noRuntimeAvailable
             }
             var profile = compatibilityProfile(for: applications[index])
+            if GameGraphicsProfiles.profile(for: applications[index])?.enforcedBackend != nil,
+               applications[index].compatibilityProfile != profile {
+                applications[index].compatibilityProfile = profile
+                applications[index].graphics = profile.graphicsBackend.displayName
+                applications[index].lastResult = "Using the stable Torchlight II graphics profile"
+                save()
+            }
             let configuredExecutable = URL(fileURLWithPath: applications[index].executablePath)
             let executable = ExecutableDiscovery.preferredLaunchExecutable(
                 for: configuredExecutable,
@@ -3081,6 +3122,7 @@ final class BorealStore {
             let selectedGraphicsAPI = profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic
             let graphicsLaunchOption = selectedGraphicsAPI == .automatic ? nil : graphicsProfile?.launchOption(for: selectedGraphicsAPI)
             managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: profile)
+            try GameLaunchCompatibility.prepare(application: applications[index])
             try await services.environmentManager.configure(managed, runtime: runtime)
             applications[index].status = .starting
             let session: WindowsProcessSession

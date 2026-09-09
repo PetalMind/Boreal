@@ -167,6 +167,57 @@ struct WineCompatibilityProfileTests {
         #expect(!fileManager.fileExists(atPath: environmentRoot.appending(path: ".graphics-backend.json").path))
     }
 
+    @Test func modernWow64Installs32BitRendererIntoSyswow64() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-wow64-graphics-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let components = root.appending(path: "runtime/GraphicsComponents/D9VK", directoryHint: .isDirectory)
+        let system32 = root.appending(path: "environment/prefix/drive_c/windows/system32", directoryHint: .isDirectory)
+        let syswow64 = root.appending(path: "environment/prefix/drive_c/windows/syswow64", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: components.appending(path: "x32"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: components.appending(path: "x64"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: system32, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: syswow64, withIntermediateDirectories: true)
+        try Data("d9vk-x32".utf8).write(to: components.appending(path: "x32/d3d9.dll"))
+        try Data("wine-x64".utf8).write(to: system32.appending(path: "d3d9.dll"))
+        try Data("wine-x32".utf8).write(to: syswow64.appending(path: "d3d9.dll"))
+        let runtimeRoot = root.appending(path: "runtime", directoryHint: .isDirectory)
+        let runtime = InstalledRuntime(
+            id: "test-wow64-d9vk",
+            displayName: "Test WoW64 D9VK",
+            wineVersion: "test",
+            rootURL: runtimeRoot,
+            wineExecutable: runtimeRoot.appending(path: "wine"),
+            wineServerExecutable: runtimeRoot.appending(path: "wineserver"),
+            wineBootExecutable: runtimeRoot.appending(path: "wineboot"),
+            architecture: .arm64,
+            requirements: [],
+            features: RuntimeFeatures(
+                wow64: true, wineMono: false, wineGecko: false,
+                d3dmetal: false, dxmt: false, d9vk: true
+            )
+        )
+        let environmentRoot = root.appending(path: "environment", directoryHint: .isDirectory)
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(
+                name: "32-bit game in WoW64",
+                architecture: WinePrefixArchitecture.win32.rawValue
+            ),
+            runtimeID: runtime.id,
+            rootURL: environmentRoot,
+            prefixURL: environmentRoot.appending(path: "prefix", directoryHint: .isDirectory),
+            logsURL: environmentRoot.appending(path: "Logs", directoryHint: .isDirectory),
+            state: .ready
+        )
+
+        let activation = try GraphicsBackendManager().activate(.d9vk, in: environment, runtime: runtime)
+
+        #expect(activation.dllOverrides == ["d3d9"])
+        #expect(try String(contentsOf: syswow64.appending(path: "d3d9.dll"), encoding: .utf8) == "d9vk-x32")
+        #expect(try String(contentsOf: system32.appending(path: "d3d9.dll"), encoding: .utf8) == "wine-x64")
+    }
+
     @Test func vkd3dActivationInstallsDirectX12LibrariesAndOverrides() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory.appending(path: "boreal-vkd3d-\(UUID().uuidString)")
@@ -403,6 +454,79 @@ struct WineCompatibilityProfileTests {
         )
 
         #expect(configured.arguments == ["-applaunch", "475150", "/dx9"])
+    }
+
+    @Test func torchlightUsesWineD3DWhenAnOlderProfileSelectedD9VK() throws {
+        let application = WindowsApplication(
+            name: "Torchlight II",
+            publisher: "Runic Games",
+            executablePath: "/tmp/Torchlight2.exe",
+            installerPath: "",
+            environmentID: UUID(),
+            storeMetadataOnly: true,
+            compatibilityProfile: WineCompatibilityProfile(
+                windowsVersion: .windows10,
+                architecture: .win32,
+                graphicsBackend: .d9vk,
+                graphicsAPI: .directX9
+            ),
+            storeProvider: .steam,
+            storeExternalID: "200710"
+        )
+
+        let profile = GameGraphicsProfiles.profile(for: application)
+        let effective = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            application.resolvedCompatibilityProfile,
+            for: application
+        )
+
+        #expect(profile?.enforcedBackend == .wineD3D)
+        #expect(profile?.defaultAPI == .directX9)
+        #expect(effective.graphicsBackend == .wineD3D)
+        #expect(effective.graphicsAPI == .directX9)
+    }
+
+    @Test func torchlightDirectLaunchGetsTheSteamAppIDFile() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-torchlight-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appending(path: "Torchlight2.exe")
+        try Data().write(to: executable)
+        let application = WindowsApplication(
+            name: "Torchlight II",
+            publisher: "Runic Games",
+            executablePath: executable.path,
+            installerPath: "",
+            environmentID: UUID(),
+            storeMetadataOnly: true,
+            storeProvider: .steam,
+            storeExternalID: "200710"
+        )
+
+        try GameLaunchCompatibility.prepare(application: application)
+
+        #expect(try String(contentsOf: root.appending(path: "steam_appid.txt"), encoding: .utf8) == "200710\n")
+    }
+
+    @Test func torchlightCompatibilityDoesNotTouchSteamManagedInstallations() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-torchlight-steam-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appending(path: "Torchlight2.exe")
+        try Data().write(to: executable)
+        let application = WindowsApplication(
+            name: "Torchlight II",
+            publisher: "Runic Games",
+            executablePath: executable.path,
+            installerPath: "steam-windows-game",
+            environmentID: UUID(),
+            storeProvider: .steam,
+            storeExternalID: "200710"
+        )
+
+        try GameLaunchCompatibility.prepare(application: application)
+
+        #expect(!FileManager.default.fileExists(atPath: root.appending(path: "steam_appid.txt").path))
     }
 
     private func makeRuntime(
