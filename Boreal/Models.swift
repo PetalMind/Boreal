@@ -271,7 +271,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var graphicsAPI: GraphicsAPI? = nil
     var esyncEnabled = true
     var msyncEnabled = true
-    var retinaModeEnabled = true
+    var retinaModeEnabled = false
     var fullscreenFSREnabled = false
     var overlayCompatibleFullscreen = true
     /// Selected CoreGraphics display ID for the Wine desktop; nil follows the main display.
@@ -332,7 +332,7 @@ extension WineCompatibilityProfile {
         graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI)
         esyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .esyncEnabled) ?? true
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
-        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? true
+        retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? false
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
         overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? true
         overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
@@ -996,7 +996,7 @@ struct InstallCandidate: Identifiable, Hashable, Sendable {
             && ExecutableDiscovery.isEligibleExecutablePath(url.lastPathComponent)
     }
     var recommendedRuntimeEngine: RuntimeEngine {
-        WindowsExecutableArchitecture.inspect(url) == .x86_64 ? .gamePortingToolkit : .wine
+        UnityIL2CPPRuntimeCompatibility.recommendedRuntimeEngine(for: url)
     }
 }
 

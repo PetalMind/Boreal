@@ -990,7 +990,13 @@ final class BorealStore {
         }
     }
 
-    private func recreateStandaloneEnvironment(_ applicationID: UUID, profile: WineCompatibilityProfile, previousProfile: WineCompatibilityProfile, engine: RuntimeEngine) {
+    private func recreateStandaloneEnvironment(
+        _ applicationID: UUID,
+        profile: WineCompatibilityProfile,
+        previousProfile: WineCompatibilityProfile,
+        engine: RuntimeEngine,
+        launchWhenReady: Bool = false
+    ) {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
         let oldEnvironmentID = applications[index].environmentID
         let executable = URL(fileURLWithPath: applications[index].executablePath)
@@ -1045,6 +1051,9 @@ final class BorealStore {
                     try? await services.environmentManager.remove(oldManaged)
                     environments.removeAll { $0.id == oldEnvironmentID }
                     save()
+                }
+                if launchWhenReady {
+                    await toggleRunningAsync(applicationID)
                 }
             } catch {
                 let diagnostics = await preserveDiagnosticsAndRemoveFailedEnvironment(replacement)
@@ -1944,7 +1953,7 @@ final class BorealStore {
         let name = selected.deletingPathExtension().lastPathComponent
         let gogIdentity = GOGInstalledGameDetector.detect(executable: selected)
         let architecture = WindowsExecutableArchitecture.inspect(selected)
-        let engine: RuntimeEngine = architecture == .x86_64 ? .gamePortingToolkit : .wine
+        let engine = UnityIL2CPPRuntimeCompatibility.recommendedRuntimeEngine(for: selected)
         let environmentArchitecture = architecture == .x86 ? "win32" : "win64"
         SoundService.shared.play(.installationStarted)
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
@@ -3247,6 +3256,36 @@ final class BorealStore {
                 applications[index].executablePath = executable.path
                 applications[index].auxiliaryExecutables = nil
                 applications[index].lastResult = "Using direct game executable \(executable.lastPathComponent)"
+                save()
+            }
+            let isUnityIL2CPP = UnityIL2CPPRuntimeCompatibility.requiresModernWine(at: executable)
+            if runtime.resolvedEngine == .gamePortingToolkit, isUnityIL2CPP {
+                let previousProfile = profile
+                profile.graphicsBackend = .automatic
+                if let recommendedGraphicsAPI = UnityIL2CPPRuntimeCompatibility.recommendedGraphicsAPI(for: executable) {
+                    profile.graphicsAPI = recommendedGraphicsAPI
+                }
+                applications[index].compatibilityProfile = profile
+                applications[index].lastResult = "Rebuilding the Unity IL2CPP environment with Wine"
+                applications[index].lastErrorDetail = nil
+                save()
+                recreateStandaloneEnvironment(
+                    applications[index].id,
+                    profile: profile,
+                    previousProfile: previousProfile,
+                    engine: .wine,
+                    launchWhenReady: true
+                )
+                return
+            }
+            if isUnityIL2CPP,
+               let recommendedGraphicsAPI = UnityIL2CPPRuntimeCompatibility.recommendedGraphicsAPI(for: executable),
+               profile.graphicsBackend != .automatic || profile.graphicsAPI != recommendedGraphicsAPI {
+                profile.graphicsBackend = .automatic
+                profile.graphicsAPI = recommendedGraphicsAPI
+                applications[index].compatibilityProfile = profile
+                applications[index].lastResult = "Using DirectX 11 with the compatible Wine graphics backend"
+                applications[index].lastErrorDetail = nil
                 save()
             }
             if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: executable) {
