@@ -4,7 +4,10 @@ nonisolated struct BorealServices: Sendable {
     let runtimeManager: any RuntimeManaging
     let environmentManager: any EnvironmentManaging
     let processRunner: any WindowsProcessRunning
+    let launchCoordinator: any LaunchCoordinating
     let installer: any Installing
+    let installationService: any GameInstallationManaging
+    let activityService: ActivityService
     let steamLibrary: any SteamLibraryLoading
     let steamWindows: any SteamWindowsProviding
     let epicLibrary: any EpicLibraryProviding
@@ -20,6 +23,9 @@ nonisolated struct BorealServices: Sendable {
         environmentManager: any EnvironmentManaging,
         processRunner: any WindowsProcessRunning,
         installer: any Installing,
+        launchCoordinator: (any LaunchCoordinating)? = nil,
+        installationService: any GameInstallationManaging = InstallationService(),
+        activityService: ActivityService = ActivityService(),
         steamLibrary: any SteamLibraryLoading,
         steamWindows: any SteamWindowsProviding,
         epicLibrary: any EpicLibraryProviding,
@@ -33,7 +39,10 @@ nonisolated struct BorealServices: Sendable {
         self.runtimeManager = runtimeManager
         self.environmentManager = environmentManager
         self.processRunner = processRunner
+        self.launchCoordinator = launchCoordinator ?? LaunchCoordinator(processRunner: processRunner)
         self.installer = installer
+        self.installationService = installationService
+        self.activityService = activityService
         self.steamLibrary = steamLibrary
         self.steamWindows = steamWindows
         self.epicLibrary = epicLibrary

@@ -4,6 +4,12 @@ import Testing
 
 @Suite(.serialized)
 struct GOGServiceTests {
+    @Test func requiresGPTKForTaintedGrailUnityIL2CPPAndD3D11() {
+        #expect(GameRuntimeProfiles.requiredEngine(provider: .gog, externalID: "1887281589") == .gamePortingToolkit)
+        #expect(GameRuntimeProfiles.requiredEngine(provider: .steam, externalID: "1466060") == .gamePortingToolkit)
+        #expect(GameRuntimeProfiles.requiredEngine(provider: .gog, externalID: "another-game") == nil)
+    }
+
     @Test func usesTitanQuestOfficialDirectX9FallbackWithWine() {
         let wine = GOGService.compatibilityLaunchConfiguration(
             appID: "1196955511",

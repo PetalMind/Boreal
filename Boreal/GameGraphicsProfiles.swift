@@ -1,7 +1,53 @@
 import Foundation
 
+nonisolated enum GameRuntimeProfiles {
+    static func requiredEngine(provider: GameLibraryProvider, externalID: String) -> RuntimeEngine? {
+        switch (provider, externalID) {
+        case (.gog, "1887281589"), (.steam, "1466060"):
+            // Unity 6 needs D3D11 feature level 11, which WineD3D cannot
+            // expose on Apple Silicon. Boreal supplies the missing WinRT API
+            // alias in the prefix so GPTK can load IL2CPP and use D3DMetal.
+            return .gamePortingToolkit
+        default:
+            return nil
+        }
+    }
+
+    static func requiredEngine(for application: WindowsApplication) -> RuntimeEngine? {
+        guard let provider = application.storeProvider,
+              let externalID = application.storeExternalID else { return nil }
+        return requiredEngine(provider: provider, externalID: externalID)
+    }
+
+    static func requiredEngine(for game: StoreLibraryGame) -> RuntimeEngine? {
+        requiredEngine(provider: game.provider, externalID: game.externalID)
+    }
+}
+
 nonisolated enum GameGraphicsProfiles {
     static let builtIn: [GameGraphicsProfile] = [
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1887281589",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX11, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            overlayCompatibleFullscreen: true,
+            launchEnvironment: ["WINEDLLOVERRIDES": "Rewired_WindowsGamingInput="]
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
+            externalID: "1466060",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX11, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            overlayCompatibleFullscreen: true,
+            launchEnvironment: ["WINEDLLOVERRIDES": "Rewired_WindowsGamingInput="]
+        ),
         GameGraphicsProfile(
             provider: .steam,
             externalID: "1593500",

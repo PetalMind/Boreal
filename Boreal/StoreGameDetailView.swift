@@ -275,7 +275,7 @@ struct StoreGameDetailView: View {
             case .offers: discoveryGame != nil
             case .activity: discoveryGame == nil
             case .compatibility: currentGame.supportsNativeMacOS != true
-            case .files: currentGame.installPath != nil || linkedApplication != nil
+            case .files: store.installedLocation(for: currentGame) != nil || linkedApplication != nil
             }
         }
     }
@@ -783,13 +783,13 @@ struct StoreGameDetailView: View {
             } else if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
             } else if game.provider == .steam {
-                if currentGame.isInstalled, currentGame.installedPlatform == .nativeMacOS, currentGame.installPath != nil {
+                if store.isInstalled(currentGame), store.installedPlatform(for: currentGame) == .nativeMacOS, store.installedLocation(for: currentGame) != nil {
                     Button("Play", systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else if let app = linkedApplication {
                     runtimeLaunchControl(for: app, playTitle: "Play")
                 } else if currentGame.supportsNativeMacOS == true {
-                    Button(currentGame.isInstalled ? "Play" : "Install", systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
+                    Button(store.isInstalled(currentGame) ? "Play" : "Install", systemImage: store.isInstalled(currentGame) ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else if currentGame.supportsWindows == true, storeOperation == nil {
                     Button("Install Windows Version", systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
@@ -798,8 +798,8 @@ struct StoreGameDetailView: View {
                     Button("Open in Steam", systemImage: "arrow.up.right.square") { openSteam() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 }
-            } else if currentGame.isInstalled {
-                if currentGame.installedPlatform == .nativeMacOS {
+            } else if store.isInstalled(currentGame) {
+                if store.installedPlatform(for: currentGame) == .nativeMacOS {
                     Button("Play", systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else if let app = linkedApplication {
@@ -870,29 +870,29 @@ struct StoreGameDetailView: View {
                 }
                 Divider()
             }
-            if currentGame.installPath != nil {
+            if store.installedLocation(for: currentGame) != nil {
                 Button("Show Game Files", systemImage: "folder") { showGameFiles() }
             }
-            if !currentGame.isInstalled && linkedApplication == nil {
+            if !store.isInstalled(currentGame) && linkedApplication == nil {
                 Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }
             }
 
             if currentGame.provider == .steam {
                 Button("View Steam Store Page", systemImage: "arrow.up.right.square") { openStorePage() }
             }
-            if currentGame.isInstalled, store.supportsStoreGameUpdate(currentGame) {
+            if store.isInstalled(currentGame), store.supportsStoreGameUpdate(currentGame) {
                 Button("Check for Updates", systemImage: "arrow.triangle.2.circlepath") {
                     store.updateStoreGame(currentGame)
                 }
                 .disabled(storeOperation != nil)
             }
-            if currentGame.isInstalled, store.supportsStoreGameVerification(currentGame) {
+            if store.isInstalled(currentGame), store.supportsStoreGameVerification(currentGame) {
                 Button("Verify Game Files", systemImage: "checkmark.shield") {
                     store.verifyStoreGame(currentGame)
                 }
                 .disabled(storeOperation != nil)
             }
-            if currentGame.isInstalled || linkedApplication != nil {
+            if store.isInstalled(currentGame) || linkedApplication != nil {
                 Divider()
                 Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
             }
@@ -960,7 +960,7 @@ struct StoreGameDetailView: View {
 
     private func operationTitle(for progress: StoreGameOperationProgress) -> String {
         let base: String
-        if currentGame.isInstalled {
+        if store.isInstalled(currentGame) {
             base = progress.phase == .verifying ? "Repairing" : "Updating"
         } else {
             switch progress.phase {
@@ -1087,7 +1087,7 @@ struct StoreGameDetailView: View {
             Button("Try Windows Installation Again", systemImage: "arrow.clockwise") {
                 store.clearStoreGameOperation(for: game); showsInstallationOptions = true
             }
-        } else if currentGame.isInstalled {
+        } else if store.isInstalled(currentGame) {
             Button("Try Preparation Again", systemImage: "arrow.clockwise") {
                 store.clearStoreGameOperation(for: game); store.prepareStoreGame(game)
             }
@@ -1487,7 +1487,7 @@ struct StoreGameDetailView: View {
     }
 
     private var installationLocation: String {
-        guard let path = currentGame.installPath else { return "Not installed" }
+        guard let path = store.installedLocation(for: currentGame)?.path else { return "Not installed" }
         return URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
     }
 
@@ -1644,29 +1644,29 @@ struct StoreGameDetailView: View {
 
     private var detailsSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if currentGame.installPath != nil || currentGame.storageBytes != nil || currentGame.sizeEstimate != nil {
+            if store.installedLocation(for: currentGame) != nil || currentGame.storageBytes != nil || currentGame.sizeEstimate != nil {
                 detailCard("Installation", symbol: "internaldrive.fill") {
-                    Label(currentGame.isInstalled || linkedApplication != nil ? "Installed" : "Not installed", systemImage: currentGame.isInstalled || linkedApplication != nil ? "checkmark.circle.fill" : "arrow.down.circle")
+                    Label(store.isInstalled(currentGame) || linkedApplication != nil ? "Installed" : "Not installed", systemImage: store.isInstalled(currentGame) || linkedApplication != nil ? "checkmark.circle.fill" : "arrow.down.circle")
                         .font(.callout.weight(.semibold))
-                        .foregroundStyle(currentGame.isInstalled || linkedApplication != nil ? Color.mint : Color.secondary)
+                        .foregroundStyle(store.isInstalled(currentGame) || linkedApplication != nil ? Color.mint : Color.secondary)
                     Divider()
                     metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
                     if let environment = linkedEnvironment {
                         metric("Prefix", value: store.formattedBytes(environment.storageBytes), symbol: "shippingbox")
                     }
-                    if currentGame.installPath != nil {
+                    if store.installedLocation(for: currentGame) != nil {
                         Divider()
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Location").font(.caption).foregroundStyle(.secondary)
                             Text(installationLocation).font(.caption).foregroundStyle(.secondary)
                                 .lineLimit(3).truncationMode(.middle).textSelection(.enabled)
-                                .help(currentGame.installPath ?? installationLocation)
+                                .help(store.installedLocation(for: currentGame)?.path ?? installationLocation)
                         }
                     }
                     if currentGame.sizeEstimate?.downloadBytes != nil {
                         metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
                     }
-                    if currentGame.installPath != nil {
+                    if store.installedLocation(for: currentGame) != nil {
                         Button("Manage files", systemImage: "arrow.right") { selectedTab = .files }
                             .buttonStyle(BorealSecondaryActionButtonStyle())
                     }
@@ -1685,11 +1685,11 @@ struct StoreGameDetailView: View {
                 }
             }
             detailCard("Actions", symbol: "ellipsis") {
-                if currentGame.installPath != nil {
+                if store.installedLocation(for: currentGame) != nil {
                     Button("Open game folder", systemImage: "folder") { showGameFiles() }
                         .buttonStyle(BorealRailActionButtonStyle())
                 }
-                if !currentGame.isInstalled && linkedApplication == nil {
+                if !store.isInstalled(currentGame) && linkedApplication == nil {
                     Button("Locate installed game…", systemImage: "folder.badge.plus") { locateInstalledGame() }
                         .buttonStyle(BorealRailActionButtonStyle())
                 }
@@ -1697,21 +1697,21 @@ struct StoreGameDetailView: View {
                     Button("View Steam store page", systemImage: "arrow.up.right.square") { openStorePage() }
                         .buttonStyle(BorealRailActionButtonStyle())
                 }
-                if currentGame.isInstalled, store.supportsStoreGameUpdate(currentGame) {
+                if store.isInstalled(currentGame), store.supportsStoreGameUpdate(currentGame) {
                     Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
                         store.updateStoreGame(currentGame)
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
                     .disabled(storeOperation != nil)
                 }
-                if currentGame.isInstalled, store.supportsStoreGameVerification(currentGame) {
+                if store.isInstalled(currentGame), store.supportsStoreGameVerification(currentGame) {
                     Button("Verify game files", systemImage: "checkmark.shield") {
                         store.verifyStoreGame(currentGame)
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
                     .disabled(storeOperation != nil)
                 }
-                if currentGame.isInstalled || linkedApplication != nil {
+                if store.isInstalled(currentGame) || linkedApplication != nil {
                     Divider()
                     Button("Uninstall…", systemImage: "trash", role: .destructive) {
                         showsUninstallConfirmation = true
@@ -1724,7 +1724,7 @@ struct StoreGameDetailView: View {
 
     private var installationFilesSection: some View {
         detailCard("Installation", symbol: "folder.fill") {
-            if let path = currentGame.installPath {
+            if let path = store.installedLocation(for: currentGame)?.path {
                 metric("Location", value: path, symbol: "folder")
                 Button("Open installation folder", systemImage: "folder") { showGameFiles() }
                     .buttonStyle(BorealSecondaryActionButtonStyle())
@@ -1769,14 +1769,14 @@ struct StoreGameDetailView: View {
 
     private var libraryStatus: String {
         if linkedApplication != nil { return "Managed by Boreal" }
-        if currentGame.isInstalled { return "Installed" }
+        if store.isInstalled(currentGame) { return "Installed" }
         return "In your library"
     }
 
     private var libraryStatusSymbol: String {
         if linkedApplication?.status == .running { return "play.circle.fill" }
         if linkedApplication != nil { return "checkmark.seal.fill" }
-        if currentGame.isInstalled { return "checkmark.circle.fill" }
+        if store.isInstalled(currentGame) { return "checkmark.circle.fill" }
         return "books.vertical.fill"
     }
 
@@ -1784,7 +1784,7 @@ struct StoreGameDetailView: View {
         if linkedApplication?.status == .running { return "The game is running now." }
         if storeOperation != nil { return "An installation task is currently in progress." }
         if linkedApplication != nil { return "Ready to launch with its configured Boreal runtime." }
-        if currentGame.isInstalled { return "Installed locally and ready to open." }
+        if store.isInstalled(currentGame) { return "Installed locally and ready to open." }
         return "Owned on \(currentGame.provider.rawValue). Install it when you are ready to play."
     }
 
@@ -1815,7 +1815,7 @@ struct StoreGameDetailView: View {
     }
 
     private var diskReportTaskID: String {
-        "disk-\(game.id.uuidString)-\(currentGame.installPath ?? "uninstalled")"
+        "disk-\(game.id.uuidString)-\(store.installedLocation(for: currentGame)?.path ?? "uninstalled")"
     }
 
     private var linkedEnvironment: WindowsEnvironment? {
@@ -1901,13 +1901,13 @@ struct StoreGameDetailView: View {
     }
 
     private func showGameFiles() {
-        guard let installPath = currentGame.installPath else { return }
+        guard let installPath = store.installedLocation(for: currentGame)?.path else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
     }
 
     private func openSteam() {
-        let action = currentGame.isInstalled ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
-        if action == "rungameid", currentGame.installedPlatform == .nativeMacOS, let path = currentGame.installPath {
+        let action = store.isInstalled(currentGame) ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
+        if action == "rungameid", store.installedPlatform(for: currentGame) == .nativeMacOS, let path = store.installedLocation(for: currentGame)?.path {
             GameOverlayController.shared.expectNativeGame(
                 name: currentGame.name,
                 installationURL: URL(fileURLWithPath: path, isDirectory: true)
@@ -1917,7 +1917,7 @@ struct StoreGameDetailView: View {
     }
 
     private func openNativeInstallation() {
-        guard let path = currentGame.installPath else { return }
+        guard let path = store.installedLocation(for: currentGame)?.path else { return }
         let root = URL(fileURLWithPath: path, isDirectory: true)
         if let enumerator = FileManager.default.enumerator(
             at: root,

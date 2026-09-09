@@ -44,6 +44,14 @@ final class BorealStore {
     var applications: [WindowsApplication] = []
     var environments: [WindowsEnvironment] = []
     var storeGames: [StoreLibraryGame] = []
+    /// Canonical installation records. `StoreLibraryGame` installation fields
+    /// remain only as a compatibility bridge for provider payloads and old
+    /// persisted files.
+    private(set) var installations: [GameInstallation] = []
+    /// Runtime/process state is separate from installation state. It is
+    /// derived from the launch coordinator and environment monitor rather
+    /// than persisted as part of catalog metadata.
+    private(set) var executionStates: [UUID: ExecutionState] = [:]
     private(set) var favoriteKeys: Set<String> = []
     var librarySyncState: LibrarySyncState = .idle
     var epicConnectionState: EpicConnectionState = .checking
@@ -83,6 +91,9 @@ final class BorealStore {
     private let services: BorealServices
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
+    /// Developer-mode diagnostics: the last immutable plan prepared for each
+    /// application. It is not used as a mutable process command afterward.
+    private(set) var lastLaunchPlans: [UUID: LaunchPlan] = [:]
     private var performanceLogURLs: [UUID: URL] = [:]
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
@@ -198,6 +209,13 @@ final class BorealStore {
 
     func application(id: UUID) -> WindowsApplication? { applications.first { $0.id == id } }
     func storeGame(id: UUID) -> StoreLibraryGame? { storeGames.first { $0.id == id } }
+
+    func launchPlanDiagnostics(for applicationID: UUID) -> String? {
+        guard let plan = lastLaunchPlans[applicationID] else { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? String(data: encoder.encode(plan), encoding: .utf8)
+    }
 
     func renameCustomApplication(_ applicationID: UUID, to requestedName: String) {
         let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -655,11 +673,39 @@ final class BorealStore {
     }
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
 
+    func installation(for game: StoreLibraryGame) -> GameInstallation? {
+        installations.first {
+            $0.gameID == game.id || $0.storeReference == game.storeReference
+        }
+    }
+
+    func installedLocation(for game: StoreLibraryGame) -> URL? {
+        if let installation = installation(for: game) {
+            return StoragePathResolver.resolve(installation.location, layout: storageLayout)
+        }
+        return game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    func installedPlatform(for game: StoreLibraryGame) -> StoreGameInstallationPlatform? {
+        installation(for: game)?.platform ?? game.installedPlatform
+    }
+
+    func isInstalled(_ game: StoreLibraryGame) -> Bool {
+        installation(for: game).map { $0.state == .installed } ?? game.isInstalled
+    }
+
+    private func hasInstallation(_ game: StoreLibraryGame) -> Bool {
+        installation(for: game)?.state.representsAnInstallation ?? game.isInstalled
+    }
+
     var managedStorageLayout: BorealStorageLayout { storageLayout }
 
     func refreshGameDiskStorage(for game: StoreLibraryGame) {
         let gameID = game.id
-        let gamePath = game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let gamePath = installations.first(where: {
+            $0.gameID == game.id || $0.storeReference == game.storeReference
+        }).map { StoragePathResolver.resolve($0.location, layout: storageLayout) }
+            ?? game.installPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let prefixPath = linkedApplication(for: game).flatMap { environment(id: $0.environmentID)?.prefixPath }.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let supportPath = storageURL.deletingLastPathComponent()
         Task.detached(priority: .utility) { [weak self] in
@@ -772,7 +818,10 @@ final class BorealStore {
     func applications(in environmentID: UUID) -> [WindowsApplication] { applications.filter { $0.environmentID == environmentID } }
 
     func recommendedRuntimeEngine(for game: StoreLibraryGame) -> RuntimeEngine {
-        game.provider == .gog && game.externalID == "2022341186" ? .gamePortingToolkit : .wine
+        if let required = GameRuntimeProfiles.requiredEngine(for: game) {
+            return required
+        }
+        return game.provider == .gog && game.externalID == "2022341186" ? .gamePortingToolkit : .wine
     }
 
     func hasInstalledRuntime(engine: RuntimeEngine) -> Bool {
@@ -780,6 +829,9 @@ final class BorealStore {
     }
 
     func runtimeCompatibilityIssue(for application: WindowsApplication, engine: RuntimeEngine) -> String? {
+        if let required = GameRuntimeProfiles.requiredEngine(for: application), engine != required {
+            return "This game requires GPTK with D3DMetal for Direct3D 11. Boreal prepares its Unity IL2CPP compatibility files automatically."
+        }
         guard engine == .gamePortingToolkit,
               WindowsExecutableArchitecture.inspect(URL(fileURLWithPath: application.executablePath)) == .x86 else { return nil }
         let supportsWoW64 = runtimeStatuses.contains {
@@ -1434,7 +1486,7 @@ final class BorealStore {
                         await self?.updateSteamPreparation(stage, key: key, token: token)
                     }
                     try await registerSteamRuntimeHost(prepared)
-                    try await launchSteamInstall(game, steamExecutable: prepared.steamExecutable, environment: prepared.installation.environment, runtime: prepared.installation.runtime)
+                    try await launchSteamInstall(game, applicationID: game.id, steamExecutable: prepared.steamExecutable, environment: prepared.installation.environment, runtime: prepared.installation.runtime)
                 }
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
@@ -1510,6 +1562,11 @@ final class BorealStore {
         storeGames[index].installPath = installationPath
         storeGames[index].installedPlatform = .windows
         storeGames[index].storageBytes = GameStorage.allocatedSize(of: URL(fileURLWithPath: installationPath))
+        recordInstallation(
+            for: game,
+            location: URL(fileURLWithPath: installationPath, isDirectory: true),
+            platform: .windows
+        )
         SoundService.shared.play(.downloadCompleted)
     }
 
@@ -1560,20 +1617,81 @@ final class BorealStore {
               let runtime = try await runtime(for: environmentRecord) else {
             throw InstallerServiceError.noRuntimeAvailable
         }
-        try await launchSteamInstall(game, steamExecutable: URL(fileURLWithPath: host.executablePath), environment: managed, runtime: runtime)
-    }
-
-    private func launchSteamInstall(_ game: StoreLibraryGame, steamExecutable: URL, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
-        let bootstrap = try await services.processRunner.run(
-            plan: SteamWindowsService.bootstrapPlan(steamExecutable: steamExecutable),
-            environment: environment,
+        try await launchSteamInstall(
+            game,
+            applicationID: host.id,
+            steamExecutable: URL(fileURLWithPath: host.executablePath),
+            environment: managed,
             runtime: runtime
         )
+    }
+
+    private func launchSteamInstall(
+        _ game: StoreLibraryGame,
+        applicationID: UUID,
+        steamExecutable: URL,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        let bootstrapWindowsPlan = SteamWindowsService.bootstrapPlan(steamExecutable: steamExecutable)
+        let bootstrap = try await services.launchCoordinator.start(
+            plan: makeLaunchPlan(
+                bootstrapWindowsPlan,
+                applicationID: applicationID,
+                provider: .steam,
+                externalID: game.externalID,
+                environment: environment,
+                runtime: runtime,
+                profile: nil
+            ),
+            environment: environment,
+            runtime: runtime
+        ).processSession
         Task { _ = try? await services.processRunner.waitForExit(bootstrap) }
         try await Task.sleep(for: .milliseconds(400))
-        let plan = SteamWindowsService.protocolPlan("steam://install/\(game.externalID)", steamExecutable: steamExecutable)
-        let session = try await services.processRunner.run(plan: plan, environment: environment, runtime: runtime)
+        let windowsPlan = SteamWindowsService.protocolPlan("steam://install/\(game.externalID)", steamExecutable: steamExecutable)
+        let session = try await services.launchCoordinator.start(
+            plan: makeLaunchPlan(
+                windowsPlan,
+                applicationID: applicationID,
+                provider: .steam,
+                externalID: game.externalID,
+                environment: environment,
+                runtime: runtime,
+                profile: nil
+            ),
+            environment: environment,
+            runtime: runtime
+        ).processSession
         Task { _ = try? await services.processRunner.waitForExit(session) }
+    }
+
+    private func makeLaunchPlan(
+        _ windowsPlan: WindowsLaunchPlan,
+        applicationID: UUID,
+        provider: GameLibraryProvider?,
+        externalID: String?,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        profile: WineCompatibilityProfile?
+    ) -> LaunchPlan {
+        let storeReference = provider.flatMap { provider in
+            externalID.map { externalID in StoreReference(provider: provider, externalID: externalID) }
+        }
+        let installationID = installations.first {
+            $0.gameID == applicationID || $0.storeReference == storeReference
+        }?.id
+        return LaunchPlan(
+            applicationID: applicationID,
+            installationID: installationID,
+            environmentID: environment.id,
+            runtimeID: runtime.id,
+            provider: provider,
+            externalID: externalID,
+            windowsPlan: windowsPlan,
+            graphicsBackend: profile?.graphicsBackend ?? .automatic,
+            compatibilityProfile: profile
+        )
     }
 
     func refreshEpicConnection() {
@@ -1975,6 +2093,7 @@ final class BorealStore {
             storeGames[index].installPath = selected.path
             storeGames[index].installedPlatform = .nativeMacOS
             storeGames[index].storageBytes = GameStorage.allocatedSize(of: selected)
+            recordInstallation(for: game, location: selected, platform: .nativeMacOS)
             save()
             SoundService.shared.play(.installationCompleted)
             return
@@ -2053,6 +2172,13 @@ final class BorealStore {
                     storeGames[index].installPath = selected.deletingLastPathComponent().path
                     storeGames[index].installedPlatform = .windows
                     storeGames[index].storageBytes = app.storageBytes
+                    recordInstallation(
+                        for: game,
+                        location: selected.deletingLastPathComponent(),
+                        platform: .windows,
+                        environmentID: managed.id,
+                        executable: selected
+                    )
                     if storeGames[index].compatibility == nil { storeGames[index].compatibility = compatibility }
                 }
                 storeGameOperations[key] = nil
@@ -2117,6 +2243,7 @@ final class BorealStore {
             lastProgress: initialProgress,
             samples: previousRecord?.samples
         )
+        markInstallationInstalling(for: game, destinationRoot: destinationRoot, platform: platform)
         save()
         let task = Task { [weak self] in
             guard let self else { return }
@@ -2125,23 +2252,25 @@ final class BorealStore {
                     await self?.updateStoreDownload(progress, key: key, token: token)
                 }
                 let root = destinationRoot
-                let provider = try services.storeProviders.provider(for: game.provider)
-                try await provider.install(game, destinationRoot: root, platform: platform, progress: update)
+                let installationURL = try await services.installationService.install(
+                    game,
+                    destinationRoot: root,
+                    platform: platform,
+                    providerRegistry: services.storeProviders,
+                    progress: update
+                )
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
                 if game.provider == .gog,
-                   let index = storeGames.firstIndex(where: { $0.id == game.id }) {
-                    guard let installationURL = await provider.installationURL(
-                        for: game,
-                        destinationRoot: root,
-                        platform: platform
-                    ) else {
+                   let installationURL {
+                    guard let index = storeGames.firstIndex(where: { $0.id == game.id }) else {
                         throw GOGServiceError.installationIncomplete(platform)
                     }
                     storeGames[index].isInstalled = true
                     storeGames[index].installPath = installationURL.path
                     storeGames[index].installedPlatform = platform
                     storeGames[index].storageBytes = GameStorage.allocatedSize(of: installationURL)
+                    recordInstallation(for: game, location: installationURL, platform: platform)
                     save()
                 }
                 if game.provider == .epic,
@@ -2158,9 +2287,11 @@ final class BorealStore {
                 SoundService.shared.play(.downloadCompleted)
                 syncLibrary(game.provider)
             } catch is CancellationError {
+                markInstallationFailed(for: game)
                 finishCancelledStoreOperation(key: key, token: token)
             } catch {
                 guard storeOperationTokens[key] == token else { return }
+                markInstallationFailed(for: game)
                 storeGameOperations[key] = .failed(error.localizedDescription)
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
@@ -2329,7 +2460,7 @@ final class BorealStore {
     private func startStoreGameMaintenance(_ game: StoreLibraryGame, action: StoreGameMaintenanceAction) {
         let key = storeOperationKey(for: game)
         let capabilities = services.storeProviders.capabilities(for: game.provider)
-        guard game.isInstalled,
+        guard isInstalled(game),
               capabilities.contains(action.capability),
               storeGameOperations[key] == nil else { return }
         let token = UUID()
@@ -2342,15 +2473,22 @@ final class BorealStore {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
-                let provider = try services.storeProviders.provider(for: game.provider)
                 let update: @Sendable (StoreGameOperationProgress) async -> Void = { [weak self] progress in
                     await self?.updateMaintenanceProgress(progress, key: key, token: token)
                 }
                 switch action {
                 case .update:
-                    try await provider.update(game, progress: update)
+                    try await services.installationService.update(
+                        game,
+                        providerRegistry: services.storeProviders,
+                        progress: update
+                    )
                 case .verify:
-                    try await provider.verify(game, progress: update)
+                    try await services.installationService.verify(
+                        game,
+                        providerRegistry: services.storeProviders,
+                        progress: update
+                    )
                 }
                 try Task.checkCancellation()
                 guard storeOperationTokens[key] == token else { return }
@@ -2380,7 +2518,7 @@ final class BorealStore {
     func uninstallStoreGame(_ game: StoreLibraryGame) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider),
-              game.isInstalled,
+              hasInstallation(game),
               storeGameOperations[key] == nil else { return }
         let token = UUID()
         storeOperationTokens[key] = token
@@ -2398,8 +2536,10 @@ final class BorealStore {
                     }
                 }
                 try Task.checkCancellation()
-                let provider = try services.storeProviders.provider(for: game.provider)
-                try await provider.uninstall(game)
+                try await services.installationService.uninstall(
+                    game,
+                    providerRegistry: services.storeProviders
+                )
                 guard storeOperationTokens[key] == token else { return }
                 if let index = storeGames.firstIndex(where: { $0.id == game.id }) {
                     storeGames[index].isInstalled = false
@@ -2407,6 +2547,7 @@ final class BorealStore {
                     storeGames[index].installedPlatform = nil
                     storeGames[index].storageBytes = nil
                 }
+                markInstallationUninstalled(for: game)
                 storeGameOperations[key] = nil
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
@@ -2428,7 +2569,7 @@ final class BorealStore {
     func prepareStoreGame(_ game: StoreLibraryGame, runtimeEngine: RuntimeEngine? = nil) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider),
-              game.isInstalled,
+              isInstalled(game),
               linkedApplication(for: game) == nil,
               storeGameOperations[key] == nil else { return }
         let token = UUID()
@@ -2458,8 +2599,12 @@ final class BorealStore {
                 managed.state = .ready
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Validating the game launch task…", fraction: 0.75, key: key, token: token)
-                let provider = try services.storeProviders.provider(for: game.provider)
-                let plan = try await provider.launchPlan(for: game, runtime: runtime, environment: managed)
+                let plan = try await services.launchCoordinator.makeStoreLaunchPlan(
+                    for: game,
+                    runtime: runtime,
+                    environment: managed,
+                    providerRegistry: services.storeProviders
+                )
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
@@ -2577,8 +2722,12 @@ final class BorealStore {
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Validating the game launch plan…", fraction: 0.75, key: key, token: token)
 
-                let storeProvider = try services.storeProviders.provider(for: provider)
-                let plan = try await storeProvider.launchPlan(for: game, runtime: runtime, environment: managed)
+                let plan = try await services.launchCoordinator.makeStoreLaunchPlan(
+                    for: game,
+                    runtime: runtime,
+                    environment: managed,
+                    providerRegistry: services.storeProviders
+                )
                 guard FileManager.default.fileExists(atPath: plan.executable.path) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
@@ -2779,6 +2928,7 @@ final class BorealStore {
         if usesLayeredStorage, let layered = BorealStorageLoader.loadLayered(from: storageLayout) {
             applications = layered.applications
             environments = layered.environments
+            installations = layered.installations
             let persistedGames = layered.storeGames
             storeGames = persistedGames.filter { $0.provider != .gog }
                 + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
@@ -2787,6 +2937,7 @@ final class BorealStore {
             lastAutomaticLibraryRefreshAt = layered.lastAutomaticLibraryRefreshAt
             recoverInterruptedDownloads()
             storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            reconcileInstallationState()
             if !storeDownloadRecords.isEmpty { save() }
             return
         }
@@ -2801,6 +2952,11 @@ final class BorealStore {
             BorealStorageLoader.migrateLegacyEnvironments(state.environments, to: storageLayout)
         }
         let persistedGames = state.storeGames ?? []
+        installations = InstallationMigration.fromLegacy(
+            applications: applications,
+            storeGames: persistedGames,
+            layout: storageLayout
+        ).map { InstallationStateResolver.resolve($0, layout: storageLayout) }
         storeGames = persistedGames.filter { $0.provider != .gog }
             + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
         storeDownloadRecords = state.storeDownloads ?? [:]
@@ -2808,7 +2964,155 @@ final class BorealStore {
         lastAutomaticLibraryRefreshAt = state.lastAutomaticLibraryRefreshAt
         recoverInterruptedDownloads()
         storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        reconcileInstallationState()
         if usesLayeredStorage || !storeDownloadRecords.isEmpty { save() }
+    }
+
+    /// Reconciles only the persisted installation projection. Filesystem
+    /// presence changes the installation state to `.missing`; the record and
+    /// its provider link are intentionally retained.
+    private func reconcileInstallationState() {
+        installations = installations.map {
+            InstallationStateResolver.resolve($0, layout: storageLayout)
+        }
+        for installation in installations where installation.state.representsAnInstallation {
+            guard let index = storeGames.firstIndex(where: { $0.id == installation.gameID }) else { continue }
+            storeGames[index].isInstalled = true
+            storeGames[index].installPath = StoragePathResolver.resolve(installation.location, layout: storageLayout).path
+            storeGames[index].installedPlatform = installation.platform
+            storeGames[index].storageBytes = installation.installedSize
+        }
+    }
+
+    private func synchronizeInstallationCompatibilityBridge() {
+        let migrated = InstallationMigration.fromLegacy(
+            applications: applications,
+            storeGames: storeGames,
+            layout: storageLayout
+        )
+        var byGameID = Dictionary(uniqueKeysWithValues: installations.map { ($0.gameID, $0) })
+        for legacy in migrated {
+            guard let game = storeGames.first(where: { $0.id == legacy.gameID }), game.isInstalled else {
+                if byGameID[legacy.gameID] == nil, applications.contains(where: { $0.id == legacy.gameID }) {
+                    byGameID[legacy.gameID] = legacy
+                }
+                continue
+            }
+            if var current = byGameID[legacy.gameID], current.state != .uninstalled {
+                current.storeReference = legacy.storeReference ?? current.storeReference
+                current.displayName = legacy.displayName ?? current.displayName
+                // An active provider operation owns its destination and
+                // lifecycle state. Do not let the legacy compatibility fields
+                // turn `.installing` into `.installed` during an intermediate
+                // save.
+                if current.state != .installing && current.state != .broken {
+                    let locationChanged = current.location != legacy.location
+                    current.location = legacy.location
+                    current.platform = legacy.platform
+                    current.installedSize = legacy.installedSize
+                    if locationChanged || current.state == .unknown {
+                        current.state = .installed
+                    }
+                    if !legacy.executables.isEmpty { current.executables = legacy.executables }
+                }
+                current.updatedAt = .now
+                byGameID[legacy.gameID] = current
+            } else if byGameID[legacy.gameID] == nil {
+                byGameID[legacy.gameID] = legacy
+            }
+        }
+        installations = byGameID.values.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func recordInstallation(
+        for game: StoreLibraryGame,
+        location: URL,
+        platform: StoreGameInstallationPlatform,
+        environmentID: UUID? = nil,
+        executable: URL? = nil
+    ) {
+        let normalizedLocation = location.standardizedFileURL
+        var current = installations.first {
+            $0.gameID == game.id || $0.storeReference == game.storeReference
+        } ?? GameInstallation(
+            id: game.id,
+            gameID: game.id,
+            storeReference: game.storeReference,
+            displayName: game.name,
+            location: StoragePathResolver.location(for: normalizedLocation, layout: storageLayout),
+            platform: platform
+        )
+        current.storeReference = game.storeReference
+        current.displayName = game.name
+        current.location = StoragePathResolver.location(for: normalizedLocation, layout: storageLayout)
+        current.platform = platform
+        current.environmentID = environmentID ?? current.environmentID
+        current.installedSize = GameStorage.allocatedSize(of: normalizedLocation) ?? game.displayedStorageBytes
+        current.state = .installed
+        current.updatedAt = .now
+        if let executable {
+            let executablePath = executable.standardizedFileURL.path
+            let rootPath = normalizedLocation.path.hasSuffix("/") ? normalizedLocation.path : normalizedLocation.path + "/"
+            let relativePath = executablePath.hasPrefix(rootPath)
+                ? String(executablePath.dropFirst(rootPath.count))
+                : executable.lastPathComponent
+            let architecture: ExecutableArchitecture? = switch WindowsExecutableArchitecture.inspect(executable) {
+            case .x86: .x86
+            case .x86_64: .x86_64
+            case .unknown: nil
+            }
+            let value = GameExecutable(relativePath: relativePath, role: .game, architecture: architecture)
+            current.executables = current.executables.filter { $0.relativePath != relativePath } + [value]
+            current.selectedExecutableID = value.id
+        }
+        if let index = installations.firstIndex(where: { $0.gameID == current.gameID }) {
+            installations[index] = current
+        } else {
+            installations.append(current)
+        }
+    }
+
+    private func markInstallationUninstalled(for game: StoreLibraryGame) {
+        guard let index = installations.firstIndex(where: {
+            $0.gameID == game.id || $0.storeReference == game.storeReference
+        }) else { return }
+        installations[index].state = .uninstalled
+        installations[index].updatedAt = .now
+    }
+
+    private func markInstallationInstalling(
+        for game: StoreLibraryGame,
+        destinationRoot: URL,
+        platform: StoreGameInstallationPlatform
+    ) {
+        var current = installation(for: game) ?? GameInstallation(
+            id: game.id,
+            gameID: game.id,
+            storeReference: game.storeReference,
+            displayName: game.name,
+            location: StoragePathResolver.location(for: destinationRoot, layout: storageLayout),
+            platform: platform,
+            state: .installing
+        )
+        current.location = StoragePathResolver.location(for: destinationRoot, layout: storageLayout)
+        current.platform = platform
+        current.storeReference = game.storeReference
+        current.displayName = game.name
+        current.state = .installing
+        current.updatedAt = .now
+        if let index = installations.firstIndex(where: { $0.gameID == current.gameID }) {
+            installations[index] = current
+        } else {
+            installations.append(current)
+        }
+    }
+
+    private func markInstallationFailed(for game: StoreLibraryGame) {
+        guard let index = installations.firstIndex(where: {
+            $0.gameID == game.id || $0.storeReference == game.storeReference
+        }), installations[index].state == .installing else { return }
+        installations[index].state = .broken
+        installations[index].updatedAt = .now
     }
 
     private func recoverInterruptedDownloads() {
@@ -2980,18 +3284,33 @@ final class BorealStore {
                 name: environmentRecord.name,
                 profile: launchProfile
             )
-            try GameLaunchCompatibility.prepare(application: application)
-            try await services.environmentManager.configure(managed, runtime: runtime)
-            let session = try await services.processRunner.run(
-                plan: WindowsLaunchPlan(
-                    executable: executable,
-                    arguments: [],
-                    environment: [:],
-                    workingDirectory: executable.deletingLastPathComponent()
-                ),
+            try GameLaunchCompatibility.prepare(
+                application: application,
                 environment: managed,
                 runtime: runtime
             )
+            try await services.environmentManager.configure(managed, runtime: runtime)
+            let windowsPlan = WindowsLaunchPlan(
+                executable: executable,
+                arguments: [],
+                environment: [:],
+                workingDirectory: executable.deletingLastPathComponent()
+            )
+            let launchPlan = makeLaunchPlan(
+                windowsPlan,
+                applicationID: application.id,
+                provider: application.storeProvider,
+                externalID: application.storeExternalID,
+                environment: managed,
+                runtime: runtime,
+                profile: launchProfile
+            )
+            lastLaunchPlans[application.id] = launchPlan
+            let session = try await services.launchCoordinator.start(
+                plan: launchPlan,
+                environment: managed,
+                runtime: runtime
+            ).processSession
             if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
                 applications[currentIndex].lastResult = "Opened \(action.displayName)"
                 applications[currentIndex].lastErrorDetail = nil
@@ -3057,6 +3376,25 @@ final class BorealStore {
             return
         }
         guard !applications[index].status.isBusy else { return }
+        if let requiredEngine = GameRuntimeProfiles.requiredEngine(for: applications[index]),
+           let environmentRecord = environment(id: applications[index].environmentID),
+           let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }),
+           runtime.resolvedEngine != requiredEngine {
+            let previousProfile = applications[index].resolvedCompatibilityProfile
+            var compatibleProfile = previousProfile
+            compatibleProfile.graphicsBackend = requiredEngine == .gamePortingToolkit ? .d3dMetal : .automatic
+            applications[index].compatibilityProfile = compatibleProfile
+            applications[index].graphics = requiredEngine.graphicsName
+            applications[index].lastResult = "Preparing the compatible \(requiredEngine.displayName) runtime"
+            save()
+            recreateEnvironment(
+                id,
+                with: requiredEngine,
+                launchWhenReady: true,
+                rollbackProfile: previousProfile
+            )
+            return
+        }
         let usesExistingExecutable = applications[index].installerPath == "existing-installation"
             || applications[index].usesStoreMetadataOnly
         let refreshesExecutableAtLaunch = !usesExistingExecutable && [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
@@ -3078,6 +3416,7 @@ final class BorealStore {
             return
         }
         applications[index].status = .preparing
+        executionStates[id] = .preparing
         applications[index].lastErrorDetail = nil
         applications[index].lastFailureStage = nil
         do {
@@ -3122,7 +3461,11 @@ final class BorealStore {
             let selectedGraphicsAPI = profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic
             let graphicsLaunchOption = selectedGraphicsAPI == .automatic ? nil : graphicsProfile?.launchOption(for: selectedGraphicsAPI)
             managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: profile)
-            try GameLaunchCompatibility.prepare(application: applications[index])
+            try GameLaunchCompatibility.prepare(
+                application: applications[index],
+                environment: managed,
+                runtime: runtime
+            )
             try await services.environmentManager.configure(managed, runtime: runtime)
             applications[index].status = .starting
             let session: WindowsProcessSession
@@ -3142,11 +3485,19 @@ final class BorealStore {
                     var bootstrapPlan = SteamWindowsService.bootstrapPlan(steamExecutable: executable)
                     bootstrapPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
                     bootstrapPlan.overlayDisplayID = profile.overlayDisplayID
-                    let bootstrap = try await services.processRunner.run(
-                        plan: bootstrapPlan,
+                    let bootstrap = try await services.launchCoordinator.start(
+                        plan: makeLaunchPlan(
+                            bootstrapPlan,
+                            applicationID: applications[index].id,
+                            provider: provider,
+                            externalID: appID,
+                            environment: managed,
+                            runtime: runtime,
+                            profile: profile
+                        ),
                         environment: managed,
                         runtime: runtime
-                    )
+                    ).processSession
                     Task { _ = try? await services.processRunner.waitForExit(bootstrap) }
                     try await Task.sleep(for: .milliseconds(400))
                     plan = SteamWindowsService.playPlan(appID: appID, steamExecutable: executable)
@@ -3154,8 +3505,12 @@ final class BorealStore {
                     guard let game = storeGames.first(where: { $0.provider == provider && $0.externalID == appID }) else {
                         throw GameStoreProviderError.installationMissing(provider)
                     }
-                    let storeProvider = try services.storeProviders.provider(for: provider)
-                    plan = try await storeProvider.launchPlan(for: game, runtime: runtime, environment: managed)
+                    plan = try await services.launchCoordinator.makeStoreLaunchPlan(
+                        for: game,
+                        runtime: runtime,
+                        environment: managed,
+                        providerRegistry: services.storeProviders
+                    )
                 }
                 applications[index].executablePath = plan.executable.path
                 var configuredPlan = try GameGraphicsProfiles.applying(
@@ -3181,7 +3536,21 @@ final class BorealStore {
                     )
                     configuredPlan = graphicsCompatibilityManager.applying(graphicsPlan, to: configuredPlan)
                 }
-                session = try await services.processRunner.run(plan: configuredPlan, environment: managed, runtime: runtime)
+                let launchPlan = makeLaunchPlan(
+                    configuredPlan,
+                    applicationID: applications[index].id,
+                    provider: provider,
+                    externalID: appID,
+                    environment: managed,
+                    runtime: runtime,
+                    profile: profile
+                )
+                lastLaunchPlans[applications[index].id] = launchPlan
+                session = try await services.launchCoordinator.start(
+                    plan: launchPlan,
+                    environment: managed,
+                    runtime: runtime
+                ).processSession
             } else {
                 let executable = URL(fileURLWithPath: applications[index].executablePath)
                 var configuredPlan = try GameGraphicsProfiles.applying(
@@ -3209,9 +3578,24 @@ final class BorealStore {
                     runtime: runtime
                 )
                 configuredPlan = graphicsCompatibilityManager.applying(graphicsPlan, to: configuredPlan)
-                session = try await services.processRunner.run(plan: configuredPlan, environment: managed, runtime: runtime)
+                let launchPlan = makeLaunchPlan(
+                    configuredPlan,
+                    applicationID: applications[index].id,
+                    provider: applications[index].storeProvider,
+                    externalID: applications[index].storeExternalID,
+                    environment: managed,
+                    runtime: runtime,
+                    profile: profile
+                )
+                lastLaunchPlans[applications[index].id] = launchPlan
+                session = try await services.launchCoordinator.start(
+                    plan: launchPlan,
+                    environment: managed,
+                    runtime: runtime
+                ).processSession
             }
             applications[index].status = .running
+            executionStates[id] = .running
             applications[index].lastOpened = .now
             SoundService.shared.play(.launch)
             activeSessions[id] = session
@@ -3230,6 +3614,7 @@ final class BorealStore {
             monitorLauncher(session: session, appID: id)
             monitorEnvironmentSession(environment: managed, runtime: runtime, appID: id)
         } catch {
+            executionStates[id] = .failed(error.localizedDescription)
             applications[index].status = .needsAttention
             applications[index].lastResult = "Couldn’t open"
             applications[index].lastFailureStage = "Starting application"
@@ -3286,6 +3671,7 @@ final class BorealStore {
                     : (wasRequested ? "Launcher stopped" : "Launcher exited normally")
                 applications[index].lastExitCode = result?.exitCode
             }
+            executionStates[appID] = .terminated(exitCode: result?.exitCode)
             activeSessions[appID] = nil
             save()
             if !wasRequested,
@@ -3363,6 +3749,7 @@ final class BorealStore {
             case .active:
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
+                executionStates[appID] = .running
                 beginPlaySession(appID: appID)
                 if !app.isInstallerOnly {
                     ControllerManager.shared.activate(
@@ -3397,6 +3784,7 @@ final class BorealStore {
             applications[index].status = .ready
             if wasRequested { applications[index].lastResult = "Stopped" }
         }
+        executionStates[appID] = .terminated(exitCode: applications[index].lastExitCode)
         environmentSessionStates[environmentID] = .inactive
         activeSessions[appID] = nil
         performanceLogURLs[appID] = nil
@@ -3410,24 +3798,12 @@ final class BorealStore {
     func beginPlaySession(appID: UUID, at date: Date = .now) {
         guard activePlaySessions[appID] == nil,
               let application = application(id: appID),
-              let provider = application.storeProvider,
-              let externalID = application.storeExternalID,
-              let gameIndex = storeGames.firstIndex(where: {
-                  $0.provider == provider && $0.externalID == externalID
-              }) else { return }
-        let session: GamePlaySession
-        if let unfinished = storeGames[gameIndex].activePlaySession {
-            session = unfinished
-        } else {
-            session = GamePlaySession(
-                startedAt: date,
-                endedAt: nil,
-                measuredDurationSeconds: 0,
-                lastCheckpointAt: date
-            )
-            storeGames[gameIndex].appendPlaySession(session)
-            save()
-        }
+              let session = services.activityService.begin(
+                  application: application,
+                  games: &storeGames,
+                  at: date
+              ) else { return }
+        save()
         activePlaySessions[appID] = ActivePlaySession(
             sessionID: session.id,
             checkpointInstant: ContinuousClock().now
@@ -3440,17 +3816,13 @@ final class BorealStore {
         playSessionCheckpointTasks[appID] = nil
         checkpointPlaySession(appID: appID, at: date)
         let active = activePlaySessions.removeValue(forKey: appID)
-        guard let application = application(id: appID),
-              let provider = application.storeProvider,
-              let externalID = application.storeExternalID,
-              let gameIndex = storeGames.firstIndex(where: {
-                  $0.provider == provider && $0.externalID == externalID
-              }),
-              var session = active.flatMap({ active in
-                  storeGames[gameIndex].playSessions?.first(where: { $0.id == active.sessionID })
-              }) ?? storeGames[gameIndex].activePlaySession else { return }
-        session.finish(at: date)
-        storeGames[gameIndex].updatePlaySession(session)
+        guard let application = application(id: appID) else { return }
+        services.activityService.finish(
+            sessionID: active?.sessionID,
+            application: application,
+            games: &storeGames,
+            at: date
+        )
         save()
     }
 
@@ -3468,19 +3840,18 @@ final class BorealStore {
 
     private func checkpointPlaySession(appID: UUID, at date: Date = .now) {
         guard var active = activePlaySessions[appID],
-              let application = application(id: appID),
-              let provider = application.storeProvider,
-              let externalID = application.storeExternalID,
-              let gameIndex = storeGames.firstIndex(where: {
-                  $0.provider == provider && $0.externalID == externalID
-              }),
-              var session = storeGames[gameIndex].playSessions?.first(where: { $0.id == active.sessionID }) else { return }
+              let application = application(id: appID) else { return }
         let now = ContinuousClock().now
         let elapsed = active.checkpointInstant.duration(to: now)
         let components = elapsed.components
         let elapsedSeconds = Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
-        session.checkpoint(elapsed: elapsedSeconds, at: date)
-        storeGames[gameIndex].updatePlaySession(session)
+        services.activityService.checkpoint(
+            sessionID: active.sessionID,
+            application: application,
+            games: &storeGames,
+            elapsed: elapsedSeconds,
+            at: date
+        )
         active.checkpointInstant = now
         activePlaySessions[appID] = active
         save()
@@ -3497,6 +3868,7 @@ final class BorealStore {
     }
 
     private func save() {
+        synchronizeInstallationCompatibilityBridge()
         if usesLayeredStorage {
             let snapshot = BorealStorageSnapshot(
                 applications: applications,
@@ -3504,7 +3876,8 @@ final class BorealStore {
                 favoriteKeys: favoriteKeys,
                 storeDownloads: storeDownloadRecords,
                 lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
-                layout: storageLayout
+                layout: storageLayout,
+                installations: installations
             )
             Task { [weak self, libraryRepository] in
                 do {
@@ -3844,7 +4217,8 @@ final class BorealStore {
 
     var gamesNeedingRelocation: [StoreLibraryGame] {
         storeGames.filter { game in
-            guard game.isInstalled, [.epic, .gog].contains(game.provider), let path = game.installPath else { return false }
+            guard hasInstallation(game), [.epic, .gog].contains(game.provider),
+                  let path = installation(for: game).map({ StoragePathResolver.resolve($0.location, layout: storageLayout).path }) ?? game.installPath else { return false }
             let destination = defaultGameInstallationRoot(for: game.provider).standardizedFileURL.path
             let installed = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
             return installed != destination && !installed.hasPrefix(destination + "/")
@@ -3900,7 +4274,9 @@ final class BorealStore {
 
     private func moveInstalledGame(_ game: StoreLibraryGame) async throws {
         guard let index = storeGames.firstIndex(where: { $0.id == game.id }),
-              let oldPath = game.installPath else { return }
+              let oldPath = installations.first(where: {
+                  $0.gameID == game.id || $0.storeReference == game.storeReference
+              }).map({ StoragePathResolver.resolve($0.location, layout: storageLayout).path }) ?? game.installPath else { return }
         let oldURL = URL(fileURLWithPath: oldPath, isDirectory: true).standardizedFileURL
         let newURL: URL
         switch game.provider {
@@ -3957,6 +4333,11 @@ final class BorealStore {
         let newPath = newURL.path
         storeGames[gameIndex].installPath = newPath
         storeGames[gameIndex].storageBytes = GameStorage.allocatedSize(of: newURL)
+        recordInstallation(
+            for: storeGames[gameIndex],
+            location: newURL,
+            platform: storeGames[gameIndex].installedPlatform ?? .windows
+        )
         for index in applications.indices {
             guard applications[index].storeProvider == storeGames[gameIndex].provider,
                   applications[index].storeExternalID == storeGames[gameIndex].externalID else { continue }

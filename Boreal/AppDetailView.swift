@@ -213,6 +213,17 @@ struct AppDetailView: View {
                     DetailRow(title: "Exit code", value: String(code), symbol: "terminal")
                 }
             }
+            if developerMode, let launchPlan = store.launchPlanDiagnostics(for: app.id) {
+                DisclosureGroup("Last LaunchPlan") {
+                    ScrollView(.horizontal) {
+                        Text(launchPlan)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(.top, 5)
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
         }
     }
 

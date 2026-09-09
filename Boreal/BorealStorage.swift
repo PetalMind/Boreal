@@ -30,6 +30,26 @@ nonisolated enum ExecutableArchitecture: String, Codable, Hashable, Sendable {
     case x86_64
 }
 
+/// The persisted installation lifecycle is deliberately independent from
+/// `ApplicationStatus`. A game can have an installation record whose files
+/// are currently missing, while its provider metadata and history remain
+/// available to the library.
+nonisolated enum InstallationState: String, Codable, Hashable, Sendable {
+    case unknown
+    case installing
+    case installed
+    case missing
+    case broken
+    case uninstalled
+
+    var representsAnInstallation: Bool {
+        switch self {
+        case .unknown, .uninstalled: false
+        case .installing, .installed, .missing, .broken: true
+        }
+    }
+}
+
 nonisolated struct GameExecutable: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     var relativePath: String
@@ -96,28 +116,86 @@ nonisolated struct Game: Codable, Hashable, Identifiable, Sendable {
 nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     let gameID: UUID
+    var storeReference: StoreReference?
+    var displayName: String?
     var location: InstallationLocation
     var platform: StoreGameInstallationPlatform
     var environmentID: UUID?
     var executables: [GameExecutable]
     var installedSize: Int64?
+    var state: InstallationState
+    var selectedExecutableID: UUID?
+    var createdAt: Date
+    var updatedAt: Date
 
     init(
         id: UUID = UUID(),
         gameID: UUID,
+        storeReference: StoreReference? = nil,
+        displayName: String? = nil,
         location: InstallationLocation,
         platform: StoreGameInstallationPlatform,
         environmentID: UUID? = nil,
         executables: [GameExecutable] = [],
-        installedSize: Int64? = nil
+        installedSize: Int64? = nil,
+        state: InstallationState = .installed,
+        selectedExecutableID: UUID? = nil,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
     ) {
         self.id = id
         self.gameID = gameID
+        self.storeReference = storeReference
+        self.displayName = displayName
         self.location = location
         self.platform = platform
         self.environmentID = environmentID
         self.executables = executables
         self.installedSize = installedSize
+        self.state = state
+        self.selectedExecutableID = selectedExecutableID
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, gameID, storeReference, displayName, location, platform
+        case environmentID, executables, installedSize, state
+        case selectedExecutableID, createdAt, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        gameID = try container.decode(UUID.self, forKey: .gameID)
+        storeReference = try container.decodeIfPresent(StoreReference.self, forKey: .storeReference)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        location = try container.decode(InstallationLocation.self, forKey: .location)
+        platform = try container.decode(StoreGameInstallationPlatform.self, forKey: .platform)
+        environmentID = try container.decodeIfPresent(UUID.self, forKey: .environmentID)
+        executables = try container.decodeIfPresent([GameExecutable].self, forKey: .executables) ?? []
+        installedSize = try container.decodeIfPresent(Int64.self, forKey: .installedSize)
+        state = try container.decodeIfPresent(InstallationState.self, forKey: .state) ?? .installed
+        selectedExecutableID = try container.decodeIfPresent(UUID.self, forKey: .selectedExecutableID)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(gameID, forKey: .gameID)
+        try container.encodeIfPresent(storeReference, forKey: .storeReference)
+        try container.encodeIfPresent(displayName, forKey: .displayName)
+        try container.encode(location, forKey: .location)
+        try container.encode(platform, forKey: .platform)
+        try container.encodeIfPresent(environmentID, forKey: .environmentID)
+        try container.encode(executables, forKey: .executables)
+        try container.encodeIfPresent(installedSize, forKey: .installedSize)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(selectedExecutableID, forKey: .selectedExecutableID)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -243,20 +321,26 @@ nonisolated enum BorealStorageScanner {
         layout: BorealStorageLayout,
         applications: [WindowsApplication],
         storeGames: [StoreLibraryGame],
-        environments: [WindowsEnvironment]
+        environments: [WindowsEnvironment],
+        installations: [GameInstallation] = []
     ) -> BorealStorageReport {
         let fileManager = FileManager.default
         var measurements: [BorealStorageItem] = []
         var gameRoots: [URL] = []
 
-        for game in storeGames where game.isInstalled {
-            guard let installPath = game.installPath else { continue }
-            let root = URL(fileURLWithPath: installPath, isDirectory: true).standardizedFileURL
+        let canonicalInstallations = installations.isEmpty
+            ? InstallationMigration.fromLegacy(applications: applications, storeGames: storeGames, layout: layout)
+            : installations
+        for installation in canonicalInstallations where installation.state.representsAnInstallation {
+            guard let game = storeGames.first(where: {
+                $0.id == installation.gameID || $0.storeReference == installation.storeReference
+            }) else { continue }
+            let root = StoragePathResolver.resolve(installation.location, layout: layout).standardizedFileURL
             guard appendIfNew(root, to: &gameRoots) else { continue }
             let shaderRoots = shaderPaths(gameURL: root, prefixURL: nil, applicationSupportURL: layout.rootURL)
             let downloadRoots = downloadPaths(in: [root])
             let measuredBytes = size(of: root, excluding: shaderRoots + downloadRoots, fileManager: fileManager)
-            let bytes = measuredBytes ?? game.storageBytes ?? 0
+            let bytes = measuredBytes ?? installation.installedSize ?? game.storageBytes ?? 0
             guard bytes > 0 else { continue }
             measurements.append(BorealStorageItem(
                 category: .games,
@@ -269,7 +353,9 @@ nonisolated enum BorealStorageScanner {
             ))
         }
 
-        let linkedGameKeys = Set(storeGames.filter { $0.isInstalled }.map { "\($0.provider.rawValue):\($0.externalID)" })
+        let linkedGameKeys = Set(canonicalInstallations.compactMap { installation in
+            installation.storeReference.map { "\($0.provider.rawValue):\($0.externalID)" }
+        })
         for application in applications where !application.isSteamRuntimeHost
             && !application.isInstallerOnly
             && !application.usesStoreMetadataOnly {
@@ -498,7 +584,7 @@ nonisolated enum BorealStorageScanner {
 }
 
 nonisolated enum BorealStorageSchema {
-    static let current = 1
+    static let current = 2
 }
 
 // The catalog intentionally contains no downloads, favorites, sessions, or
@@ -651,6 +737,32 @@ nonisolated struct LibraryDatabase: Codable, Sendable {
     var applications: [LibraryApplicationRecord]
     var games: [LibraryGameRecord]
     var installations: [GameInstallation]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, applications, games, installations
+    }
+
+    init(
+        schemaVersion: Int,
+        applications: [LibraryApplicationRecord],
+        games: [LibraryGameRecord],
+        installations: [GameInstallation]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.applications = applications
+        self.games = games
+        self.installations = installations
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        applications = try container.decodeIfPresent([LibraryApplicationRecord].self, forKey: .applications) ?? []
+        games = try container.decodeIfPresent([LibraryGameRecord].self, forKey: .games) ?? []
+        // Version 1 could contain only catalog/application records. Missing
+        // installations are migrated from the legacy UI models by the loader.
+        installations = try container.decodeIfPresent([GameInstallation].self, forKey: .installations) ?? []
+    }
 }
 
 nonisolated struct FavoritesDatabase: Codable, Sendable {
@@ -820,57 +932,12 @@ nonisolated struct BorealStorageSnapshot: Sendable {
         favoriteKeys: Set<String>,
         storeDownloads: [String: StoreDownloadRecord],
         lastAutomaticLibraryRefreshAt: Date?,
-        layout: BorealStorageLayout
+        layout: BorealStorageLayout,
+        installations canonicalInstallations: [GameInstallation] = []
     ) {
-        var installations: [GameInstallation] = []
-        for game in storeGames where game.isInstalled {
-            guard let installPath = game.installPath else { continue }
-            let installLocation = StoragePathResolver.location(
-                for: URL(fileURLWithPath: installPath),
-                layout: layout
-            )
-            let environmentID = applications.first(where: {
-                $0.storeProvider == game.provider
-                    && $0.storeExternalID == game.externalID
-                    && $0.status != .unavailable
-            })?.environmentID
-            let installedSize: Int64? = (game.storageBytes ?? 0) > 0
-                ? game.storageBytes
-                : game.displayedStorageBytes
-            let installation = GameInstallation(
-                id: game.id,
-                gameID: game.id,
-                location: installLocation,
-                platform: game.installedPlatform ?? .windows,
-                environmentID: environmentID,
-                installedSize: installedSize
-            )
-            installations.append(installation)
-        }
-        for application in applications {
-            guard !application.isSteamRuntimeHost, !application.isInstallerOnly else { continue }
-            let appURL = URL(fileURLWithPath: application.executablePath)
-            let executableArchitecture: ExecutableArchitecture? = switch WindowsExecutableArchitecture.inspect(appURL) {
-            case .x86: .x86
-            case .x86_64: .x86_64
-            case .unknown: nil
-            }
-            let executable = GameExecutable(
-                relativePath: appURL.lastPathComponent,
-                role: .game,
-                architecture: executableArchitecture
-            )
-            let installation = GameInstallation(
-                id: application.id,
-                gameID: application.id,
-                location: StoragePathResolver.location(for: appURL.deletingLastPathComponent(), layout: layout),
-                platform: .windows,
-                environmentID: application.environmentID,
-                executables: [executable],
-                installedSize: application.storageBytes > 0 ? application.storageBytes : nil
-            )
-            installations.append(installation)
-        }
+        let installations = canonicalInstallations.isEmpty
+            ? InstallationMigration.fromLegacy(applications: applications, storeGames: storeGames, layout: layout)
+            : canonicalInstallations
 
         library = LibraryDatabase(
             schemaVersion: BorealStorageSchema.current,
@@ -900,6 +967,7 @@ nonisolated struct BorealStorageLoadedState: Sendable {
     var applications: [WindowsApplication]
     var environments: [WindowsEnvironment]
     var storeGames: [StoreLibraryGame]
+    var installations: [GameInstallation]
     var storeDownloads: [String: StoreDownloadRecord]
     var favoriteKeys: Set<String>
     var lastAutomaticLibraryRefreshAt: Date?
@@ -912,12 +980,18 @@ nonisolated enum BorealStorageLoader {
 
         let applications = library.applications.map { $0.resolve(layout: layout) }
         var games = library.games.map { $0.resolve() }
-        for installation in library.installations {
+        let migratedInstallations = library.installations.isEmpty
+            ? InstallationMigration.fromLegacy(applications: applications, storeGames: games, layout: layout)
+            : library.installations
+        let installations = migratedInstallations.map {
+            InstallationStateResolver.resolve($0, layout: layout)
+        }
+        for installation in installations where installation.state.representsAnInstallation {
             guard let index = games.firstIndex(where: { $0.id == installation.gameID }) else { continue }
-            games[index].isInstalled = true
+            games[index].isInstalled = installation.state != .uninstalled
             games[index].installedPlatform = installation.platform
             games[index].installPath = StoragePathResolver.resolve(installation.location, layout: layout).path
-            games[index].storageBytes = installation.installedSize ?? 0
+            games[index].storageBytes = installation.installedSize
         }
 
         if let sessionDatabase = decode(SessionsDatabase.self, at: layout.sessionsURL),
@@ -940,6 +1014,7 @@ nonisolated enum BorealStorageLoader {
             applications: applications,
             environments: environments,
             storeGames: games,
+            installations: installations,
             storeDownloads: (downloads?.schemaVersion ?? 0) <= BorealStorageSchema.current ? (downloads?.records ?? [:]) : [:],
             favoriteKeys: Set((favorites?.schemaVersion ?? 0) <= BorealStorageSchema.current ? (favorites?.keys ?? []) : []),
             lastAutomaticLibraryRefreshAt: (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current ? appState?.lastAutomaticLibraryRefreshAt : nil

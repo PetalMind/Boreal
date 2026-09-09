@@ -21,7 +21,7 @@ struct ConsoleModeView: View {
     let exit: () -> Void
 
     private var items: [LibraryItem] {
-        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames)
+        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations)
             .filter { !$0.isInstallerOnly }
             .filter { item in
                 switch section {
@@ -601,9 +601,9 @@ struct ConsoleModeView: View {
             guard let game = store.storeGame(id: id) else { return }
             if let application = store.linkedApplication(for: game) {
                 store.toggleRunning(application.id)
-            } else if game.isInstalled, game.installedPlatform == .nativeMacOS {
+            } else if store.isInstalled(game), store.installedPlatform(for: game) == .nativeMacOS {
                 openNativeGame(game)
-            } else if !game.isInstalled {
+            } else if !store.isInstalled(game) {
                 install(game)
             } else {
                 // A Windows store installation without a linked Boreal
@@ -615,7 +615,7 @@ struct ConsoleModeView: View {
     }
 
     private func openNativeGame(_ game: StoreLibraryGame) {
-        guard let path = game.installPath else { return }
+        guard let path = store.installedLocation(for: game)?.path else { return }
         let root = URL(fileURLWithPath: path, isDirectory: true)
         if let enumerator = FileManager.default.enumerator(
             at: root,
@@ -642,7 +642,7 @@ struct ConsoleModeView: View {
                 if let game = store.storeGame(id: id) {
                     if let app = store.linkedApplication(for: game) {
                         Button(app.status == .running ? "Stop Game" : "Play") { store.toggleRunning(app.id) }
-                    } else if game.isInstalled == false {
+                    } else if store.isInstalled(game) == false {
                         Button("Install") { install(game) }
                     }
                 }

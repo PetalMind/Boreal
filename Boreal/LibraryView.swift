@@ -140,7 +140,11 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
 }
 
 nonisolated enum LibraryProjector {
-    static func makeItems(applications: [WindowsApplication], storeGames: [StoreLibraryGame]) -> [LibraryItem] {
+    static func makeItems(
+        applications: [WindowsApplication],
+        storeGames: [StoreLibraryGame],
+        installations: [GameInstallation] = []
+    ) -> [LibraryItem] {
         let storeGamesByLink = Dictionary(
             storeGames.map { game in (storeLink(provider: game.provider, externalID: game.externalID), game) },
             uniquingKeysWith: { first, _ in first }
@@ -157,21 +161,28 @@ nonisolated enum LibraryProjector {
             guard let provider = app.storeProvider, let externalID = app.storeExternalID else { return true }
             return storeGamesByLink[storeLink(provider: provider, externalID: externalID)] == nil
         }.map { app in
-            LibraryItem(
+            let installationState = installations.first(where: { $0.gameID == app.id })?.state
+            let blocksExecution = installationState.map { $0 != .installed } ?? false
+            let isPresent = installationState?.representsAnInstallation ?? (app.status != .unavailable)
+            return LibraryItem(
                 id: .application(app.id), kind: .application(app), name: app.name, subtitle: app.publisher, producer: app.publisher,
                 source: app.isInstallerOnly ? .boreal : (app.usesStoreMetadataOnly ? .boreal : (app.storeProvider.map(source) ?? .boreal)),
                 isInstallerOnly: app.isInstallerOnly,
-                installed: app.status != .unavailable,
-                readyToPlay: !app.isInstallerOnly && (app.status == .ready || app.status == .running),
-                running: app.status == .running,
-                needsAttention: app.status == .needsAttention || app.status == .unavailable,
+                installed: isPresent,
+                readyToPlay: !app.isInstallerOnly && !blocksExecution && (app.status == .ready || app.status == .running),
+                running: !blocksExecution && app.status == .running,
+                needsAttention: app.status == .needsAttention || app.status == .unavailable || installationState == .missing || installationState == .broken,
                 lastUsed: app.lastOpened, playtimeMinutes: nil, storageBytes: app.storageBytes > 0 ? app.storageBytes : nil,
                 storageIsEstimate: false,
                 supportsNativeMacOS: false,
                 compatibility: app.compatibility,
-                statusText: app.isInstallerOnly
-                    ? (app.status == .running ? "Installer running" : (app.status == .ready ? "Installer ready" : app.status.rawValue))
-                    : app.status.rawValue
+                statusText: installationState == .missing
+                    ? "Missing files"
+                    : (installationState == .broken
+                        ? "Needs Attention"
+                        : (app.isInstallerOnly
+                            ? (app.status == .running ? "Installer running" : (app.status == .ready ? "Installer ready" : app.status.rawValue))
+                            : app.status.rawValue))
             )
         }
         // Store metadata remains the canonical presentation after installation.
@@ -179,16 +190,30 @@ nonisolated enum LibraryProjector {
         // artwork, media, ratings, or the store detail route.
         let games = storeGames.map { game in
             let linkedApp = linkedApplications[storeLink(provider: game.provider, externalID: game.externalID)]
+            let installation = installations.first { installation in
+                installation.gameID == game.id
+                    || installation.storeReference == game.storeReference
+            }
+            let installationState = installation?.state
             // A stale application record must not make an uninstalled store game
             // look playable. Unavailable records remain visible through the store
             // game, but no longer contribute runtime state or installation truth.
             let usableLinkedApp = linkedApp.flatMap { $0.status == .unavailable ? nil : $0 }
-            let ready = usableLinkedApp.map { $0.status == .ready || $0.status == .running }
-                ?? (game.provider == .steam && game.isInstalled)
-            let running = usableLinkedApp?.status == .running
-            let attention = usableLinkedApp?.status == .needsAttention
-            let installed = usableLinkedApp != nil || game.isInstalled
-            let storageBytes = usableLinkedApp.flatMap { $0.storageBytes > 0 ? $0.storageBytes : nil }
+            let installationIsPresent = installationState?.representsAnInstallation
+                ?? game.isInstalled // Compatibility fallback for pre-migration callers.
+            let installationIsMissing = installationState == .missing
+            let installationBlocksExecution = installationState.map { $0 != .installed } ?? false
+            // A canonical missing installation outranks stale application
+            // status. The old linked app record can remain for diagnostics,
+            // but it must not make the game appear runnable.
+            let liveLinkedApp = installationBlocksExecution ? nil : usableLinkedApp
+            let ready = liveLinkedApp.map { $0.status == .ready || $0.status == .running }
+                ?? (game.provider == .steam && installationIsPresent && !installationIsMissing)
+            let running = liveLinkedApp?.status == .running
+            let attention = liveLinkedApp?.status == .needsAttention
+            let installed = liveLinkedApp != nil || installationIsPresent
+            let storageBytes = liveLinkedApp.flatMap { $0.storageBytes > 0 ? $0.storageBytes : nil }
+                ?? installation?.installedSize
                 ?? game.displayedStorageBytes
             let compatibility = usableLinkedApp.flatMap { $0.compatibility == .unknown ? nil : $0.compatibility }
                 ?? game.compatibility?.tier.rating
@@ -203,13 +228,19 @@ nonisolated enum LibraryProjector {
                 source: linkedApp?.usesStoreMetadataOnly == true ? .boreal : source(game.provider),
                 isInstallerOnly: false,
                 installed: installed, readyToPlay: ready, running: running, needsAttention: attention,
-                lastUsed: usableLinkedApp?.lastOpened ?? game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
+                lastUsed: liveLinkedApp?.lastOpened ?? game.lastPlayed, playtimeMinutes: game.playtimeMinutes,
                 storageBytes: storageBytes,
                 storageIsEstimate: usableLinkedApp == nil && game.storageBytes == nil && game.sizeEstimate?.installedBytes != nil,
                 supportsNativeMacOS: game.supportsNativeMacOS == true,
                 compatibility: compatibility,
-                statusText: usableLinkedApp?.status.rawValue
-                    ?? (attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (installed ? "Installed" : "Available"))))
+                statusText: liveLinkedApp?.status.rawValue
+                    ?? (installationIsMissing
+                        ? "Missing files"
+                        : (installationState == .installing
+                            ? "Installing"
+                            : (installationState == .broken
+                                ? "Needs Attention"
+                                : (attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (installed ? "Installed" : "Available")))))))
             )
         }
         return apps + games
@@ -415,7 +446,11 @@ struct LibraryView: View {
     @State private var projectedLibrary = LibraryProjectionCache()
 
     private var allItems: [LibraryItem] {
-        projectedLibrary.items(applications: store.applications, storeGames: store.storeGames)
+        projectedLibrary.items(
+            applications: store.applications,
+            storeGames: store.storeGames,
+            installations: store.installations
+        )
     }
 
     private var items: [LibraryItem] {
@@ -1104,7 +1139,7 @@ struct LibraryView: View {
             }
             Button("Show Details", systemImage: "info.circle") { select(item) }
             if case .storeGame(let game) = item.kind,
-               game.isInstalled,
+               store.isInstalled(game),
                [.epic, .gog].contains(game.provider) {
                 Divider()
                 Button("Uninstall…", systemImage: "trash", role: .destructive) {
@@ -1163,7 +1198,7 @@ struct LibraryView: View {
                 } else {
                     store.toggleRunning(app.id)
                 }
-            } else if game.provider == .steam, game.isInstalled,
+            } else if game.provider == .steam, store.isInstalled(game),
                       let url = URL(string: "steam://rungameid/\(game.externalID)") {
                 NSWorkspace.shared.open(url)
             } else {
@@ -1273,13 +1308,19 @@ private struct ActiveLibraryFilter: Identifiable {
 private final class LibraryProjectionCache {
     private var applications: [WindowsApplication] = []
     private var storeGames: [StoreLibraryGame] = []
+    private var installations: [GameInstallation] = []
     private var cachedItems: [LibraryItem] = []
 
-    func items(applications: [WindowsApplication], storeGames: [StoreLibraryGame]) -> [LibraryItem] {
-        guard applications != self.applications || storeGames != self.storeGames else { return cachedItems }
+    func items(
+        applications: [WindowsApplication],
+        storeGames: [StoreLibraryGame],
+        installations: [GameInstallation]
+    ) -> [LibraryItem] {
+        guard applications != self.applications || storeGames != self.storeGames || installations != self.installations else { return cachedItems }
         self.applications = applications
         self.storeGames = storeGames
-        cachedItems = LibraryProjector.makeItems(applications: applications, storeGames: storeGames)
+        self.installations = installations
+        cachedItems = LibraryProjector.makeItems(applications: applications, storeGames: storeGames, installations: installations)
         return cachedItems
     }
 }

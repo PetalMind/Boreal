@@ -30,11 +30,14 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
 
 nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
     case steamAppIDFileUnavailable(URL, underlying: String)
+    case unityWinRTShimUnavailable(URL, underlying: String)
 
     var errorDescription: String? {
         switch self {
         case .steamAppIDFileUnavailable(let url, let underlying):
             "Boreal couldn’t prepare Torchlight II for direct launch. The file \(url.path) could not be written: \(underlying)"
+        case .unityWinRTShimUnavailable(let url, let underlying):
+            "Boreal couldn’t prepare Tainted Grail’s Unity runtime compatibility file at \(url.path): \(underlying)"
         }
     }
 }
@@ -43,8 +46,20 @@ nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
 /// code when the game is launched outside its original store client.
 nonisolated enum GameLaunchCompatibility {
     private static let torchlightAppID = "200710"
+    private static let taintedGrailIDs: Set<String> = ["1887281589", "1466060"]
 
-    static func prepare(application: WindowsApplication) throws {
+    static func prepare(
+        application: WindowsApplication,
+        environment: ManagedBorealEnvironment? = nil,
+        runtime: InstalledRuntime? = nil
+    ) throws {
+        if let externalID = application.storeExternalID,
+           taintedGrailIDs.contains(externalID),
+           runtime?.resolvedEngine == .gamePortingToolkit,
+           let environment {
+            try prepareTaintedGrailWinRTShim(in: environment)
+        }
+
         guard application.usesStoreMetadataOnly,
               application.storeProvider == .steam,
               application.storeExternalID == torchlightAppID else { return }
@@ -63,6 +78,22 @@ nonisolated enum GameLaunchCompatibility {
         } catch {
             throw GameLaunchCompatibilityError.steamAppIDFileUnavailable(
                 appIDFile,
+                underlying: error.localizedDescription
+            )
+        }
+    }
+
+    private static func prepareTaintedGrailWinRTShim(in environment: ManagedBorealEnvironment) throws {
+        let system32 = environment.prefixURL.appending(path: "drive_c/windows/system32", directoryHint: .isDirectory)
+        let source = system32.appending(path: "combase.dll")
+        let destination = system32.appending(path: "api-ms-win-core-winrt-robuffer-l1-1-0.dll")
+        do {
+            let expected = try Data(contentsOf: source)
+            if let existing = try? Data(contentsOf: destination), existing == expected { return }
+            try expected.write(to: destination, options: .atomic)
+        } catch {
+            throw GameLaunchCompatibilityError.unityWinRTShimUnavailable(
+                destination,
                 underlying: error.localizedDescription
             )
         }

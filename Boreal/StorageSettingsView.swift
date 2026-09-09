@@ -238,9 +238,16 @@ struct StorageSettingsView: View {
         let layout = store.managedStorageLayout
         let applications = store.applications
         let storeGames = store.storeGames
+        let installations = store.installations
         let environments = store.environments
         let value = await Task.detached(priority: .utility) {
-            BorealStorageScanner.scan(layout: layout, applications: applications, storeGames: storeGames, environments: environments)
+            BorealStorageScanner.scan(
+                layout: layout,
+                applications: applications,
+                storeGames: storeGames,
+                environments: environments,
+                installations: installations
+            )
         }.value
         report = value
         isScanning = false
