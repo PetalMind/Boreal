@@ -260,7 +260,7 @@ actor ITADPriceService: DiscoveryPricingLoading {
     private var countryCode: String {
         let configured = UserDefaults.standard.string(forKey: Self.countryCodeDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if let configured, configured.count == 2 { return configured }
-        return Locale.current.region?.identifier ?? "PL"
+        return ExternalContentPreferences.system.systemRegionCode
     }
 
     private func readCache() -> [String: DiscoveryPriceSummary] {

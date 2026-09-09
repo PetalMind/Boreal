@@ -2,6 +2,35 @@ import CryptoKit
 import Darwin
 import Foundation
 
+nonisolated struct GOGInstalledGameIdentity: Equatable, Sendable {
+    let externalID: String
+    let name: String?
+    let installationURL: URL
+}
+
+nonisolated enum GOGInstalledGameDetector {
+    static func detect(executable: URL, fileManager: FileManager = .default) -> GOGInstalledGameIdentity? {
+        let directory = executable.deletingLastPathComponent().standardizedFileURL
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for infoURL in entries where infoURL.lastPathComponent.hasPrefix("goggame-") && infoURL.pathExtension == "info" {
+            guard let data = try? Data(contentsOf: infoURL),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let externalID = (root["gameId"] as? String) ?? (root["rootGameId"] as? String),
+                  !externalID.isEmpty, externalID.allSatisfy(\.isNumber) else { continue }
+            return GOGInstalledGameIdentity(
+                externalID: externalID,
+                name: root["name"] as? String,
+                installationURL: directory
+            )
+        }
+        return nil
+    }
+}
+
 private nonisolated final class GOGOutputBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
@@ -88,6 +117,7 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
     case verificationFailed
     case helperUnavailable
     case notAuthenticated
+    case localManifestUnavailable
     case commandFailed(Int32)
     case noBuildsFound
     case invalidResponse
@@ -102,6 +132,7 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
         case .verificationFailed: "The downloaded GOG support component failed SHA-256 verification and was not installed."
         case .helperUnavailable: "Install GOG support before connecting your account."
         case .notAuthenticated: "Connect your GOG account, then refresh the Library."
+        case .localManifestUnavailable: "This offline GOG installation has not been adopted by Boreal yet."
         case .commandFailed(let code): "GOG support stopped with exit code \(code)."
         case .noBuildsFound: "GOG does not provide a downloadable build for the selected platform."
         case .invalidResponse: "GOG returned Library data in an unsupported format."
@@ -357,12 +388,32 @@ actor GOGService: GOGLibraryProviding {
             fractionCompleted: nil,
             phase: command == "repair" ? .verifying : .preparing
         ))
-        _ = try await run([
+        let platformArgument = platform == .nativeMacOS ? "osx" : "windows"
+        let arguments = [
             command, appID,
             "--path", path.path,
-            "--platform", platform == .nativeMacOS ? "osx" : "windows",
+            "--platform", platformArgument,
             "--skip-dlcs",
-        ], progress: progress)
+        ]
+        do {
+            _ = try await run(arguments, progress: progress)
+        } catch GOGServiceError.localManifestUnavailable where command == "repair" {
+            // Offline installers ship GOG's hash database, not gogdl's local
+            // manifest. The first managed download adopts the existing path,
+            // compares it with the current store build, and establishes the
+            // manifest used by subsequent lightweight repair operations.
+            await progress(StoreGameOperationProgress(
+                message: "Adopting the offline GOG installation and restoring its files…",
+                fractionCompleted: nil,
+                phase: .verifying
+            ))
+            _ = try await run([
+                "download", appID,
+                "--path", path.path,
+                "--platform", platformArgument,
+                "--skip-dlcs",
+            ], progress: progress)
+        }
         try Task.checkCancellation()
     }
 
@@ -755,6 +806,8 @@ actor GOGService: GOGLibraryProviding {
                 let diagnosticOutput = capturedOutput + errorOutput.snapshot()
                 if process.terminationStatus == 0 {
                     continuation.resume(returning: capturedOutput)
+                } else if String(data: diagnosticOutput, encoding: .utf8)?.localizedCaseInsensitiveContains("No manifest stored locally") == true {
+                    continuation.resume(throwing: GOGServiceError.localManifestUnavailable)
                 } else if String(data: diagnosticOutput, encoding: .utf8)?.localizedCaseInsensitiveContains("No builds found") == true {
                     continuation.resume(throwing: GOGServiceError.noBuildsFound)
                 } else {

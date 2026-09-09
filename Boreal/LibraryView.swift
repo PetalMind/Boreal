@@ -45,7 +45,7 @@ nonisolated enum LibrarySourceFilter: String, CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .boreal: "Custom Installed"
+        case .boreal: "Imported Games"
         case .steam: "Steam"
         case .epic: "Epic Games"
         case .gog: "GOG"

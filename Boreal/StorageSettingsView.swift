@@ -33,8 +33,8 @@ struct StorageSettingsView: View {
     private var gameLocationCard: some View {
         let location = store.gameInstallationBaseRoot
         return SettingsCard(
-            "Game installation location",
-            subtitle: "Choose where new Epic and GOG games are stored.",
+            .Settings.gameInstallationLocationTitle,
+            subtitle: .Settings.gameInstallationLocationSubtitle,
             symbol: "externaldrive.fill"
         ) {
             HStack(spacing: 12) {
@@ -108,7 +108,7 @@ struct StorageSettingsView: View {
     }
 
     private var overviewCard: some View {
-        SettingsCard("Storage", subtitle: "See what Boreal is using without touching game data or prefixes.", symbol: "internaldrive.fill") {
+        SettingsCard(.Settings.storageOverviewTitle, subtitle: .Settings.storageOverviewSubtitle, symbol: "internaldrive.fill") {
             if let report {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -175,7 +175,7 @@ struct StorageSettingsView: View {
     private func categoryCards(_ report: BorealStorageReport) -> some View {
         ForEach(categories) { category in
             let items = report.items(for: category)
-            SettingsCard(category.title, subtitle: category.subtitle, symbol: category.symbol) {
+            SettingsCard(storageCategoryTitle(category), subtitle: storageCategorySubtitle(category), symbol: category.symbol) {
                 if items.isEmpty {
                     Text("No measured data in this category.")
                         .foregroundStyle(.secondary)
@@ -197,7 +197,7 @@ struct StorageSettingsView: View {
     }
 
     private var safetyCard: some View {
-        SettingsCard("Storage safety", subtitle: "The report separates data by the consequence of removing it.", symbol: "checkmark.shield.fill") {
+        SettingsCard(.Settings.storageSafetyTitle, subtitle: .Settings.storageSafetySubtitle, symbol: "checkmark.shield.fill") {
             StorageRiskRow(title: "Safe", description: "Downloads and logs can be recreated or removed without deleting a game or prefix.", color: .green)
             Divider()
             StorageRiskRow(title: "Regeneratable", description: "Shader and metadata caches may be rebuilt; the next launch can take longer.", color: .orange)
@@ -207,14 +207,36 @@ struct StorageSettingsView: View {
     }
 
     private var loadingCard: some View {
-        SettingsCard("Scanning Storage", subtitle: "Reading only locations already managed or recorded by Boreal.", symbol: "magnifyingglass") {
+        SettingsCard(.Settings.scanningStorageTitle, subtitle: .Settings.scanningStorageSubtitle, symbol: "magnifyingglass") {
             ProgressView().controlSize(.small)
         }
     }
 
     private var emptyCard: some View {
-        SettingsCard("Storage", subtitle: "Scan to measure Boreal-managed files.", symbol: "internaldrive") {
+        SettingsCard(.Settings.storageEmptyTitle, subtitle: .Settings.storageEmptySubtitle, symbol: "internaldrive") {
             Text("No scan has been completed yet.").foregroundStyle(.secondary)
+        }
+    }
+
+    private func storageCategoryTitle(_ category: BorealStorageCategory) -> LocalizedStringResource {
+        switch category {
+        case .games: .Settings.storageGamesTitle
+        case .environments: .Settings.storageEnvironmentsTitle
+        case .runtimes: .Settings.storageRuntimesTitle
+        case .caches: .Settings.storageCachesTitle
+        case .downloads: .Settings.storageDownloadsTitle
+        case .logs: .Settings.storageLogsTitle
+        }
+    }
+
+    private func storageCategorySubtitle(_ category: BorealStorageCategory) -> LocalizedStringResource {
+        switch category {
+        case .games: .Settings.storageGamesSubtitle
+        case .environments: .Settings.storageEnvironmentsSubtitle
+        case .runtimes: .Settings.storageRuntimesSubtitle
+        case .caches: .Settings.storageCachesSubtitle
+        case .downloads: .Settings.storageDownloadsSubtitle
+        case .logs: .Settings.storageLogsSubtitle
         }
     }
 

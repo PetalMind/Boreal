@@ -102,12 +102,12 @@ struct BorealSettingsView: View {
 }
 
 struct SettingsCard<Content: View>: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringResource
+    let subtitle: LocalizedStringResource
     let symbol: String
     let content: Content
 
-    init(_ title: String, subtitle: String, symbol: String, @ViewBuilder content: () -> Content) {
+    init(_ title: LocalizedStringResource, subtitle: LocalizedStringResource, symbol: String, @ViewBuilder content: () -> Content) {
         self.title = title
         self.subtitle = subtitle
         self.symbol = symbol
@@ -138,10 +138,10 @@ struct SettingsCard<Content: View>: View {
 }
 
 struct SettingsRow<Content: View>: View {
-    let title: String
+    let title: LocalizedStringResource
     let content: Content
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: LocalizedStringResource, @ViewBuilder content: () -> Content) {
         self.title = title
         self.content = content()
     }
@@ -161,27 +161,27 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .general: "General"
-        case .storage: "Storage"
-        case .runtime: "Runtime"
-        case .controllers: "Controllers"
-        case .fullscreen: "Fullscreen"
-        case .overlay: "Overlay"
-        case .advanced: "Advanced"
+        case .general: .Settings.generalTitle
+        case .storage: .Settings.storageTitle
+        case .runtime: .Settings.runtimeTitle
+        case .controllers: .Settings.controllersTitle
+        case .fullscreen: .Settings.fullscreenTitle
+        case .overlay: .Settings.overlayTitle
+        case .advanced: .Settings.advancedTitle
         }
     }
 
-    var subtitle: String {
+    var subtitle: LocalizedStringResource {
         switch self {
-        case .general: "Updates, sound, discovery prices"
-        case .storage: "Games, environments and caches"
-        case .runtime: "Wine and graphics components"
-        case .controllers: "Mapping and input behavior"
-        case .fullscreen: "Controller-first interface"
-        case .overlay: "In-game performance display"
-        case .advanced: "Developer settings"
+        case .general: .Settings.generalSubtitle
+        case .storage: .Settings.storageSubtitle
+        case .runtime: .Settings.runtimeSubtitle
+        case .controllers: .Settings.controllersSubtitle
+        case .fullscreen: .Settings.fullscreenSubtitle
+        case .overlay: .Settings.overlaySubtitle
+        case .advanced: .Settings.advancedSubtitle
         }
     }
 
@@ -200,6 +200,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
 
 struct GeneralSettingsView: View {
     @Environment(BorealStore.self) private var store
+    @AppStorage("appLanguage") private var appLanguage = AppLanguage.system.rawValue
     @AppStorage("automaticUpdates") private var automaticUpdates = true
     @AppStorage("keepInstallers") private var keepInstallers = false
     @AppStorage(BorealSoundSettings.enabled) private var interfaceSoundsEnabled = true
@@ -213,37 +214,61 @@ struct GeneralSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                SettingsCard("Updates & Installers", subtitle: "Control automatic updates and downloaded files.", symbol: "arrow.triangle.2.circlepath") {
-                    SettingsRow("Check for updates automatically") { Toggle("", isOn: $automaticUpdates).labelsHidden() }
+                SettingsCard(.Settings.updatesTitle, subtitle: .Settings.updatesSubtitle, symbol: "arrow.triangle.2.circlepath") {
+                    SettingsRow(.Settings.automaticUpdatesLabel) { Toggle("", isOn: $automaticUpdates).labelsHidden() }
                     Divider()
-                    SettingsRow("Keep downloaded installers") { Toggle("", isOn: $keepInstallers).labelsHidden() }
+                    SettingsRow(.Settings.keepInstallersLabel) { Toggle("", isOn: $keepInstallers).labelsHidden() }
                 }
 
-                SettingsCard("Sound", subtitle: "Choose when Boreal plays interface sounds.", symbol: "speaker.wave.2.fill") {
-                    SettingsRow("Interface sounds") { Toggle("", isOn: $interfaceSoundsEnabled).labelsHidden() }
+                SettingsCard(.Settings.soundTitle, subtitle: .Settings.soundSubtitle, symbol: "speaker.wave.2.fill") {
+                    SettingsRow(.Settings.interfaceSoundsLabel) { Toggle("", isOn: $interfaceSoundsEnabled).labelsHidden() }
                     Divider()
-                    SettingsRow("Sound volume") {
+                    SettingsRow(.Settings.soundVolumeLabel) {
                         Slider(value: $interfaceSoundVolume, in: 0...1).frame(width: 180)
                         Text(interfaceSoundVolume, format: .percent.precision(.fractionLength(0)))
                             .foregroundStyle(.secondary).frame(width: 38, alignment: .trailing)
                     }
                     .disabled(!interfaceSoundsEnabled)
                     Divider()
-                    SettingsRow("Completed downloads") { Toggle("", isOn: $soundsForCompletedDownloads).labelsHidden() }
+                    SettingsRow(.Settings.completedDownloadsLabel) { Toggle("", isOn: $soundsForCompletedDownloads).labelsHidden() }
                     Divider()
-                    SettingsRow("Installations") { Toggle("", isOn: $soundsForInstallations).labelsHidden() }
+                    SettingsRow(.Settings.installationsLabel) { Toggle("", isOn: $soundsForInstallations).labelsHidden() }
                     Divider()
-                    SettingsRow("Errors and warnings") { Toggle("", isOn: $soundsForErrorsAndWarnings).labelsHidden() }
+                    SettingsRow(.Settings.errorsAndWarningsLabel) { Toggle("", isOn: $soundsForErrorsAndWarnings).labelsHidden() }
                 }
 
-                SettingsCard("Discovery Prices", subtitle: "Connect IsThereAnyDeal price data.", symbol: "tag.fill") {
-                    SettingsRow("API key") { SecureField("IsThereAnyDeal API key", text: $itadAPIKey).frame(width: 260) }
+                SettingsCard(.Settings.languageCardTitle, subtitle: .Settings.languageCardSubtitle, symbol: "character.book.closed") {
+                    SettingsRow(.Settings.languageTitle) {
+                        Picker(selection: $appLanguage) {
+                            ForEach(AppLanguage.allCases) { language in
+                                Text(language.title).tag(language.rawValue)
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+                }
+
+                SettingsCard(.Settings.discoveryPricesTitle, subtitle: .Settings.discoveryPricesSubtitle, symbol: "tag.fill") {
+                    SettingsRow(.Settings.apiKeyLabel) {
+                        SecureField(.Settings.apiKeyPlaceholder, text: $itadAPIKey, prompt: Text(.Settings.apiKeyPlaceholder))
+                            .frame(width: 260)
+                    }
                     Divider()
-                    SettingsRow("Store country") { TextField("ISO code", text: $itadCountryCode).frame(width: 260) }
+                    SettingsRow(.Settings.storeCountryLabel) {
+                        TextField(.Settings.isoCodePlaceholder, text: $itadCountryCode, prompt: Text(.Settings.isoCodePlaceholder))
+                            .frame(width: 260)
+                    }
                     Divider()
-                    SettingsRow("Authentication") { Text("API Key").foregroundStyle(.secondary) }
+                    SettingsRow(.Settings.authenticationLabel) { Text(.Settings.authenticationValue).foregroundStyle(.secondary) }
                     Divider()
-                    SettingsRow("ITAD app page") { Link("Register an API key ↗", destination: URL(string: "https://isthereanydeal.com/apps/")!) }
+                    SettingsRow(.Settings.itadAppPageLabel) {
+                        Link(destination: URL(string: "https://isthereanydeal.com/apps/")!) {
+                            Text(.Settings.registerAPIKey)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 32)
@@ -262,13 +287,13 @@ struct RuntimeSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                SettingsCard("Boreal Runtime", subtitle: "Manage the Windows compatibility runtime.", symbol: "gearshape.2.fill") {
-                    SettingsRow("Update runtimes automatically") { Toggle("", isOn: $automaticRuntimeUpdates).labelsHidden() }
+                SettingsCard(.Settings.borealRuntimeTitle, subtitle: .Settings.borealRuntimeSubtitle, symbol: "gearshape.2.fill") {
+                    SettingsRow(.Settings.automaticRuntimeUpdatesLabel) { Toggle("", isOn: $automaticRuntimeUpdates).labelsHidden() }
                 }
-                SettingsCard("Graphics Components", subtitle: "Keep installed translation layers current.", symbol: "display") {
-                    SettingsRow("Update DXVK automatically") { Toggle("", isOn: $automaticDXVKUpdates).labelsHidden() }
+                SettingsCard(.Settings.graphicsComponentsTitle, subtitle: .Settings.graphicsComponentsSubtitle, symbol: "display") {
+                    SettingsRow(.Settings.automaticDXVKUpdatesLabel) { Toggle("", isOn: $automaticDXVKUpdates).labelsHidden() }
                     Divider()
-                    SettingsRow("Update VKD3D-Proton automatically") { Toggle("", isOn: $automaticVKD3DUpdates).labelsHidden() }
+                    SettingsRow(.Settings.automaticVKD3DupdatesLabel) { Toggle("", isOn: $automaticVKD3DUpdates).labelsHidden() }
                 }
             }
             .padding(.horizontal, 32).padding(.bottom, 28)
@@ -284,19 +309,19 @@ struct ConsoleModeSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                SettingsCard("Controller-first Interface", subtitle: "Configure Boreal's fullscreen experience.", symbol: "rectangle.inset.filled") {
-                    SettingsRow("Use Boreal Fullscreen / TV mode") { Toggle("", isOn: $consoleModeEnabled).labelsHidden() }
+                SettingsCard(.Settings.controllerFirstTitle, subtitle: .Settings.controllerFirstSubtitle, symbol: "rectangle.inset.filled") {
+                    SettingsRow(.Settings.consoleModeLabel) { Toggle("", isOn: $consoleModeEnabled).labelsHidden() }
                     Divider()
-                    SettingsRow("Ask when a controller connects") { Toggle("", isOn: $consoleModeAutoEnter).labelsHidden() }
+                    SettingsRow(.Settings.consoleModeAutoEnterLabel) { Toggle("", isOn: $consoleModeAutoEnter).labelsHidden() }
                     Divider()
-                    SettingsRow("Return after a game exits") { Toggle("", isOn: $returnAfterGame).labelsHidden() }
+                    SettingsRow(.Settings.consoleModeReturnLabel) { Toggle("", isOn: $returnAfterGame).labelsHidden() }
                 }
-                SettingsCard("Controls", subtitle: "Controller shortcuts used in fullscreen mode.", symbol: "gamecontroller.fill") {
-                    SettingsRow("Navigate") { Text("D-pad / left stick").foregroundStyle(.secondary) }
+                SettingsCard(.Settings.controlsTitle, subtitle: .Settings.controlsSubtitle, symbol: "gamecontroller.fill") {
+                    SettingsRow(.Settings.navigateLabel) { Text(.Settings.dPadLeftStick).foregroundStyle(.secondary) }
                     Divider()
-                    SettingsRow("Select / Back") { Text("A / B").foregroundStyle(.secondary) }
+                    SettingsRow(.Settings.selectBackLabel) { Text(.Settings.aB).foregroundStyle(.secondary) }
                     Divider()
-                    SettingsRow("Game menu") { Text("Y").foregroundStyle(.secondary) }
+                    SettingsRow(.Settings.gameMenuLabel) { Text(.Settings.yButton).foregroundStyle(.secondary) }
                 }
             }
             .padding(.horizontal, 32).padding(.bottom, 28)
@@ -309,8 +334,8 @@ struct AdvancedSettingsView: View {
     @AppStorage("developerMode") private var developerMode = false
     var body: some View {
         ScrollView {
-            SettingsCard("Developer Settings", subtitle: "Reveal runtime internals, logs and environment variables.", symbol: "wrench.and.screwdriver.fill") {
-                SettingsRow("Developer Mode") { Toggle("", isOn: $developerMode).labelsHidden() }
+            SettingsCard(.Settings.developerSettingsTitle, subtitle: .Settings.developerSettingsSubtitle, symbol: "wrench.and.screwdriver.fill") {
+                SettingsRow(.Settings.developerModeLabel) { Toggle("", isOn: $developerMode).labelsHidden() }
             }
             .padding(.horizontal, 32).padding(.bottom, 28)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)

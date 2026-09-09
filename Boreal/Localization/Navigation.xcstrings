@@ -1,0 +1,582 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "accountsTitle": {
+      "comment": "Sidebar destination for connected game accounts.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accounts"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konta"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "addTitle": {
+      "comment": "Menu used to add games or environments.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dodaj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "controllerSettingsTitle": {
+      "comment": "Sidebar destination for controller settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controller Settings"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ustawienia kontrolera"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "discoverySectionTitle": {
+      "comment": "Sidebar section containing game discovery.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Library"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biblioteka"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "discoverySubtitle": {
+      "comment": "Sidebar subtitle for game discovery.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Find games for your Mac"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Znajdź gry na Maca"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "discoveryTitle": {
+      "comment": "Sidebar destination for game discovery.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discovery"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odkrywaj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "downloadsTitle": {
+      "comment": "Sidebar destination for downloads.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloads"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobieranie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "environmentsTitle": {
+      "comment": "Sidebar destination for Windows environments.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Environments"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowiska"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "favoritesSubtitle": {
+      "comment": "Sidebar subtitle for favorite games.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your collection"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Twoja kolekcja"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "favoritesTitle": {
+      "comment": "Sidebar destination for favorite games.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorites"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ulubione"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "homeSubtitle": {
+      "comment": "Sidebar subtitle for the complete library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All your games"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wszystkie gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "homeTitle": {
+      "comment": "Sidebar destination for the complete library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Główna"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "installedSubtitle": {
+      "comment": "Sidebar subtitle for installed games.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ready on this Mac"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gotowe na tym Macu"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "installedTitle": {
+      "comment": "Sidebar destination for installed games.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zainstalowane"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "librarySectionTitle": {
+      "comment": "Sidebar section containing library destinations.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Library"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biblioteka"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "settingsTitle": {
+      "comment": "Sidebar destination for application settings.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ustawienia"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "servicesSectionTitle": {
+      "comment": "Sidebar section containing account and utility destinations.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Services"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usługi"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "sourcesSectionTitle": {
+      "comment": "Sidebar section containing library source filters.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sources"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Źródła"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "developerSectionTitle": {
+      "comment": "Sidebar section containing developer destinations.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deweloper"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "libraryTitle": {
+      "comment": "Main navigation title for the library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Library"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biblioteka"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimePreparingHelp": {
+      "comment": "Help text for the runtime preparation status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show runtime preparation"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż przygotowanie środowiska"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimePreparingTitle": {
+      "comment": "Runtime footer status while preparation is running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing Runtime"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przygotowywanie środowiska"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeReadyHelp": {
+      "comment": "Help text for the verified runtime status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show the verified Windows runtime"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż zweryfikowane środowisko Windows"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeReadyTitle": {
+      "comment": "Runtime footer status when a verified runtime is available.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime Ready"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowisko gotowe"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeSetupNeededHelp": {
+      "comment": "Help text for the runtime setup required status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open runtime setup"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otwórz konfigurację środowiska"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeSetupNeededTitle": {
+      "comment": "Runtime footer status when setup is required.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime Setup Needed"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wymagana konfiguracja środowiska"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeAvailableHelp": {
+      "comment": "Help text for the downloadable runtime status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download the Windows runtime"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobierz środowisko Windows"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "runtimeAvailableTitle": {
+      "comment": "Runtime footer status when a runtime can be downloaded.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime Available"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Środowisko dostępne"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "searchDiscovery": {
+      "comment": "Search field prompt for Discovery.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search Discovery"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Szukaj w Odkrywaj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "searchLibrary": {
+      "comment": "Search field prompt for the library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search Library"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Szukaj w bibliotece"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "wineDetectedHelp": {
+      "comment": "Help text for the detected Wine status.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boreal can prepare the detected Wine automatically"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boreal może automatycznie przygotować wykryty Wine"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "wineDetectedTitle": {
+      "comment": "Runtime footer status when Wine is detected locally.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine Detected"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wykryto Wine"
+          }
+        }
+      },
+      "extractionState": "manual"
+    }
+  },
+  "version": "1.0"
+}

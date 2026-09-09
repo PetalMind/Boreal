@@ -228,7 +228,7 @@ struct StoreGameDetailView: View {
     private var heroIdentity: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(discoveryGame == nil
-                 ? "\(linkedApplication?.usesStoreMetadataOnly == true ? "Custom Installed" : currentGame.provider.rawValue)  ·  IN YOUR LIBRARY"
+                 ? "\(linkedApplication?.usesStoreMetadataOnly == true ? "Imported Games" : currentGame.provider.rawValue)  ·  IN YOUR LIBRARY"
                  : "\(currentGame.provider.rawValue)  ·  DISCOVERY")
                 .font(.caption.weight(.semibold))
                 .tracking(0.5)
@@ -849,6 +849,12 @@ struct StoreGameDetailView: View {
                 }
                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") {
                     compatibilityApplication = app
+                }
+                if !app.isInstallerOnly, !app.isSteamRuntimeHost {
+                    Button("Install Patch or DLC…", systemImage: "shippingbox.and.arrow.backward") {
+                        selectWindowsInstaller(for: app)
+                    }
+                    .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
                 }
                 let gameActions = store.auxiliaryExecutables(for: app)
                 if !gameActions.isEmpty {
@@ -1950,6 +1956,22 @@ struct StoreGameDetailView: View {
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK, let url = panel.url else { return }
         store.registerExistingGame(game, at: url)
+    }
+
+    private func selectWindowsInstaller(for application: WindowsApplication) {
+        let panel = NSOpenPanel()
+        panel.title = "Install Patch or DLC for \(application.name)"
+        panel.message = "Choose a Windows installer to run inside \(application.name)’s existing environment."
+        panel.prompt = "Run Installer"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "exe") ?? .data,
+            UTType(filenameExtension: "msi") ?? .data,
+        ]
+        guard panel.runModal() == .OK, let installer = panel.url else { return }
+        store.runWindowsInstaller(installer, for: application.id)
     }
 
     private func openStorePage() {

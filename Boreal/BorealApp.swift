@@ -11,11 +11,18 @@ import SwiftUI
 @main
 struct BorealApp: App {
     @State private var store = BorealStore()
+    @AppStorage("appLanguage") private var appLanguage = AppLanguage.system.rawValue
+
+    private var selectedLocale: Locale {
+        let language = AppLanguage(rawValue: appLanguage) ?? .system
+        return language.locale ?? .current
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(store)
+                .environment(\.locale, selectedLocale)
                 .task {
                     ControllerManager.shared.start()
                     await store.runAutomaticCompatibilityUpdateCheck()
@@ -58,6 +65,7 @@ struct BorealApp: App {
         Settings {
             BorealSettingsView()
                 .environment(store)
+                .environment(\.locale, selectedLocale)
         }
     }
 }

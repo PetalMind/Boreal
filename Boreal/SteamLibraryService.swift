@@ -390,7 +390,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         guard var components = URLComponents(string: "https://store.steampowered.com/api/appdetails") else { return nil }
         components.queryItems = [
             URLQueryItem(name: "appids", value: appID),
-            URLQueryItem(name: "l", value: Locale.current.language.languageCode?.identifier ?? "en")
+            URLQueryItem(name: "l", value: ExternalContentPreferences.system.steamLanguageCode)
         ]
         guard let url = components.url else { return nil }
         async let detailsRequest = session.data(from: url)

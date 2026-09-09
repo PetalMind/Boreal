@@ -1,0 +1,546 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "About Boreal": {
+      "comment": "Label for the application information section.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About Boreal"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O Boreal"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "BOREAL": {
+      "comment": "Boreal product name.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BOREAL"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BOREAL"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Cancel": {
+      "comment": "Generic cancel action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anuluj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Close": {
+      "comment": "Generic close action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zamknij"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Customize Boreal to fit your workflow.": {
+      "comment": "Subtitle shown at the top of the settings window.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Customize Boreal to fit your workflow."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dostosuj Boreal do swojego sposobu pracy."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Diagnostic": {
+      "comment": "Overlay information level.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostyczny"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Done": {
+      "comment": "Generic completion action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gotowe"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Grid": {
+      "comment": "Library grid view command.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grid"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siatka"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "List": {
+      "comment": "Library list view command.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "List"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Minimal": {
+      "comment": "Minimal overlay information level.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimal"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimalny"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "One library. Every world.": {
+      "comment": "Boreal product tagline.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One library. Every world."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jedna biblioteka. Całe światy."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Settings": {
+      "comment": "Settings window title.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ustawienia"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Standard": {
+      "comment": "Standard overlay information level.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standard"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standardowy"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Try Again": {
+      "comment": "Generic retry action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try Again"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spróbuj ponownie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Add": {
+      "comment": "Menu for adding games or environments.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dodaj"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Create": {
+      "comment": "Create environment action.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utwórz"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Create Empty Environment…": {
+      "comment": "Action that creates an empty Windows environment.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create Empty Environment…"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utwórz puste środowisko…"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Install Windows App…": {
+      "comment": "Action that imports a Windows executable or installer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install Windows App…"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zainstaluj aplikację Windows…"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Import Steam Library": {
+      "comment": "Action that imports the Steam library.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import Steam Library"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importuj bibliotekę Steam"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Install an app or create an environment": {
+      "comment": "Help text for the add menu in developer mode.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install an app or create an environment"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zainstaluj aplikację lub utwórz środowisko"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Install a Windows app": {
+      "comment": "Help text for the add menu.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install a Windows app"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zainstaluj aplikację Windows"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Name": {
+      "comment": "Name field for a new environment.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nazwa"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "New Environment": {
+      "comment": "Title of the new environment dialog.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Environment"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nowe środowisko"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Create an empty, isolated Windows environment.": {
+      "comment": "Description of the new environment dialog.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create an empty, isolated Windows environment."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utwórz puste, odizolowane środowisko Windows."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "App Not Found": {
+      "comment": "Empty state when an application route no longer exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Not Found"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nie znaleziono aplikacji"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Game Not Found": {
+      "comment": "Empty state when a game route no longer exists.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Game Not Found"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nie znaleziono gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Overlay Information Level": {
+      "comment": "Menu containing overlay information levels.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Overlay Information Level"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poziom informacji nakładki"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Toggle Game Overlay": {
+      "comment": "Menu action for showing or hiding the game overlay.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Game Overlay"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przełącz nakładkę gry"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Cycle Overlay Information Level": {
+      "comment": "Menu action for cycling overlay information levels.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cycle Overlay Information Level"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zmień poziom informacji nakładki"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "View": {
+      "comment": "Application menu containing view commands.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Widok"
+          }
+        }
+      },
+      "extractionState": "manual"
+    }
+  },
+  "version": "1.0"
+}

@@ -91,7 +91,7 @@ struct ContentView: View {
                     destinationView
                 }
                 .frame(minWidth: 640, minHeight: 500)
-                .navigationTitle(title)
+                .navigationTitle(Text(title))
                 .toolbar { toolbarContent }
                 .navigationDestination(for: LibraryRoute.self) { route in
                     routeView(route)
@@ -197,8 +197,8 @@ struct ContentView: View {
                     showDiscovery()
                 } label: {
                     BorealSidebarRow(
-                        title: "Discovery",
-                        subtitle: "Find games for your Mac",
+                        title: .Navigation.discoveryTitle,
+                        subtitle: .Navigation.discoverySubtitle,
                         symbol: "sparkles",
                         tint: .purple,
                         count: store.discoveryCatalog?.trackedCount,
@@ -216,8 +216,8 @@ struct ContentView: View {
                     libraryProducerFilter = ""
                 } label: {
                     BorealSidebarRow(
-                        title: "Home",
-                        subtitle: "All your games",
+                        title: .Navigation.homeTitle,
+                        subtitle: .Navigation.homeSubtitle,
                         symbol: "rectangle.grid.2x2.fill",
                         tint: .cyan,
                         isSelected: isHomeSelected
@@ -229,8 +229,8 @@ struct ContentView: View {
                     showInstalledLibrary()
                 } label: {
                     BorealSidebarRow(
-                        title: "Installed",
-                        subtitle: "Ready on this Mac",
+                        title: .Navigation.installedTitle,
+                        subtitle: .Navigation.installedSubtitle,
                         symbol: "arrow.down.circle.fill",
                         tint: .green,
                         count: installedCount,
@@ -244,8 +244,8 @@ struct ContentView: View {
                     showFavoritesLibrary()
                 } label: {
                     BorealSidebarRow(
-                        title: "Favorites",
-                        subtitle: "Your collection",
+                        title: .Navigation.favoritesTitle,
+                        subtitle: .Navigation.favoritesSubtitle,
                         symbol: "heart.fill",
                         tint: .pink,
                         count: favoriteCount,
@@ -256,7 +256,7 @@ struct ContentView: View {
                 .tag(SidebarDestination.favorites)
                 .accessibilityAddTraits(isFavoritesSelected ? .isSelected : [])
             } header: {
-                BorealSidebarSectionHeader("Library")
+                BorealSidebarSectionHeader(.Navigation.librarySectionTitle)
             }
 
             Section {
@@ -275,23 +275,30 @@ struct ContentView: View {
                     .accessibilityAddTraits(isSelected(source) ? .isSelected : [])
                 }
             } header: {
-                BorealSidebarSectionHeader("Sources")
+                BorealSidebarSectionHeader(.Navigation.sourcesSectionTitle)
             }
 
             Section {
-                Label("Accounts", systemImage: "person.crop.circle.badge.checkmark").tag(SidebarDestination.accounts)
-                Label("Downloads", systemImage: "arrow.down.circle").tag(SidebarDestination.downloads)
-                Label("Controller Settings", systemImage: "gamecontroller.fill").tag(SidebarDestination.controllers)
+                Label { Text(.Navigation.accountsTitle) } icon: { Image(systemName: "person.crop.circle.badge.checkmark") }
+                    .tag(SidebarDestination.accounts)
+                Label { Text(.Navigation.downloadsTitle) } icon: { Image(systemName: "arrow.down.circle") }
+                    .tag(SidebarDestination.downloads)
+                Label { Text(.Navigation.controllerSettingsTitle) } icon: { Image(systemName: "gamecontroller.fill") }
+                    .tag(SidebarDestination.controllers)
             } header: {
-                BorealSidebarSectionHeader("Services")
+                BorealSidebarSectionHeader(.Navigation.servicesSectionTitle)
             }
             if developerMode {
-                Section("Developer") {
-                    Label("Environments", systemImage: "externaldrive").tag(SidebarDestination.environments)
+                Section {
+                    Label { Text(.Navigation.environmentsTitle) } icon: { Image(systemName: "externaldrive") }
+                        .tag(SidebarDestination.environments)
+                } header: {
+                    BorealSidebarSectionHeader(.Navigation.developerSectionTitle)
                 }
             }
             Section {
-                Label("Ustawienia", systemImage: "gearshape").tag(SidebarDestination.settings)
+                Label { Text(.Navigation.settingsTitle) } icon: { Image(systemName: "gearshape") }
+                    .tag(SidebarDestination.settings)
             }
         }
         .listStyle(.sidebar)
@@ -348,7 +355,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .font(.caption)
             .foregroundStyle(.secondary)
-            .help(runtimeFooter.help)
+            .help(Text(runtimeFooter.help))
             .padding()
         }
     }
@@ -356,10 +363,10 @@ struct ContentView: View {
     @ViewBuilder private var destinationView: some View {
         switch selection ?? .library {
         case .discovery:
-            DiscoveryView(searchText: $discoverySearchText) {
-                libraryPath.append(.discoveryGame($0))
-            }
-                .searchable(text: $discoverySearchText, placement: .toolbar, prompt: "Search Discovery")
+                DiscoveryView(searchText: $discoverySearchText) {
+                    libraryPath.append(.discoveryGame($0))
+                }
+                .searchable(text: $discoverySearchText, placement: .toolbar, prompt: Text(.Navigation.searchDiscovery))
         case .library, .favorites:
             LibraryView(
                 searchText: $searchText,
@@ -378,7 +385,7 @@ struct ContentView: View {
                 selectStoreGameAction: { libraryPath.append(.storeGame($0)) },
                 selectDiscoveryGameAction: { libraryPath.append(.discoveryGame($0)) }
             )
-            .searchable(text: $searchText, placement: .toolbar, prompt: "Search Library")
+            .searchable(text: $searchText, placement: .toolbar, prompt: Text(.Navigation.searchLibrary))
         case .accounts: AccountsView()
         case .environments: EnvironmentsView { showsNewEnvironment = true }
         case .downloads: DownloadsView()
@@ -470,33 +477,33 @@ struct ContentView: View {
         }
     }
 
-    private var title: String {
+    private var title: LocalizedStringResource {
         switch selection ?? .library {
-        case .library: "Library"
-        case .discovery: "Discovery"
-        case .favorites: "Favorites"
-        case .accounts: "Accounts"
-        case .environments: "Environments"
-        case .downloads: "Downloads"
-        case .controllers: "Controller Settings"
-        case .settings: "Ustawienia"
+        case .library: .Navigation.libraryTitle
+        case .discovery: .Navigation.discoveryTitle
+        case .favorites: .Navigation.favoritesTitle
+        case .accounts: .Navigation.accountsTitle
+        case .environments: .Navigation.environmentsTitle
+        case .downloads: .Navigation.downloadsTitle
+        case .controllers: .Navigation.controllerSettingsTitle
+        case .settings: .Navigation.settingsTitle
         }
     }
 
-    private var runtimeFooter: (title: String, symbol: String, tint: Color, help: String) {
+    private var runtimeFooter: (title: LocalizedStringResource, symbol: String, tint: Color, help: LocalizedStringResource) {
         if store.runtimeOperationDetail != nil {
-            return ("Preparing Runtime", "shippingbox", .accentColor, "Show runtime preparation")
+            return (.Navigation.runtimePreparingTitle, "shippingbox", .accentColor, .Navigation.runtimePreparingHelp)
         }
         if store.runtimeStatuses.contains(where: { $0.source == .installed && $0.isVerified }) {
-            return ("Runtime Ready", "checkmark.circle.fill", .green, "Show the verified Windows runtime")
+            return (.Navigation.runtimeReadyTitle, "checkmark.circle.fill", .green, .Navigation.runtimeReadyHelp)
         }
         if !store.localRuntimeCandidates.isEmpty {
-            return ("Wine Detected", "shippingbox.and.arrow.backward.fill", .cyan, "Boreal can prepare the detected Wine automatically")
+            return (.Navigation.wineDetectedTitle, "shippingbox.and.arrow.backward.fill", .cyan, .Navigation.wineDetectedHelp)
         }
         if store.runtimeStatuses.contains(where: { $0.state == .available }) {
-            return ("Runtime Available", "arrow.down.circle.fill", .accentColor, "Download the Windows runtime")
+            return (.Navigation.runtimeAvailableTitle, "arrow.down.circle.fill", .accentColor, .Navigation.runtimeAvailableHelp)
         }
-        return ("Runtime Setup Needed", "shippingbox", .orange, "Open runtime setup")
+        return (.Navigation.runtimeSetupNeededTitle, "shippingbox", .orange, .Navigation.runtimeSetupNeededHelp)
     }
 
     private var controllerTint: Color {
@@ -608,12 +615,13 @@ struct ContentView: View {
 }
 
 private struct BorealSidebarSectionHeader: View {
-    let title: String
+    let title: LocalizedStringResource
 
-    init(_ title: String) { self.title = title }
+    init(_ title: LocalizedStringResource) { self.title = title }
 
     var body: some View {
-        Text(title.uppercased())
+        Text(title)
+            .textCase(.uppercase)
             .font(.caption2.weight(.bold))
             .tracking(1.15)
             .foregroundStyle(.tertiary)
@@ -621,8 +629,8 @@ private struct BorealSidebarSectionHeader: View {
 }
 
 private struct BorealSidebarRow: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringResource
+    let subtitle: LocalizedStringResource
     let symbol: String
     let tint: Color
     var count: Int?

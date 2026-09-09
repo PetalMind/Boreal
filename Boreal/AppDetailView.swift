@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AppDetailView: View {
     @Environment(BorealStore.self) private var store
@@ -31,6 +32,12 @@ struct AppDetailView: View {
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             Menu {
                                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") { showsCompatibilityConfigurator = true }
+                                if !app.isInstallerOnly, !app.isSteamRuntimeHost {
+                                    Button("Install Patch or DLC…", systemImage: "shippingbox.and.arrow.backward") {
+                                        selectWindowsInstaller()
+                                    }
+                                    .disabled(app.status == .running || app.status.isBusy)
+                                }
                                 let gameActions = store.auxiliaryExecutables(for: app)
                                 if !gameActions.isEmpty {
                                     Divider()
@@ -155,6 +162,22 @@ struct AppDetailView: View {
 
     private var isCustomInstalled: Bool {
         !app.isSteamRuntimeHost && (app.storeProvider == nil || app.usesStoreMetadataOnly)
+    }
+
+    private func selectWindowsInstaller() {
+        let panel = NSOpenPanel()
+        panel.title = "Install Patch or DLC for \(app.name)"
+        panel.message = "Choose a Windows installer to run inside \(app.name)’s existing environment."
+        panel.prompt = "Run Installer"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "exe") ?? .data,
+            UTType(filenameExtension: "msi") ?? .data,
+        ]
+        guard panel.runModal() == .OK, let installer = panel.url else { return }
+        store.runWindowsInstaller(installer, for: app.id)
     }
 
     @ViewBuilder private var primaryAction: some View {
