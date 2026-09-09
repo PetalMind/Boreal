@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct InstallationSheet: View {
     private enum InstallerSheetAction: String, CaseIterable, Hashable {
         case install
+        case existing
         case runOnly
     }
 
@@ -37,6 +38,7 @@ struct InstallationSheet: View {
         .onAppear {
             store.resetInstallation()
             selectedRuntimeEngine = candidate.recommendedRuntimeEngine
+            selectedAction = candidate.canBeRegisteredAsExistingGame ? .existing : .install
         }
     }
 
@@ -45,6 +47,9 @@ struct InstallationSheet: View {
         case .idle:
                 Picker("Action", selection: $selectedAction) {
                     Text("Install and add to Library").tag(InstallerSheetAction.install)
+                    if candidate.canBeRegisteredAsExistingGame {
+                        Text("Add existing game").tag(InstallerSheetAction.existing)
+                    }
                     Text("Run installer only").tag(InstallerSheetAction.runOnly)
                 }
                 .pickerStyle(.segmented)
@@ -64,17 +69,30 @@ struct InstallationSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: 390, alignment: .leading)
+                } else if selectedAction == .existing {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("The selected game will be added without launching it.", systemImage: "checkmark.shield.fill")
+                        Text("Boreal will prepare an isolated environment and register this executable. It will not perform a first launch or run the game during setup.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 390, alignment: .leading)
                 }
                 DisclosureGroup("Installation Details", isExpanded: $showsDetails) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("\(candidate.fileType) setup file", systemImage: "doc")
+                        Label("\(candidate.fileType) \(selectedAction == .existing ? "game file" : "setup file")", systemImage: "doc")
                         if selectedAction == .runOnly {
                             Label("Runs with \(selectedRuntimeEngine.displayName)", systemImage: "cpu")
                             Label("No game detection or native installation", systemImage: "checkmark.shield")
+                        } else if selectedAction == .existing {
+                            Label("Adds the selected game without launching it", systemImage: "checkmark.shield")
+                            Label("Existing Windows environment", systemImage: "externaldrive")
                         } else {
                             Label("Configuration selected automatically", systemImage: "cpu")
                         }
-                        Label("Isolated Windows environment", systemImage: "externaldrive")
+                        if selectedAction != .existing {
+                            Label("Isolated Windows environment", systemImage: "externaldrive")
+                        }
                     }
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -102,7 +120,7 @@ struct InstallationSheet: View {
             .frame(width: 390)
         case .succeeded:
             Label(
-                selectedAction == .runOnly ? "Installer launched" : "First launch verified",
+                selectedAction == .runOnly ? "Installer launched" : (selectedAction == .existing ? "Game added" : "First launch verified"),
                 systemImage: selectedAction == .runOnly ? "shippingbox.fill" : "checkmark.seal.fill"
             )
                 .foregroundStyle(.green)
@@ -127,7 +145,7 @@ struct InstallationSheet: View {
             .frame(width: 390, alignment: .leading)
         case .cancelled:
             Label(
-                selectedAction == .runOnly ? "Installer launch cancelled" : "Incomplete environment removed",
+                selectedAction == .runOnly ? "Installer launch cancelled" : (selectedAction == .existing ? "Game addition cancelled" : "Incomplete environment removed"),
                 systemImage: "checkmark.circle.fill"
             )
                 .foregroundStyle(.green)
@@ -135,11 +153,8 @@ struct InstallationSheet: View {
     }
 
     @ViewBuilder private var installationSteps: some View {
-        let stages = selectedAction == .runOnly
-            ? [InstallationStage.preparingRuntime, .creatingEnvironment, .startingInstaller]
-            : InstallationStage.allCases
         VStack(alignment: .leading, spacing: 9) {
-            ForEach(stages, id: \.self) { stage in
+            ForEach(installationStages, id: \.self) { stage in
                 HStack(spacing: 9) {
                     if store.installation.completedStages.contains(stage) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
@@ -157,6 +172,17 @@ struct InstallationSheet: View {
         .accessibilityElement(children: .contain)
     }
 
+    private var installationStages: [InstallationStage] {
+        switch selectedAction {
+        case .runOnly:
+            return [.preparingRuntime, .creatingEnvironment, .startingInstaller]
+        case .existing:
+            return [.preparingRuntime, .creatingEnvironment, .committing]
+        case .install:
+            return InstallationStage.allCases
+        }
+    }
+
     @ViewBuilder private var actions: some View {
         switch store.installation.state {
         case .idle:
@@ -166,7 +192,7 @@ struct InstallationSheet: View {
                 Button("Use Existing Game…", systemImage: "folder.badge.plus") {
                     chooseExistingGame()
                 }
-                Button(selectedAction == .runOnly ? "Run Installer" : "Install", systemImage: selectedAction == .runOnly ? "play.fill" : "arrow.down.circle.fill") { beginAction() }
+                Button(primaryActionTitle, systemImage: primaryActionSymbol) { beginAction() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
@@ -179,7 +205,7 @@ struct InstallationSheet: View {
             HStack {
                 Button("Done") { dismiss() }
                 Spacer()
-                Button(selectedAction == .runOnly ? "View in Library" : "Open", systemImage: selectedAction == .runOnly ? "shippingbox.fill" : "play.fill") { completion(id); dismiss() }
+                Button(successActionTitle, systemImage: successActionSymbol) { completion(id); dismiss() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
@@ -208,17 +234,20 @@ struct InstallationSheet: View {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "exe") ?? .data]
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard url.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+              FileManager.default.fileExists(atPath: url.path),
+              ExecutableDiscovery.isEligibleExecutablePath(url.lastPathComponent) else {
+            store.addExistingWindowsApp(at: url)
+            return
+        }
+        selectedAction = .existing
         store.addExistingWindowsApp(at: url)
-        dismiss()
     }
 
     private var installationFraction: Double {
-        let stages = selectedAction == .runOnly
-            ? [InstallationStage.preparingRuntime, .creatingEnvironment, .startingInstaller]
-            : InstallationStage.allCases
         guard let stage = store.installation.stage,
-              let index = stages.firstIndex(of: stage) else { return 0 }
-        return Double(index) / Double(max(stages.count - 1, 1))
+              let index = installationStages.firstIndex(of: stage) else { return 0 }
+        return Double(index) / Double(max(installationStages.count - 1, 1))
     }
 
     private var installationPercentage: Int {
@@ -227,11 +256,11 @@ struct InstallationSheet: View {
 
     private var title: String {
         switch store.installation.state {
-        case .idle: selectedAction == .runOnly ? "Run \(candidate.name)" : "Install \(candidate.name)"
-        case .installing: selectedAction == .runOnly ? "Starting \(candidate.name)" : "Installing \(candidate.name)"
+        case .idle: selectedAction == .runOnly ? "Run \(candidate.name)" : (selectedAction == .existing ? "Add \(candidate.name)" : "Install \(candidate.name)")
+        case .installing: selectedAction == .runOnly ? "Starting \(candidate.name)" : (selectedAction == .existing ? "Adding \(candidate.name)" : "Installing \(candidate.name)")
         case .succeeded: selectedAction == .runOnly ? "Installer is running" : "\(candidate.name) is ready"
         case .failed: selectedAction == .runOnly ? "Installer Couldn’t Start" : "Installation Failed"
-        case .cancelled: selectedAction == .runOnly ? "Installer Launch Cancelled" : "Installation Cancelled"
+        case .cancelled: selectedAction == .runOnly ? "Installer Launch Cancelled" : (selectedAction == .existing ? "Game Addition Cancelled" : "Installation Cancelled")
         }
     }
 
@@ -243,13 +272,17 @@ struct InstallationSheet: View {
         case .installing: store.installation.stage?.userMessage ?? "Preparing installation…"
         case .succeeded: selectedAction == .runOnly
                 ? "The installer was launched directly. Boreal did not install or detect the game for you."
-                : "Boreal checked that the application opens correctly."
+                : (selectedAction == .existing
+                    ? "The game was added without being launched."
+                    : "Boreal checked that the application opens correctly.")
         case .failed: selectedAction == .runOnly
                 ? "\(candidate.name) could not be launched."
                 : "\(candidate.name) wasn’t added to your Library."
         case .cancelled: selectedAction == .runOnly
                 ? "The installer launch was stopped and the incomplete environment was removed."
-                : "The installer was stopped and the incomplete environment was removed."
+                : (selectedAction == .existing
+                    ? "The game addition was stopped and the incomplete environment was removed."
+                    : "The installer was stopped and the incomplete environment was removed.")
         }
     }
 
@@ -267,10 +300,37 @@ struct InstallationSheet: View {
     }
 
     private func beginAction() {
-        if selectedAction == .runOnly {
+        switch selectedAction {
+        case .runOnly:
             store.beginInstallerLaunch(candidate, runtimeEngine: selectedRuntimeEngine)
-        } else {
+        case .existing:
+            store.addExistingWindowsApp(at: candidate.url)
+        case .install:
             beginInstallation()
         }
+    }
+
+    private var primaryActionTitle: String {
+        switch selectedAction {
+        case .runOnly: "Run Installer"
+        case .existing: "Add Game"
+        case .install: "Install"
+        }
+    }
+
+    private var primaryActionSymbol: String {
+        switch selectedAction {
+        case .runOnly: "play.fill"
+        case .existing: "folder.badge.plus"
+        case .install: "arrow.down.circle.fill"
+        }
+    }
+
+    private var successActionTitle: String {
+        selectedAction == .install ? "Open" : "View in Library"
+    }
+
+    private var successActionSymbol: String {
+        selectedAction == .install ? "play.fill" : "folder"
     }
 }

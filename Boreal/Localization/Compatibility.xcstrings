@@ -1,6 +1,158 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "excellentTitle": {
+      "comment": "Compatibility rating shown for an excellent result.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Excellent" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Doskonała" } }
+      },
+      "extractionState": "manual"
+    },
+    "goodTitle": {
+      "comment": "Compatibility rating shown for a good result.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Good" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Dobra" } }
+      },
+      "extractionState": "manual"
+    },
+    "limitedTitle": {
+      "comment": "Compatibility rating shown for limited functionality.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Limited" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Ograniczona" } }
+      },
+      "extractionState": "manual"
+    },
+    "unsupportedTitle": {
+      "comment": "Compatibility rating shown when the game is unsupported.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unsupported" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Nieobsługiwana" } }
+      },
+      "extractionState": "manual"
+    },
+    "macViaWine": {
+      "comment": "Compatibility badge prefix for Windows games running through Wine.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mac via Wine" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Mac przez Wine" } }
+      },
+      "extractionState": "manual"
+    },
+    "menuOnlyTitle": {
+      "comment": "AppleGamingWiki rating for a game that reaches only its menu.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Menu only" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Tylko menu" } }
+      },
+      "extractionState": "manual"
+    },
+    "brokenTitle": {
+      "comment": "AppleGamingWiki rating for a broken game.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Broken" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Nie działa" } }
+      },
+      "extractionState": "manual"
+    },
+    "notApplicableTitle": {
+      "comment": "Compatibility rating that does not apply to the game.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not applicable" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Nie dotyczy" } }
+      },
+      "extractionState": "manual"
+    },
+    "platinumTitle": {
+      "comment": "Community compatibility tier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Platinum" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Platynowa" } }
+      },
+      "extractionState": "manual"
+    },
+    "goldTitle": {
+      "comment": "Community compatibility tier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Gold" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Złota" } }
+      },
+      "extractionState": "manual"
+    },
+    "silverTitle": {
+      "comment": "Community compatibility tier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Silver" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Srebrna" } }
+      },
+      "extractionState": "manual"
+    },
+    "bronzeTitle": {
+      "comment": "Community compatibility tier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Bronze" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Brązowa" } }
+      },
+      "extractionState": "manual"
+    },
+    "borkedTitle": {
+      "comment": "Community compatibility tier for a game that does not work.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Borked" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Nie działa" } }
+      },
+      "extractionState": "manual"
+    },
+    "pendingTitle": {
+      "comment": "Community compatibility tier waiting for a result.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Pending" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Oczekuje na dane" } }
+      },
+      "extractionState": "manual"
+    },
+    "runsGreatTitle": {
+      "comment": "Community compatibility tier for a game that runs great.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Runs Great" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Działa świetnie" } }
+      },
+      "extractionState": "manual"
+    },
+    "runsWellTitle": {
+      "comment": "Community compatibility tier for a game that runs well.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Runs Well" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Działa dobrze" } }
+      },
+      "extractionState": "manual"
+    },
+    "limitedFunctionalityTitle": {
+      "comment": "Community compatibility tier for limited functionality.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Limited Functionality" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Ograniczona funkcjonalność" } }
+      },
+      "extractionState": "manual"
+    },
+    "installsButDoesNotRunTitle": {
+      "comment": "Community compatibility tier for a game that installs but does not run.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Installs, Will Not Run" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Instaluje się, ale nie uruchamia" } }
+      },
+      "extractionState": "manual"
+    },
+    "willNotInstallTitle": {
+      "comment": "Community compatibility tier for a game that will not install.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Will Not Install" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Nie instaluje się" } }
+      },
+      "extractionState": "manual"
+    },
     "nativeTitle": {
       "comment": "Compatibility method for a native macOS build.",
       "localizations": {
@@ -16,6 +168,110 @@
             "value": "Natywna macOS"
           }
         }
+      },
+      "extractionState": "manual"
+    },
+    "rosetta2Title": {
+      "comment": "Compatibility method using Rosetta 2.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Rosetta 2" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Rosetta 2" } }
+      },
+      "extractionState": "manual"
+    },
+    "crossOverTitle": {
+      "comment": "Compatibility method using CrossOver.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CrossOver" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "CrossOver" } }
+      },
+      "extractionState": "manual"
+    },
+    "wineTitle": {
+      "comment": "Compatibility method using Wine.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wine" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Wine" } }
+      },
+      "extractionState": "manual"
+    },
+    "parallelsTitle": {
+      "comment": "Compatibility method using Parallels.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Parallels" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Parallels" } }
+      },
+      "extractionState": "manual"
+    },
+    "methods": {
+      "comment": "Label for the number of compatibility methods reported by the community.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "methods" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "metod" } }
+      },
+      "extractionState": "manual"
+    },
+    "stars": {
+      "comment": "Unit used for a community compatibility score.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "stars" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "gwiazdek" } }
+      },
+      "extractionState": "manual"
+    },
+    "reports": {
+      "comment": "Label for the number of community compatibility reports.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "reports" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "raportów" } }
+      },
+      "extractionState": "manual"
+    },
+    "confidence": {
+      "comment": "Label for a community compatibility confidence value.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "confidence" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "pewności" } }
+      },
+      "extractionState": "manual"
+    },
+    "trending": {
+      "comment": "Label for the trending community compatibility tier.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Trending" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Trend" } }
+      },
+      "extractionState": "manual"
+    },
+    "updated": {
+      "comment": "Label for the date when compatibility data was updated.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Updated" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Zaktualizowano" } }
+      },
+      "extractionState": "manual"
+    },
+    "highConfidence": {
+      "comment": "Community compatibility confidence value.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "High" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Wysoka" } }
+      },
+      "extractionState": "manual"
+    },
+    "mediumConfidence": {
+      "comment": "Community compatibility confidence value.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Medium" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Średnia" } }
+      },
+      "extractionState": "manual"
+    },
+    "lowConfidence": {
+      "comment": "Community compatibility confidence value.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Low" } },
+        "pl": { "stringUnit": { "state": "translated", "value": "Niska" } }
       },
       "extractionState": "manual"
     },

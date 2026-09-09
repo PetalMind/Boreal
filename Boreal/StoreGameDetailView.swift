@@ -6,11 +6,21 @@ import UniformTypeIdentifiers
 
 struct StoreGameDetailView: View {
     private enum DetailTab: String, CaseIterable {
-        case overview = "Overview"
-        case compatibility = "Compatibility"
-        case offers = "Offers"
-        case activity = "Activity"
-        case files = "Files"
+        case overview
+        case compatibility
+        case offers
+        case activity
+        case files
+
+        var title: LocalizedStringResource {
+            switch self {
+            case .overview: .Library.overviewTab
+            case .compatibility: .Library.compatibilityTab
+            case .offers: .Library.offersTab
+            case .activity: .Library.activityTab
+            case .files: .Library.filesTab
+            }
+        }
     }
 
     @Environment(BorealStore.self) private var store
@@ -227,9 +237,21 @@ struct StoreGameDetailView: View {
 
     private var heroIdentity: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(discoveryGame == nil
-                 ? "\(linkedApplication?.usesStoreMetadataOnly == true ? "Imported Games" : currentGame.provider.rawValue)  ·  IN YOUR LIBRARY"
-                 : "\(currentGame.provider.rawValue)  ·  DISCOVERY")
+            HStack(spacing: 4) {
+                if discoveryGame == nil {
+                    if linkedApplication?.usesStoreMetadataOnly == true {
+                        Text(.Library.importedGames)
+                    } else {
+                        Text(currentGame.provider.rawValue)
+                    }
+                    Text("·")
+                    Text(.Library.inYourLibrary)
+                } else {
+                    Text(currentGame.provider.rawValue)
+                    Text("·")
+                    Text(.Library.discoveryLabel)
+                }
+            }
                 .font(.caption.weight(.semibold))
                 .tracking(0.5)
                 .foregroundStyle(.white.opacity(0.65))
@@ -258,7 +280,14 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder private var heroBadgeContent: some View {
         if currentGame.supportsNativeMacOS != true {
-            Label(compatibilityRating.rawValue + " compatibility", systemImage: compatibilityRating.symbol)
+            Label {
+                HStack(spacing: 4) {
+                    Text(compatibilityRating.localizedTitle)
+                    Text(.Library.compatibilityLabel)
+                }
+            } icon: {
+                Image(systemName: compatibilityRating.symbol)
+            }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(compatibilityTint)
                 .padding(.horizontal, 9).padding(.vertical, 5)
@@ -285,7 +314,7 @@ struct StoreGameDetailView: View {
             HStack(spacing: 28) {
                 ForEach(visibleTabs, id: \.self) { tab in
                     Button { selectedTab = tab } label: {
-                        Text(tab.rawValue)
+                        Text(tab.title)
                             .font(.callout.weight(selectedTab == tab ? .semibold : .regular))
                             .foregroundStyle(selectedTab == tab ? .primary : .secondary)
                             .padding(.vertical, 12)
@@ -347,7 +376,7 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder private var discoveryPriceCard: some View {
         if let discoveryGame {
-            detailCard("Price", symbol: "tag.fill", actionTitle: "View offers", action: { selectedTab = .offers }) {
+            detailCard(.Library.priceTitle, symbol: "tag.fill", actionTitle: .Library.viewOffers, action: { selectedTab = .offers }) {
                 if let summary = store.discoveryPriceSummary(for: discoveryGame) {
                     if let offer = summary.bestOffer {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -364,11 +393,18 @@ struct StoreGameDetailView: View {
                             Text(offer.shop.name).font(.callout).foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("No current offers found.").foregroundStyle(.secondary)
+                        Text(.Library.noCurrentOffers).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 16) {
                         if let low = summary.historicalLow {
-                            Label("Low \(low.price.formatted)", systemImage: "chart.line.downtrend.xyaxis")
+                            Label {
+                                HStack(spacing: 4) {
+                                    Text(.Library.lowPrice)
+                                    Text(low.price.formatted)
+                                }
+                            } icon: {
+                                Image(systemName: "chart.line.downtrend.xyaxis")
+                            }
                         }
                         if let quality = summary.dealQuality {
                             Label(quality.title, systemImage: quality.symbol).foregroundStyle(quality == .poor ? .orange : .green)
@@ -379,14 +415,14 @@ struct StoreGameDetailView: View {
                 } else if store.isDiscoveryPriceLoading(for: discoveryGame) {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Loading current offers…")
+                        Text(.Library.loadingCurrentOffers)
                     }
                     .foregroundStyle(.secondary)
                 } else {
-                    Text(ITADPriceService.isConfigured ? "Price data is currently unavailable." : "Add an IsThereAnyDeal API key in Settings → General to load prices.")
+                    Text(ITADPriceService.isConfigured ? .Library.priceDataUnavailable : .Library.priceAPIKeyForPrices)
                         .foregroundStyle(.secondary)
                 }
-                Text("Prices provided by IsThereAnyDeal.")
+                Text(.Library.pricesByItad)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -397,12 +433,12 @@ struct StoreGameDetailView: View {
         if let discoveryGame {
             let summary = store.discoveryPriceSummary(for: discoveryGame)
             VStack(alignment: .leading, spacing: 12) {
-                detailCard("Offers", symbol: "tag.fill") {
+                detailCard(.Library.offersTitle, symbol: "tag.fill") {
                     if let summary {
                         if let offer = summary.bestOffer {
                             HStack(alignment: .firstTextBaseline) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("Best price").font(.caption).foregroundStyle(.secondary)
+                                    Text(.Library.bestPrice).font(.caption).foregroundStyle(.secondary)
                                     Text(offer.price.formatted).font(.title2.bold())
                                 }
                                 Spacer()
@@ -418,7 +454,7 @@ struct StoreGameDetailView: View {
                         }
                         if let low = summary.historicalLow {
                             HStack {
-                                Label("Historical low", systemImage: "chart.line.downtrend.xyaxis")
+                                Label(.Library.historicalLow, systemImage: "chart.line.downtrend.xyaxis")
                                 Spacer()
                                 Text(low.price.formatted).font(.callout.weight(.semibold))
                                 Text(low.timestamp.formatted(date: .abbreviated, time: .omitted))
@@ -432,15 +468,15 @@ struct StoreGameDetailView: View {
                                 discoveryOfferRow(offer)
                             }
                         } else {
-                            Text("No current offers found.").font(.callout).foregroundStyle(.secondary)
+                            Text(.Library.noCurrentOffers).font(.callout).foregroundStyle(.secondary)
                         }
                     } else if store.isDiscoveryPriceLoading(for: discoveryGame) {
-                        ProgressView("Loading offers…")
+                        ProgressView(.Library.loadingOffers)
                     } else {
-                        Text(ITADPriceService.isConfigured ? "Price data is currently unavailable." : "Add an IsThereAnyDeal API key in Settings → General to load offers.")
+                        Text(ITADPriceService.isConfigured ? .Library.priceDataUnavailable : .Library.priceAPIKeyForOffers)
                             .foregroundStyle(.secondary)
                     }
-                    Text("Offer links and price data are provided by IsThereAnyDeal.")
+                    Text(.Library.offerLinksByItad)
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
                 discoveryPriceHistorySection(for: discoveryGame)
@@ -468,7 +504,7 @@ struct StoreGameDetailView: View {
                     }
                 }
                 if let url = URL(string: offer.url) {
-                    Link("View offer", destination: url)
+                    Link(.Library.viewOffer, destination: url)
                         .font(.caption).foregroundStyle(.cyan)
                 }
             }
@@ -477,37 +513,37 @@ struct StoreGameDetailView: View {
     }
 
     private func discoveryPriceHistorySection(for game: AppleGamingWikiGame) -> some View {
-        detailCard("Price history", symbol: "chart.xyaxis.line") {
-            Picker("Period", selection: $priceHistoryRange) {
+        detailCard(.Library.priceHistoryTitle, symbol: "chart.xyaxis.line") {
+            Picker(.Library.period, selection: $priceHistoryRange) {
                 ForEach(DiscoveryPriceHistoryRange.allCases, id: \.self) { range in
                     Text(range.rawValue).tag(range)
                 }
             }
             .pickerStyle(.segmented)
             if priceHistoryLoading {
-                ProgressView("Loading price history…")
+                ProgressView(.Library.loadingPriceHistory)
                     .frame(maxWidth: .infinity, minHeight: 180)
             } else if priceHistory.isEmpty {
-                Text("No price history is available for this period.")
+                Text(.Library.noPriceHistory)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
             } else {
                 Chart(priceHistory.sorted { $0.timestamp < $1.timestamp }) { point in
                     LineMark(
-                        x: .value("Date", point.timestamp),
-                        y: .value("Price", point.deal.price.amount)
+                        x: .value(.Library.date, point.timestamp),
+                        y: .value(.Library.price, point.deal.price.amount)
                     )
-                    .foregroundStyle(by: .value("Store", point.shop.name))
+                    .foregroundStyle(by: .value(.Library.store, point.shop.name))
                     PointMark(
-                        x: .value("Date", point.timestamp),
-                        y: .value("Price", point.deal.price.amount)
+                        x: .value(.Library.date, point.timestamp),
+                        y: .value(.Library.price, point.deal.price.amount)
                     )
-                    .foregroundStyle(by: .value("Store", point.shop.name))
+                    .foregroundStyle(by: .value(.Library.store, point.shop.name))
                 }
                 .chartLegend(position: .bottom, alignment: .leading)
                 .frame(height: 220)
             }
-            Text("History provided by IsThereAnyDeal.")
+            Text(.Library.historyByItad)
                 .font(.caption2).foregroundStyle(.tertiary)
         }
     }
@@ -519,20 +555,20 @@ struct StoreGameDetailView: View {
         let recommended = statuses.filter { $0.recommendation == .recommended }
         let optional = statuses.filter { $0.recommendation == .optional }
         let canInstallRequired = required.contains { $0.state == .missing || $0.state == .failed }
-        return detailCard("Dependencies", symbol: "shippingbox.fill") {
+        return detailCard(.Library.dependenciesTitle, symbol: "shippingbox.fill") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Boreal keeps this game’s prefix minimal and installs components only when they are required or you choose them.")
+                Text(.Library.dependenciesDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !required.isEmpty {
-                    dependencyGroup("Required", statuses: required, environmentID: environmentID)
+                    dependencyGroup(.Library.required, statuses: required, environmentID: environmentID)
                 }
                 if !recommended.isEmpty {
-                    dependencyGroup("Recommended for this game", statuses: recommended, environmentID: environmentID)
+                    dependencyGroup(.Library.recommendedForGame, statuses: recommended, environmentID: environmentID)
                 }
-                dependencyGroup("Optional", statuses: optional, environmentID: environmentID)
+                dependencyGroup(.Library.optional, statuses: optional, environmentID: environmentID)
                 if canInstallRequired {
-                    Button("Install Required Dependencies", systemImage: "arrow.down.circle.fill") {
+                    Button(.Library.installRequiredDependencies, systemImage: "arrow.down.circle.fill") {
                         store.installRequiredDependencies(for: environmentID)
                     }
                     .buttonStyle(.borderedProminent)
@@ -543,7 +579,7 @@ struct StoreGameDetailView: View {
     }
 
     @ViewBuilder
-    private func dependencyGroup(_ title: String, statuses: [RuntimeDependencyStatus], environmentID: UUID) -> some View {
+    private func dependencyGroup(_ title: LocalizedStringResource, statuses: [RuntimeDependencyStatus], environmentID: UUID) -> some View {
         Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
         ForEach(statuses) { status in
             HStack(alignment: .top, spacing: 10) {
@@ -560,9 +596,9 @@ struct StoreGameDetailView: View {
                 if status.state == .installing {
                     ProgressView().controlSize(.small)
                 } else if status.state == .installed {
-                    Text("Installed").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    Text(.Library.installed).font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 } else {
-                    Button(status.state == .failed ? "Retry" : "Install") {
+                    Button(status.state == .failed ? .Library.retry : .Library.install) {
                         store.installDependency(status.dependency, for: environmentID)
                     }
                     .controlSize(.small)
@@ -599,16 +635,23 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder private var gameSetupSection: some View {
         if let environment = linkedEnvironment, let application = linkedApplication {
-            detailCard("Game setup", symbol: "gearshape.fill") {
-                metric("Runtime", value: environment.runtime, symbol: "internaldrive")
-                metric("Graphics", value: environment.graphics, symbol: "display")
-                metric("Windows", value: environment.windowsVersion, symbol: "window.ceiling")
+            detailCard(.Library.gameSetupTitle, symbol: "gearshape.fill") {
+                metric(.Library.runtime, value: environment.runtime, symbol: "internaldrive")
+                metric(.Library.graphics, value: environment.graphics, symbol: "display")
+                metric(.Library.windowsVersion, value: environment.windowsVersion, symbol: "window.ceiling")
                 let required = store.dependencyStatuses(for: environment.id, application: application).filter { $0.recommendation == .required }
-                metric("Components", value: required.isEmpty ? "None required" : (required.allSatisfy { $0.state == .installed } ? "Ready" : "Requires attention"), symbol: "checkmark.circle")
+                let componentStatus: LocalizedStringResource = if required.isEmpty {
+                    .Library.noneRequired
+                } else if required.allSatisfy({ $0.state == .installed }) {
+                    .Library.ready
+                } else {
+                    .Library.requiresAttention
+                }
+                metric(.Library.components, value: componentStatus, symbol: "checkmark.circle")
                 HStack(spacing: 10) {
-                    Button("Configure") { compatibilityApplication = application }
+                    Button(.Library.configure) { compatibilityApplication = application }
                         .buttonStyle(BorealSecondaryActionButtonStyle())
-                    Button("Components", systemImage: "arrow.right") { selectedTab = .compatibility }
+                    Button(.Library.components, systemImage: "arrow.right") { selectedTab = .compatibility }
                         .buttonStyle(BorealSecondaryActionButtonStyle())
                 }
             }
@@ -638,7 +681,7 @@ struct StoreGameDetailView: View {
     }
 
     private func compatibilityOverview(width: CGFloat) -> some View {
-        detailCard("Compatibility", symbol: "gamecontroller.fill") {
+        detailCard(.Library.compatibilityTitle, symbol: "gamecontroller.fill") {
             let layout = width >= 1000 ? AnyLayout(HStackLayout(alignment: .center, spacing: 22)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
             layout {
                 let summaryLayout = width >= 1000 || width < 520 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
@@ -650,9 +693,12 @@ struct StoreGameDetailView: View {
                             .frame(width: 48, height: 48)
                             .background(compatibilityTint.opacity(0.14), in: Circle())
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(compatibilityRating.rawValue + " compatibility")
+                            HStack(spacing: 4) {
+                                Text(compatibilityRating.localizedTitle)
+                                Text(.Library.compatibilityLabel)
+                            }
                                 .font(.system(size: 18, weight: .semibold))
-                            Text(discoveryGame != nil ? "Based on AppleGamingWiki community reports." : (currentGame.compatibility == nil ? "No community reports available." : "Based on community compatibility reports."))
+                            Text(discoveryGame != nil ? .Library.basedOnAppleGamingWiki : (currentGame.compatibility == nil ? .Library.noCommunityReports : .Library.basedOnCommunityReports))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         .fixedSize(horizontal: false, vertical: true)
@@ -662,8 +708,18 @@ struct StoreGameDetailView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: width < 360 ? 1 : 2), alignment: .leading, spacing: 12) {
-                    compatibilityFact("Graphics", value: linkedEnvironment?.graphics ?? "Not configured", symbol: "display")
-                    compatibilityFact("Community", value: discoveryGame.map { "\($0.availableRatings.count) methods · \($0.bestRating.rawValue)" } ?? currentGame.compatibility.map { "\($0.reportCount.formatted()) reports · \($0.tier.title)" } ?? "No reports", symbol: "person.2.fill")
+                    if let graphics = linkedEnvironment?.graphics {
+                        compatibilityFact(.Library.graphics, value: graphics, symbol: "display")
+                    } else {
+                        compatibilityFact(.Library.graphics, value: .Library.notConfigured, symbol: "display")
+                    }
+                    if let discoveryGame {
+                        compatibilityFact(.Library.community, value: "\(discoveryGame.availableRatings.count) \(String(localized: .Compatibility.methods)) · \(String(localized: discoveryGame.bestRating.localizedDisplayName))", symbol: "person.2.fill")
+                    } else if let compatibility = currentGame.compatibility {
+                        compatibilityFact(.Library.community, value: "\(compatibility.reportCount.formatted()) \(String(localized: .Compatibility.reports)) · \(String(localized: compatibility.tier.localizedTitle))", symbol: "person.2.fill")
+                    } else {
+                        compatibilityFact(.Library.community, value: .Library.noReports, symbol: "person.2.fill")
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 if width >= 1000 { compatibilityDetailsButton.frame(width: 150) }
@@ -672,11 +728,21 @@ struct StoreGameDetailView: View {
     }
 
     private var compatibilityDetailsButton: some View {
-        Button("View details", systemImage: "arrow.right") { selectedTab = .compatibility }
+        Button(.Library.viewDetails, systemImage: "arrow.right") { selectedTab = .compatibility }
             .buttonStyle(BorealSecondaryActionButtonStyle())
     }
 
-    private func compatibilityFact(_ title: String, value: String, symbol: String) -> some View {
+    private func compatibilityFact(_ title: LocalizedStringResource, value: String, symbol: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.title3).foregroundStyle(.indigo.opacity(0.9))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func compatibilityFact(_ title: LocalizedStringResource, value: LocalizedStringResource, symbol: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: symbol).font(.title3).foregroundStyle(.indigo.opacity(0.9))
             VStack(alignment: .leading, spacing: 4) {
@@ -687,31 +753,31 @@ struct StoreGameDetailView: View {
     }
 
     private var aboutGameSection: some View {
-        detailCard("About this game", symbol: "doc.text.fill") {
+        detailCard(.Library.aboutThisGameTitle, symbol: "doc.text.fill") {
             if let summary = currentGame.summary, !summary.isEmpty {
                 Text(summary)
                     .font(.callout).foregroundStyle(.secondary).lineSpacing(2)
                     .lineLimit(showsFullDescription ? nil : 4)
                     .textSelection(.enabled)
                 if summary.count > 160 {
-                    Button(showsFullDescription ? "Show less" : "Read more") { showsFullDescription.toggle() }
+                    Button(showsFullDescription ? .Library.showLess : .Library.readMore) { showsFullDescription.toggle() }
                         .buttonStyle(.plain).foregroundStyle(.cyan).font(.caption.weight(.semibold))
                 }
             } else {
-                Text("No description provided by this store.").font(.callout).foregroundStyle(.secondary)
+                Text(.Library.noStoreDescription).font(.callout).foregroundStyle(.secondary)
             }
             if let developer = currentGame.developer {
                 Divider()
-                metric("Developer", value: developer, symbol: "person.2")
+                metric(.Library.developer, value: developer, symbol: "person.2")
             }
-            metric("Source", value: currentGame.provider.rawValue, symbol: "bag")
+            metric(.Library.source, value: currentGame.provider.rawValue, symbol: "bag")
             if let discoveryGame {
                 switch store.gogRevivedAvailability(for: discoveryGame) {
                 case .available(let entry):
                     if let url = URL(string: entry.pageURL) {
                         Divider()
                         Link(destination: url) {
-                            Label("Open on GOG Revived", systemImage: "arrow.up.right.square")
+                            Label(.Library.openOnGogRevived, systemImage: "arrow.up.right.square")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(BorealSecondaryActionButtonStyle())
@@ -721,15 +787,15 @@ struct StoreGameDetailView: View {
                     Divider()
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Checking GOG Revived…").font(.caption).foregroundStyle(.secondary)
+                        Text(.Library.checkingGogRevived).font(.caption).foregroundStyle(.secondary)
                     }
                 case .notFound:
                     Divider()
-                    Label("Not listed on GOG Revived", systemImage: "minus.circle")
+                        Label(.Library.notListedOnGogRevived, systemImage: "minus.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 case .unavailable:
                     Divider()
-                    Label("GOG Revived status unavailable", systemImage: "questionmark.circle")
+                        Label(.Library.gogStatusUnavailable, systemImage: "questionmark.circle")
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
@@ -754,7 +820,7 @@ struct StoreGameDetailView: View {
     private var storeImageFailurePlaceholder: some View {
         ZStack {
             LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
+            Label(.Library.imageUnavailable, systemImage: "photo.badge.exclamationmark")
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.82))
         }
@@ -776,7 +842,7 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder private var primaryLaunchAction: some View {
             if let discoveryGame, !isInLibrary {
-                Button("Add to Library", systemImage: "plus") {
+                Button(.Library.addToLibrary, systemImage: "plus") {
                     store.addDiscoveryGameToLibrary(discoveryGame, details: currentGame)
                 }
                 .buttonStyle(BorealPrimaryActionButtonStyle())
@@ -784,26 +850,26 @@ struct StoreGameDetailView: View {
                 storeOperationPrimaryButton(operation)
             } else if game.provider == .steam {
                 if currentGame.isInstalled, currentGame.installedPlatform == .nativeMacOS, currentGame.installPath != nil {
-                    Button("Play", systemImage: "play.fill") { openNativeInstallation() }
+                    Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else if let app = linkedApplication {
-                    runtimeLaunchControl(for: app, playTitle: "Play")
+                    runtimeLaunchControl(for: app, playTitle: .Library.play)
                 } else if currentGame.supportsNativeMacOS == true {
-                    Button(currentGame.isInstalled ? "Play" : "Install", systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
+                    Button(currentGame.isInstalled ? .Library.play : .Library.install, systemImage: currentGame.isInstalled ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else if currentGame.supportsWindows == true, storeOperation == nil {
-                    Button("Install Windows Version", systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
+                    Button(.Library.installWindowsVersion, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else {
-                    Button("Open in Steam", systemImage: "arrow.up.right.square") { openSteam() }
+                    Button(.Library.openInSteam, systemImage: "arrow.up.right.square") { openSteam() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 }
             } else if currentGame.isInstalled {
                 if currentGame.installedPlatform == .nativeMacOS {
-                    Button("Play", systemImage: "play.fill") { openNativeInstallation() }
+                    Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 } else if let app = linkedApplication {
-                    runtimeLaunchControl(for: app, playTitle: "Play")
+                    runtimeLaunchControl(for: app, playTitle: .Library.play)
                 } else if storeOperation == nil {
                     runtimePreparationMenu
                 }
@@ -842,30 +908,30 @@ struct StoreGameDetailView: View {
         Menu {
             if let app = linkedApplication {
                 if app.usesStoreMetadataOnly {
-                    Button("Rename Game…", systemImage: "pencil") {
+                    Button(.Library.renameGame, systemImage: "pencil") {
                         renameValue = app.name
                         showsRenameDialog = true
                     }
                 }
-                Button("Compatibility Settings…", systemImage: "slider.horizontal.3") {
+                Button(.Library.compatibilitySettings, systemImage: "slider.horizontal.3") {
                     compatibilityApplication = app
                 }
                 if !app.isInstallerOnly, !app.isSteamRuntimeHost {
-                    Button("Install Patch or DLC…", systemImage: "shippingbox.and.arrow.backward") {
+                    Button(.Library.installPatchOrDLC, systemImage: "shippingbox.and.arrow.backward") {
                         selectWindowsInstaller(for: app)
                     }
                     .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
                 }
                 let gameActions = store.auxiliaryExecutables(for: app)
                 if !gameActions.isEmpty {
-                    Section("Game Actions") {
+                    Section(content: {
                         ForEach(gameActions) { action in
                             Button(action.displayName, systemImage: action.role.symbol) {
                                 store.runAuxiliaryExecutable(action, for: app.id)
                             }
                             .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
                         }
-                    }
+                    }, header: { Text(.Library.gameActions) })
                 }
                 Divider()
             }
@@ -877,41 +943,41 @@ struct StoreGameDetailView: View {
                 Divider()
             }
             if currentGame.installPath != nil {
-                Button("Show Game Files", systemImage: "folder") { showGameFiles() }
+                Button(.Library.showGameFiles, systemImage: "folder") { showGameFiles() }
             }
             if !currentGame.isInstalled && linkedApplication == nil {
-                Button("Locate Installed Game…", systemImage: "folder.badge.plus") { locateInstalledGame() }
+                Button(.Library.locateInstalledGame, systemImage: "folder.badge.plus") { locateInstalledGame() }
             }
 
             if currentGame.provider == .steam {
-                Button("View Steam Store Page", systemImage: "arrow.up.right.square") { openStorePage() }
+                Button(.Library.viewSteamStorePage, systemImage: "arrow.up.right.square") { openStorePage() }
             }
             if currentGame.isInstalled, store.supportsStoreGameUpdate(currentGame) {
-                Button("Check for Updates", systemImage: "arrow.triangle.2.circlepath") {
+                Button(.Library.checkForUpdates, systemImage: "arrow.triangle.2.circlepath") {
                     store.updateStoreGame(currentGame)
                 }
                 .disabled(storeOperation != nil)
             }
             if currentGame.isInstalled, store.supportsStoreGameVerification(currentGame) {
-                Button("Verify Game Files", systemImage: "checkmark.shield") {
+                Button(.Library.verifyGameFiles, systemImage: "checkmark.shield") {
                     store.verifyStoreGame(currentGame)
                 }
                 .disabled(storeOperation != nil)
             }
             if currentGame.isInstalled || linkedApplication != nil {
                 Divider()
-                Button("Uninstall…", systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
+                Button(.Library.uninstall, systemImage: "trash", role: .destructive) { showsUninstallConfirmation = true }
             }
         } label: {
             squareMenuLabel(symbol: "ellipsis")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help("More actions")
-        .accessibilityLabel("More actions")
+        .help(Text(.Library.moreActions))
+        .accessibilityLabel(Text(.Library.moreActions))
     }
 
-    @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: String) -> some View {
+    @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: LocalizedStringResource) -> some View {
         switch app.status {
         case .running:
             Button("Stop", systemImage: "stop.fill") { store.toggleRunning(app.id) }
@@ -1046,7 +1112,7 @@ struct StoreGameDetailView: View {
                 store.prepareStoreGame(currentGame, runtimeEngine: .wine)
             }
         } label: {
-            Label("Prepare to Play", systemImage: "wand.and.stars")
+            Label(.Library.prepareToPlay, systemImage: "wand.and.stars")
         }
         .menuStyle(.borderlessButton)
         .buttonStyle(BorealPrimaryActionButtonStyle())
@@ -1111,24 +1177,24 @@ struct StoreGameDetailView: View {
         let totalSeconds = activeSeconds > 0
             ? max(providerSeconds, completedMeasuredSeconds) + activeSeconds
             : max(providerSeconds, currentGame.measuredPlaytime)
-        guard totalSeconds > 0 else { return "Not played" }
+        guard totalSeconds > 0 else { return String(localized: .Library.notPlayed) }
         return formatDuration(totalSeconds)
     }
 
     private func libraryOverview(width: CGFloat) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: width >= 760 ? 4 : (width >= 360 ? 2 : 1)), spacing: 12) {
-                overviewMetric("Playtime", value: playtime, symbol: "clock")
-                overviewMetric("Last played", value: lastPlayedValue, symbol: "calendar")
+                overviewMetric(.Library.playtime, value: playtime, symbol: "clock")
+                overviewMetric(.Library.lastPlayed, value: lastPlayedValue, symbol: "calendar")
                 overviewMetric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
-                overviewMetric("Compatibility", value: currentGame.supportsNativeMacOS == true ? "Native macOS" : compatibilityRating.rawValue, symbol: compatibilityRating.symbol, tint: currentGame.supportsNativeMacOS == true ? .mint : compatibilityTint)
+                overviewMetric(.Library.compatibilityTitle, value: String(localized: currentGame.supportsNativeMacOS == true ? .Compatibility.nativeTitle : compatibilityRating.localizedTitle), symbol: compatibilityRating.symbol, tint: currentGame.supportsNativeMacOS == true ? .mint : compatibilityTint)
             }
         }
     }
 
     private var lastPlayedValue: String {
-        if store.activePlaySessionStart(for: currentGame) != nil { return "Playing now" }
-        return currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? "Never"
+        if store.activePlaySessionStart(for: currentGame) != nil { return String(localized: .Library.playingNow) }
+        return currentGame.lastPlayed?.formatted(date: .abbreviated, time: .omitted) ?? String(localized: .Library.never)
     }
 
     private var activitySection: some View {
@@ -1143,11 +1209,11 @@ struct StoreGameDetailView: View {
         let columns = activityWidth >= 900 ? 5 : (activityWidth >= 560 ? 3 : (activityWidth >= 350 ? 2 : 1))
         return VStack(alignment: .leading, spacing: 12) {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns), spacing: 12) {
-                activityMetric("Total playtime", value: formatDuration(sessions.reduce(0) { $0 + $1.duration }), symbol: "clock")
-                activityMetric("Sessions", value: "\(sessions.count)", symbol: "gamecontroller")
-                activityMetric("Average session", value: formatDuration(statistics.averageSession), symbol: "chart.bar.fill")
-                activityMetric("Longest session", value: formatDuration(statistics.longestSession), symbol: "trophy")
-                activityMetric("Last played", value: lastPlayedValue, symbol: "calendar", subtitle: currentGame.lastPlayed.map { $0.formatted(.relative(presentation: .named)) })
+                activityMetric(.Library.totalPlaytime, value: formatDuration(sessions.reduce(0) { $0 + $1.duration }), symbol: "clock")
+                activityMetric(.Library.sessions, value: "\(sessions.count)", symbol: "gamecontroller")
+                activityMetric(.Library.averageSession, value: formatDuration(statistics.averageSession), symbol: "chart.bar.fill")
+                activityMetric(.Library.longestSession, value: formatDuration(statistics.longestSession), symbol: "trophy")
+                activityMetric(.Library.lastPlayed, value: lastPlayedValue, symbol: "calendar", subtitle: currentGame.lastPlayed.map { $0.formatted(.relative(presentation: .named)) })
             }
             if activityWidth >= 760 {
                 HStack(alignment: .top, spacing: 12) {
@@ -1173,7 +1239,7 @@ struct StoreGameDetailView: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { activityWidth = $0 }
     }
 
-    private func activityMetric(_ title: String, value: String, symbol: String, subtitle: String? = nil) -> some View {
+    private func activityMetric(_ title: LocalizedStringResource, value: String, symbol: String, subtitle: String? = nil) -> some View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 23, weight: .medium))
@@ -1197,13 +1263,13 @@ struct StoreGameDetailView: View {
     }
 
     private var activityTrackingCard: some View {
-        activityCard("Tracked by Boreal", symbol: "info.circle.fill", minimumHeight: 100) {
+        activityCard(.Library.trackedByBoreal, symbol: "info.circle.fill", minimumHeight: 100) {
             HStack(spacing: 16) {
-                Text("Activity is measured while \(currentGame.name) is launched through Boreal. Offline play and other launchers may not be included.")
+                Text(.Library.activityTrackingDescription)
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                Button("Learn more") { showsActivityInfo = true }
+                Button(.Library.learnMore) { showsActivityInfo = true }
                     .buttonStyle(.plain)
                     .font(.caption.weight(.medium))
                     .padding(.horizontal, 16).padding(.vertical, 10)
@@ -1211,7 +1277,7 @@ struct StoreGameDetailView: View {
                     .overlay { RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.06)) }
                     .fixedSize()
                     .popover(isPresented: $showsActivityInfo) {
-                        Text("Boreal records elapsed time while a managed game session is active. These statistics use locally recorded sessions; store-reported playtime can differ. Sessions interrupted when Boreal closes may be incomplete.")
+                        Text(.Library.activityTrackingDetails)
                             .font(.callout).padding(20).frame(width: 320)
                     }
             }
@@ -1219,7 +1285,7 @@ struct StoreGameDetailView: View {
     }
 
     private func activityWeekCard(_ statistics: GameActivityStatistics, at date: Date) -> some View {
-        activityCard("This week", symbol: "calendar.badge.clock", minimumHeight: 100) {
+        activityCard(.Library.thisWeek, symbol: "calendar.badge.clock", minimumHeight: 100) {
             HStack(alignment: .top) {
                 if let week = Calendar.autoupdatingCurrent.dateInterval(of: .weekOfYear, for: date) {
                     Text("\(week.start.formatted(.dateTime.day().month())) – \(week.end.addingTimeInterval(-1).formatted(.dateTime.day().month().year()))")
@@ -1235,8 +1301,11 @@ struct StoreGameDetailView: View {
                                 .font(.caption).foregroundStyle(change >= 0 ? .green : .secondary)
                         }
                     }
-                    Text("Last week: \(formatDuration(statistics.lastWeek))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text(.Library.lastWeek)
+                        Text(formatDuration(statistics.lastWeek))
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -1244,19 +1313,19 @@ struct StoreGameDetailView: View {
 
     private func activityChart(_ statistics: GameActivityStatistics) -> some View {
         let days = Array(statistics.days.suffix(activityDayCount))
-        return activityCard("Playtime over time", symbol: "chart.xyaxis.line", minimumHeight: 180, showsPeriod: true) {
+        return activityCard(.Library.playtimeOverTime, symbol: "chart.xyaxis.line", minimumHeight: 180, showsPeriod: true) {
             Chart(days) { day in
-                AreaMark(x: .value("Date", day.date), y: .value("Minutes", day.duration / 60))
+                AreaMark(x: .value(.Library.date, day.date), y: .value(.Library.minutes, day.duration / 60))
                     .foregroundStyle(LinearGradient(colors: [.blue.opacity(0.3), .blue.opacity(0.02)], startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("Date", day.date), y: .value("Minutes", day.duration / 60))
+                LineMark(x: .value(.Library.date, day.date), y: .value(.Library.minutes, day.duration / 60))
                     .foregroundStyle(.blue).lineStyle(StrokeStyle(lineWidth: 2))
                 if activityDayCount == 7 {
-                    PointMark(x: .value("Date", day.date), y: .value("Minutes", day.duration / 60))
+                    PointMark(x: .value(.Library.date, day.date), y: .value(.Library.minutes, day.duration / 60))
                         .foregroundStyle(.blue).symbolSize(28)
                 }
                 if let selection = selectedActivityDate,
                    Calendar.autoupdatingCurrent.isDate(day.date, inSameDayAs: selection) {
-                    RuleMark(x: .value("Selected date", day.date))
+                    RuleMark(x: .value(.Library.selectedDate, day.date))
                         .foregroundStyle(.secondary.opacity(0.4))
                         .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -1287,7 +1356,7 @@ struct StoreGameDetailView: View {
             .chartYAxis {
                 AxisMarks(position: .leading) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
-                    AxisValueLabel { if let minutes = value.as(Double.self) { Text("\(minutes.formatted(.number.precision(.fractionLength(0)))) min") } }
+                    AxisValueLabel { if let minutes = value.as(Double.self) { Text("\(minutes.formatted(.number.precision(.fractionLength(0)))) \(String(localized: .Library.minutesShort))") } }
                 }
             }
             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 7)) }
@@ -1299,7 +1368,7 @@ struct StoreGameDetailView: View {
     private func activityHeatmap(_ statistics: GameActivityStatistics) -> some View {
         let days = Array(statistics.days.suffix(84))
         let maximum = days.map(\.duration).max() ?? 0
-        return activityCard("Activity heatmap", symbol: "square.grid.3x3.fill", minimumHeight: 180) {
+        return activityCard(.Library.activityHeatmap, symbol: "square.grid.3x3.fill", minimumHeight: 180) {
             HStack(alignment: .center, spacing: 16) {
                 VStack(spacing: 8) {
                     HStack {
@@ -1330,7 +1399,7 @@ struct StoreGameDetailView: View {
                     ForEach([4, 2, 1, 0], id: \.self) { level in
                         HStack(spacing: 7) {
                             RoundedRectangle(cornerRadius: 2).fill(heatmapColor(for: Double(level), maximum: 4)).frame(width: 10, height: 10)
-                            Text(["No activity", "A little activity", "Some activity", "", "More activity"][level])
+                            activityLevelLabel(level)
                         }
                     }
                 }.font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
@@ -1339,20 +1408,31 @@ struct StoreGameDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func activityLevelLabel(_ level: Int) -> some View {
+        switch level {
+        case 0: Text(.Library.noActivity)
+        case 1: Text(.Library.littleActivity)
+        case 2: Text(.Library.someActivity)
+        case 4: Text(.Library.moreActivity)
+        default: EmptyView()
+        }
+    }
+
     private func activityHistory(_ sessions: [GamePlaySession]) -> some View {
-        activityCard("Session history", symbol: "list.bullet.rectangle", sessionCount: sessions.count) {
+        activityCard(.Library.sessionHistory, symbol: "list.bullet.rectangle", sessionCount: sessions.count) {
             if sessions.isEmpty {
-                Text("No sessions recorded yet. Launch this game through Boreal to start tracking activity.")
+                Text(.Library.noSessionsDescription)
                     .font(.callout).foregroundStyle(.secondary).padding(.vertical, 18)
             } else {
                 ScrollView(.horizontal) {
                     Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
                         GridRow {
-                            Text("Date").frame(maxWidth: .infinity, alignment: .leading)
-                            Text("Start time").frame(maxWidth: .infinity, alignment: .leading)
-                            Text("End time").frame(maxWidth: .infinity, alignment: .leading)
-                            Text("Duration").frame(maxWidth: .infinity, alignment: .leading)
-                            Text("Status").frame(maxWidth: .infinity, alignment: .leading)
+                            Text(.Library.date).frame(maxWidth: .infinity, alignment: .leading)
+                            Text(.Library.startTime).frame(maxWidth: .infinity, alignment: .leading)
+                            Text(.Library.endTime).frame(maxWidth: .infinity, alignment: .leading)
+                            Text(.Library.duration).frame(maxWidth: .infinity, alignment: .leading)
+                            Text(.Library.status).frame(maxWidth: .infinity, alignment: .leading)
                         }.font(.caption2).foregroundStyle(.secondary)
                         ForEach(sessions.sorted { $0.startedAt > $1.startedAt }) { session in
                             Divider().gridCellUnsizedAxes(.horizontal)
@@ -1364,7 +1444,7 @@ struct StoreGameDetailView: View {
                                 Text(session.startedAt.formatted(date: .omitted, time: .shortened))
                                 Text(session.endedAt?.formatted(date: .omitted, time: .shortened) ?? "—")
                                 Text(formatDuration(session.duration)).monospacedDigit()
-                                Text(session.isActive ? "Playing now" : "Completed")
+                                Text(session.isActive ? .Library.playingNow : .Library.completed)
                                     .font(.caption2.weight(.medium))
                                     .foregroundStyle(session.isActive ? .blue : .green)
                                     .padding(.horizontal, 8).padding(.vertical, 3)
@@ -1379,7 +1459,7 @@ struct StoreGameDetailView: View {
     }
 
     private func activityCard<Content: View>(
-        _ title: String, symbol: String, minimumHeight: CGFloat = 0,
+        _ title: LocalizedStringResource, symbol: String, minimumHeight: CGFloat = 0,
         showsPeriod: Bool = false, sessionCount: Int? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -1407,7 +1487,11 @@ struct StoreGameDetailView: View {
                     .padding(3).background(.white.opacity(0.04), in: Capsule())
                 }
                 if let sessionCount {
-                    Text("\(sessionCount) sessions").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text("\(sessionCount)")
+                        Text(.Library.sessions)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .frame(minHeight: 30)
@@ -1439,9 +1523,30 @@ struct StoreGameDetailView: View {
         let seconds = max(0, Int(duration))
         let hours = seconds / 3_600
         let minutes = (seconds % 3_600) / 60
-        if hours > 0 { return String(format: "%d h %02d min", hours, minutes) }
-        if minutes > 0 { return "\(minutes) min" }
-        return "\(seconds) sec"
+        let hoursUnit = String(localized: .Library.hoursShort)
+        let minutesUnit = String(localized: .Library.minutesShort)
+        if hours > 0 { return String(format: "%d %@ %02d %@", hours, hoursUnit, minutes, minutesUnit) }
+        if minutes > 0 { return "\(minutes) \(minutesUnit)" }
+        return "\(seconds) \(String(localized: .Library.secondsShort))"
+    }
+
+    private func overviewMetric(_ title: LocalizedStringResource, value: String, symbol: String, tint: Color = .blue) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .background(tint.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.system(size: 17, weight: .semibold)).foregroundStyle(tint).lineLimit(1).minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)) }
     }
 
     private func overviewMetric(_ title: String, value: String, symbol: String, tint: Color = .blue) -> some View {
@@ -1464,12 +1569,12 @@ struct StoreGameDetailView: View {
     }
 
     private var formattedDownloadSize: String {
-        guard let bytes = currentGame.sizeEstimate?.downloadBytes, bytes > 0 else { return "Not provided" }
+        guard let bytes = currentGame.sizeEstimate?.downloadBytes, bytes > 0 else { return String(localized: .Library.notProvided) }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
-    private var requiredStorageTitle: String {
-        currentGame.storageBytes.map { $0 > 0 } == true ? "On disk" : "Required space"
+    private var requiredStorageTitle: LocalizedStringResource {
+        currentGame.storageBytes.map { $0 > 0 } == true ? .Library.onDisk : .Library.requiredSpace
     }
 
     private var formattedRequiredStorage: String {
@@ -1477,7 +1582,7 @@ struct StoreGameDetailView: View {
             return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         }
         guard let estimate = currentGame.sizeEstimate,
-              let bytes = estimate.installedBytes, bytes > 0 else { return "Not provided" }
+              let bytes = estimate.installedBytes, bytes > 0 else { return String(localized: .Library.notProvided) }
         let formatted = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         return estimate.source.isExactManifest ? formatted : "≈ \(formatted)"
     }
@@ -1622,7 +1727,7 @@ struct StoreGameDetailView: View {
         let visibleCount: CGFloat = width >= 1150 ? 5 : (width >= 850 ? 4 : (width >= 620 ? 3 : 2))
         let thumbnailWidth = max(156, (width - 28 - (visibleCount - 1) * 10) / visibleCount)
         if !mediaItems.isEmpty {
-            detailCard("Media", symbol: "photo", actionTitle: "View all media", action: {
+            detailCard(.Library.mediaTitle, symbol: "photo", actionTitle: .Library.viewAllMedia, action: {
                 selectedMedia = StoreMediaSelection(items: mediaItems, initialIndex: 0)
             }) {
                 ScrollView(.horizontal) {
@@ -1651,67 +1756,67 @@ struct StoreGameDetailView: View {
     private var detailsSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
             if currentGame.installPath != nil || currentGame.storageBytes != nil || currentGame.sizeEstimate != nil {
-                detailCard("Installation", symbol: "internaldrive.fill") {
-                    Label(currentGame.isInstalled || linkedApplication != nil ? "Installed" : "Not installed", systemImage: currentGame.isInstalled || linkedApplication != nil ? "checkmark.circle.fill" : "arrow.down.circle")
+                detailCard(.Library.installationTitle, symbol: "internaldrive.fill") {
+                    Label(currentGame.isInstalled || linkedApplication != nil ? .Library.installed : .Library.notInstalled, systemImage: currentGame.isInstalled || linkedApplication != nil ? "checkmark.circle.fill" : "arrow.down.circle")
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(currentGame.isInstalled || linkedApplication != nil ? Color.mint : Color.secondary)
                     Divider()
                     metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
                     if let environment = linkedEnvironment {
-                        metric("Prefix", value: store.formattedBytes(environment.storageBytes), symbol: "shippingbox")
+                        metric(.Library.prefix, value: store.formattedBytes(environment.storageBytes), symbol: "shippingbox")
                     }
                     if currentGame.installPath != nil {
                         Divider()
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Location").font(.caption).foregroundStyle(.secondary)
+                            Text(.Library.location).font(.caption).foregroundStyle(.secondary)
                             Text(installationLocation).font(.caption).foregroundStyle(.secondary)
                                 .lineLimit(3).truncationMode(.middle).textSelection(.enabled)
                                 .help(currentGame.installPath ?? installationLocation)
                         }
                     }
                     if currentGame.sizeEstimate?.downloadBytes != nil {
-                        metric("Download", value: formattedDownloadSize, symbol: "arrow.down.circle")
+                        metric(.Library.download, value: formattedDownloadSize, symbol: "arrow.down.circle")
                     }
                     if currentGame.installPath != nil {
-                        Button("Manage files", systemImage: "arrow.right") { selectedTab = .files }
+                        Button(.Library.manageFiles, systemImage: "arrow.right") { selectedTab = .files }
                             .buttonStyle(BorealSecondaryActionButtonStyle())
                     }
                 }
             }
             if let environment = linkedEnvironment {
-                detailCard("Environment", symbol: "shippingbox") {
-                    metric("Runtime", value: environment.runtime, symbol: "gearshape.2")
-                    metric("Graphics", value: environment.graphics, symbol: "display")
-                    metric("Windows version", value: environment.windowsVersion, symbol: "window.ceiling")
-                    metric("Architecture", value: environment.architecture, symbol: "cpu")
+                detailCard(.Library.environmentTitle, symbol: "shippingbox") {
+                    metric(.Library.runtime, value: environment.runtime, symbol: "gearshape.2")
+                    metric(.Library.graphics, value: environment.graphics, symbol: "display")
+                    metric(.Library.windowsVersion, value: environment.windowsVersion, symbol: "window.ceiling")
+                    metric(.Library.architecture, value: environment.architecture, symbol: "cpu")
                     if let application = linkedApplication {
-                        Button("Configure", systemImage: "arrow.right") { compatibilityApplication = application }
+                        Button(.Library.configure, systemImage: "arrow.right") { compatibilityApplication = application }
                             .buttonStyle(BorealSecondaryActionButtonStyle())
                     }
                 }
             }
-            detailCard("Actions", symbol: "ellipsis") {
+            detailCard(.Library.actionsTitle, symbol: "ellipsis") {
                 if currentGame.installPath != nil {
-                    Button("Open game folder", systemImage: "folder") { showGameFiles() }
+                    Button(.Library.openGameFolder, systemImage: "folder") { showGameFiles() }
                         .buttonStyle(BorealRailActionButtonStyle())
                 }
                 if !currentGame.isInstalled && linkedApplication == nil {
-                    Button("Locate installed game…", systemImage: "folder.badge.plus") { locateInstalledGame() }
+                    Button(.Library.locateInstalledGame, systemImage: "folder.badge.plus") { locateInstalledGame() }
                         .buttonStyle(BorealRailActionButtonStyle())
                 }
                 if currentGame.provider == .steam {
-                    Button("View Steam store page", systemImage: "arrow.up.right.square") { openStorePage() }
+                    Button(.Library.viewSteamStorePage, systemImage: "arrow.up.right.square") { openStorePage() }
                         .buttonStyle(BorealRailActionButtonStyle())
                 }
                 if currentGame.isInstalled, store.supportsStoreGameUpdate(currentGame) {
-                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
+                    Button(.Library.checkForUpdates, systemImage: "arrow.triangle.2.circlepath") {
                         store.updateStoreGame(currentGame)
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
                     .disabled(storeOperation != nil)
                 }
                 if currentGame.isInstalled, store.supportsStoreGameVerification(currentGame) {
-                    Button("Verify game files", systemImage: "checkmark.shield") {
+                    Button(.Library.verifyGameFiles, systemImage: "checkmark.shield") {
                         store.verifyStoreGame(currentGame)
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
@@ -1719,7 +1824,7 @@ struct StoreGameDetailView: View {
                 }
                 if currentGame.isInstalled || linkedApplication != nil {
                     Divider()
-                    Button("Uninstall…", systemImage: "trash", role: .destructive) {
+                    Button(.Library.uninstall, systemImage: "trash", role: .destructive) {
                         showsUninstallConfirmation = true
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
@@ -1729,14 +1834,14 @@ struct StoreGameDetailView: View {
     }
 
     private var installationFilesSection: some View {
-        detailCard("Installation", symbol: "folder.fill") {
+        detailCard(.Library.installationTitle, symbol: "folder.fill") {
             if let path = currentGame.installPath {
-                metric("Location", value: path, symbol: "folder")
-                Button("Open installation folder", systemImage: "folder") { showGameFiles() }
+                metric(.Library.location, value: path, symbol: "folder")
+                Button(.Library.openInstallationFolder, systemImage: "folder") { showGameFiles() }
                     .buttonStyle(BorealSecondaryActionButtonStyle())
             }
             if let application = linkedApplication {
-                metric("Executable", value: URL(fileURLWithPath: application.executablePath).lastPathComponent, symbol: "doc")
+                metric(.Library.executable, value: URL(fileURLWithPath: application.executablePath).lastPathComponent, symbol: "doc")
             }
             diskStorageCard
         }
@@ -1744,33 +1849,43 @@ struct StoreGameDetailView: View {
 
     private var diskStorageCard: some View {
         let report = store.gameDiskReport(for: currentGame)
-        return detailCard("Disk usage", symbol: "internaldrive.fill") {
+        return detailCard(.Library.diskUsageTitle, symbol: "internaldrive.fill") {
             ForEach(GameDiskStorageCategory.allCases, id: \.self) { category in
                 let item = report?.item(category)
-                metric(category.title, value: item?.bytes.map(store.formattedBytes) ?? "Unavailable", symbol: category == .shaders ? "sparkles" : "internaldrive")
+                metric(diskStorageTitle(category), value: item?.bytes.map(store.formattedBytes) ?? String(localized: .Library.unavailable), symbol: category == .shaders ? "sparkles" : "internaldrive")
             }
             Divider()
-            Text("Shader Cache").font(.subheadline.weight(.semibold))
+            Text(.Library.shaderCache).font(.subheadline.weight(.semibold))
             HStack {
-                Text("Cache may rebuild during gameplay. Temporary stutter is expected.")
+                Text(.Library.cacheWarning)
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Clear") { diskStorageCategory = .shaders; showsDiskStorageConfirmation = true }
+                Button(.Library.clear) { diskStorageCategory = .shaders; showsDiskStorageConfirmation = true }
                     .disabled(report?.item(.shaders)?.bytes == nil)
-                Button("Rebuild") { store.rebuildShaderCache(for: currentGame) }
+                Button(.Library.rebuild) { store.rebuildShaderCache(for: currentGame) }
                     .disabled(report?.item(.shaders)?.bytes == nil)
             }
             .buttonStyle(.bordered)
             HStack {
-                clearButton(.downloads, title: "Remove Downloads", report: report)
-                clearButton(.snapshots, title: "Delete Old Snapshots", report: report)
+                clearButton(.downloads, title: .Library.removeDownloads, report: report)
+                clearButton(.snapshots, title: .Library.deleteOldSnapshots, report: report)
             }
         }
     }
 
-    private func clearButton(_ category: GameDiskStorageCategory, title: String, report: GameDiskStorageReport?) -> some View {
+    private func clearButton(_ category: GameDiskStorageCategory, title: LocalizedStringResource, report: GameDiskStorageReport?) -> some View {
         Button(title) { diskStorageCategory = category; showsDiskStorageConfirmation = true }
             .disabled(report?.item(category)?.bytes == nil)
+    }
+
+    private func diskStorageTitle(_ category: GameDiskStorageCategory) -> LocalizedStringResource {
+        switch category {
+        case .gameFiles: .Library.gameFiles
+        case .prefix: .Library.prefix
+        case .shaders: .Library.shaders
+        case .downloads: .Library.download
+        case .snapshots: .Library.snapshots
+        }
     }
 
     private var libraryStatus: String {
@@ -1798,7 +1913,7 @@ struct StoreGameDetailView: View {
         LinearGradient(colors: [Color(red: 0.09, green: 0.125, blue: 0.18), Color(red: 0.065, green: 0.095, blue: 0.14)], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
-    private func detailCard<Content: View>(_ title: String, symbol: String, actionTitle: String? = nil, action: @escaping () -> Void = {}, @ViewBuilder content: () -> Content) -> some View {
+    private func detailCard<Content: View>(_ title: LocalizedStringResource, symbol: String, actionTitle: LocalizedStringResource? = nil, action: @escaping () -> Void = {}, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label(title, systemImage: symbol).font(.headline)
@@ -1833,44 +1948,44 @@ struct StoreGameDetailView: View {
         currentGame.supportsNativeMacOS == true ? "macOS" : "Windows"
     }
 
-    private var installButtonTitle: String {
-        currentGame.supportsNativeMacOS == true ? "Install Native macOS Version" : "Install Windows Version"
+    private var installButtonTitle: LocalizedStringResource {
+        currentGame.supportsNativeMacOS == true ? .Library.installNativeMacVersion : .Library.installWindowsVersion
     }
 
     private var compatibilitySection: some View {
         VStack(alignment: .leading, spacing: 13) {
-            Label("Mac Compatibility", systemImage: "checkmark.shield.fill")
+            Label(.Library.macCompatibility, systemImage: "checkmark.shield.fill")
                 .font(.headline)
             if let discoveryGame, !discoveryGame.availableRatings.isEmpty {
                 ForEach(discoveryGame.availableRatings, id: \.title) { entry in
                     HStack {
-                        Text(entry.title)
+                        Text(entry.localizedTitle)
                         Spacer()
-                        Label(entry.rating.rawValue, systemImage: entry.rating.symbol)
+                        Label { Text(entry.rating.localizedDisplayName) } icon: { Image(systemName: entry.rating.symbol) }
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(entry.rating.color)
                     }
                     Divider().opacity(0.45)
                 }
-                Text("AppleGamingWiki ratings are community data and do not replace a Boreal-tested profile.")
+                Text(.Library.appleGamingWikiDisclaimer)
                     .font(.caption).foregroundStyle(.secondary)
             } else if let profile = currentGame.compatibility {
                 HStack(alignment: .top, spacing: 18) {
                     MacCompatibilityBadge(rating: profile.tier.rating)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Wine compatibility")
+                        Text(.Library.wineCompatibility)
                             .fontWeight(.medium)
                         Text(compatibilitySummary(profile))
                             .font(.callout).foregroundStyle(.secondary)
-                        Text("This compatibility estimate is not a guarantee for Boreal's Wine configuration.")
+                        Text(.Library.wineCompatibilityDisclaimer)
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             } else {
                 ContentUnavailableView(
-                    "No compatibility reports",
+                    .Library.noCompatibilityReports,
                     systemImage: "questionmark.circle",
-                    description: Text("Boreal did not find an unambiguous macOS/Wine compatibility result for this title.")
+                    description: Text(.Library.noCompatibilityResult)
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             }
@@ -1882,17 +1997,50 @@ struct StoreGameDetailView: View {
     }
 
     private func compatibilitySummary(_ profile: CommunityCompatibility) -> String {
-        var parts = [profile.tier.title]
-        if let score = profile.score { parts.append("\(Int(score))/5 stars") }
-        if profile.reportCount > 0 { parts.append("\(profile.reportCount.formatted()) reports") }
+        var parts = [String(localized: profile.tier.localizedTitle)]
+        if let score = profile.score { parts.append("\(Int(score))/5 \(String(localized: .Compatibility.stars))") }
+        if profile.reportCount > 0 { parts.append("\(profile.reportCount.formatted()) \(String(localized: .Compatibility.reports))") }
         if let confidence = profile.confidence, profile.score == nil {
-            parts.append("\(confidence.capitalized) confidence")
+            parts.append("\(localizedConfidence(confidence)) \(String(localized: .Compatibility.confidence))")
         }
-        if let trending = profile.trendingTier, trending != profile.tier { parts.append("Trending: \(trending.title)") }
+        if let trending = profile.trendingTier, trending != profile.tier { parts.append("\(String(localized: .Compatibility.trending)): \(String(localized: trending.localizedTitle))") }
         if let date = profile.sourceUpdatedAt, profile.score != nil {
-            parts.append("Updated \(date.formatted(date: .abbreviated, time: .omitted))")
+            parts.append("\(String(localized: .Compatibility.updated)) \(date.formatted(date: .abbreviated, time: .omitted))")
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func localizedConfidence(_ confidence: String) -> String {
+        switch confidence.lowercased() {
+        case "high": String(localized: .Compatibility.highConfidence)
+        case "medium", "moderate": String(localized: .Compatibility.mediumConfidence)
+        case "low": String(localized: .Compatibility.lowConfidence)
+        default: confidence.capitalized
+        }
+    }
+
+    private func metric(_ title: LocalizedStringResource, value: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Label { Text(title) } icon: { Image(systemName: symbol) }
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+            Spacer(minLength: 8)
+            Text(value).font(.caption.weight(.medium))
+                .multilineTextAlignment(.trailing).textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metric(_ title: LocalizedStringResource, value: LocalizedStringResource, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Label { Text(title) } icon: { Image(systemName: symbol) }
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+            Spacer(minLength: 8)
+            Text(value).font(.caption.weight(.medium))
+                .multilineTextAlignment(.trailing)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func metric(_ title: String, value: String, symbol: String) -> some View {
@@ -2187,7 +2335,7 @@ private struct StoreGameInstallationSheet: View {
     }
 
     private var formattedDownloadSize: String {
-        guard let bytes = game.sizeEstimate?.downloadBytes, bytes > 0 else { return "Not provided" }
+        guard let bytes = game.sizeEstimate?.downloadBytes, bytes > 0 else { return String(localized: .Library.notProvided) }
         return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 

@@ -1959,9 +1959,11 @@ final class BorealStore {
                     runtime: runtime
                 )
                 createdEnvironment = managed
+                // Adding an already installed game must only prepare the
+                // environment. Its executable is registered below and is
+                // launched only through the Library Play action.
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 try Task.checkCancellation()
-                await updateInstallation(.verifyingFirstLaunch)
                 let communityProfile: CommunityCompatibility? = nil
                 let environment = WindowsEnvironment(
                     id: managed.id,
@@ -1999,7 +2001,7 @@ final class BorealStore {
                 await refreshAuxiliaryExecutables(for: app.id)
                 await updateInstallation(.committing)
                 save()
-                installation.completedStages = Set(InstallationStage.allCases)
+                installation.completedStages = [.preparingRuntime, .creatingEnvironment, .committing]
                 installation.state = .succeeded(app.id)
                 SoundService.shared.play(.installationCompleted)
                 installationTask = nil

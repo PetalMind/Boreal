@@ -56,6 +56,18 @@ nonisolated enum AppleGamingWikiRating: String, Codable, CaseIterable, Hashable,
         case .notApplicable: "Not applicable"
         }
     }
+
+    var localizedDisplayName: LocalizedStringResource {
+        switch self {
+        case .perfect: .Compatibility.excellentTitle
+        case .playable: .Compatibility.goodTitle
+        case .runs: .Compatibility.limitedTitle
+        case .menu: .Compatibility.menuOnlyTitle
+        case .unplayable: .Compatibility.brokenTitle
+        case .unknown: .Compatibility.unknownTitle
+        case .notApplicable: .Compatibility.notApplicableTitle
+        }
+    }
 }
 
 nonisolated enum AppleGamingWikiPlatform: String, CaseIterable, Hashable, Sendable {
@@ -120,6 +132,17 @@ nonisolated enum DiscoveryScope: String, CaseIterable, Hashable, Sendable {
 nonisolated struct AppleGamingWikiRatingEntry: Hashable, Sendable {
     let title: String
     let rating: AppleGamingWikiRating
+
+    var localizedTitle: LocalizedStringResource {
+        switch title {
+        case "Native": .Compatibility.nativeTitle
+        case "Rosetta 2": .Compatibility.rosetta2Title
+        case "CrossOver": .Compatibility.crossOverTitle
+        case "Wine": .Compatibility.wineTitle
+        case "Parallels": .Compatibility.parallelsTitle
+        default: .Compatibility.unknownTitle
+        }
+    }
 }
 
 nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiable {
