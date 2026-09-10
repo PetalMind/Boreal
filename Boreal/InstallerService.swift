@@ -32,6 +32,12 @@ nonisolated enum InstallerServiceError: LocalizedError, Sendable {
 
 nonisolated protocol Installing: Sendable {
     func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit
+    func install(
+        _ installer: URL,
+        name: String,
+        preferredEngine: RuntimeEngine?,
+        progress: @escaping @Sendable (InstallationStage) async -> Void
+    ) async throws -> InstallationCommit
     func launchInstaller(
         _ installer: URL,
         name: String,
@@ -41,6 +47,15 @@ nonisolated protocol Installing: Sendable {
 }
 
 extension Installing {
+    func install(
+        _ installer: URL,
+        name: String,
+        preferredEngine: RuntimeEngine?,
+        progress: @escaping @Sendable (InstallationStage) async -> Void
+    ) async throws -> InstallationCommit {
+        try await install(installer, name: name, progress: progress)
+    }
+
     func launchInstaller(
         _ installer: URL,
         name: String,
@@ -105,13 +120,23 @@ actor InstallerService: Installing {
     }
 
     func install(_ installer: URL, name: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> InstallationCommit {
+        try await install(installer, name: name, preferredEngine: nil, progress: progress)
+    }
+
+    func install(
+        _ installer: URL,
+        name: String,
+        preferredEngine selectedEngine: RuntimeEngine?,
+        progress: @escaping @Sendable (InstallationStage) async -> Void
+    ) async throws -> InstallationCommit {
         await progress(.preparingRuntime)
         // The installer is a PE executable, so choose the compatibility engine
         // before creating the prefix and before running any Windows code.
         let installerArchitecture = WindowsExecutableArchitecture.inspect(installer)
-        let preferredEngine: RuntimeEngine = installerArchitecture == .x86_64
+        let inferredEngine: RuntimeEngine = installerArchitecture == .x86_64
             ? .gamePortingToolkit
             : .wine
+        let preferredEngine = selectedEngine ?? inferredEngine
         // Steam's setup bootstrapper is commonly a 32-bit PE, but the resulting
         // bottle must also host 64-bit Steam games. Keep the shared Steam bottle
         // WoW64-capable instead of deriving its architecture from SteamSetup.exe.

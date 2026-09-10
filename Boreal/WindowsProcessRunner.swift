@@ -97,6 +97,21 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        if environment.configuration.graphicsBackend == .wineD3D,
+           environment.configuration.graphicsFallback == .wineD3DVulkan {
+            // The prefix may still contain a previously activated DXVK/D9VK
+            // DLL. Force Wine builtin D3D for this process as well, so the
+            // first retry works even before the next environment reconfigure
+            // has restored the managed prefix files.
+            processEnvironment["WINED3D_RENDERER"] = "vulkan"
+            let libraries = Set(RendererLaunchFailureDetector.builtinDLLOverrides(for: environment.configuration.graphicsAPI))
+            let existing = processEnvironment["WINEDLLOVERRIDES"]?.split(separator: ";").map(String.init) ?? []
+            let preserved = existing.filter { entry in
+                let library = entry.split(separator: "=", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+                return !libraries.contains(library)
+            }
+            processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
+        }
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime) == .d9vk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
             let configuration = environment.rootURL.appending(path: "Darksiders2-d9vk.conf")

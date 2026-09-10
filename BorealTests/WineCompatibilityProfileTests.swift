@@ -486,6 +486,60 @@ struct WineCompatibilityProfileTests {
         #expect(effective.graphicsAPI == .directX9)
     }
 
+    @Test func boundByFlameUsesWineD3DVulkanFallbackForGOGLaunches() {
+        let application = WindowsApplication(
+            name: "Bound By Flame",
+            publisher: "Spiders",
+            executablePath: "/tmp/BoundByFlame.exe",
+            installerPath: "existing-installation",
+            environmentID: UUID(),
+            compatibilityProfile: WineCompatibilityProfile(
+                windowsVersion: .windows10,
+                architecture: .win32,
+                graphicsBackend: .d9vk,
+                graphicsAPI: .directX9
+            ),
+            storeProvider: .gog,
+            storeExternalID: "1787707874"
+        )
+
+        let profile = GameGraphicsProfiles.profile(for: application)
+        let effective = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            application.resolvedCompatibilityProfile,
+            for: application
+        )
+
+        #expect(profile?.defaultAPI == .directX9)
+        #expect(profile?.preferredBackend == .wineD3D)
+        #expect(profile?.enforcedBackend == .wineD3D)
+        #expect(profile?.launchEnvironment?["WINED3D_RENDERER"] == "vulkan")
+        #expect(effective.graphicsBackend == .wineD3D)
+        #expect(effective.graphicsAPI == .directX9)
+    }
+
+    @Test func rendererDeviceFailureSelectsGenericWineD3DFallback() {
+        let profile = WineCompatibilityProfile(
+            graphicsBackend: .d9vk,
+            graphicsAPI: .directX9
+        )
+        let log = "info: DXVK: v1.10.3\nerr: DxvkAdapter: Failed to create device\n"
+
+        #expect(RendererLaunchFailureDetector.shouldUseWineD3DVulkanFallback(stderr: log, profile: profile))
+        #expect(RendererLaunchFailureDetector.builtinDLLOverrides(for: .directX9) == ["d3d9"])
+    }
+
+    @Test func rendererFallbackDoesNotTriggerForNormalGameOutput() {
+        let profile = WineCompatibilityProfile(
+            graphicsBackend: .dxvk,
+            graphicsAPI: .directX11
+        )
+
+        #expect(!RendererLaunchFailureDetector.shouldUseWineD3DVulkanFallback(
+            stderr: "info: DXVK: v1.10.3\ninfo: D3D11 device initialized\n",
+            profile: profile
+        ))
+    }
+
     @Test func torchlightDirectLaunchGetsTheSteamAppIDFile() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-torchlight-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }

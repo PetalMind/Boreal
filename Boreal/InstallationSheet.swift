@@ -18,22 +18,22 @@ struct InstallationSheet: View {
     @State private var selectedRuntimeEngine: RuntimeEngine = .wine
 
     var body: some View {
-        VStack(spacing: 24) {
-            AppIconView(symbol: iconSymbol, size: 88)
-            VStack(spacing: 7) {
-                Text(title).font(.title2).fontWeight(.semibold)
-                Text(message)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
-                    .accessibilityLabel(message)
-            }
-
+        VStack(alignment: .leading, spacing: 0) {
+            header
             content
-            actions.frame(width: 390)   
+            actions
         }
-        .padding(34)
-        .frame(minWidth: 500, minHeight: 420)
+        .padding(28)
+        .frame(width: 650)
+        .frame(minHeight: 520)
+        .background(
+            LinearGradient(
+                colors: [Color(red: 0.09, green: 0.10, blue: 0.13), Color(red: 0.055, green: 0.06, blue: 0.08)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .preferredColorScheme(.dark)
         .interactiveDismissDisabled(isInstalling)
         .onAppear {
             store.resetInstallation()
@@ -42,9 +42,147 @@ struct InstallationSheet: View {
         }
     }
 
+    private var header: some View {
+        HStack(alignment: .top, spacing: 20) {
+            AppIconView(symbol: iconSymbol, size: 96)
+                .frame(width: 112, height: 112)
+                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            VStack(alignment: .leading, spacing: 9) {
+                Text(candidate.name)
+                    .font(.system(size: 27, weight: .bold))
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    metadataBadge(candidate.fileType, symbol: "doc.fill")
+                    metadataBadge("Windows", symbol: "desktopcomputer")
+                    metadataBadge(selectedRuntimeLabel, symbol: "wineglass")
+                }
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(message)
+            }
+            .padding(.top, 5)
+            Spacer(minLength: 8)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 34, height: 34)
+                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(isInstalling)
+            .accessibilityLabel("Close")
+        }
+        .padding(.bottom, 28)
+    }
+
+    private func metadataBadge(_ text: String, symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func optionRow<Content: View>(title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.callout)
+                .frame(width: 110, alignment: .leading)
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            content().font(.callout)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+    }
+
+    private var informationCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("What will happen?", systemImage: "info.circle.fill")
+                .font(.headline)
+                .foregroundStyle(.blue)
+            Text(actionExplanation)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("Technical details", isExpanded: $showsDetails) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Label("\(candidate.fileType) \(selectedAction == .existing ? "game file" : "setup file")", systemImage: "doc")
+                    if selectedAction == .runOnly {
+                        Label("Runs with \(selectedRuntimeEngine.displayName) · \(selectedRuntimeEngine.graphicsName)", systemImage: "cpu")
+                    } else if selectedAction == .existing {
+                        Label("The selected executable remains in its current location", systemImage: "folder")
+                    } else {
+                        Label("Uses \(selectedRuntimeEngine.displayName) · \(selectedRuntimeEngine.graphicsName)", systemImage: "cpu")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.blue.opacity(0.35)) }
+    }
+
+    private var selectedRuntimeLabel: String {
+        selectedRuntimeEngine.displayName
+    }
+
+    private var actionSymbol: String {
+        switch selectedAction {
+        case .install: "arrow.down.to.line"
+        case .existing: "folder.badge.plus"
+        case .runOnly: "play.fill"
+        }
+    }
+
+    private var actionDescription: String {
+        switch selectedAction {
+        case .install: "Install and add to Library"
+        case .existing: "Register existing game"
+        case .runOnly: "Run installer once"
+        }
+    }
+
+    private var actionExplanation: String {
+        switch selectedAction {
+        case .install:
+            "Boreal will inspect the installer, prepare a compatible isolated Windows environment, run setup, detect the installed game, and add it to your Library."
+        case .existing:
+            "Boreal will prepare an isolated environment and register this executable without launching it or moving the existing game files."
+        case .runOnly:
+            "Boreal will prepare an isolated environment and launch this file with the selected runtime. It will not detect or add a game to your Library."
+        }
+    }
+
+    private var installationLocation: String {
+        if selectedAction == .existing {
+            return candidate.url.deletingLastPathComponent().path
+        }
+        return "Managed Boreal environment · final folder selected in the installer"
+    }
+
+    private func revealSelectedFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([candidate.url])
+    }
+
+    private func revealSelectedGameLocation() {
+        NSWorkspace.shared.open(candidate.url.deletingLastPathComponent())
+    }
+
     @ViewBuilder private var content: some View {
         switch store.installation.state {
         case .idle:
+            VStack(alignment: .leading, spacing: 14) {
                 Picker("Action", selection: $selectedAction) {
                     Text("Install and add to Library").tag(InstallerSheetAction.install)
                     if candidate.canBeRegisteredAsExistingGame {
@@ -53,71 +191,74 @@ struct InstallationSheet: View {
                     Text("Run installer only").tag(InstallerSheetAction.runOnly)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 390)
+                .labelsHidden()
+                .controlSize(.large)
 
-                if selectedAction == .runOnly {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("Run with", selection: $selectedRuntimeEngine) {
-                            ForEach(RuntimeEngine.allCases, id: \.self) { engine in
-                                Label(engine.displayName + " (" + engine.graphicsName + ")", systemImage: engine == .gamePortingToolkit ? "cpu" : "shippingbox")
-                                    .tag(engine)
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Setup options", systemImage: "gearshape")
+                        .font(.headline)
+                    VStack(spacing: 0) {
+                        optionRow(title: "Selected file", symbol: "doc") {
+                            Text(candidate.url.path).lineLimit(1).truncationMode(.middle)
+                            Button("Show") { revealSelectedFile() }
+                        }
+                        Divider().opacity(0.45)
+                        optionRow(title: selectedAction == .existing ? "Game location" : "Install location", symbol: "folder") {
+                            Text(installationLocation)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if selectedAction == .existing {
+                                Button("Show") { revealSelectedGameLocation() }
                             }
                         }
-                        .pickerStyle(.menu)
-                        Text("Boreal will launch this file directly. It will not detect a game, start a first launch, or install a native macOS version.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 390, alignment: .leading)
-                } else if selectedAction == .existing {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("The selected game will be added without launching it.", systemImage: "checkmark.shield.fill")
-                        Text("Boreal will prepare an isolated environment and register this executable. It will not perform a first launch or run the game during setup.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 390, alignment: .leading)
-                }
-                DisclosureGroup("Installation Details", isExpanded: $showsDetails) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("\(candidate.fileType) \(selectedAction == .existing ? "game file" : "setup file")", systemImage: "doc")
-                        if selectedAction == .runOnly {
-                            Label("Runs with \(selectedRuntimeEngine.displayName)", systemImage: "cpu")
-                            Label("No game detection or native installation", systemImage: "checkmark.shield")
-                        } else if selectedAction == .existing {
-                            Label("Adds the selected game without launching it", systemImage: "checkmark.shield")
-                            Label("Existing Windows environment", systemImage: "externaldrive")
-                        } else {
-                            Label("Configuration selected automatically", systemImage: "cpu")
+                        Divider().opacity(0.45)
+                        optionRow(title: "Action", symbol: actionSymbol) {
+                            Text(actionDescription)
                         }
-                        if selectedAction != .existing {
-                            Label("Isolated Windows environment", systemImage: "externaldrive")
+                        Divider().opacity(0.45)
+                        optionRow(title: "Environment", symbol: "wineglass") {
+                            Picker("Run with", selection: $selectedRuntimeEngine) {
+                                ForEach(RuntimeEngine.allCases, id: \.self) { engine in
+                                    Text(engine.displayName + " · " + engine.graphicsName).tag(engine)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
                         }
                     }
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.black.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.10)) }
                 }
-                .frame(width: 390)
+
+                informationCard
+            }
         case .installing:
-            VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(store.installation.stage?.title ?? "Preparing")
-                        .font(.callout.weight(.medium))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).font(.title3.bold())
+                        Text(store.installation.stage?.userMessage ?? "Preparing installation…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Text("\(installationPercentage)%")
-                        .font(.title3.bold().monospacedDigit())
+                        .font(.title2.bold().monospacedDigit())
                         .contentTransition(.numericText())
                 }
                 ProgressView(value: installationFraction)
                     .progressViewStyle(BorealDownloadProgressStyle())
-                    .frame(width: 340)
-                DisclosureGroup("Show Details", isExpanded: $showsDetails) {
-                    installationSteps.padding(.top, 8)
-                }
+                installationSteps
+                    .padding(16)
+                    .background(.black.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.10)) }
+                Label("You may keep using Boreal while this operation finishes.", systemImage: "info.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.blue)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            .frame(width: 390)
         case .succeeded:
             Label(
                 selectedAction == .runOnly ? "Installer launched" : (selectedAction == .existing ? "Game added" : "First launch verified"),
@@ -187,36 +328,42 @@ struct InstallationSheet: View {
         switch store.installation.state {
         case .idle:
             HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
                 Spacer()
-                Button("Use Existing Game…", systemImage: "folder.badge.plus") {
-                    chooseExistingGame()
-                }
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .controlSize(.large)
                 Button(primaryActionTitle, systemImage: primaryActionSymbol) { beginAction() }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                     .keyboardShortcut(.defaultAction)
             }
+            .padding(.top, 18)
         case .installing:
             HStack {
-                Button("Cancel Installation", role: .cancel) { store.cancelInstallation() }
                 Spacer()
+                Button("Cancel Installation", role: .cancel) { store.cancelInstallation() }
+                    .controlSize(.large)
             }
+            .padding(.top, 18)
         case .succeeded(let id):
             HStack {
-                Button("Done") { dismiss() }
                 Spacer()
+                Button("Done") { dismiss() }
                 Button(successActionTitle, systemImage: successActionSymbol) { completion(id); dismiss() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
+            .controlSize(.large)
+            .padding(.top, 18)
         case .failed, .cancelled:
             HStack {
-                Button("Done") { dismiss() }
                 Spacer()
+                Button("Done") { dismiss() }
                 Button("Try Again", systemImage: "arrow.clockwise") { beginAction() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
+            .controlSize(.large)
+            .padding(.top, 18)
         }
     }
 
@@ -237,11 +384,11 @@ struct InstallationSheet: View {
         guard url.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
               FileManager.default.fileExists(atPath: url.path),
               ExecutableDiscovery.isEligibleExecutablePath(url.lastPathComponent) else {
-            store.addExistingWindowsApp(at: url)
+            store.addExistingWindowsApp(at: url, runtimeEngine: selectedRuntimeEngine)
             return
         }
         selectedAction = .existing
-        store.addExistingWindowsApp(at: url)
+        store.addExistingWindowsApp(at: url, runtimeEngine: selectedRuntimeEngine)
     }
 
     private var installationFraction: Double {
@@ -296,7 +443,7 @@ struct InstallationSheet: View {
     }
 
     private func beginInstallation() {
-        store.beginInstallation(candidate)
+        store.beginInstallation(candidate, runtimeEngine: selectedRuntimeEngine)
     }
 
     private func beginAction() {
@@ -304,7 +451,7 @@ struct InstallationSheet: View {
         case .runOnly:
             store.beginInstallerLaunch(candidate, runtimeEngine: selectedRuntimeEngine)
         case .existing:
-            store.addExistingWindowsApp(at: candidate.url)
+            store.addExistingWindowsApp(at: candidate.url, runtimeEngine: selectedRuntimeEngine)
         case .install:
             beginInstallation()
         }

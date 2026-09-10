@@ -108,6 +108,13 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
     }
 }
 
+/// A renderer fallback learned from a concrete failed launch. This remains a
+/// compatibility detail rather than a user-facing graphics choice.
+nonisolated enum WineGraphicsFallback: String, Codable, CaseIterable, Sendable, Hashable {
+    case none
+    case wineD3DVulkan
+}
+
 nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case none
     case dgVoodoo2
@@ -266,6 +273,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var windowsVersion: WineWindowsVersion = .windows11
     var architecture: WinePrefixArchitecture = .win64
     var graphicsBackend: WineGraphicsBackend = .automatic
+    var graphicsFallback: WineGraphicsFallback = .none
     var legacyWrapper: LegacyGraphicsWrapper = .none
     var legacyGraphicsAPI: LegacyGraphicsAPI = .directDraw
     var graphicsAPI: GraphicsAPI? = nil
@@ -282,7 +290,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var launchArguments = ""
 
     private enum CodingKeys: String, CodingKey {
-        case windowsVersion, architecture, graphicsBackend, legacyWrapper, legacyGraphicsAPI, graphicsAPI
+        case windowsVersion, architecture, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
         case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
         case disableSteamInputEquivalent, forceXInput, launchArguments
     }
@@ -327,6 +335,7 @@ extension WineCompatibilityProfile {
         windowsVersion = try values.decodeIfPresent(WineWindowsVersion.self, forKey: .windowsVersion) ?? .windows11
         architecture = try values.decodeIfPresent(WinePrefixArchitecture.self, forKey: .architecture) ?? .win64
         graphicsBackend = try values.decodeIfPresent(WineGraphicsBackend.self, forKey: .graphicsBackend) ?? .automatic
+        graphicsFallback = try values.decodeIfPresent(WineGraphicsFallback.self, forKey: .graphicsFallback) ?? .none
         legacyWrapper = try values.decodeIfPresent(LegacyGraphicsWrapper.self, forKey: .legacyWrapper) ?? .none
         legacyGraphicsAPI = try values.decodeIfPresent(LegacyGraphicsAPI.self, forKey: .legacyGraphicsAPI) ?? .directDraw
         graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI)

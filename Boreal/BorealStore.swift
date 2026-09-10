@@ -99,6 +99,8 @@ final class BorealStore {
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
     private var requestedStops: Set<UUID> = []
     private var unexpectedLauncherFailures: Set<UUID> = []
+    private var automaticRendererFallbacksPending: Set<UUID> = []
+    private var automaticRendererFallbackLogURLs: Set<URL> = []
     private var environmentSessionStates: [UUID: EnvironmentSessionState] = [:]
     private var environmentMonitorIDs: [UUID: UUID] = [:]
     private var activePlaySessions: [UUID: ActivePlaySession] = [:]
@@ -1128,11 +1130,11 @@ final class BorealStore {
         }
     }
 
-    func install(_ candidate: InstallCandidate) async -> UUID? {
+    func install(_ candidate: InstallCandidate, runtimeEngine: RuntimeEngine? = nil) async -> UUID? {
         SoundService.shared.play(.installationStarted)
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
         do {
-            let commit = try await services.installer.install(candidate.url, name: candidate.name) { [weak self] stage in
+            let commit = try await services.installer.install(candidate.url, name: candidate.name, preferredEngine: runtimeEngine) { [weak self] stage in
                 await self?.updateInstallation(stage)
             }
             let communityProfile: CommunityCompatibility? = nil
@@ -1282,7 +1284,10 @@ final class BorealStore {
         let names = rawNames.map(Self.storeSearchTitle).filter { !$0.isEmpty }
         for name in names {
             let normalized = SteamLibraryService.normalizedStoreTitle(name)
-            let localMatches = storeGames.filter { SteamLibraryService.normalizedStoreTitle($0.name) == normalized }
+            let localMatches = storeGames.filter {
+                SteamLibraryService.normalizedStoreTitle($0.name) == normalized
+                    && hasCatalogPresentationMetadata($0)
+            }
             if localMatches.count == 1 { return localMatches[0] }
             if localMatches.count > 1 { continue }
             if let match = await services.steamLibrary.searchStoreGame(named: name) { return match }
@@ -1300,6 +1305,17 @@ final class BorealStore {
         return nil
     }
 
+    private func hasCatalogPresentationMetadata(_ game: StoreLibraryGame) -> Bool {
+        game.summary != nil
+            || game.artworkPath != nil
+            || game.portraitImageURL != nil
+            || game.headerImageURL != nil
+            || game.backgroundImageURL != nil
+            || game.screenshotURLs?.isEmpty == false
+            || game.videos?.isEmpty == false
+            || game.storeRating != nil
+    }
+
     private func matchingStoreGame(named name: String, in games: [StoreLibraryGame]) -> StoreLibraryGame? {
         let normalized = SteamLibraryService.normalizedStoreTitle(name)
         let exact = games.filter { SteamLibraryService.normalizedStoreTitle($0.name) == normalized }
@@ -1310,6 +1326,47 @@ final class BorealStore {
             return !queryTokens.isEmpty && queryTokens.isSubset(of: tokens)
         }
         return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    private func importedGameMetadata(
+        executable: URL,
+        name: String,
+        gogIdentity: GOGInstalledGameIdentity?
+    ) async -> StoreLibraryGame? {
+        if let gogIdentity,
+           let games = try? await services.gogLibrary.loadLibrary(),
+           let game = games.first(where: { $0.externalID == gogIdentity.externalID }),
+           hasCatalogPresentationMetadata(game) {
+            return game
+        }
+        guard var metadata = await matchStoreMetadata(for: [
+            gogIdentity?.name,
+            name,
+            executable.deletingPathExtension().lastPathComponent,
+            executable.deletingLastPathComponent().lastPathComponent,
+        ].compactMap { $0 }) else { return nil }
+        if let gogIdentity {
+            metadata.id = UUID()
+            metadata.provider = .gog
+            metadata.externalID = gogIdentity.externalID
+            metadata.name = gogIdentity.name ?? metadata.name
+        }
+        return metadata
+    }
+
+    private func upsertImportedPresentationMetadata(_ metadata: StoreLibraryGame) {
+        if let index = storeGames.firstIndex(where: { $0.storeReference == metadata.storeReference }) {
+            var value = metadata
+            value.id = storeGames[index].id
+            value.preserveMeasuredActivity(from: storeGames[index])
+            value.isInstalled = storeGames[index].isInstalled
+            value.installPath = storeGames[index].installPath
+            value.installedPlatform = storeGames[index].installedPlatform
+            value.storageBytes = storeGames[index].storageBytes
+            storeGames[index] = value
+        } else {
+            storeGames.append(metadata)
+        }
     }
 
     private func applyRenamedApplicationMetadata(_ metadata: StoreLibraryGame?, to applicationID: UUID, requestedName: String) {
@@ -1363,20 +1420,42 @@ final class BorealStore {
             guard !$0.isInstallerOnly else { return false }
             if $0.storeProvider == nil && $0.storeExternalID == nil { return true }
             guard $0.usesStoreMetadataOnly,
-                  let provider = $0.storeProvider,
-                  let externalID = $0.storeExternalID else { return false }
-            return !storeGames.contains { $0.provider == provider && $0.externalID == externalID }
+                  let reference = $0.storeReference else { return false }
+            guard let game = storeGames.first(where: { $0.storeReference == reference }) else { return true }
+            return game.artworkPath == nil
+                && game.portraitImageURL == nil
+                && game.headerImageURL == nil
+                && game.backgroundImageURL == nil
+                && game.screenshotURLs?.isEmpty != false
         }
         var changed = false
         for candidate in candidates {
             let executable = URL(fileURLWithPath: candidate.executablePath)
-            let metadata: StoreLibraryGame?
+            var metadata: StoreLibraryGame?
             if candidate.usesStoreMetadataOnly,
-               candidate.storeProvider == .steam,
+               let provider = candidate.storeProvider,
                let externalID = candidate.storeExternalID {
-                let seed = StoreLibraryGame(provider: .steam, externalID: externalID, name: candidate.name)
-                let refreshed = await services.steamLibrary.loadDetails(for: seed)
-                metadata = refreshed.hasPresentationMetadata ? refreshed : nil
+                switch provider {
+                case .steam:
+                    let seed = StoreLibraryGame(provider: .steam, externalID: externalID, name: candidate.name)
+                    let refreshed = await services.steamLibrary.loadDetails(for: seed)
+                    metadata = refreshed.hasPresentationMetadata ? refreshed : nil
+                case .epic:
+                    metadata = try? await services.epicLibrary.loadLibrary().first { $0.externalID == externalID }
+                case .gog:
+                    metadata = try? await services.gogLibrary.loadLibrary().first { $0.externalID == externalID }
+                    if metadata.map(hasCatalogPresentationMetadata) != true {
+                        metadata = await matchStoreMetadata(for: [
+                            candidate.name,
+                            executable.deletingPathExtension().lastPathComponent,
+                            executable.deletingLastPathComponent().lastPathComponent,
+                        ])
+                        metadata?.id = UUID()
+                        metadata?.provider = .gog
+                        metadata?.externalID = externalID
+                        metadata?.name = candidate.name
+                    }
+                }
             } else if candidate.storeProvider == nil && candidate.storeExternalID == nil {
                 metadata = await matchStoreMetadata(for: [
                     candidate.name,
@@ -1392,9 +1471,7 @@ final class BorealStore {
             applications[index].storeProvider = metadata.provider
             applications[index].storeExternalID = metadata.externalID
             applications[index].storeMetadataOnly = true
-            if !storeGames.contains(where: { $0.provider == metadata.provider && $0.externalID == metadata.externalID }) {
-                storeGames.append(metadata)
-            }
+            upsertImportedPresentationMetadata(metadata)
             changed = true
         }
         if changed { save() }
@@ -1456,13 +1533,13 @@ final class BorealStore {
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func beginInstallation(_ candidate: InstallCandidate) {
+    func beginInstallation(_ candidate: InstallCandidate, runtimeEngine: RuntimeEngine? = nil) {
         guard installationTask == nil else { return }
         let token = UUID()
         installationToken = token
         installationTask = Task { [weak self] in
             guard let self else { return nil }
-            let result = await self.install(candidate)
+            let result = await self.install(candidate, runtimeEngine: runtimeEngine)
             if self.installationToken == token {
                 self.installationTask = nil
                 self.installationToken = nil
@@ -2053,7 +2130,7 @@ final class BorealStore {
         )
     }
 
-    func addExistingWindowsApp(at selectedURL: URL) {
+    func addExistingWindowsApp(at selectedURL: URL, runtimeEngine: RuntimeEngine? = nil) {
         let selected = selectedURL.standardizedFileURL
         guard installationTask == nil else { return }
         guard selected.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
@@ -2071,7 +2148,7 @@ final class BorealStore {
         let name = selected.deletingPathExtension().lastPathComponent
         let gogIdentity = GOGInstalledGameDetector.detect(executable: selected)
         let architecture = WindowsExecutableArchitecture.inspect(selected)
-        let engine = UnityIL2CPPRuntimeCompatibility.recommendedRuntimeEngine(for: selected)
+        let engine = runtimeEngine ?? UnityIL2CPPRuntimeCompatibility.recommendedRuntimeEngine(for: selected)
         let environmentArchitecture = architecture == .x86 ? "win32" : "win64"
         SoundService.shared.play(.installationStarted)
         installation = InstallationProgress(state: .installing, stage: .preparingRuntime)
@@ -2079,6 +2156,11 @@ final class BorealStore {
             guard let self else { return nil }
             var createdEnvironment: ManagedBorealEnvironment?
             do {
+                let metadata = await importedGameMetadata(
+                    executable: selected,
+                    name: name,
+                    gogIdentity: gogIdentity
+                )
                 let runtime = try await services.runtimeManager.prepareReadyRuntime(preferredEngine: engine)
                 await updateInstallation(.creatingEnvironment)
                 let managed = try await services.environmentManager.create(
@@ -2104,8 +2186,8 @@ final class BorealStore {
                     logsPath: managed.logsURL.path
                 )
                 let app = WindowsApplication(
-                    name: name,
-                    publisher: "Windows application",
+                    name: metadata?.name ?? gogIdentity?.name ?? name,
+                    publisher: metadata?.developer ?? "Windows application",
                     executablePath: selected.path,
                     installerPath: "existing-installation",
                     environmentID: managed.id,
@@ -2115,13 +2197,19 @@ final class BorealStore {
                     storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
                     iconSymbol: symbol(for: name),
                     lastResult: "Existing installation added",
-                    storeProvider: gogIdentity.map { _ in .gog },
-                    storeExternalID: gogIdentity?.externalID,
-                    storeMetadataOnly: gogIdentity == nil ? nil : true,
+                    storeProvider: gogIdentity == nil ? metadata?.provider : .gog,
+                    storeExternalID: gogIdentity?.externalID ?? metadata?.externalID,
+                    storeMetadataOnly: metadata == nil && gogIdentity == nil ? nil : true,
                     communityCompatibility: communityProfile
                 )
                 environments.append(environment)
                 applications.append(app)
+                if var metadata {
+                    metadata.isInstalled = false
+                    metadata.installPath = nil
+                    metadata.installedPlatform = nil
+                    upsertImportedPresentationMetadata(metadata)
+                }
                 if let gogIdentity, let appIndex = applications.indices.last {
                     adoptGOGInstallationIdentity(gogIdentity, forApplicationAt: appIndex)
                 }
@@ -3583,7 +3671,7 @@ final class BorealStore {
                applications[index].compatibilityProfile != profile {
                 applications[index].compatibilityProfile = profile
                 applications[index].graphics = profile.graphicsBackend.displayName
-                applications[index].lastResult = "Using the stable Torchlight II graphics profile"
+                applications[index].lastResult = "Using the stable graphics profile for \(applications[index].name)"
                 save()
             }
             let configuredExecutable = URL(fileURLWithPath: applications[index].executablePath)
@@ -3824,6 +3912,7 @@ final class BorealStore {
             performanceLogURLs[id] = nil
             activeEnvironments[id] = nil
             activeRuntimes[id] = nil
+            automaticRendererFallbacksPending.remove(id)
             environmentSessionStates[app.environmentID] = nil
             environmentMonitorIDs[id] = nil
             save()
@@ -3841,7 +3930,14 @@ final class BorealStore {
             let result = try? await services.processRunner.waitForExit(session)
             guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
             let wasRequested = requestedStops.contains(appID)
-            if let result, result.exitCode != 0, !wasRequested {
+            let fallbackWasAlreadyPrepared = automaticRendererFallbackLogURLs.remove(session.stderrLog) != nil
+            let shouldRetryWithWineD3D = !wasRequested
+                && !fallbackWasAlreadyPrepared
+                && prepareAutomaticRendererFallback(appID: appID, logURL: session.stderrLog)
+            if shouldRetryWithWineD3D {
+                applications[index].lastResult = "Renderer initialization failed; switching to WineD3D/Vulkan"
+                applications[index].lastExitCode = result?.exitCode
+            } else if let result, result.exitCode != 0, !wasRequested, !fallbackWasAlreadyPrepared {
                 SoundService.shared.play(.error)
                 unexpectedLauncherFailures.insert(appID)
                 applications[index].lastResult = "Exited unexpectedly"
@@ -3961,7 +4057,17 @@ final class BorealStore {
         endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
         let wasRequested = requestedStops.remove(appID) != nil
-        if unexpectedLauncherFailures.remove(appID) != nil && !wasRequested {
+        let shouldRetryWithWineD3D = !wasRequested && (
+            automaticRendererFallbacksPending.remove(appID) != nil
+            || prepareAutomaticRendererFallback(appID: appID, logURL: nil)
+        )
+        if shouldRetryWithWineD3D {
+            automaticRendererFallbacksPending.remove(appID)
+            unexpectedLauncherFailures.remove(appID)
+            applications[index].status = .ready
+            applications[index].lastResult = "Retrying with WineD3D/Vulkan"
+            applications[index].lastErrorDetail = nil
+        } else if unexpectedLauncherFailures.remove(appID) != nil && !wasRequested {
             applications[index].status = .needsAttention
         } else {
             applications[index].status = .ready
@@ -3976,6 +4082,38 @@ final class BorealStore {
         ControllerManager.shared.deactivate(for: appID)
         environmentMonitorIDs[appID] = nil
         save()
+        if shouldRetryWithWineD3D {
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(350))
+                guard let self,
+                      self.applications.first(where: { $0.id == appID })?.status == .ready else { return }
+                await self.toggleRunningAsync(appID)
+            }
+        }
+    }
+
+    private func prepareAutomaticRendererFallback(appID: UUID, logURL: URL?) -> Bool {
+        guard let index = applications.firstIndex(where: { $0.id == appID }),
+              !applications[index].isInstallerOnly,
+              let resolvedLogURL = logURL ?? performanceLogURLs[appID] else { return false }
+        let application = applications[index]
+        guard GameGraphicsProfiles.profile(for: application)?.enforcedBackend == nil else { return false }
+        let currentProfile = application.resolvedCompatibilityProfile
+        guard RendererLaunchFailureDetector.shouldUseWineD3DVulkanFallback(
+            logURL: resolvedLogURL,
+            profile: currentProfile
+        ) else { return false }
+        automaticRendererFallbackLogURLs.insert(resolvedLogURL)
+        automaticRendererFallbacksPending.insert(appID)
+        var fallbackProfile = currentProfile
+        fallbackProfile.graphicsBackend = .wineD3D
+        fallbackProfile.graphicsFallback = .wineD3DVulkan
+        applications[index].compatibilityProfile = fallbackProfile
+        applications[index].graphics = fallbackProfile.graphicsBackend.displayName
+        applications[index].lastResult = "Renderer initialization failed; switching to WineD3D/Vulkan"
+        applications[index].lastErrorDetail = "Boreal detected a Direct3D device initialization failure in the renderer log and selected the built-in Wine fallback for the next launch."
+        save()
+        return true
     }
 
     func beginPlaySession(appID: UUID, at date: Date = .now) {

@@ -119,6 +119,24 @@ nonisolated enum GameGraphicsProfiles {
             ],
             preferredBackend: .d9vk,
             overlayCompatibleFullscreen: true
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1787707874",
+            availableAPIs: [.directX9],
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            // Bound by Flame's SilkEngine reaches D3D9, but the current
+            // DXVK/D9VK path fails device creation on Apple Silicon. WineD3D
+            // through its Vulkan renderer initializes the same installation.
+            preferredBackend: .wineD3D,
+            enforcedBackend: .wineD3D,
+            overlayCompatibleFullscreen: true,
+            launchEnvironment: [
+                "WINED3D_RENDERER": "vulkan"
+            ]
         )
     ]
 
@@ -132,8 +150,7 @@ nonisolated enum GameGraphicsProfiles {
         _ currentProfile: WineCompatibilityProfile,
         for application: WindowsApplication
     ) -> WineCompatibilityProfile {
-        guard application.usesStoreMetadataOnly,
-              let builtIn = profile(for: application),
+        guard let builtIn = profile(for: application),
               let enforcedBackend = builtIn.enforcedBackend else { return currentProfile }
         var effective = currentProfile
         effective.graphicsAPI = builtIn.defaultAPI
@@ -185,6 +202,53 @@ nonisolated enum GameGraphicsProfiles {
         var configured = plan
         configured.environment.merge(launchEnvironment) { _, profileValue in profileValue }
         return configured
+    }
+}
+
+/// Recognizes renderer initialization failures from the process log. The
+/// signature deliberately requires both a Vulkan/translation hint and a
+/// device/resource creation failure, so an ordinary game error does not
+/// silently change the selected renderer.
+nonisolated enum RendererLaunchFailureDetector {
+    static func shouldUseWineD3DVulkanFallback(
+        logURL: URL,
+        profile: WineCompatibilityProfile,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard fileManager.isReadableFile(atPath: logURL.path),
+              let data = try? Data(contentsOf: logURL),
+              let stderr = String(data: data, encoding: .utf8) else { return false }
+        return shouldUseWineD3DVulkanFallback(stderr: stderr, profile: profile)
+    }
+
+    static func shouldUseWineD3DVulkanFallback(
+        stderr: String,
+        profile: WineCompatibilityProfile
+    ) -> Bool {
+        guard profile.graphicsFallback == .none,
+              [.automatic, .dxvk, .d9vk].contains(profile.graphicsBackend) else { return false }
+        let normalized = stderr.lowercased()
+        let rendererHint = ["dxvk", "d9vk", "moltenvk", "vulkan", "direct3d", "d3d9", "d3d10", "d3d11", "d3d12"]
+            .contains { normalized.contains($0) }
+        let initializationFailure = [
+            "failed to create device",
+            "failed to create buffer",
+            "failed to create the direct3d rendering device",
+            "vk_error_feature_not_present",
+            "dxvkadapter",
+            "dxvkbuffer"
+        ].contains { normalized.contains($0) }
+        return rendererHint && initializationFailure
+    }
+
+    static func builtinDLLOverrides(for api: GraphicsAPI) -> [String] {
+        switch api {
+        case .directX9: ["d3d9"]
+        case .directX10: ["d3d10", "d3d10_1", "d3d10core", "dxgi"]
+        case .directX11: ["d3d11", "dxgi"]
+        case .directX12: ["d3d12", "d3d12core", "dxgi"]
+        case .automatic: ["d3d8", "d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi"]
+        }
     }
 }
 
