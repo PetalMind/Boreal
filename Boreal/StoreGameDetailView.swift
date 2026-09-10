@@ -868,11 +868,13 @@ struct StoreGameDetailView: View {
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 }
             } else if store.isInstalled(currentGame) {
-                if store.installedPlatform(for: currentGame) == .nativeMacOS {
+                if let app = linkedApplication {
+                    runtimeLaunchControl(for: app, playTitle: .Library.play)
+                } else if store.usesManagedRuntime(for: currentGame), storeOperation == nil {
+                    runtimePreparationMenu
+                } else if store.installedPlatform(for: currentGame) == .nativeMacOS {
                     Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
-                } else if let app = linkedApplication {
-                    runtimeLaunchControl(for: app, playTitle: .Library.play)
                 } else if storeOperation == nil {
                     runtimePreparationMenu
                 }
@@ -1908,6 +1910,9 @@ struct StoreGameDetailView: View {
         if linkedApplication?.status == .running { return "The game is running now." }
         if storeOperation != nil { return "An installation task is currently in progress." }
         if linkedApplication != nil { return "Ready to launch with its configured Boreal runtime." }
+        if store.isInstalled(currentGame), store.usesManagedRuntime(for: currentGame) {
+            return "Installed locally and ready to prepare its Boreal environment."
+        }
         if store.isInstalled(currentGame) { return "Installed locally and ready to open." }
         return "Owned on \(currentGame.provider.rawValue). Install it when you are ready to play."
     }
@@ -1948,11 +1953,13 @@ struct StoreGameDetailView: View {
     }
 
     private var preferredPlatformName: String {
-        currentGame.supportsNativeMacOS == true ? "macOS" : "Windows"
+        store.preferredStoreInstallationPlatform(for: currentGame) == .nativeMacOS ? "macOS" : "Windows"
     }
 
     private var installButtonTitle: LocalizedStringResource {
-        currentGame.supportsNativeMacOS == true ? .Library.installNativeMacVersion : .Library.installWindowsVersion
+        store.preferredStoreInstallationPlatform(for: currentGame) == .nativeMacOS
+            ? .Library.installNativeMacVersion
+            : .Library.installWindowsVersion
     }
 
     private var compatibilitySection: some View {
@@ -2095,7 +2102,7 @@ struct StoreGameDetailView: View {
     private func locateInstalledGame() {
         let panel = NSOpenPanel()
         panel.title = "Locate \(game.name)"
-        panel.message = currentGame.supportsNativeMacOS == true
+        panel.message = store.preferredStoreInstallationPlatform(for: currentGame) == .nativeMacOS
             ? "Choose the installed macOS .app or the main Windows .exe file."
             : "Choose the installed game’s main Windows .exe file."
         panel.prompt = "Add to Boreal"
@@ -2103,7 +2110,7 @@ struct StoreGameDetailView: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         var types = [UTType(filenameExtension: "exe") ?? .data]
-        if currentGame.supportsNativeMacOS == true { types.append(.applicationBundle) }
+        if store.preferredStoreInstallationPlatform(for: currentGame) == .nativeMacOS { types.append(.applicationBundle) }
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK, let url = panel.url else { return }
         store.registerExistingGame(game, at: url)
@@ -2463,7 +2470,7 @@ private struct StoreGameInstallationSheet: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         var types = [UTType(filenameExtension: "exe") ?? .data]
-        if game.supportsNativeMacOS == true { types.append(.applicationBundle) }
+        if installationPlatform == .nativeMacOS { types.append(.applicationBundle) }
         panel.allowedContentTypes = types
         guard panel.runModal() == .OK, let url = panel.url else { return }
         store.registerExistingGame(game, at: url)
@@ -2471,17 +2478,20 @@ private struct StoreGameInstallationSheet: View {
     }
 
     private var gameSummary: String { game.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
-    private var platformName: String { game.supportsNativeMacOS == true ? "macOS" : "Windows" }
+    private var installationPlatform: StoreGameInstallationPlatform {
+        store.preferredStoreInstallationPlatform(for: game)
+    }
+    private var platformName: String { installationPlatform == .nativeMacOS ? "macOS" : "Windows" }
     private var targetEnvironmentName: String {
-        if game.supportsNativeMacOS == true { return "Native macOS application" }
+        if installationPlatform == .nativeMacOS { return "Native macOS application" }
         if game.provider == .steam { return "Boreal · Steam for Windows" }
         return "Boreal · automatic Wine/GPTK environment"
     }
     private var primaryActionTitle: String {
-        game.supportsNativeMacOS == true ? "Install Native Version" : (game.provider == .steam ? "Open Steam Installer" : "Install")
+        installationPlatform == .nativeMacOS ? "Install Native Version" : (game.provider == .steam ? "Open Steam Installer" : "Install")
     }
     private var installationExplanation: String {
-        if game.supportsNativeMacOS == true {
+        if installationPlatform == .nativeMacOS {
             return "Boreal will download the native Mac release and add it to your Library."
         }
         if game.provider == .steam {
@@ -2490,7 +2500,7 @@ private struct StoreGameInstallationSheet: View {
         return "Game files will be downloaded from \(game.provider.rawValue). Boreal will inspect the executable, prepare a compatible isolated Windows environment, and add the game to your Library."
     }
     private var existingInstallationExplanation: String {
-        game.supportsNativeMacOS == true
+        installationPlatform == .nativeMacOS
             ? "Choose the installed macOS .app or the main Windows .exe file."
             : "Choose the installed game’s main Windows .exe file."
     }
@@ -2557,7 +2567,7 @@ private struct StoreGameInstallationSheet: View {
             Label("Installation options", systemImage: "gearshape")
                 .font(.headline)
             VStack(spacing: 0) {
-                optionRow(title: "Target environment", symbol: game.supportsNativeMacOS == true ? "apple.logo" : "wineglass") {
+                optionRow(title: "Target environment", symbol: installationPlatform == .nativeMacOS ? "apple.logo" : "wineglass") {
                     Text(targetEnvironmentName).lineLimit(1)
                 }
                 Divider().opacity(0.45)
@@ -2657,7 +2667,7 @@ private struct StoreGameInstallationSheet: View {
     }
 
     @ViewBuilder private var architectureSummary: some View {
-        if game.supportsNativeMacOS != true {
+        if installationPlatform != .nativeMacOS {
             if let architecture = game.sizeEstimate?.executableArchitecture {
                 let requiresWine = architecture == .x86
                 Label(

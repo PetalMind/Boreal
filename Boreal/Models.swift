@@ -370,6 +370,9 @@ nonisolated struct AuxiliaryExecutable: Codable, Hashable, Sendable, Identifiabl
 nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var windowsVersion: WineWindowsVersion = .windows11
     var architecture: WinePrefixArchitecture = .win64
+    /// Nil keeps profiles created before the prefix picker on automatic
+    /// resolution. Selecting a value in the UI persists the exact prefix mode.
+    var prefixMode: WinePrefixMode? = nil
     var graphicsBackend: WineGraphicsBackend = .automatic
     var graphicsFallback: WineGraphicsFallback = .none
     var legacyWrapper: LegacyGraphicsWrapper = .none
@@ -388,7 +391,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var launchArguments = ""
 
     private enum CodingKeys: String, CodingKey {
-        case windowsVersion, architecture, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
+        case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
         case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
         case disableSteamInputEquivalent, forceXInput, launchArguments
     }
@@ -432,6 +435,7 @@ extension WineCompatibilityProfile {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         windowsVersion = try values.decodeIfPresent(WineWindowsVersion.self, forKey: .windowsVersion) ?? .windows11
         architecture = try values.decodeIfPresent(WinePrefixArchitecture.self, forKey: .architecture) ?? .win64
+        prefixMode = try values.decodeIfPresent(WinePrefixMode.self, forKey: .prefixMode)
         graphicsBackend = try values.decodeIfPresent(WineGraphicsBackend.self, forKey: .graphicsBackend) ?? .automatic
         graphicsFallback = try values.decodeIfPresent(WineGraphicsFallback.self, forKey: .graphicsFallback) ?? .none
         legacyWrapper = try values.decodeIfPresent(LegacyGraphicsWrapper.self, forKey: .legacyWrapper) ?? .none

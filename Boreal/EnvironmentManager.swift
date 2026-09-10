@@ -44,6 +44,7 @@ actor EnvironmentManager: EnvironmentManaging {
 
     func initialize(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
+        try validatePrefixMode(environment, runtime: runtime)
         var initializing = environment
         initializing.state = .initializing
         try write(initializing)
@@ -114,6 +115,7 @@ actor EnvironmentManager: EnvironmentManaging {
 
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
+        try validatePrefixMode(environment, runtime: runtime)
         try await applyConfiguration(environment, runtime: runtime)
         try write(environment)
     }
@@ -254,6 +256,7 @@ actor EnvironmentManager: EnvironmentManaging {
 
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
+        try validatePrefixMode(environment, runtime: runtime)
         // InstalledRuntime persists the resolved executable URLs, while the
         // package support directory has a stable location in every runtime.
         let packagedInstaller = runtime.rootURL.appending(path: "Support/winetricks")
@@ -361,10 +364,7 @@ actor EnvironmentManager: EnvironmentManaging {
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
-        let prefixMode = WinePrefixMode.resolve(
-            requestedArchitecture: environment.configuration.architecture,
-            runtimeSupportsWoW64: runtime.features?.wow64 == true
-        )
+        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
             values["WINEARCH"] = architecture
         } else {
@@ -397,6 +397,15 @@ actor EnvironmentManager: EnvironmentManaging {
         values["WINE"] = runtime.wineExecutable.path
         values["WINE64"] = runtime.wineExecutable.path
         return values
+    }
+
+    private func validatePrefixMode(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) throws {
+        let mode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        let supportsWoW64 = runtime.features?.wow64 == true
+        let supported = mode == .wow64 ? supportsWoW64 : !supportsWoW64
+        guard supported else {
+            throw EnvironmentManagerError.unsupportedPrefixMode(mode: mode, runtime: runtime.displayName)
+        }
     }
 
     private func waitForPrefixInitialization(_ prefix: URL) async throws -> Bool {

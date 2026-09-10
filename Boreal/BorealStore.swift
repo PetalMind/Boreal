@@ -123,11 +123,16 @@ final class BorealStore {
     private var discoveryEnrichmentTask: Task<Void, Never>?
     private var discoverySourceCatalog: AppleGamingWikiCatalog?
     private var discoveryMetadataLoads: Set<String> = []
+    private var discoveryMetadataAccessOrder: [String] = []
     private var unavailableDiscoveryMetadata: Set<String> = []
     private var discoveryPriceLoads: Set<String> = []
+    private var discoveryPriceAccessOrder: [String] = []
     private var discoveryOffersLoads: Set<String> = []
     private var loadedDiscoveryOffers: Set<String> = []
     private var discoveryGOGRevivedLoads: Set<String> = []
+
+    private static let discoveryMetadataMemoryLimit = 128
+    private static let discoveryPriceMemoryLimit = 128
 
     nonisolated static let automaticLibraryRefreshInterval: TimeInterval = 8 * 60 * 60
     nonisolated static let gameInstallationRootDefaultsKey = "gameInstallationRootPath"
@@ -274,9 +279,6 @@ final class BorealStore {
             do {
                 let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: false)
                 guard !Task.isCancelled else { return }
-                let cachedMetadata = await services.discoveryCatalog.cachedMetadata(for: catalog.games)
-                guard !Task.isCancelled else { return }
-                discoveryMetadata.merge(cachedMetadata) { current, _ in current }
                 applyDiscoveryCatalog(catalog)
                 discoveryState = .loaded
             } catch {
@@ -298,9 +300,6 @@ final class BorealStore {
             do {
                 let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: true)
                 guard !Task.isCancelled else { return }
-                let cachedMetadata = await services.discoveryCatalog.cachedMetadata(for: catalog.games)
-                guard !Task.isCancelled else { return }
-                discoveryMetadata.merge(cachedMetadata) { current, _ in current }
                 applyDiscoveryCatalog(catalog)
                 discoveryState = .loaded
             } catch {
@@ -340,18 +339,31 @@ final class BorealStore {
     }
 
     func ensureDiscoveryMetadata(for game: AppleGamingWikiGame) async {
-        guard discoveryMetadata[game.id] == nil,
-              discoveryMetadataLoads.insert(game.id).inserted else { return }
+        guard discoveryMetadata[game.id] == nil else { return }
+        guard discoveryMetadataLoads.insert(game.id).inserted else {
+            await waitForDiscoveryMetadataLoadToFinish(for: game.id)
+            guard !Task.isCancelled else { return }
+            await ensureDiscoveryMetadata(for: game)
+            return
+        }
         await discoveryMetadataGate.acquire()
-        if !Task.isCancelled {
-            let metadata = await services.discoveryCatalog.metadata(for: game, forceRefresh: false)
-            if let metadata {
-                unavailableDiscoveryMetadata.remove(game.id)
-                discoveryMetadata[game.id] = metadata
-                scheduleDiscoveryCatalogEnrichment()
-            } else {
-                unavailableDiscoveryMetadata.insert(game.id)
-            }
+        guard !Task.isCancelled else {
+            discoveryMetadataLoads.remove(game.id)
+            await discoveryMetadataGate.release()
+            return
+        }
+        let metadata = await services.discoveryCatalog.metadata(for: game, forceRefresh: false)
+        guard !Task.isCancelled else {
+            discoveryMetadataLoads.remove(game.id)
+            await discoveryMetadataGate.release()
+            return
+        }
+        if let metadata {
+            unavailableDiscoveryMetadata.remove(game.id)
+            cacheDiscoveryMetadata(metadata, for: game.id)
+            scheduleDiscoveryCatalogEnrichment()
+        } else {
+            unavailableDiscoveryMetadata.insert(game.id)
         }
         discoveryMetadataLoads.remove(game.id)
         await discoveryMetadataGate.release()
@@ -493,6 +505,10 @@ final class BorealStore {
         discoveryMetadataLoads.contains(game.id)
     }
 
+    func discoveryMetadata(for game: AppleGamingWikiGame) -> DiscoveryGameMetadata? {
+        discoveryMetadata[game.id]
+    }
+
     func isDiscoveryMetadataUnavailable(for game: AppleGamingWikiGame) -> Bool {
         unavailableDiscoveryMetadata.contains(game.id)
     }
@@ -507,45 +523,65 @@ final class BorealStore {
 
     func invalidateDiscoveryPrices() {
         discoveryPriceSummaries.removeAll()
+        discoveryPriceAccessOrder.removeAll()
         discoveryPriceLoads.removeAll()
         discoveryOffersLoads.removeAll()
         loadedDiscoveryOffers.removeAll()
     }
 
     func ensureDiscoveryPrice(for game: AppleGamingWikiGame) async {
-        guard discoveryPriceSummaries[game.id] == nil,
-              discoveryPriceLoads.insert(game.id).inserted else { return }
+        guard discoveryPriceSummaries[game.id] == nil else { return }
+        guard discoveryPriceLoads.insert(game.id).inserted else {
+            await waitForDiscoveryPriceLoadToFinish(for: game.id)
+            guard !Task.isCancelled else { return }
+            await ensureDiscoveryPrice(for: game)
+            return
+        }
         await discoveryPriceGate.acquire()
+        guard !Task.isCancelled else {
+            discoveryPriceLoads.remove(game.id)
+            await discoveryPriceGate.release()
+            return
+        }
         var resolvedGame = game
         if let metadata = discoveryMetadata[game.id] {
             resolvedGame.steamAppID = metadata.steamAppID ?? game.steamAppID
         }
         let summary = await services.discoveryPricing.loadOverview(for: resolvedGame)
         discoveryPriceLoads.remove(game.id)
-        if let summary { discoveryPriceSummaries[game.id] = summary }
+        if !Task.isCancelled, let summary {
+            cacheDiscoveryPriceSummary(summary, for: game.id)
+        }
         await discoveryPriceGate.release()
     }
 
     func ensureDiscoveryOffers(for game: AppleGamingWikiGame) async {
         await ensureDiscoveryPrice(for: game)
+        guard !Task.isCancelled else { return }
         guard var summary = discoveryPriceSummaries[game.id],
               !loadedDiscoveryOffers.contains(game.id),
               discoveryOffersLoads.insert(game.id).inserted else { return }
+        guard !Task.isCancelled else {
+            discoveryOffersLoads.remove(game.id)
+            return
+        }
         let offers = await services.discoveryPricing.loadOffers(for: summary.itadGameID)
         discoveryOffersLoads.remove(game.id)
-        guard let offers else { return }
+        guard !Task.isCancelled, let offers else { return }
         summary.offers = offers
-        discoveryPriceSummaries[game.id] = summary
+        cacheDiscoveryPriceSummary(summary, for: game.id)
         loadedDiscoveryOffers.insert(game.id)
     }
 
     func loadDiscoveryPriceHistory(for game: AppleGamingWikiGame, since: Date?) async -> [ITADPriceHistoryPoint]? {
         await ensureDiscoveryPrice(for: game)
-        guard let itadGameID = discoveryPriceSummaries[game.id]?.itadGameID else { return nil }
+        guard !Task.isCancelled,
+              let itadGameID = discoveryPriceSummaries[game.id]?.itadGameID else { return nil }
         return await services.discoveryPricing.loadHistory(for: itadGameID, since: since)
     }
 
     func discoveryStoreDetails(for game: AppleGamingWikiGame) async -> StoreLibraryGame? {
+        guard !Task.isCancelled else { return nil }
         let details: StoreLibraryGame?
         if let appID = game.steamAppID ?? discoveryMetadata[game.id]?.steamAppID {
             details = await services.steamLibrary.loadDetails(
@@ -555,8 +591,51 @@ final class BorealStore {
             details = await services.steamLibrary.searchStoreGame(named: game.title)
         }
         guard var details else { return nil }
+        guard !Task.isCancelled else { return nil }
         details.currentPlayerCount = await services.steamLibrary.loadCurrentPlayerCount(appID: details.externalID)
+        guard !Task.isCancelled else { return nil }
         return details
+    }
+
+    private func cacheDiscoveryMetadata(_ metadata: DiscoveryGameMetadata, for id: String) {
+        discoveryMetadata[id] = metadata
+        discoveryMetadataAccessOrder.removeAll { $0 == id }
+        discoveryMetadataAccessOrder.append(id)
+        while discoveryMetadataAccessOrder.count > Self.discoveryMetadataMemoryLimit {
+            let evictedID = discoveryMetadataAccessOrder.removeFirst()
+            discoveryMetadata.removeValue(forKey: evictedID)
+        }
+    }
+
+    private func waitForDiscoveryMetadataLoadToFinish(for id: String) async {
+        while discoveryMetadataLoads.contains(id) {
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func waitForDiscoveryPriceLoadToFinish(for id: String) async {
+        while discoveryPriceLoads.contains(id) {
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func cacheDiscoveryPriceSummary(_ summary: DiscoveryPriceSummary, for id: String) {
+        discoveryPriceSummaries[id] = summary
+        discoveryPriceAccessOrder.removeAll { $0 == id }
+        discoveryPriceAccessOrder.append(id)
+        while discoveryPriceAccessOrder.count > Self.discoveryPriceMemoryLimit {
+            let evictedID = discoveryPriceAccessOrder.removeFirst()
+            discoveryPriceSummaries.removeValue(forKey: evictedID)
+            loadedDiscoveryOffers.remove(evictedID)
+        }
     }
 
     func addDiscoveryGameToLibrary(_ game: AppleGamingWikiGame, details: StoreLibraryGame) {
@@ -645,18 +724,34 @@ final class BorealStore {
     /// the product card. Steam is used only as a field-level fallback; the
     /// game's provider and identity remain GOG/Epic.
     func refreshSteamPresentationFallbackIfNeeded(for game: StoreLibraryGame) {
-        guard [.epic, .gog].contains(game.provider),
-              Self.needsSteamPresentationFallback(game),
-              steamPresentationFallbacks.insert(storePresentationKey(for: game)).inserted else { return }
+        let reference = game.storeReference
+        guard [.epic, .gog].contains(reference.provider),
+              let currentGame = storeGames.first(where: { $0.storeReference == reference }),
+              Self.needsSteamPresentationFallback(currentGame),
+              steamPresentationFallbacks.insert(storePresentationKey(for: currentGame)).inserted else { return }
+        let linkedTitle = linkedApplication(for: currentGame)?.name
+        let searchTitles = [currentGame.name, linkedTitle]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { result, title in
+                if !result.contains(title) { result.append(title) }
+            }
 
         Task { [weak self] in
-            guard let self,
-                  let fallback = await services.steamLibrary.searchStoreGame(named: game.name),
-                  let index = storeGames.firstIndex(where: { $0.storeReference == game.storeReference }) else { return }
-            var value = storeGames[index]
+            guard let self else { return }
+            var fallback: StoreLibraryGame?
+            for title in searchTitles {
+                if let match = await self.services.steamLibrary.searchStoreGame(named: title) {
+                    fallback = match
+                    break
+                }
+            }
+            guard let fallback,
+                  let index = self.storeGames.firstIndex(where: { $0.storeReference == reference }) else { return }
+            var value = self.storeGames[index]
             guard Self.mergeSteamPresentationFallback(from: fallback, into: &value) else { return }
-            storeGames[index] = value
-            save()
+            self.storeGames[index] = value
+            self.save()
         }
     }
 
@@ -667,9 +762,9 @@ final class BorealStore {
     private static func needsSteamPresentationFallback(_ game: StoreLibraryGame) -> Bool {
         guard [.epic, .gog].contains(game.provider) else { return false }
         return isMissingPresentationText(game.summary)
-            || isMissingPresentationText(game.portraitImageURL)
-            || isMissingPresentationText(game.headerImageURL)
-            || isMissingPresentationText(game.backgroundImageURL)
+            || isMissingPresentationURL(game.portraitImageURL)
+            || isMissingPresentationURL(game.headerImageURL)
+            || isMissingPresentationURL(game.backgroundImageURL)
             || !hasUsableMedia(game.screenshotURLs)
             || !hasUsableVideos(game.videos)
     }
@@ -682,9 +777,9 @@ final class BorealStore {
         if isMissingPresentationText(game.developer) { game.developer = fallback.developer }
         if isMissingPresentationText(game.summary) { game.summary = fallback.summary }
         if isMissingPresentationText(game.artworkPath) { game.artworkPath = fallback.artworkPath }
-        if isMissingPresentationText(game.portraitImageURL) { game.portraitImageURL = fallback.portraitImageURL }
-        if isMissingPresentationText(game.headerImageURL) { game.headerImageURL = fallback.headerImageURL }
-        if isMissingPresentationText(game.backgroundImageURL) { game.backgroundImageURL = fallback.backgroundImageURL }
+        if isMissingPresentationURL(game.portraitImageURL) { game.portraitImageURL = fallback.portraitImageURL }
+        if isMissingPresentationURL(game.headerImageURL) { game.headerImageURL = fallback.headerImageURL }
+        if isMissingPresentationURL(game.backgroundImageURL) { game.backgroundImageURL = fallback.backgroundImageURL }
         if !hasUsableMedia(game.screenshotURLs) { game.screenshotURLs = fallback.screenshotURLs }
         if !hasUsableVideos(game.videos) { game.videos = fallback.videos }
         return game != original
@@ -694,14 +789,20 @@ final class BorealStore {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
     }
 
+    private static func isMissingPresentationURL(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              let url = URL(string: value) else { return true }
+        return url.scheme == nil
+    }
+
     private static func hasUsableMedia(_ values: [String]?) -> Bool {
-        values?.contains { !isMissingPresentationText($0) && URL(string: $0) != nil } == true
+        values?.contains { !isMissingPresentationURL($0) } == true
     }
 
     private static func hasUsableVideos(_ values: [StoreVideo]?) -> Bool {
         values?.contains {
-            (!isMissingPresentationText($0.videoURL) && URL(string: $0.videoURL) != nil)
-                || ($0.thumbnailURL.flatMap { URL(string: $0) } != nil)
+            !isMissingPresentationURL($0.videoURL) || !isMissingPresentationURL($0.thumbnailURL)
         } == true
     }
 
@@ -716,7 +817,7 @@ final class BorealStore {
 
     func loadStoreGameSizeIfNeeded(for gameID: UUID) async {
         guard let game = storeGame(id: gameID) else { return }
-        let platform: StoreGameInstallationPlatform = game.supportsNativeMacOS == true ? .nativeMacOS : .windows
+        let platform = preferredStoreInstallationPlatform(for: game)
         if let cached = game.sizeEstimate,
            cached.platform == platform,
            Date.now.timeIntervalSince(cached.fetchedAt) < 86_400 {
@@ -940,6 +1041,13 @@ final class BorealStore {
         if environment(id: application.environmentID)?.architecture == "32-bit" {
             profile.architecture = .win32
         }
+        if let record = environment(id: application.environmentID),
+           let managed = managedEnvironment(from: record),
+           let runtime = runtimeStatuses.first(where: {
+               $0.id == managed.runtimeID && $0.source == .installed && $0.state == .installed
+           }) {
+            profile.prefixMode = managed.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        }
         return profile
     }
 
@@ -969,6 +1077,21 @@ final class BorealStore {
         case .automatic, .wineD3D:
             return nil
         }
+    }
+
+    func prefixModeIssue(_ mode: WinePrefixMode, for application: WindowsApplication) -> String? {
+        guard let environment = environment(id: application.environmentID),
+              let runtime = runtimeStatuses.first(where: {
+                  $0.id == environment.runtimeID && $0.source == .installed && $0.state == .installed
+              }) else { return nil }
+        let supportsWoW64 = runtime.features?.wow64 == true
+        if mode == .wow64, !supportsWoW64 {
+            return "The selected runtime does not provide modern WoW64 prefixes."
+        }
+        if mode != .wow64, supportsWoW64 {
+            return "Legacy WINEARCH prefixes are unavailable in this modern WoW64 runtime."
+        }
+        return nil
     }
 
     func compatibilityRuntimeFeatures(
@@ -1030,6 +1153,7 @@ final class BorealStore {
         case .automatic, .wineD3D: currentRuntimeSupportsBackend = true
         }
         let requiresRecreation = previousProfile.architecture != profile.architecture
+            || previousProfile.prefixMode != profile.prefixMode
             || requestedEngine != currentEngine
             || !currentRuntimeSupportsBackend
         let usesSharedSteamEnvironment = applications[index].usesSharedSteamEnvironment
@@ -1052,6 +1176,7 @@ final class BorealStore {
             recreateEnvironment(applicationID, with: requestedEngine, rollbackProfile: previousProfile)
         } else if usesSharedSteamEnvironment {
             applications[index].compatibilityProfile?.architecture = previousProfile.architecture
+            applications[index].compatibilityProfile?.prefixMode = previousProfile.prefixMode
             applications[index].compatibilityProfile?.graphicsBackend = previousProfile.graphicsBackend
             applications[index].lastResult = "Steam keeps architecture and renderer in its shared environment"
             save()
@@ -1126,14 +1251,10 @@ final class BorealStore {
                 let runtime = try await prepareRuntime(
                     supporting: profile.graphicsBackend,
                     preferredEngine: engine,
-                    executableArchitecture: executableArchitecture
+                    executableArchitecture: executableArchitecture,
+                    prefixMode: profile.prefixMode
                 )
-                if executableArchitecture == .x86_64, profile.architecture == .win32 {
-                    throw RuntimeManagerError.incompatible64BitExecutable
-                }
-                if executableArchitecture == .x86, profile.architecture == .win64, runtime.features?.wow64 != true {
-                    throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
-                }
+                try validatePrefixSelection(profile, executableArchitecture: executableArchitecture, runtime: runtime)
                 var managed = try await services.environmentManager.create(
                     configuration: EnvironmentConfiguration(name: applicationName, profile: profile),
                     runtime: runtime
@@ -2195,12 +2316,25 @@ final class BorealStore {
     }
 
     func installStoreGame(_ game: StoreLibraryGame, destinationRoot: URL? = nil) {
-        let platform: StoreGameInstallationPlatform = game.supportsNativeMacOS == true ? .nativeMacOS : .windows
+        let platform = preferredStoreInstallationPlatform(for: game)
         startStoreGameInstallation(
             game,
             destinationRoot: destinationRoot ?? defaultGameInstallationRoot(for: game.provider),
             platform: platform
         )
+    }
+
+    /// Epic's catalog can advertise a macOS build, but Boreal's Epic launch
+    /// contract is the managed Windows path returned by Legendary. Keep the
+    /// catalog badge independent from the platform used for installation and
+    /// launch preparation.
+    func preferredStoreInstallationPlatform(for game: StoreLibraryGame) -> StoreGameInstallationPlatform {
+        if game.provider == .epic { return .windows }
+        return game.supportsNativeMacOS == true ? .nativeMacOS : .windows
+    }
+
+    func usesManagedRuntime(for game: StoreLibraryGame) -> Bool {
+        preferredStoreInstallationPlatform(for: game) == .windows && game.provider != .steam
     }
 
     func addExistingWindowsApp(at selectedURL: URL, runtimeEngine: RuntimeEngine? = nil) {
@@ -2323,12 +2457,14 @@ final class BorealStore {
         guard storeGameOperations[key] == nil else { return }
 
         if selected.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
-            guard game.supportsNativeMacOS == true,
+            guard preferredStoreInstallationPlatform(for: game) == .nativeMacOS,
                   FileManager.default.fileExists(atPath: selected.path) else {
                 presentedIssue = BorealIssue(
                     title: "This installation couldn’t be added",
                     stage: "Validating the selected native macOS game.",
-                    recovery: "Choose the installed game’s .app bundle.",
+                    recovery: game.provider == .epic
+                        ? "Epic games are prepared through Boreal’s managed Windows environment. Choose the game’s main Windows .exe file."
+                        : "Choose the installed game’s .app bundle.",
                     technicalDetails: selected.path
                 )
                 return
@@ -2956,23 +3092,13 @@ final class BorealStore {
                 updateEnvironmentPreparation("Validating \(engine.displayName)…", fraction: 0.1, key: key, token: token)
                 let compatibilityProfile = applications[appIndex].resolvedCompatibilityProfile
                 let currentArchitecture = WindowsExecutableArchitecture.inspect(currentExecutable)
-                let runtime = rollbackProfile == nil
-                    ? try await services.runtimeManager.prepareReadyRuntime(
-                        preferredEngine: engine,
-                        executableArchitecture: currentArchitecture
-                    )
-                    : try await prepareRuntime(
-                        supporting: compatibilityProfile.graphicsBackend,
-                        preferredEngine: engine,
-                        executableArchitecture: currentArchitecture
-                    )
-                if currentArchitecture == .x86_64, compatibilityProfile.architecture == .win32 {
-                    throw RuntimeManagerError.incompatible64BitExecutable
-                }
-                if currentArchitecture == .x86, compatibilityProfile.architecture == .win64,
-                   runtime.features?.wow64 != true {
-                    throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
-                }
+                let runtime = try await prepareRuntime(
+                    supporting: compatibilityProfile.graphicsBackend,
+                    preferredEngine: engine,
+                    executableArchitecture: currentArchitecture,
+                    prefixMode: compatibilityProfile.prefixMode
+                )
+                try validatePrefixSelection(compatibilityProfile, executableArchitecture: currentArchitecture, runtime: runtime)
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Creating a new isolated prefix…", fraction: 0.3, key: key, token: token)
                 var managed = try await services.environmentManager.create(
@@ -2995,13 +3121,7 @@ final class BorealStore {
                     throw CocoaError(.fileNoSuchFile)
                 }
                 let launchArchitecture = WindowsExecutableArchitecture.inspect(plan.executable)
-                if launchArchitecture == .x86_64, compatibilityProfile.architecture == .win32 {
-                    throw RuntimeManagerError.incompatible64BitExecutable
-                }
-                if launchArchitecture == .x86, compatibilityProfile.architecture == .win64,
-                   runtime.features?.wow64 != true {
-                    throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
-                }
+                try validatePrefixSelection(compatibilityProfile, executableArchitecture: launchArchitecture, runtime: runtime)
                 let validation = try await services.environmentManager.validate(managed)
                 guard validation.isReady else { throw EnvironmentManagerError.validationFailed(validation) }
                 guard storeOperationTokens[key] == token,
@@ -3096,12 +3216,18 @@ final class BorealStore {
     private func prepareRuntime(
         supporting backend: WineGraphicsBackend,
         preferredEngine: RuntimeEngine,
-        executableArchitecture: WindowsExecutableArchitecture? = nil
+        executableArchitecture: WindowsExecutableArchitecture? = nil,
+        prefixMode: WinePrefixMode? = nil
     ) async throws -> InstalledRuntime {
         let installed = try await services.runtimeManager.installedRuntimes()
         if let runtime = installed.first(where: {
             guard $0.resolvedEngine == preferredEngine else { return false }
-            if executableArchitecture == .x86, $0.features?.wow64 != true { return false }
+            if prefixMode == nil, executableArchitecture == .x86, $0.features?.wow64 != true { return false }
+            if let prefixMode {
+                let runtimeSupportsWoW64 = $0.features?.wow64 == true
+                let unsupported = prefixMode == .wow64 ? !runtimeSupportsWoW64 : runtimeSupportsWoW64
+                if unsupported { return false }
+            }
             switch backend {
             case .d3dMetal: return $0.features?.d3dmetal == true
             case .dxmt: return $0.features?.dxmt == true
@@ -3115,10 +3241,43 @@ final class BorealStore {
         guard backend == .automatic || backend == .wineD3D else {
             throw InstallerServiceError.noRuntimeAvailable
         }
+        if prefixMode != nil, prefixMode != .wow64 {
+            throw InstallerServiceError.noRuntimeAvailable
+        }
         return try await services.runtimeManager.prepareReadyRuntime(
             preferredEngine: preferredEngine,
             executableArchitecture: executableArchitecture
         )
+    }
+
+    private func validatePrefixSelection(
+        _ profile: WineCompatibilityProfile,
+        executableArchitecture: WindowsExecutableArchitecture,
+        runtime: InstalledRuntime
+    ) throws {
+        if executableArchitecture == .x86_64, profile.architecture == .win32 {
+            throw RuntimeManagerError.incompatible64BitExecutable
+        }
+        if executableArchitecture == .x86,
+           profile.architecture == .win64,
+           runtime.features?.wow64 != true {
+            throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
+        }
+        let mode = WinePrefixMode.resolve(
+            requestedMode: profile.prefixMode,
+            requestedArchitecture: profile.architecture.rawValue,
+            runtimeSupportsWoW64: runtime.features?.wow64 == true
+        )
+        if executableArchitecture == .x86_64, mode == .legacyWin32 {
+            throw RuntimeManagerError.incompatible64BitExecutable
+        }
+        let supportsWoW64 = runtime.features?.wow64 == true
+        if mode == .wow64, !supportsWoW64 {
+            throw EnvironmentManagerError.unsupportedPrefixMode(mode: mode, runtime: runtime.displayName)
+        }
+        if mode != .wow64, supportsWoW64 {
+            throw EnvironmentManagerError.unsupportedPrefixMode(mode: mode, runtime: runtime.displayName)
+        }
     }
 
     private func steamWindowsApplication(

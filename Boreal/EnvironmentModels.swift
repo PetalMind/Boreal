@@ -2,12 +2,38 @@ import Foundation
 
 nonisolated enum ManagedEnvironmentState: String, Codable, Sendable { case created, initializing, ready, invalid }
 
-nonisolated enum WinePrefixMode: String, Codable, Sendable, Equatable {
+nonisolated enum WinePrefixMode: String, Codable, CaseIterable, Sendable, Equatable, Hashable, Identifiable {
     case wow64
     case legacyWin32
     case legacyWin64
 
-    static func resolve(requestedArchitecture: String, runtimeSupportsWoW64: Bool) -> Self {
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .wow64: "WoW64"
+        case .legacyWin32: "Legacy Win32"
+        case .legacyWin64: "Legacy Win64"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .wow64: "Modern combined prefix for 32-bit and 64-bit Windows applications."
+        case .legacyWin32: "Classic 32-bit prefix using WINEARCH=win32."
+        case .legacyWin64: "Classic 64-bit prefix using WINEARCH=win64."
+        }
+    }
+
+    /// Resolves configurations written before prefix mode became a persisted
+    /// choice. New profiles pass an explicit value; old configurations retain
+    /// the safe automatic behavior based on the installed runtime.
+    static func resolve(
+        requestedMode: Self?,
+        requestedArchitecture: String,
+        runtimeSupportsWoW64: Bool
+    ) -> Self {
+        if let requestedMode { return requestedMode }
         if runtimeSupportsWoW64 { return .wow64 }
         return requestedArchitecture == WinePrefixArchitecture.win32.rawValue ? .legacyWin32 : .legacyWin64
     }
@@ -25,6 +51,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var name: String
     var windowsVersion: String = "win11"
     var architecture: String = "win64"
+    /// Nil means this descriptor predates the user-selectable prefix mode and
+    /// should resolve to WoW64 when the runtime supports it.
+    var prefixMode: WinePrefixMode?
     var graphicsBackend: WineGraphicsBackend = .automatic
     var graphicsAPI: GraphicsAPI = .automatic
     var graphicsFallback: WineGraphicsFallback = .none
@@ -39,10 +68,17 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         GraphicsBackendConfiguration(backend: graphicsBackend, api: graphicsAPI, fullscreenFSREnabled: fullscreenFSREnabled)
     }
 
-    init(name: String, windowsVersion: String = "win11", architecture: String = "win64", profile: WineCompatibilityProfile? = nil) {
+    init(
+        name: String,
+        windowsVersion: String = "win11",
+        architecture: String = "win64",
+        prefixMode: WinePrefixMode? = nil,
+        profile: WineCompatibilityProfile? = nil
+    ) {
         self.name = name
         self.windowsVersion = profile?.windowsVersion.rawValue ?? windowsVersion
         self.architecture = profile?.architecture.rawValue ?? architecture
+        self.prefixMode = profile?.prefixMode ?? prefixMode
         self.graphicsBackend = profile?.graphicsBackend ?? .automatic
         self.graphicsAPI = profile?.graphicsAPI ?? .automatic
         self.graphicsFallback = profile?.graphicsFallback ?? .none
@@ -55,7 +91,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, windowsVersion, architecture, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
+        case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
         case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput
     }
 
@@ -64,6 +100,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         name = try values.decode(String.self, forKey: .name)
         windowsVersion = try values.decodeIfPresent(String.self, forKey: .windowsVersion) ?? "win11"
         architecture = try values.decodeIfPresent(String.self, forKey: .architecture) ?? "win64"
+        prefixMode = try values.decodeIfPresent(WinePrefixMode.self, forKey: .prefixMode)
         graphicsBackend = try values.decodeIfPresent(WineGraphicsBackend.self, forKey: .graphicsBackend) ?? .automatic
         graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI) ?? .automatic
         graphicsFallback = try values.decodeIfPresent(WineGraphicsFallback.self, forKey: .graphicsFallback) ?? .none
@@ -73,6 +110,14 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
+    }
+
+    func resolvedPrefixMode(runtimeSupportsWoW64: Bool) -> WinePrefixMode {
+        WinePrefixMode.resolve(
+            requestedMode: prefixMode,
+            requestedArchitecture: architecture,
+            runtimeSupportsWoW64: runtimeSupportsWoW64
+        )
     }
 }
 
@@ -151,6 +196,7 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
     case initializationFailed(exitCode: Int32, stderrLog: URL)
     case configurationFailed(exitCode: Int32, stderrLog: URL)
     case validationFailed(EnvironmentValidation)
+    case unsupportedPrefixMode(mode: WinePrefixMode, runtime: String)
     case runtimeMismatch
     case dependencyInstallerMissing(URL)
     case dependencyInstallerDownloadFailed
@@ -161,6 +207,7 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
         case .initializationFailed(let code, _): "Wine couldn’t initialize the environment (exit code \(code))."
         case .configurationFailed(let code, _): "Wine couldn’t apply the compatibility profile (exit code \(code))."
         case .validationFailed: "The Windows environment is incomplete."
+        case .unsupportedPrefixMode(let mode, let runtime): "The \(mode.displayName) prefix is unavailable in the selected runtime (\(runtime))."
         case .runtimeMismatch: "The selected runtime does not match this environment."
         case .dependencyInstallerMissing: "This runtime package does not contain Boreal's dependency installer."
         case .dependencyInstallerDownloadFailed: "Boreal could not download its dependency installer from the official source."

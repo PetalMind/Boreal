@@ -137,10 +137,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // cannot redirect a launch into another prefix or runtime search path.
         processEnvironment["WINEPREFIX"] = environment.prefixURL.path
         processEnvironment["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")
-        let prefixMode = WinePrefixMode.resolve(
-            requestedArchitecture: environment.configuration.architecture,
-            runtimeSupportsWoW64: runtime.features?.wow64 == true
-        )
+        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
             processEnvironment["WINEARCH"] = architecture
         } else {
@@ -286,10 +283,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
-        let prefixMode = WinePrefixMode.resolve(
-            requestedArchitecture: environment.configuration.architecture,
-            runtimeSupportsWoW64: runtime.features?.wow64 == true
-        )
+        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
             values["WINEARCH"] = architecture
         } else {

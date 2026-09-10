@@ -25,17 +25,25 @@ Wiersz paska bocznego może pokazywać liczbę rekordów z aktualnego katalogu (
 
 `DiscoveryView` jest przewijalnym widokiem z następującymi sekcjami:
 
-1. nagłówek z profilem bieżącego Maca;
-2. podsumowanie katalogu;
-3. przełącznik zakresu przeglądania;
-4. filtry i sortowanie;
+1. zwarty nagłówek z opisem celu widoku, profilem bieżącego Maca i dyskretnym przyciskiem **Data sources**;
+2. spokojne podsumowanie katalogu z liczbą wszystkich wpisów, ścieżek Mac i wpisów z raportami;
+3. szeroki przełącznik zakresu przeglądania;
+4. osobny pasek filtrów oraz po prawej sortowanie i przełącznik siatka/lista;
 5. opcjonalny pasek informacji o wyszukiwaniu lub źródle danych;
 6. karuzela rekomendacji, gdy nie ma aktywnego wyszukiwania;
 7. katalog w układzie siatki albo listy;
 8. automatyczne doładowywanie kolejnych wyników Steam;
 9. informacja o dacie danych albo o użyciu ostatniego zapisanego katalogu.
 
-Przycisk **Data sources** otwiera krótki przewodnik. Wyjaśnia on pochodzenie raportów, metadanych, cen i ograniczenia znaczenia ratingów. Przycisk **Refresh Discovery** uruchamia wymuszone odświeżenie katalogu.
+Przycisk **Data sources** otwiera krótki przewodnik. Wyjaśnia on pochodzenie raportów, metadanych, cen i ograniczenia znaczenia ratingów. Przycisk **Refresh Discovery** uruchamia wymuszone odświeżenie katalogu. Podczas przewijania przypięta pozostaje wyłącznie sekcja zakresu i filtrów; hero oraz statystyki mogą zniknąć, dzięki czemu sterowanie katalogiem jest dostępne bez przypinania dużego panelu.
+
+### Zasady prezentacji
+
+Warstwa widoku zachowuje natywny, spokojny charakter macOS. Główny zakres jest pokazany jako jeden szeroki segmented control, a filtry są od niego oddzielone. Po wybraniu filtra pojawia się chip z nazwą i przyciskiem usunięcia; **Reset filters** jest widoczne tylko wtedy, gdy istnieje aktywny filtr. Sortowanie i wybór siatka/lista znajdują się po prawej stronie paska filtrów, a przy węższym oknie układ przechodzi do dwóch wierszy.
+
+Siatka używa adaptacyjnych kolumn o minimalnej szerokości 250 px i maksymalnej 290 px, z odstępem 16 px. Zawartość ma maksymalną szerokość 1600 px, co ogranicza liczbę kart na ultrapanoramicznych ekranach do czytelnych 5–6 kolumn zamiast bardzo drobnych kafelków.
+
+Teksty widoku korzystają z katalogów lokalizacji. W języku polskim zakresy mają nazwy **Polecane**, **Wszystkie**, **Mac** i **Windows**, przycisk zapisu to **Zapisz**, a zapisany stan **Zapisano**. Brak raportu jest opisywany jako **Brak danych o zgodności**, bez sugerowania negatywnego wyniku.
 
 ### Profil Maca
 
@@ -149,19 +157,20 @@ Karty używają następującej kolejności obrazów:
 3. okładka z rekordu katalogu;
 4. lokalny placeholder z nazwą gry.
 
-Pobieranie obrazów korzysta ze wspólnego cache pamięciowego i współdzieli trwające żądanie dla tego samego URL-u. Maksymalny rozmiar obrazu przekazywanego do karty wynosi 560 pikseli.
+Pobieranie obrazów korzysta z dwóch poziomów cache i współdzieli trwające żądanie dla tego samego URL-u. Najpierw sprawdzany jest ograniczony `NSCache` w pamięci (maksymalnie 100 obrazów i około 96 MB), a następnie cache dyskowy. Obrazy są downsample'owane przed przekazaniem do SwiftUI; maksymalny rozmiar obrazu przekazywanego do karty wynosi 560 pikseli.
 
 ## Cache i tryb offline
 
-`AppleGamingWikiDiscoveryService` korzysta z trzech plików w katalogu danych Boreal:
+`AppleGamingWikiDiscoveryService` korzysta z katalogu danych Boreal oraz zrekonstruowalnego cache artworków:
 
 ```text
 ~/Library/Application Support/Boreal/Discovery/applegamingwiki.json
-~/Library/Application Support/Boreal/Discovery/applegamingwiki-metadata.json
+~/Library/Application Support/Boreal/Discovery/metadata/<hash>.json
 ~/Library/Application Support/Boreal/Discovery/applegamingwiki-unavailable.json
+~/Library/Caches/Boreal/Discovery/Artwork/<hash>.png
 ```
 
-Własna lokalizacja `Application Support` może być przekazana przez `BorealStore` w testowym albo niestandardowym środowisku.
+`applegamingwiki-metadata.json` z wcześniejszej wersji jest odczytywany jednorazowo i migrowany do plików per-entry. Własna lokalizacja `Application Support` może być przekazana przez `BorealStore` w testowym albo niestandardowym środowisku. Cache artworków znajduje się w `Caches`, ponieważ można go bezpiecznie odbudować z sieci.
 
 Zasady ładowania katalogu:
 
@@ -176,20 +185,33 @@ W stopce widoku pojawia się albo data aktualizacji katalogu, albo komunikat „
 
 Cache metadanych ma żywotność 24 godzin. Nieudane wyszukanie metadanych ma osobny negatywny cache przez 15 minut, aby przewijanie katalogu nie powtarzało bez końca tych samych żądań. Jednocześnie maksymalnie cztery pobrania metadanych mogą być obsługiwane przez `BorealStore`.
 
+## Lifecycle i pamięć
+
+Katalog około 2800 lekkich rekordów pozostaje tablicą w pamięci i plikiem JSON. Na tym rozmiarze koszt samej listy jest mały, więc nie ma jeszcze migracji do SQLite. Ważne jest to, że ładowanie katalogu nie hydratuje już wszystkich metadanych: pełny opis, identyfikator Steam i obraz są pobierane dopiero przez widoczną kartę albo ekran szczegółów.
+
+Working set danych jest ograniczony niezależnie od długości przewijania:
+
+- `BorealStore` utrzymuje maksymalnie 128 wpisów metadanych oraz 128 podsumowań cen w pamięci;
+- usługa metadanych utrzymuje te same dane per-entry i odczytuje pojedynczy plik dopiero, gdy jest potrzebny;
+- pełne oferty i historia cen są pobierane na ekranie szczegółów, a nie dla całego katalogu;
+- zadania kart i szczegółów są związane z cyklem życia widoku i po anulowaniu nie publikują spóźnionych wyników;
+- cache dyskowy artworków jest przycinany po przekroczeniu 512 MB do około 384 MB.
+
+SwiftUI `LazyVStack` i `LazyVGrid` ograniczają liczbę aktywnych kart, natomiast wspólny pipeline obrazów deduplikuje równoległe żądania. Nie ma jawnego prefetchu całego katalogu — dzięki temu przewijanie utrzymuje working set zamiast tworzyć tysiące zadań i obiektów `NSImage`.
+
 ## Kafelek gry
 
 `DiscoveryGameTile` działa zarówno w siatce, jak i w poziomej liście. Kafelek zawiera:
 
-- artwork i tytuł otwierające szczegóły;
+- pełnoformatowy artwork i tytuł otwierające szczegóły; proporcje obrazu są zachowane, a brak obrazu korzysta z istniejącego placeholdera;
 - maksymalnie dwa gatunki;
-- etykietę Native macOS, Rosetta 2, macOS albo Windows;
-- najlepszy rating lub „Compatibility unknown”;
-- raportowaną metodę, jeśli istnieje grywalny raport;
-- najlepszą dostępną cenę, stan ładowania albo „Price unavailable”;
-- link do strony Steam, jeśli istnieje identyfikator;
-- przycisk zapisu pozycji z Discovery.
+- badge Native macOS, Rosetta 2, macOS albo Windows z metodą uruchomienia, np. **Windows · Wine**;
+- najlepszy rating albo subtelne **No compatibility data**;
+- najlepszą dostępną cenę z wyróżnioną kwotą i rabatem, stan ładowania albo **Price unavailable**;
+- pojedynczy link/sklep, jeśli istnieją dane, bez powtarzania nazwy sklepu w wierszu ceny;
+- ikonę zakładki **Save/Saved** na prawym górnym rogu artworku.
 
-Przycisk zapisu nie uruchamia zakupu ani instalacji. Przechowuje wybrany rekord jako zainteresowanie użytkownika w `saved-games.json`. W interfejsie stan ten jest opisany jako **Saved**, a nie **In Library**, ponieważ jest to zapisana lista Discovery, odrębna od właściwych rekordów `storeGames` biblioteki. **In Library** jest używane dopiero przez akcję na ekranie szczegółów po faktycznym dodaniu rekordu do biblioteki.
+Kliknięcie artworku albo tytułu otwiera szczegóły, a kliknięcie ikony zakładki zmienia wyłącznie stan zapisu. Karta nie używa agresywnego powiększania; hover ogranicza się do delikatnej zmiany tła, obramowania i cienia. Przycisk zapisu nie uruchamia zakupu ani instalacji. Przechowuje wybrany rekord jako zainteresowanie użytkownika w `saved-games.json`. W interfejsie stan ten jest opisany jako **Saved**, a nie **In Library**, ponieważ jest to zapisana lista Discovery, odrębna od właściwych rekordów `storeGames` biblioteki. **In Library** jest używane dopiero przez akcję na ekranie szczegółów po faktycznym dodaniu rekordu do biblioteki.
 
 ## Ceny i oferty
 

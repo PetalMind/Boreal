@@ -378,11 +378,12 @@ struct BorealTests {
             prefixInitializationInterval: .milliseconds(1)
         )
         let environment = try await manager.create(
-            configuration: EnvironmentConfiguration(name: "PE32 Game", architecture: "win32"),
+            configuration: EnvironmentConfiguration(name: "PE32 Game", architecture: "win32", prefixMode: .wow64),
             runtime: runtime
         )
 
         #expect(environment.configuration.architecture == "win32")
+        #expect(environment.configuration.prefixMode == .wow64)
         try await manager.initialize(environment, runtime: runtime)
         #expect(try await manager.validate(environment).isReady)
     }
@@ -405,6 +406,7 @@ struct BorealTests {
         let profile = WineCompatibilityProfile(
             windowsVersion: .windows7,
             architecture: .win32,
+            prefixMode: .legacyWin32,
             graphicsBackend: .wineD3D,
             esyncEnabled: false,
             msyncEnabled: false,

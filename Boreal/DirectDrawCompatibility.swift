@@ -187,11 +187,15 @@ nonisolated enum Heroes3DirectDrawCompatibility {
         let windowsDirectory = environment.prefixURL.appending(path: "drive_c/windows")
         switch WindowsExecutableArchitecture.inspect(executable) {
         case .x86:
-            return windowsDirectory.appending(path: "syswow64/ddraw.dll")
+            let syswow64 = windowsDirectory.appending(path: "syswow64", directoryHint: .isDirectory)
+            let usesLegacyWin32 = environment.configuration.prefixMode == .legacyWin32
+                || (environment.configuration.prefixMode == nil && !FileManager.default.fileExists(atPath: syswow64.path))
+            let directory = usesLegacyWin32 ? "system32" : "syswow64"
+            return windowsDirectory.appending(path: "\(directory)/ddraw.dll")
         case .x86_64:
             return windowsDirectory.appending(path: "system32/ddraw.dll")
         case .unknown:
-            let directory = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue ? "syswow64" : "system32"
+            let directory = environment.configuration.prefixMode == .legacyWin32 ? "system32" : "syswow64"
             return windowsDirectory.appending(path: "\(directory)/ddraw.dll")
         }
     }

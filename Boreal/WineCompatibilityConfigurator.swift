@@ -63,7 +63,7 @@ struct WineCompatibilityConfigurator: View {
             Divider()
             CompatibilitySettingsFooter(
                 restore: { profile = .default }, cancel: { dismiss() }, save: save,
-                saveDisabled: application.status == .running || application.status.isBusy || graphicsBackendIssue != nil
+                saveDisabled: application.status == .running || application.status.isBusy || graphicsBackendIssue != nil || prefixModeIssue != nil
             )
         }
         .frame(minWidth: 680, idealWidth: 840, maxWidth: 900, minHeight: 620, idealHeight: 760, maxHeight: 860)
@@ -170,8 +170,20 @@ struct WineCompatibilityConfigurator: View {
                     CompatibilityPickerRow(title: "Windows version", detail: nil) {
                         Picker("Windows version", selection: $profile.windowsVersion) { ForEach(WineWindowsVersion.allCases) { Text($0.displayName).tag($0) } }.labelsHidden()
                     }
-                    CompatibilityPickerRow(title: "Architecture", detail: String(localized: "Changing architecture rebuilds the Windows environment. Your game files stay in place.")) {
-                        Picker("Architecture", selection: $profile.architecture) { ForEach(WinePrefixArchitecture.allCases) { Text($0.displayName).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment)
+                    CompatibilityPickerRow(title: "Windows executable architecture", detail: String(localized: "This describes the selected Windows executable. It is separate from the Wine prefix mode.")) {
+                        Picker("Windows executable architecture", selection: $profile.architecture) { ForEach(WinePrefixArchitecture.allCases) { Text(executableArchitectureLabel($0)).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment)
+                    }
+                    CompatibilityPickerRow(title: "Wine prefix", detail: prefixModeExplanation) {
+                        Picker("Wine prefix", selection: prefixModeBinding) {
+                            ForEach(WinePrefixMode.allCases) { mode in
+                                Text(prefixModeLabel(mode)).tag(mode).disabled(store.prefixModeIssue(mode, for: application) != nil)
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(usesSharedSteamEnvironment)
+                    }
+                    if let prefixModeIssue {
+                        CompatibilityCallout(text: prefixModeIssue, symbol: "exclamationmark.triangle.fill", tint: .orange)
                     }
                 }.padding(.top, 8)
             }
@@ -250,6 +262,32 @@ struct WineCompatibilityConfigurator: View {
         guard let id = profile.overlayDisplayID, let display = availableDisplays.first(where: { $0.id == id }) else { return String(localized: "Automatic (main display)") }
         return display.label
     }
+    private var prefixModeBinding: Binding<WinePrefixMode> {
+        Binding(
+            get: { profile.prefixMode ?? .wow64 },
+            set: { profile.prefixMode = $0 }
+        )
+    }
+    private func executableArchitectureLabel(_ architecture: WinePrefixArchitecture) -> String {
+        architecture == .win32 ? "32-bit (x86)" : "64-bit (x64)"
+    }
+    private func prefixModeLabel(_ mode: WinePrefixMode) -> String {
+        guard store.prefixModeIssue(mode, for: application) == nil else {
+            return mode.displayName + " · " + String(localized: "Unavailable")
+        }
+        return mode.displayName
+    }
+    private var prefixModeExplanation: String {
+        let mode = profile.prefixMode ?? .wow64
+        return switch mode {
+        case .wow64:
+            String(localized: "Modern combined prefix. WINEARCH is left unset and both 32-bit and 64-bit processes can run in one environment.")
+        case .legacyWin32:
+            String(localized: "Classic 32-bit prefix. Uses WINEARCH=win32 and requires a runtime that supports legacy prefixes.")
+        case .legacyWin64:
+            String(localized: "Classic 64-bit prefix. Uses WINEARCH=win64 and requires a runtime that supports legacy prefixes.")
+        }
+    }
     private var olderGameProfile: WineCompatibilityProfile { WineCompatibilityProfile(windowsVersion: .windows7, architecture: .win32, graphicsBackend: .wineD3D, esyncEnabled: true, msyncEnabled: false, retinaModeEnabled: false) }
     private var performanceProfile: WineCompatibilityProfile { WineCompatibilityProfile(windowsVersion: .windows10, architecture: .win64, graphicsBackend: .d3dMetal, esyncEnabled: true, msyncEnabled: true, retinaModeEnabled: false, fullscreenFSREnabled: true) }
     private var recommendedProfile: WineCompatibilityProfile {
@@ -270,6 +308,7 @@ struct WineCompatibilityConfigurator: View {
     }
     private var graphicsProfile: GameGraphicsProfile? { GameGraphicsProfiles.profile(for: application) }
     private var graphicsBackendIssue: String? { store.graphicsBackendIssue(profile.graphicsBackend, for: application) }
+    private var prefixModeIssue: String? { store.prefixModeIssue(profile.prefixMode ?? .wow64, for: application) }
     private var runtimeFeatures: RuntimeFeatures? { store.compatibilityRuntimeFeatures(for: application, backend: profile.graphicsBackend) }
     private func backendLabel(_ backend: WineGraphicsBackend) -> String { store.graphicsBackendIssue(backend, for: application) == nil ? backend.displayName : backend.displayName + " · " + String(localized: "Unavailable") }
     private var graphicsAPIBinding: Binding<GraphicsAPI> { Binding(get: { profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic }, set: { profile.graphicsAPI = $0 }) }
@@ -391,6 +430,7 @@ private struct CompatibilityResultCard: View {
             row("Renderer", profile.graphicsBackend.displayName, "gearshape.2")
             row("DirectX version", directXLabel, "square.3.layers.3d")
             row("Windows version", profile.windowsVersion.displayName, "window.ceiling")
+            row("Wine prefix", (profile.prefixMode ?? .wow64).displayName, "shippingbox")
             row("Game display", displayLabel, "display")
             row("Overlay compatible", profile.overlayCompatibleFullscreen ? String(localized: "Yes") : String(localized: "No"), "rectangle.on.rectangle")
             if let compatibility = application.communityCompatibility {

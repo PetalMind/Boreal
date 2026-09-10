@@ -190,10 +190,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         runtime: InstalledRuntime
     ) throws -> [(URL, URL)] {
         let layouts: [(String, String)]
-        switch WinePrefixMode.resolve(
-            requestedArchitecture: environment.configuration.architecture,
-            runtimeSupportsWoW64: runtime.features?.wow64 == true
-        ) {
+        switch environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true) {
         case .wow64:
             // A modern WoW64 prefix keeps 64-bit DLLs in system32 and
             // 32-bit DLLs in syswow64. A requested 32-bit application still
@@ -205,7 +202,9 @@ nonisolated struct GraphicsBackendManager: Sendable {
         case .legacyWin32:
             layouts = [("x32", "system32")]
         case .legacyWin64:
-            layouts = [("x64", "system32")]
+            layouts = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue
+                ? [("x32", "syswow64")]
+                : [("x64", "system32")]
         }
         var result: [(URL, URL)] = []
         for (sourceFolder, windowsFolder) in layouts {
