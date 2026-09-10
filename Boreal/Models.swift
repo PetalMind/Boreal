@@ -72,9 +72,26 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
     case d3dMetal
     case dxmt
     case dxvk
-    case d9vk
     case vkd3d
     case wineD3D
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "d9vk":
+            // D9VK was upstreamed into DXVK. Keep older profiles readable while
+            // exposing one Vulkan translation backend to the rest of Boreal.
+            self = .dxvk
+        default:
+            guard let backend = Self(rawValue: value) else {
+                throw DecodingError.dataCorruptedError(
+                    in: try decoder.singleValueContainer(),
+                    debugDescription: "Unknown graphics backend: \(value)"
+                )
+            }
+            self = backend
+        }
+    }
 
     var id: String { rawValue }
     var displayName: String {
@@ -83,7 +100,6 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         case .d3dMetal: "D3DMetal"
         case .dxmt: "DXMT"
         case .dxvk: "DXVK"
-        case .d9vk: "D9VK"
         case .vkd3d: "VKD3D-Proton"
         case .wineD3D: "Wine (WineD3D)"
         }
@@ -93,8 +109,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         case .automatic: "Chooses the best renderer actually supplied by the selected runtime."
         case .d3dMetal: "Apple Game Porting Toolkit renderer, optimized for DirectX 11 and 12."
         case .dxmt: "Metal-based Direct3D 11 translation. Requires a runtime package containing DXMT."
-        case .dxvk: "Vulkan-based Direct3D 10–11 translation using the managed macOS package. Direct3D 9 uses WineD3D."
-        case .d9vk: "Vulkan-based Direct3D 9 translation using the managed macOS package."
+        case .dxvk: "Vulkan-based Direct3D 9–11 translation when the managed component supplies the required DLLs."
         case .vkd3d: "Vulkan-based Direct3D 12 translation using VKD3D-Proton."
         case .wineD3D: "Wine's built-in OpenGL renderer and the safest fallback."
         }
@@ -103,8 +118,62 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         switch self {
         case .automatic: nil
         case .d3dMetal: .gamePortingToolkit
-        case .dxmt, .dxvk, .d9vk, .vkd3d, .wineD3D: .wine
+        case .dxmt, .dxvk, .vkd3d, .wineD3D: .wine
         }
+    }
+}
+
+nonisolated enum HostGraphicsAPI: String, Codable, CaseIterable, Sendable, Hashable {
+    case metal
+    case vulkan
+    case openGL
+
+    var displayName: String {
+        switch self {
+        case .metal: "Metal"
+        case .vulkan: "Vulkan"
+        case .openGL: "OpenGL"
+        }
+    }
+}
+
+nonisolated enum GraphicsRuntimeFeature: String, Codable, CaseIterable, Sendable, Hashable {
+    case d3dMetal
+    case dxmt
+    case dxvk
+    case vkd3d
+}
+
+/// A complete host-side graphics path. The backend alone is not enough to
+/// describe whether a runtime can actually execute it: API coverage,
+/// prefix architecture, runtime capabilities and component packages all
+/// participate in the decision.
+nonisolated struct GraphicsStack: Codable, Hashable, Sendable, Identifiable {
+    let backend: GraphicsBackend
+    let supportedAPIs: Set<GraphicsAPI>
+    let supportedArchitectures: Set<WinePrefixArchitecture>
+    let hostAPI: HostGraphicsAPI
+    let requiredRuntimeFeatures: Set<GraphicsRuntimeFeature>
+    let requiredComponents: Set<RuntimeComponent>
+    let priority: Int
+
+    var id: GraphicsBackend { backend }
+
+    func supports(api: GraphicsAPI, architecture: WinePrefixArchitecture) -> Bool {
+        (api == .automatic || supportedAPIs.contains(api))
+            && supportedArchitectures.contains(architecture)
+    }
+
+    func withHostAPI(_ hostAPI: HostGraphicsAPI) -> GraphicsStack {
+        GraphicsStack(
+            backend: backend,
+            supportedAPIs: supportedAPIs,
+            supportedArchitectures: supportedArchitectures,
+            hostAPI: hostAPI,
+            requiredRuntimeFeatures: requiredRuntimeFeatures,
+            requiredComponents: requiredComponents,
+            priority: priority
+        )
     }
 }
 
@@ -113,6 +182,35 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
 nonisolated enum WineGraphicsFallback: String, Codable, CaseIterable, Sendable, Hashable {
     case none
     case wineD3DVulkan
+}
+
+nonisolated enum GraphicsFallbackReason: String, Codable, Sendable, Hashable {
+    case graphicsDeviceInitialization
+}
+
+nonisolated struct CompatibilityFallbackEvent: Codable, Hashable, Sendable, Identifiable {
+    let id: UUID
+    let failedBackend: GraphicsBackend
+    let fallbackBackend: GraphicsBackend
+    let reason: GraphicsFallbackReason
+    let date: Date
+    let logReference: URL?
+
+    init(
+        id: UUID = UUID(),
+        failedBackend: GraphicsBackend,
+        fallbackBackend: GraphicsBackend,
+        reason: GraphicsFallbackReason,
+        date: Date = .now,
+        logReference: URL? = nil
+    ) {
+        self.id = id
+        self.failedBackend = failedBackend
+        self.fallbackBackend = fallbackBackend
+        self.reason = reason
+        self.date = date
+        self.logReference = logReference
+    }
 }
 
 nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
@@ -370,6 +468,9 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var lastExitCode: Int32?
     var lastFailureStage: String?
     var lastErrorDetail: String?
+    /// Renderer fallback history is optional so older library files remain
+    /// decodable while Boreal can explain automatic compatibility changes.
+    var compatibilityFallbackEvents: [CompatibilityFallbackEvent]? = nil
     var storeProvider: GameLibraryProvider?
     var storeExternalID: String?
     /// True when the linked store record supplies presentation metadata only.

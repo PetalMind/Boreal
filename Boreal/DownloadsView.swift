@@ -345,14 +345,12 @@ struct DownloadsView: View {
                     if runtime.source == .installed, runtime.engine == .wine {
                         Menu {
                             Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
-                            Button("Install D9VK") { store.downloadGraphicsComponent(.d9vk, into: runtime.id) }
                             Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: runtime.id) }
                             Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
                             Divider()
                             Menu("Advanced") {
                                 Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
                                 Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
-                                Button("Import D9VK Package…") { selectGraphicsPackage(.d9vk, for: runtime) }
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")

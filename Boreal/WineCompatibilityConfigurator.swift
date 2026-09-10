@@ -106,6 +106,13 @@ struct WineCompatibilityConfigurator: View {
             if let issue = graphicsBackendIssue {
                 CompatibilityCallout(text: issue, symbol: "exclamationmark.triangle.fill", tint: .orange)
             }
+            if let event = application.compatibilityFallbackEvents?.last {
+                CompatibilityCallout(
+                    text: String(localized: "Boreal switched from \(event.failedBackend.displayName) to \(event.fallbackBackend.displayName) after a Direct3D device initialization failure."),
+                    symbol: "arrow.triangle.2.circlepath",
+                    tint: .orange
+                )
+            }
             if usesSharedSteamEnvironment {
                 CompatibilityCallout(text: String(localized: "Steam shares its Windows environment across games. Architecture, graphics renderer and older-game fixes are managed there."), symbol: "person.2.fill", tint: .blue)
             }
@@ -273,13 +280,12 @@ struct WineCompatibilityConfigurator: View {
         return api.displayName
     }
     private var graphicsBackendExplanation: String {
-        if graphicsProfile?.enforcedBackend != nil { return String(localized: "WineD3D is enforced for this game because D9VK cannot initialize its Direct3D device on this runtime.") }
+        if graphicsProfile?.enforcedBackend != nil { return String(localized: "WineD3D is enforced for this game because the Vulkan renderer cannot initialize its Direct3D device on this runtime.") }
         return switch profile.graphicsBackend {
         case .automatic: String(localized: "Chooses an available renderer for this game.")
         case .d3dMetal: String(localized: "For DirectX 11 and 12. Requires Game Porting Toolkit.")
         case .dxmt: String(localized: "Runs DirectX 11 using Metal. Requires DXMT support.")
-        case .dxvk: String(localized: "Runs DirectX 10 and 11 using Vulkan. DirectX 9 uses WineD3D.")
-        case .d9vk: String(localized: "Runs DirectX 9 using Vulkan. Requires the D9VK component.")
+        case .dxvk: String(localized: "Runs DirectX 9, 10, and 11 when the managed Vulkan component supplies the required DLLs.")
         case .vkd3d: String(localized: "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton.")
         case .wineD3D: String(localized: "A fallback to try if other renderers cause graphics problems.")
         }

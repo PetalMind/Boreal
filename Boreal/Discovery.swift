@@ -105,26 +105,47 @@ nonisolated enum AppleGamingWikiPlatform: String, CaseIterable, Hashable, Sendab
 }
 
 nonisolated enum DiscoveryScope: String, CaseIterable, Hashable, Sendable {
-    case forYou
+    case recommended
     case all
     case native
     case windows
 
     var title: String {
         switch self {
-        case .forYou: "For You"
+        case .recommended: "Recommended"
         case .all: "All Games"
-        case .native: "Native"
+        case .native: "Mac"
         case .windows: "Windows"
         }
     }
 
     var symbol: String {
         switch self {
-        case .forYou: "sparkles"
+        case .recommended: "sparkles"
         case .all: "square.grid.2x2"
         case .native: "apple.logo"
         case .windows: "wineglass"
+        }
+    }
+}
+
+nonisolated enum DiscoveryMacSupportKind: Hashable, Sendable {
+    case native
+    case rosetta2
+    case macOS
+
+    var title: String {
+        switch self {
+        case .native: "Native macOS"
+        case .rosetta2: "Rosetta 2"
+        case .macOS: "macOS"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .native, .macOS: "apple.logo"
+        case .rosetta2: "cpu"
         }
     }
 }
@@ -162,9 +183,16 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
 
     var id: String { pageURL }
     var isTested: Bool { !availableRatings.isEmpty }
-    var isNative: Bool { native.isPlayable || macOSStoreSupport == true }
+    var hasNativeMacOSSupport: Bool { native.isPlayable || macOSStoreSupport == true }
+    var hasMacSupport: Bool { hasNativeMacOSSupport || rosetta2.isPlayable }
+    var macSupportKind: DiscoveryMacSupportKind? {
+        if native.isPlayable { return .native }
+        if rosetta2.isPlayable { return .rosetta2 }
+        if macOSStoreSupport == true { return .macOS }
+        return nil
+    }
     var bestMethod: String {
-        availableRatings.first(where: { $0.rating.isPlayable })?.title ?? (isNative ? "macOS" : "Unverified")
+        availableRatings.first(where: { $0.rating.isPlayable })?.title ?? (hasMacSupport ? "macOS" : "Unverified")
     }
     var bestRating: AppleGamingWikiRating {
         availableRatings.map(\.rating).min(by: { $0.rank < $1.rank }) ?? .unknown
@@ -187,7 +215,7 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
         case .all: true
         case .perfect:
             [native, rosetta2, crossover, wine, parallels].contains(.perfect)
-        case .native: isNative
+        case .native: hasNativeMacOSSupport
         case .rosetta2: rosetta2.isPlayable
         case .crossover: crossover.isPlayable
         case .wine: wine.isPlayable
@@ -1095,7 +1123,7 @@ struct DiscoveryView: View {
 
     private var filtersMenu: some View {
         Menu {
-            Toggle("Tested compatibility only", isOn: $testedOnly)
+            Toggle("Has compatibility report", isOn: $testedOnly)
                 .help("Only entries with community compatibility reports. These are not tests performed by Boreal.")
             Divider()
             Button("Reset filters", systemImage: "arrow.counterclockwise") { resetFilters() }
@@ -1133,8 +1161,8 @@ struct DiscoveryView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Recommended for your Mac").font(.title3.bold())
-                    Text("Strongest available compatibility reports for this Mac.").font(.callout).foregroundStyle(.secondary)
+                    Text("Best compatibility").font(.title3.bold())
+                    Text("Strongest available community compatibility reports.").font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text("\(games.count) games").font(.callout).foregroundStyle(.secondary)
@@ -1151,8 +1179,8 @@ struct DiscoveryView: View {
 
     private func catalogContent(_ catalog: AppleGamingWikiCatalog) -> some View {
         let games = catalog.games.filter(matchesFilters).sorted {
-            let effectiveSort = scope == .forYou ? "Recommended" : sortOrder
-            if effectiveSort == "Recommended", recommendationScore($0) != recommendationScore($1) { return recommendationScore($0) > recommendationScore($1) }
+            let effectiveSort = scope == .recommended ? "Recommended" : sortOrder
+            if effectiveSort == "Recommended" { return recommendationPrecedes($0, $1) }
             return effectiveSort == "Name Z–A" ? $0.title.localizedStandardCompare($1.title) == .orderedDescending : $0.title.localizedStandardCompare($1.title) == .orderedAscending
         }
         return VStack(alignment: .leading, spacing: 14) {
@@ -1211,8 +1239,8 @@ struct DiscoveryView: View {
 
     private func matchesScope(_ game: AppleGamingWikiGame) -> Bool {
         switch scope {
-        case .forYou, .all: true
-        case .native: game.isNative
+        case .recommended, .all: true
+        case .native: game.hasMacSupport
         case .windows: [game.crossover, game.wine, game.parallels].contains { $0 != .unknown && $0 != .notApplicable }
         }
     }
@@ -1233,7 +1261,7 @@ struct DiscoveryView: View {
             case .all: [game.crossover, game.wine, game.parallels]
             case .native, .rosetta2, .perfect: []
             }
-        case .forYou, .all: game.availableRatings.map(\.rating)
+        case .recommended, .all: game.availableRatings.map(\.rating)
         }
     }
 
@@ -1242,11 +1270,7 @@ struct DiscoveryView: View {
             ($0.native == .perfect || $0.rosetta2 == .perfect || $0.crossover == .perfect || $0.wine == .perfect || $0.parallels == .perfect)
                 && matchesFilters($0)
         }
-        .sorted {
-            recommendationScore($0) == recommendationScore($1)
-                ? $0.title.localizedStandardCompare($1.title) == .orderedAscending
-                : recommendationScore($0) > recommendationScore($1)
-        }
+        .sorted(by: recommendationPrecedes)
     }
 
     private func recommendationScore(_ game: AppleGamingWikiGame) -> Int {
@@ -1254,7 +1278,18 @@ struct DiscoveryView: View {
             .enumerated()
             .first(where: { $0.element == .perfect })
             .map { 100 - ($0.offset * 5) } ?? 0
-        return perfectPathScore + (game.coverURL == nil ? 0 : 10) - game.bestRating.rank
+        // Artwork is presentation quality, not compatibility evidence.
+        return perfectPathScore - game.bestRating.rank
+    }
+
+    private func recommendationPrecedes(_ lhs: AppleGamingWikiGame, _ rhs: AppleGamingWikiGame) -> Bool {
+        let lhsScore = recommendationScore(lhs)
+        let rhsScore = recommendationScore(rhs)
+        if lhsScore != rhsScore { return lhsScore > rhsScore }
+
+        // Artwork is only a deterministic tie-breaker after compatibility is equal.
+        if (lhs.coverURL != nil) != (rhs.coverURL != nil) { return lhs.coverURL != nil }
+        return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
     }
 
     private var guide: some View {
@@ -1437,11 +1472,11 @@ struct DiscoveryGameTile: View {
                 Button {
                     store.toggleDiscoveryGame(game)
                 } label: {
-                    Label(store.isDiscoveryGameSaved(game) ? "In Library" : "Add to Library", systemImage: store.isDiscoveryGameSaved(game) ? "checkmark" : "plus")
+                    Label(store.isDiscoveryGameSaved(game) ? "Saved" : "Save", systemImage: store.isDiscoveryGameSaved(game) ? "checkmark" : "plus")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(store.isDiscoveryGameSaved(game) ? "Remove from saved games" : "Save to your library")
+                .help(store.isDiscoveryGameSaved(game) ? "Remove from saved games" : "Save to Discovery")
             }
         }
         .frame(maxWidth: .infinity, minHeight: horizontal ? 118 : 182, alignment: .topLeading)
@@ -1457,13 +1492,11 @@ struct DiscoveryGameTile: View {
     }
 
     private var platformTitle: String {
-        if game.isNative { return "Native macOS" }
-        if game.bestMethod == "Rosetta 2" { return "Rosetta 2" }
-        return "Windows"
+        game.macSupportKind?.title ?? "Windows"
     }
 
     private var platformSymbol: String {
-        if game.isNative { return "apple.logo" }
+        if let macSupportKind = game.macSupportKind { return macSupportKind.symbol }
         switch game.bestMethod {
         case "CrossOver": return "rectangle.2.swap"
         case "Parallels": return "rectangle.split.3x1"

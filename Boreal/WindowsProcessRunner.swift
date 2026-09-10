@@ -79,7 +79,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         if plan.executable.lastPathComponent.caseInsensitiveCompare("Grim Dawn.exe") == .orderedSame {
             // Grim Dawn's D3D9 fullscreen swap chain is not compatible with
             // the virtual explorer desktop used to keep Boreal's overlay
-            // visible. Native Wine fullscreen presents correctly with D9VK.
+            // visible. Native Wine fullscreen presents correctly with DXVK.
             launchPlan.overlayCompatibleFullscreen = false
         }
         if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: plan.executable) {
@@ -99,7 +99,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
         if environment.configuration.graphicsBackend == .wineD3D,
            environment.configuration.graphicsFallback == .wineD3DVulkan {
-            // The prefix may still contain a previously activated DXVK/D9VK
+            // The prefix may still contain a previously activated DXVK
             // DLL. Force Wine builtin D3D for this process as well, so the
             // first retry works even before the next environment reconfigure
             // has restored the managed prefix files.
@@ -112,9 +112,10 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
         }
-        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime) == .d9vk,
+        let prefixArchitecture = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue ? WinePrefixArchitecture.win32 : .win64
+        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
-            let configuration = environment.rootURL.appending(path: "Darksiders2-d9vk.conf")
+            let configuration = environment.rootURL.appending(path: "Darksiders2-dxvk.conf")
             // Darksiders II renders its 3D scene correctly at ultrawide
             // resolutions, but its minimap markers are positioned against the
             // full 21:9 surface instead of the circular map. Expose only 16:9
@@ -302,7 +303,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
         values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
-        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime) == .d9vk {
+        let prefixArchitecture = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue ? WinePrefixArchitecture.win32 : .win64
+        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk {
             // MoltenVK dynamically grows exhausted descriptor pools. Its warning
             // for every allocation can otherwise write megabytes per minute.
             values["MVK_CONFIG_LOG_LEVEL"] = "0"

@@ -3,18 +3,46 @@ import Testing
 @testable import Boreal
 
 struct WineCompatibilityProfileTests {
-    @Test func automaticRendererPolicyUsesDXVKForDirectX11WhenAvailable() {
+    @Test func automaticRendererPolicyUsesDXVKWhenNativeMetalPathsAreUnavailable() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-resolver-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dxvkRoot = root.appending(path: "GraphicsComponents/DXVK/x64", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dxvkRoot, withIntermediateDirectories: true)
+        try Data("dxvk-d3d9".utf8).write(to: dxvkRoot.appending(path: "d3d9.dll"))
+        try Data("dxvk-d3d10".utf8).write(to: dxvkRoot.appending(path: "d3d10core.dll"))
+        try Data("dxvk-d3d11".utf8).write(to: dxvkRoot.appending(path: "d3d11.dll"))
         let runtime = makeRuntime(
-            root: FileManager.default.temporaryDirectory,
+            root: root,
             features: RuntimeFeatures(
                 wow64: true, wineMono: false, wineGecko: false,
-                d3dmetal: false, dxmt: true, dxvk: true, vkd3d: true
+                d3dmetal: false, dxmt: false, dxvk: true, vkd3d: true
             )
         )
 
         #expect(RendererPolicy.preferredBackend(for: .directX11, runtime: runtime) == .dxvk)
         #expect(RendererPolicy.preferredBackend(for: .directX12, runtime: runtime) == .vkd3d)
-        #expect(RendererPolicy.preferredBackend(for: .directX9, runtime: runtime) == .wineD3D)
+        #expect(RendererPolicy.preferredBackend(for: .directX9, runtime: runtime) == .dxvk)
+    }
+
+    @Test func graphicsResolverTreatsPrefixArchitectureAsRendererConstraint() {
+        let runtime = makeRuntime(
+            root: FileManager.default.temporaryDirectory,
+            features: RuntimeFeatures(
+                wow64: true, wineMono: false, wineGecko: false,
+                d3dmetal: false, dxmt: true, dxvk: true, vkd3d: false
+            )
+        )
+
+        let resolution = GraphicsBackendResolver.resolve(
+            api: .directX11,
+            requestedBackend: .automatic,
+            runtime: runtime,
+            architecture: .win32
+        )
+
+        #expect(resolution.stack.backend == .dxvk)
+        #expect(resolution.isAvailable)
+        #expect(resolution.reasons.contains("Architecture is supported"))
     }
 
     @Test func directXDetectorChoosesNewestImportedAPI() throws {
@@ -39,7 +67,7 @@ struct WineCompatibilityProfileTests {
         )
 
         let profile = GameGraphicsProfiles.profile(for: application)
-        #expect(profile?.preferredBackend == .d9vk)
+        #expect(profile?.preferredBackend == .dxvk)
         #expect(profile?.defaultAPI == .directX9)
         #expect(profile?.launchOption(for: .directX11)?.arguments == ["-dx11"])
     }
@@ -94,7 +122,6 @@ struct WineCompatibilityProfileTests {
             .d3dMetal,
             .dxmt,
             .dxvk,
-            .d9vk,
             .vkd3d,
             .wineD3D
         ])
@@ -106,6 +133,10 @@ struct WineCompatibilityProfileTests {
 
         #expect(features.dxmt)
         #expect(!features.dxvk)
+
+        let legacyData = Data(#"{"wow64":true,"wineMono":false,"wineGecko":false,"d3dmetal":false,"dxmt":false,"d9vk":true}"#.utf8)
+        let migratedFeatures = try JSONDecoder().decode(RuntimeFeatures.self, from: legacyData)
+        #expect(migratedFeatures.dxvk)
     }
 
     @Test func dxvkActivationRestoresOriginalPrefixLibrariesWhenReset() throws {
@@ -171,20 +202,20 @@ struct WineCompatibilityProfileTests {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory.appending(path: "boreal-wow64-graphics-\(UUID().uuidString)")
         defer { try? fileManager.removeItem(at: root) }
-        let components = root.appending(path: "runtime/GraphicsComponents/D9VK", directoryHint: .isDirectory)
+        let components = root.appending(path: "runtime/GraphicsComponents/DXVK", directoryHint: .isDirectory)
         let system32 = root.appending(path: "environment/prefix/drive_c/windows/system32", directoryHint: .isDirectory)
         let syswow64 = root.appending(path: "environment/prefix/drive_c/windows/syswow64", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: components.appending(path: "x32"), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: components.appending(path: "x64"), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: system32, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: syswow64, withIntermediateDirectories: true)
-        try Data("d9vk-x32".utf8).write(to: components.appending(path: "x32/d3d9.dll"))
+        try Data("dxvk-x32".utf8).write(to: components.appending(path: "x32/d3d9.dll"))
         try Data("wine-x64".utf8).write(to: system32.appending(path: "d3d9.dll"))
         try Data("wine-x32".utf8).write(to: syswow64.appending(path: "d3d9.dll"))
         let runtimeRoot = root.appending(path: "runtime", directoryHint: .isDirectory)
         let runtime = InstalledRuntime(
-            id: "test-wow64-d9vk",
-            displayName: "Test WoW64 D9VK",
+            id: "test-wow64-dxvk",
+            displayName: "Test WoW64 DXVK",
             wineVersion: "test",
             rootURL: runtimeRoot,
             wineExecutable: runtimeRoot.appending(path: "wine"),
@@ -194,7 +225,7 @@ struct WineCompatibilityProfileTests {
             requirements: [],
             features: RuntimeFeatures(
                 wow64: true, wineMono: false, wineGecko: false,
-                d3dmetal: false, dxmt: false, d9vk: true
+                d3dmetal: false, dxmt: false, dxvk: true
             )
         )
         let environmentRoot = root.appending(path: "environment", directoryHint: .isDirectory)
@@ -211,10 +242,10 @@ struct WineCompatibilityProfileTests {
             state: .ready
         )
 
-        let activation = try GraphicsBackendManager().activate(.d9vk, in: environment, runtime: runtime)
+        let activation = try GraphicsBackendManager().activate(.dxvk, in: environment, runtime: runtime)
 
         #expect(activation.dllOverrides == ["d3d9"])
-        #expect(try String(contentsOf: syswow64.appending(path: "d3d9.dll"), encoding: .utf8) == "d9vk-x32")
+        #expect(try String(contentsOf: syswow64.appending(path: "d3d9.dll"), encoding: .utf8) == "dxvk-x32")
         #expect(try String(contentsOf: system32.appending(path: "d3d9.dll"), encoding: .utf8) == "wine-x64")
     }
 
@@ -456,7 +487,7 @@ struct WineCompatibilityProfileTests {
         #expect(configured.arguments == ["-applaunch", "475150", "/dx9"])
     }
 
-    @Test func torchlightUsesWineD3DWhenAnOlderProfileSelectedD9VK() throws {
+    @Test func torchlightUsesWineD3DWhenAnOlderProfileSelectedDXVK() throws {
         let application = WindowsApplication(
             name: "Torchlight II",
             publisher: "Runic Games",
@@ -467,7 +498,7 @@ struct WineCompatibilityProfileTests {
             compatibilityProfile: WineCompatibilityProfile(
                 windowsVersion: .windows10,
                 architecture: .win32,
-                graphicsBackend: .d9vk,
+                graphicsBackend: .dxvk,
                 graphicsAPI: .directX9
             ),
             storeProvider: .steam,
@@ -496,7 +527,7 @@ struct WineCompatibilityProfileTests {
             compatibilityProfile: WineCompatibilityProfile(
                 windowsVersion: .windows10,
                 architecture: .win32,
-                graphicsBackend: .d9vk,
+                graphicsBackend: .dxvk,
                 graphicsAPI: .directX9
             ),
             storeProvider: .gog,
@@ -519,7 +550,7 @@ struct WineCompatibilityProfileTests {
 
     @Test func rendererDeviceFailureSelectsGenericWineD3DFallback() {
         let profile = WineCompatibilityProfile(
-            graphicsBackend: .d9vk,
+            graphicsBackend: .dxvk,
             graphicsAPI: .directX9
         )
         let log = "info: DXVK: v1.10.3\nerr: DxvkAdapter: Failed to create device\n"

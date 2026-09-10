@@ -88,7 +88,7 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
             // Torchlight II reaches its world renderer through D3D9. On the
-            // current Wine/MoltenVK path, D9VK fails buffer creation during
+            // current Wine/MoltenVK path, DXVK fails buffer creation during
             // that transition, while WineD3D is the compatible fallback.
             preferredBackend: .wineD3D,
             enforcedBackend: .wineD3D,
@@ -105,7 +105,7 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX11, arguments: ["-dx11"], requiredFile: "Darksiders2.wsl"),
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
-            preferredBackend: .d9vk,
+            preferredBackend: .dxvk,
             overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(
@@ -117,7 +117,7 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX11, arguments: ["-dx11"], requiredFile: "Darksiders2.wsl"),
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
-            preferredBackend: .d9vk,
+            preferredBackend: .dxvk,
             overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(
@@ -129,7 +129,7 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
             // Bound by Flame's SilkEngine reaches D3D9, but the current
-            // DXVK/D9VK path fails device creation on Apple Silicon. WineD3D
+            // DXVK path fails device creation on Apple Silicon. WineD3D
             // through its Vulkan renderer initializes the same installation.
             preferredBackend: .wineD3D,
             enforcedBackend: .wineD3D,
@@ -226,9 +226,9 @@ nonisolated enum RendererLaunchFailureDetector {
         profile: WineCompatibilityProfile
     ) -> Bool {
         guard profile.graphicsFallback == .none,
-              [.automatic, .dxvk, .d9vk].contains(profile.graphicsBackend) else { return false }
+              [.automatic, .dxvk].contains(profile.graphicsBackend) else { return false }
         let normalized = stderr.lowercased()
-        let rendererHint = ["dxvk", "d9vk", "moltenvk", "vulkan", "direct3d", "d3d9", "d3d10", "d3d11", "d3d12"]
+        let rendererHint = ["dxvk", "moltenvk", "vulkan", "direct3d", "d3d9", "d3d10", "d3d11", "d3d12"]
             .contains { normalized.contains($0) }
         let initializationFailure = [
             "failed to create device",
@@ -252,31 +252,222 @@ nonisolated enum RendererLaunchFailureDetector {
     }
 }
 
+nonisolated struct GraphicsStackResolution: Codable, Hashable, Sendable {
+    let stack: GraphicsStack
+    let score: Int
+    let reasons: [String]
+
+    var isAvailable: Bool { score >= 0 }
+}
+
+nonisolated enum GraphicsStackCatalog {
+    static let all: [GraphicsStack] = [
+        GraphicsStack(
+            backend: .d3dMetal,
+            supportedAPIs: [.directX11, .directX12],
+            supportedArchitectures: [.win64],
+            hostAPI: .metal,
+            requiredRuntimeFeatures: [.d3dMetal],
+            requiredComponents: [],
+            priority: 95
+        ),
+        GraphicsStack(
+            backend: .dxmt,
+            supportedAPIs: [.directX11],
+            supportedArchitectures: [.win64],
+            hostAPI: .metal,
+            requiredRuntimeFeatures: [.dxmt],
+            requiredComponents: [.dxmt],
+            priority: 90
+        ),
+        GraphicsStack(
+            backend: .dxvk,
+            supportedAPIs: [.directX9, .directX10, .directX11],
+            supportedArchitectures: [.win32, .win64],
+            hostAPI: .vulkan,
+            requiredRuntimeFeatures: [.dxvk],
+            requiredComponents: [.dxvk],
+            priority: 88
+        ),
+        GraphicsStack(
+            backend: .vkd3d,
+            supportedAPIs: [.directX12],
+            supportedArchitectures: [.win32, .win64],
+            hostAPI: .vulkan,
+            requiredRuntimeFeatures: [.vkd3d],
+            requiredComponents: [.vkd3d],
+            priority: 86
+        ),
+        GraphicsStack(
+            backend: .wineD3D,
+            supportedAPIs: [.directX9, .directX10, .directX11, .directX12],
+            supportedArchitectures: [.win32, .win64],
+            hostAPI: .openGL,
+            requiredRuntimeFeatures: [],
+            requiredComponents: [],
+            priority: 10
+        )
+    ]
+
+    static func stack(for backend: GraphicsBackend) -> GraphicsStack? {
+        all.first { $0.backend == backend }
+    }
+}
+
+nonisolated enum GraphicsBackendResolver {
+    static func resolve(
+        api: GraphicsAPI,
+        requestedBackend: GraphicsBackend,
+        gameProfile: GameGraphicsProfile? = nil,
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture = .win64,
+        fallback: WineGraphicsFallback = .none
+    ) -> GraphicsStackResolution {
+        let effectiveRequested = gameProfile?.enforcedBackend ?? requestedBackend
+        let eligible = GraphicsStackCatalog.all.filter {
+            $0.supports(api: api, architecture: architecture)
+                && runtimeSupports($0, api: api, runtime: runtime)
+        }
+
+        let preferred = gameProfile?.preferredBackend
+        let ranked = eligible.map { stack -> GraphicsStackResolution in
+            var score = stack.priority + 20 + 10
+            var reasons = [
+                "Runtime capability matches (\(stack.backend.displayName))",
+                "Architecture is supported"
+            ]
+            if stack.backend == preferred {
+                score += 40
+                reasons.append("Game profile preference")
+            }
+            if stack.hostAPI == .metal {
+                score += 20
+                reasons.append("Native Metal path")
+            }
+            if fallback == .wineD3DVulkan, stack.backend == .wineD3D {
+                reasons.append("Renderer fallback uses WineD3D/Vulkan")
+            }
+            return GraphicsStackResolution(
+                stack: stack.withHostAPI(fallback == .wineD3DVulkan && stack.backend == .wineD3D ? .vulkan : stack.hostAPI),
+                score: score,
+                reasons: reasons
+            )
+        }
+
+        if effectiveRequested != .automatic,
+           let explicit = GraphicsStackCatalog.stack(for: effectiveRequested) {
+            if ranked.contains(where: { $0.stack.backend == explicit.backend }) {
+                return GraphicsStackResolution(
+                    stack: explicit.withHostAPI(fallback == .wineD3DVulkan && explicit.backend == .wineD3D ? .vulkan : explicit.hostAPI),
+                    score: 1_000,
+                    reasons: ["Explicit renderer selection"]
+                )
+            }
+            if let compatibleFallback = ranked.max(by: { lhs, rhs in
+                if lhs.score != rhs.score { return lhs.score < rhs.score }
+                return lhs.stack.backend.rawValue > rhs.stack.backend.rawValue
+            }) {
+                return GraphicsStackResolution(
+                    stack: compatibleFallback.stack,
+                    score: compatibleFallback.score,
+                    reasons: ["Selected renderer is unavailable for this runtime or architecture", "Using the best compatible fallback"] + compatibleFallback.reasons
+                )
+            }
+        }
+
+        return ranked.max { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score < rhs.score }
+            return lhs.stack.backend.rawValue > rhs.stack.backend.rawValue
+        } ?? GraphicsStackResolution(
+            stack: GraphicsStackCatalog.stack(for: .wineD3D)!,
+            score: -1_000,
+            reasons: ["No compatible graphics stack was found"]
+        )
+    }
+
+    static func supports(
+        _ backend: GraphicsBackend,
+        api: GraphicsAPI,
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture
+    ) -> Bool {
+        guard let stack = GraphicsStackCatalog.stack(for: backend),
+              stack.supports(api: api, architecture: architecture) else { return false }
+        return runtimeSupports(stack, api: api, runtime: runtime)
+    }
+
+    private static func runtimeSupports(
+        _ stack: GraphicsStack,
+        api: GraphicsAPI,
+        runtime: InstalledRuntime
+    ) -> Bool {
+        let featuresAvailable = stack.requiredRuntimeFeatures.allSatisfy { feature in
+            switch feature {
+            case .d3dMetal: runtime.features?.d3dmetal == true
+            case .dxmt: runtime.features?.dxmt == true
+            case .dxvk: runtime.features?.dxvk == true
+            case .vkd3d: runtime.features?.vkd3d == true
+            }
+        }
+        let componentsAvailable = stack.requiredComponents.allSatisfy { component in
+            switch component {
+            case .dxmt: runtime.features?.dxmt == true
+            case .dxvk: runtime.features?.dxvk == true
+            case .vkd3d: runtime.features?.vkd3d == true
+            }
+        }
+        guard featuresAvailable && componentsAvailable else { return false }
+        // The upstream DXVK model covers D3D9, but the current macOS package
+        // may intentionally omit d3d9.dll. Keep D3D9 available only when the
+        // selected runtime really contains that library.
+        if stack.backend == .dxvk, api == .directX9 {
+            return containsGraphicsLibrary(["DXVK", "D9VK"], named: "d3d9.dll", in: runtime)
+        }
+        if stack.backend == .dxvk, api == .directX10 {
+            return containsGraphicsLibrary(["DXVK"], named: "d3d10core.dll", in: runtime)
+        }
+        if stack.backend == .dxvk, api == .directX11 {
+            return containsGraphicsLibrary(["DXVK"], named: "d3d11.dll", in: runtime)
+        }
+        return true
+    }
+
+    private static func containsGraphicsLibrary(
+        _ components: [String],
+        named libraryName: String,
+        in runtime: InstalledRuntime
+    ) -> Bool {
+        let fileManager = FileManager.default
+        let roots = components.flatMap { component in
+            [
+                runtime.rootURL.appending(path: "GraphicsComponents/\(component)", directoryHint: .isDirectory),
+                runtime.rootURL.appending(path: "Support/Graphics/\(component)", directoryHint: .isDirectory)
+            ]
+        }
+        return roots.contains { root in
+            guard let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else { return false }
+            for case let url as URL in enumerator {
+                guard url.lastPathComponent.caseInsensitiveCompare(libraryName) == .orderedSame,
+                      let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                      values.isRegularFile == true else { continue }
+                return true
+            }
+            return false
+        }
+    }
+}
+
 nonisolated enum RendererPolicy {
     static func preferredBackend(for api: GraphicsAPI, runtime: InstalledRuntime) -> WineGraphicsBackend {
-        let features = runtime.features
-        let candidates: [WineGraphicsBackend]
-        switch api {
-        case .directX9:
-            candidates = [.d9vk, .wineD3D]
-        case .directX10, .directX11:
-            candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
-        case .directX12:
-            candidates = [.d3dMetal, .vkd3d, .wineD3D]
-        case .automatic:
-            candidates = [.dxvk, .d3dMetal, .dxmt, .wineD3D]
-        }
-        return candidates.first { backend in
-            switch backend {
-            case .dxvk: features?.dxvk == true
-            case .d9vk: features?.d9vk == true
-            case .vkd3d: features?.vkd3d == true
-            case .d3dMetal: features?.d3dmetal == true
-            case .dxmt: features?.dxmt == true
-            case .wineD3D: true
-            case .automatic: false
-            }
-        } ?? .wineD3D
+        GraphicsBackendResolver.resolve(
+            api: api,
+            requestedBackend: .automatic,
+            runtime: runtime
+        ).stack.backend
     }
 }
 

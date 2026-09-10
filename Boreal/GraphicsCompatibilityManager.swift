@@ -40,7 +40,8 @@ nonisolated struct GraphicsCompatibilityManager: Sendable {
             backend: backendManager.resolve(
                 configuration.graphicsBackend,
                 graphicsAPI: configuration.graphicsAPI ?? .automatic,
-                runtime: runtime
+                runtime: runtime,
+                architecture: configuration.architecture
             ),
             dllOverrides: wrapper.dllOverrides,
             files: wrapper.files

@@ -47,8 +47,16 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
     var api: GraphicsAPI
     var fullscreenFSREnabled: Bool
 
-    func resolvedBackend(runtime: InstalledRuntime) -> GraphicsBackend {
-        GraphicsBackendManager().resolve(backend, graphicsAPI: api, runtime: runtime)
+    func resolvedBackend(
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture = .win64
+    ) -> GraphicsBackend {
+        GraphicsBackendManager().resolve(
+            backend,
+            graphicsAPI: api,
+            runtime: runtime,
+            architecture: architecture
+        )
     }
 
     func capabilities(runtime: InstalledRuntime) -> GraphicsBackendCapabilities {
@@ -74,7 +82,6 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var d3dmetal: Bool
     var dxmt: Bool
     var dxvk: Bool = false
-    var d9vk: Bool = false
     var vkd3d: Bool = false
     var esync: Bool = false
     var msync: Bool = false
@@ -88,13 +95,13 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         case esync, msync, fullscreenFSR, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
         self.wineMono = wineMono
         self.wineGecko = wineGecko
         self.d3dmetal = d3dmetal
         self.dxmt = dxmt
-        self.dxvk = dxvk
+        self.dxvk = dxvk || d9vk
         self.vkd3d = vkd3d
         self.esync = esync
         self.msync = msync
@@ -110,8 +117,9 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         wineGecko = try values.decodeIfPresent(Bool.self, forKey: .wineGecko) ?? false
         d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
         dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
-        dxvk = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
-        d9vk = try values.decodeIfPresent(Bool.self, forKey: .d9vk) ?? false
+        let storedDXVK = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
+        let storedLegacyD9VK = try values.decodeIfPresent(Bool.self, forKey: .d9vk) ?? false
+        dxvk = storedDXVK || storedLegacyD9VK
         vkd3d = try values.decodeIfPresent(Bool.self, forKey: .vkd3d) ?? false
         esync = try values.decodeIfPresent(Bool.self, forKey: .esync) ?? false
         msync = try values.decodeIfPresent(Bool.self, forKey: .msync) ?? false
@@ -120,20 +128,54 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         dgVoodoo2 = try values.decodeIfPresent(Bool.self, forKey: .dgVoodoo2) ?? false
         graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
     }
+
+    /// Compatibility accessor for callers and persisted data from the period
+    /// when D9VK was modelled as a separate backend. D9VK is now part of DXVK.
+    var d9vk: Bool { dxvk }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(wow64, forKey: .wow64)
+        try values.encode(wineMono, forKey: .wineMono)
+        try values.encode(wineGecko, forKey: .wineGecko)
+        try values.encode(d3dmetal, forKey: .d3dmetal)
+        try values.encode(dxmt, forKey: .dxmt)
+        try values.encode(dxvk, forKey: .dxvk)
+        try values.encode(vkd3d, forKey: .vkd3d)
+        try values.encode(esync, forKey: .esync)
+        try values.encode(msync, forKey: .msync)
+        try values.encode(fullscreenFSR, forKey: .fullscreenFSR)
+        try values.encode(wineBusControllerMapping, forKey: .wineBusControllerMapping)
+        try values.encode(dgVoodoo2, forKey: .dgVoodoo2)
+        try values.encodeIfPresent(graphicsCapabilities, forKey: .graphicsCapabilities)
+    }
 }
 
 nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case dxmt
     case dxvk
-    case d9vk
     case vkd3d
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "d9vk": self = .dxvk
+        default:
+            guard let component = Self(rawValue: value) else {
+                throw DecodingError.dataCorruptedError(
+                    in: try decoder.singleValueContainer(),
+                    debugDescription: "Unknown runtime component: \(value)"
+                )
+            }
+            self = component
+        }
+    }
 
     var id: String { rawValue }
     var displayName: String {
         switch self {
         case .dxmt: "DXMT"
         case .dxvk: "DXVK"
-        case .d9vk: "D9VK"
         case .vkd3d: "VKD3D-Proton"
         }
     }
@@ -141,7 +183,6 @@ nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hash
         switch self {
         case .dxmt: "DXMT"
         case .dxvk: "DXVK"
-        case .d9vk: "D9VK"
         case .vkd3d: "VKD3D"
         }
     }
@@ -150,11 +191,26 @@ nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hash
 /// Windows redistributables belong to a mutable game environment, never to
 /// the immutable runtime package or the user's global Wine prefix.
 nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
-    case directXRuntime, vc2010, vc2015To2022, xact, xinput, dotNetFramework, physX
+    case legacyDirectX, vc2010, vc2015To2022, xact, xinput, dotNetFramework, physX
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "directXRuntime": self = .legacyDirectX
+        default:
+            guard let dependency = Self(rawValue: value) else {
+                throw DecodingError.dataCorruptedError(
+                    in: try decoder.singleValueContainer(),
+                    debugDescription: "Unknown runtime dependency: \(value)"
+                )
+            }
+            self = dependency
+        }
+    }
     var id: String { rawValue }
     var displayName: String {
         switch self {
-        case .directXRuntime: "DirectX runtime"
+        case .legacyDirectX: "Legacy DirectX runtime"
         case .vc2010: "VC++ 2010"
         case .vc2015To2022: "VC++ 2015–2022"
         case .xact: "XACT"
@@ -165,7 +221,7 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
     }
     var winetricksVerb: String {
         switch self {
-        case .directXRuntime: "d3dx9"
+        case .legacyDirectX: "d3dx9"
         case .vc2010: "vcrun2010"
         case .vc2015To2022: "vcrun2019"
         case .xact: "xact"
@@ -176,7 +232,7 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
     }
     var detectionLibraries: [String] {
         switch self {
-        case .directXRuntime: ["d3dx9_43.dll", "d3dcompiler_43.dll"]
+        case .legacyDirectX: ["d3dx9_43.dll", "d3dcompiler_43.dll"]
         case .vc2010: ["msvcp100.dll", "msvcr100.dll"]
         case .vc2015To2022: ["msvcp140.dll", "vcruntime140.dll"]
         case .xact: ["xactengine3_7.dll"]
@@ -208,7 +264,7 @@ nonisolated enum RuntimeDependencyResolver {
         var result: [RuntimeDependency: (RuntimeDependencyRecommendation, String)] = [
             .vc2015To2022: (.recommended, "Common runtime for modern Windows games"),
             .xinput: (.recommended, "Common controller API for Windows games"),
-            .directXRuntime: (.optional, "Install only when the game needs legacy DirectX components"),
+            .legacyDirectX: (.optional, "Install only when the game needs legacy DirectX components"),
             .vc2010: (.optional, "Install only for games built with Visual C++ 2010"),
             .xact: (.optional, "Install only for games using legacy XACT audio"),
             .dotNetFramework: (.optional, "Install only when this game explicitly requires .NET Framework"),
@@ -226,7 +282,7 @@ nonisolated enum RuntimeDependencyResolver {
             return data.range(of: lower) != nil || data.range(of: upper) != nil
         }
         let evidence: [(RuntimeDependency, [String], String)] = [
-            (.directXRuntime, ["d3dx9_", "d3dcompiler_43.dll"], "Required by this executable's legacy DirectX imports"),
+            (.legacyDirectX, ["d3dx9_", "d3dcompiler_43.dll"], "Required by this executable's legacy DirectX imports"),
             (.vc2010, ["msvcp100.dll", "msvcr100.dll"], "Required by this executable's Visual C++ 2010 imports"),
             (.vc2015To2022, ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"], "Required by this executable's Visual C++ runtime imports"),
             (.xact, ["xactengine"], "Required by this executable's XACT audio import"),
@@ -302,7 +358,10 @@ nonisolated enum UnityIL2CPPRuntimeCompatibility {
 
     static func recommendedRuntimeEngine(for executable: URL) -> RuntimeEngine {
         if requiresModernWine(at: executable) { return .wine }
-        return WindowsExecutableArchitecture.inspect(executable) == .x86_64 ? .gamePortingToolkit : .wine
+        // PE bitness is a runtime constraint, not a Wine/GPTK selector. Keep
+        // the neutral Wine default for the UI; RuntimeManaging can still pick
+        // any compatible installed runtime when no engine is explicitly set.
+        return .wine
     }
 
     static func recommendedGraphicsAPI(for executable: URL, fileManager: FileManager = .default) -> GraphicsAPI? {
@@ -601,7 +660,6 @@ nonisolated extension RuntimeManaging {
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
         if component == .dxmt { return try await downloadAndInstallGraphicsComponent(.dxmt, into: runtimeID) }
         if component == .dxvk { return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID) }
-        if component == .d9vk { return try await downloadAndInstallGraphicsComponent(.d9vk, into: runtimeID) }
         throw CocoaError(.featureUnsupported)
     }
     func installGraphicsComponent(

@@ -239,11 +239,16 @@ actor EnvironmentManager: EnvironmentManaging {
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] {
         RuntimeDependency.allCases.map { dependency in
             let marker = environment.prefixURL.appending(path: ".boreal-dependencies/\(dependency.rawValue)")
+            let legacyMarker = dependency == .legacyDirectX
+                ? environment.prefixURL.appending(path: ".boreal-dependencies/directXRuntime")
+                : nil
             let directories = ["system32", "syswow64"].map { environment.prefixURL.appending(path: "drive_c/windows/\($0)") }
             let hasLibraries = dependency.detectionLibraries.contains { library in
                 directories.contains { $0.appending(path: library).path.isEmpty == false && fileManager.fileExists(atPath: $0.appending(path: library).path) }
             }
-            return RuntimeDependencyStatus(dependency: dependency, state: (hasLibraries || fileManager.fileExists(atPath: marker.path)) ? .installed : .missing, detail: nil)
+            let markerExists = fileManager.fileExists(atPath: marker.path)
+                || legacyMarker.map { fileManager.fileExists(atPath: $0.path) } == true
+            return RuntimeDependencyStatus(dependency: dependency, state: (hasLibraries || markerExists) ? .installed : .missing, detail: nil)
         }
     }
 

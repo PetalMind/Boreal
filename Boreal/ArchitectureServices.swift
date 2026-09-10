@@ -239,6 +239,7 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
     let arguments: [String]
     let environmentVariables: [String: String]
     let graphicsBackend: GraphicsBackend
+    let graphicsStack: GraphicsStack?
     let compatibilityProfile: WineCompatibilityProfile?
     let overlayCompatibleFullscreen: Bool
     let overlayDisplayID: UInt32?
@@ -252,7 +253,8 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         externalID: String?,
         windowsPlan: WindowsLaunchPlan,
         graphicsBackend: GraphicsBackend,
-        compatibilityProfile: WineCompatibilityProfile?
+        compatibilityProfile: WineCompatibilityProfile?,
+        graphicsStack: GraphicsStack? = nil
     ) {
         self.applicationID = applicationID
         self.installationID = installationID
@@ -265,6 +267,7 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         arguments = windowsPlan.arguments
         environmentVariables = windowsPlan.environment
         self.graphicsBackend = graphicsBackend
+        self.graphicsStack = graphicsStack
         self.compatibilityProfile = compatibilityProfile
         overlayCompatibleFullscreen = windowsPlan.overlayCompatibleFullscreen
         overlayDisplayID = windowsPlan.overlayDisplayID

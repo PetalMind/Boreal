@@ -144,15 +144,13 @@ actor RuntimeManager: RuntimeManaging {
         let repository: String
         switch backend {
         case .dxvk: repository = "Gcenx/DXVK-macOS"
-        case .d9vk: repository = "Sikarugir-App/d9vk"
         case .dxmt: repository = "3Shain/dxmt"
         case .vkd3d:
             return try await downloadAndInstallComponent(.vkd3d, into: runtimeID)
         default:
-            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK, D9VK and VKD3D-Proton can be installed as optional components.")
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK and VKD3D-Proton can be installed as optional components.")
         }
-        let releasePath = backend == .d9vk ? "releases?per_page=1" : "releases/latest"
-        guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/\(releasePath)") else {
+        guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
             throw RuntimeManagerError.invalidManifest
         }
         var request = URLRequest(url: releaseURL)
@@ -162,10 +160,7 @@ actor RuntimeManager: RuntimeManaging {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw RuntimeManagerError.downloadFailed("The official release service is currently unavailable.")
         }
-        let release = backend == .d9vk
-            ? try JSONDecoder().decode([GitHubRelease].self, from: releaseData).first
-            : try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
-        guard let release else { throw RuntimeManagerError.invalidManifest }
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
         let asset = release.assets.first {
             let name = $0.name.lowercased()
             return name.hasSuffix(".tar.gz")
@@ -174,7 +169,7 @@ actor RuntimeManager: RuntimeManaging {
         } ?? release.assets.first {
             let name = $0.name.lowercased()
             return name.hasSuffix(".zip") && !name.contains("debug")
-                && ((backend != .dxmt && backend != .dxvk && backend != .d9vk) || !name.contains("builtin"))
+                && ((backend != .dxmt && backend != .dxvk) || !name.contains("builtin"))
         } ?? release.assets.first {
             let name = $0.name.lowercased()
             return backend == .dxmt && name.hasSuffix(".tar.gz") && name.contains("builtin") && !name.contains("debug")
@@ -210,7 +205,6 @@ actor RuntimeManager: RuntimeManaging {
         let component: RuntimeComponent? = switch backend {
         case .dxmt: .dxmt
         case .dxvk: .dxvk
-        case .d9vk: .d9vk
         default: nil
         }
         if let component {
@@ -255,9 +249,6 @@ actor RuntimeManager: RuntimeManaging {
         if component == .dxvk {
             return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID)
         }
-        if component == .d9vk {
-            return try await downloadAndInstallGraphicsComponent(.d9vk, into: runtimeID)
-        }
         let repository = "HansKristian-Work/vkd3d-proton"
         let release = try await latestRelease(for: component)
         guard let asset = release.assets.first(where: {
@@ -297,8 +288,8 @@ actor RuntimeManager: RuntimeManaging {
         into runtimeID: String
     ) async throws -> InstalledRuntime {
         try prepareDirectories()
-        guard backend == .dxmt || backend == .dxvk || backend == .d9vk else {
-            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT, DXVK and D9VK component packages can be imported.")
+        guard backend == .dxmt || backend == .dxvk else {
+            throw RuntimeManagerError.localRuntimeInvalid("Only DXMT and DXVK component packages can be imported.")
         }
         guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains("..") else {
             throw RuntimeManagerError.localRuntimeInvalid("The target runtime identifier is unsafe.")
@@ -307,7 +298,7 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
         }
         guard runtime.resolvedEngine == .wine else {
-            throw RuntimeManagerError.localRuntimeInvalid("DXMT, DXVK and D9VK packages require a Wine runtime. D3DMetal is supplied by Game Porting Toolkit.")
+            throw RuntimeManagerError.localRuntimeInvalid("DXMT and DXVK packages require a Wine runtime. D3DMetal is supplied by Game Porting Toolkit.")
         }
         if backend == .dxmt {
             #if !arch(arm64)
@@ -358,7 +349,7 @@ actor RuntimeManager: RuntimeManaging {
         let discoveredUnix = backend == .dxmt
             ? try discoverDXMTUnixLibraries(in: packageRoot)
             : []
-        if backend == .dxvk || backend == .d9vk {
+        if backend == .dxvk {
             for library in discovered {
                 try GraphicsBackendManager.validateNativeDXVKLibrary(library.url)
             }
@@ -368,11 +359,9 @@ actor RuntimeManager: RuntimeManaging {
                 "The selected package does not contain compiled \(backend.displayName) DLLs. Choose a release/build artifact, not the project source folder."
             )
         }
-        // The macOS DXVK repack intentionally omits d3d9.dll and dxgi.dll;
-        // those APIs remain provided by Wine's builtin implementation.
         let required = backend == .dxmt
             ? Set(["dxgi.dll", "d3d11.dll", "winemetal.dll"])
-            : backend == .d9vk ? Set(["d3d9.dll"]) : Set(["d3d10core.dll", "d3d11.dll"])
+            : Set(["d3d10core.dll", "d3d11.dll"])
         let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
         guard required.isSubset(of: names) else {
             throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
@@ -381,7 +370,7 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid("The DXMT package is incomplete. Required 64-bit Unix library: winemetal.so.")
         }
 
-        let componentName = backend == .dxmt ? "DXMT" : backend == .d9vk ? "D9VK" : "DXVK"
+        let componentName = backend == .dxmt ? "DXMT" : "DXVK"
         let destination = runtime.rootURL.appending(path: "GraphicsComponents/\(componentName)", directoryHint: .isDirectory)
         let staging = runtime.rootURL.appending(path: ".graphics-installing-\(UUID().uuidString)", directoryHint: .isDirectory)
         let backup = runtime.rootURL.appending(path: ".graphics-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -410,7 +399,6 @@ actor RuntimeManager: RuntimeManaging {
                 wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false
             )
             if backend == .dxmt { features.dxmt = true }
-            else if backend == .d9vk { features.d9vk = true }
             else { features.dxvk = true }
             runtime = InstalledRuntime(
                 id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion,
@@ -1063,11 +1051,9 @@ actor RuntimeManager: RuntimeManaging {
         switch component {
         case .dxmt: repository = "3Shain/dxmt"
         case .dxvk: repository = "Gcenx/DXVK-macOS"
-        case .d9vk: repository = "Sikarugir-App/d9vk"
         case .vkd3d: repository = "HansKristian-Work/vkd3d-proton"
         }
-        let releasePath = component == .d9vk ? "releases?per_page=1" : "releases/latest"
-        guard let url = URL(string: "https://api.github.com/repos/\(repository)/\(releasePath)") else {
+        guard let url = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
             throw RuntimeManagerError.invalidManifest
         }
         var request = URLRequest(url: url)
@@ -1076,12 +1062,6 @@ actor RuntimeManager: RuntimeManaging {
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw RuntimeManagerError.downloadFailed("The official release service is currently unavailable.")
-        }
-        if component == .d9vk {
-            guard let release = try JSONDecoder().decode([GitHubRelease].self, from: data).first else {
-                throw RuntimeManagerError.invalidManifest
-            }
-            return release
         }
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
     }
@@ -1167,7 +1147,7 @@ actor RuntimeManager: RuntimeManaging {
         in root: URL,
         backend: WineGraphicsBackend
     ) throws -> [GraphicsLibrary] {
-        let supported: Set<String> = backend == .d9vk ? ["d3d9.dll"] : backend == .dxmt
+        let supported: Set<String> = backend == .dxmt
             ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll"]
             : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
         return try discoverComponentLibraries(in: root, names: supported).sorted {
@@ -1241,7 +1221,7 @@ actor RuntimeManager: RuntimeManaging {
         features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
             && fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix/winemetal.so").path)
         features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["d3d10core.dll", "d3d11.dll"], in: runtime)
-        features.d9vk = hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
+            || hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
         features.esync = runtimePayloadContains("WINEESYNC", in: runtime)
         features.msync = runtimePayloadContains("WINEMSYNC", in: runtime)
