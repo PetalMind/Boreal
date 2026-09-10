@@ -69,7 +69,7 @@ W zakresie **Windows** pojawia się dodatkowy filtr **Windows path**. Wartość 
 Filtry są nakładane jednocześnie na każdy rekord:
 
 - **Genre** — lista gatunków jest budowana z gatunków obecnych w aktualnym katalogu; `Not provided` oznacza brak gatunków (`nil` albo pusta tablica);
-- **Compatibility** — sprawdza ratingi właściwe dla bieżącego zakresu. Dla `Mac` używany jest rating Native, dla `Windows` — wybrana ścieżka albo wszystkie trzy ścieżki Windows, a dla `Recommended` i `All Games` — wszystkie dostępne ratingi;
+- **Compatibility** — sprawdza ratingi właściwe dla bieżącego zakresu. Dla `Mac` używane są ratingi Native i Rosetta 2; deklaracja macOS bez ratingu pozostaje bez wyniku kompatybilności. Dla `Windows` używana jest wybrana ścieżka albo wszystkie trzy ścieżki Windows, a dla `Recommended` i `All Games` — wszystkie dostępne ratingi;
 - **Store** — `Steam` oznacza obecność `steamAppID`, a `Other / unknown` jego brak;
 - **Has compatibility report** — zostawia wpisy, które mają co najmniej jeden rating różny od `Unknown` i `N/A`. Oznacza to obecność raportu źródłowego, a nie test wykonany przez Boreal;
 - **Reset filters** — przywraca zakres `All Games`, wszystkie wartości filtrów i sortowania oraz czyści wyszukiwanie. Nie zmienia zapisanego wyboru siatki/listy.
@@ -182,7 +182,7 @@ Cache metadanych ma żywotność 24 godzin. Nieudane wyszukanie metadanych ma os
 
 - artwork i tytuł otwierające szczegóły;
 - maksymalnie dwa gatunki;
-- etykietę Native, Rosetta 2 albo Windows;
+- etykietę Native macOS, Rosetta 2, macOS albo Windows;
 - najlepszy rating lub „Compatibility unknown”;
 - raportowaną metodę, jeśli istnieje grywalny raport;
 - najlepszą dostępną cenę, stan ładowania albo „Price unavailable”;

@@ -148,6 +148,9 @@ struct StoreGameDetailView: View {
         .task(id: game.id) {
             store.refreshSteamMetadataIfNeeded(for: game)
         }
+        .task(id: "steam-fallback-\(game.id.uuidString)") {
+            store.refreshSteamPresentationFallbackIfNeeded(for: game)
+        }
         .task(id: "gog-revived-\(game.id.uuidString)") {
             guard let discoveryGame else { return }
             await store.ensureGOGRevivedAvailability(for: discoveryGame)

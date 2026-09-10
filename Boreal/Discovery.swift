@@ -107,14 +107,14 @@ nonisolated enum AppleGamingWikiPlatform: String, CaseIterable, Hashable, Sendab
 nonisolated enum DiscoveryScope: String, CaseIterable, Hashable, Sendable {
     case recommended
     case all
-    case native
+    case mac
     case windows
 
     var title: String {
         switch self {
         case .recommended: "Recommended"
         case .all: "All Games"
-        case .native: "Mac"
+        case .mac: "Mac"
         case .windows: "Windows"
         }
     }
@@ -123,7 +123,7 @@ nonisolated enum DiscoveryScope: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .recommended: "sparkles"
         case .all: "square.grid.2x2"
-        case .native: "apple.logo"
+        case .mac: "apple.logo"
         case .windows: "wineglass"
         }
     }
@@ -183,8 +183,8 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
 
     var id: String { pageURL }
     var isTested: Bool { !availableRatings.isEmpty }
-    var hasNativeMacOSSupport: Bool { native.isPlayable || macOSStoreSupport == true }
-    var hasMacSupport: Bool { hasNativeMacOSSupport || rosetta2.isPlayable }
+    var hasNativeMacOSReport: Bool { native.isPlayable }
+    var hasMacSupport: Bool { hasNativeMacOSReport || rosetta2.isPlayable || macOSStoreSupport == true }
     var macSupportKind: DiscoveryMacSupportKind? {
         if native.isPlayable { return .native }
         if rosetta2.isPlayable { return .rosetta2 }
@@ -215,7 +215,7 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
         case .all: true
         case .perfect:
             [native, rosetta2, crossover, wine, parallels].contains(.perfect)
-        case .native: hasNativeMacOSSupport
+        case .native: hasNativeMacOSReport
         case .rosetta2: rosetta2.isPlayable
         case .crossover: crossover.isPlayable
         case .wine: wine.isPlayable
@@ -245,6 +245,7 @@ nonisolated struct AppleGamingWikiCatalog: Codable, Hashable, Sendable {
 
     var trackedCount: Int { games.count }
     var playableCount: Int { games.filter { $0.availableRatings.contains { $0.rating.isPlayable } }.count }
+    var macSupportCount: Int { games.filter(\.hasMacSupport).count }
 
     func count(for platform: AppleGamingWikiPlatform) -> Int {
         games.filter { $0.matches(platform) }.count
@@ -950,7 +951,7 @@ struct DiscoveryView: View {
     @State private var rating = "All ratings"
     @State private var storefront = "All stores"
     @State private var sortOrder = "Recommended"
-    @State private var testedOnly = false
+    @State private var hasCompatibilityReportOnly = false
     @AppStorage("discoveryListLayout") private var listLayout = false
     @State private var showGuide = false
 
@@ -976,7 +977,7 @@ struct DiscoveryView: View {
                     catalogContent(catalog)
                 } else {
                     ContentUnavailableView {
-                        Label("Discover games for your Mac", systemImage: "gamecontroller")
+                        Label("Discover Mac games", systemImage: "gamecontroller")
                     } description: {
                         if case .failed(let message) = store.discoveryState { Text(message) }
                         else { ProgressView("Loading catalog…") }
@@ -1013,7 +1014,7 @@ struct DiscoveryView: View {
         HStack {
             VStack(alignment: .leading, spacing: 8) {
                 Text("DISCOVER").font(.caption).foregroundStyle(.secondary)
-                Text("Find games that work on your Mac").font(.system(size: 28, weight: .bold))
+                Text("Explore games with Mac support").font(.system(size: 28, weight: .bold))
                 Text(macProfile.summary)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.primary.opacity(0.86))
@@ -1033,8 +1034,8 @@ struct DiscoveryView: View {
             Text("games").foregroundStyle(.secondary)
             Text("·").foregroundStyle(.tertiary)
             Image(systemName: "apple.logo").foregroundStyle(.secondary)
-            Text(catalog.count(for: .native).formatted()).fontWeight(.semibold)
-            Text("Native").foregroundStyle(.secondary)
+            Text(catalog.macSupportCount.formatted()).fontWeight(.semibold)
+            Text("Mac").foregroundStyle(.secondary)
             Text("·").foregroundStyle(.tertiary)
             Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
             Text(unknownCount.formatted()).fontWeight(.semibold)
@@ -1042,7 +1043,7 @@ struct DiscoveryView: View {
         }
         .font(.callout)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(catalog.trackedCount) games, \(catalog.count(for: .native)) native, \(unknownCount) compatibility unknown")
+        .accessibilityLabel("\(catalog.trackedCount) games, \(catalog.macSupportCount) Mac supported, \(unknownCount) compatibility unknown")
     }
 
     private func filters(_ catalog: AppleGamingWikiCatalog) -> some View {
@@ -1123,7 +1124,7 @@ struct DiscoveryView: View {
 
     private var filtersMenu: some View {
         Menu {
-            Toggle("Has compatibility report", isOn: $testedOnly)
+            Toggle("Has compatibility report", isOn: $hasCompatibilityReportOnly)
                 .help("Only entries with community compatibility reports. These are not tests performed by Boreal.")
             Divider()
             Button("Reset filters", systemImage: "arrow.counterclockwise") { resetFilters() }
@@ -1231,7 +1232,7 @@ struct DiscoveryView: View {
         matchesScope(game)
             && matchesWindowsMethod(game)
             && (searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || game.title.localizedCaseInsensitiveContains(searchText.trimmingCharacters(in: .whitespacesAndNewlines)))
-            && (!testedOnly || game.isTested)
+            && (!hasCompatibilityReportOnly || game.isTested)
             && (rating == "All ratings" || compatibilityRatings(for: game).contains { $0.rawValue == rating })
             && (genre == "All genres" || (genre == "Not provided" ? game.genres?.isEmpty != false : game.genres?.contains(genre) == true))
             && (storefront == "All stores" || (storefront == "Steam" ? game.steamAppID != nil : game.steamAppID == nil))
@@ -1240,7 +1241,7 @@ struct DiscoveryView: View {
     private func matchesScope(_ game: AppleGamingWikiGame) -> Bool {
         switch scope {
         case .recommended, .all: true
-        case .native: game.hasMacSupport
+        case .mac: game.hasMacSupport
         case .windows: [game.crossover, game.wine, game.parallels].contains { $0 != .unknown && $0 != .notApplicable }
         }
     }
@@ -1252,7 +1253,7 @@ struct DiscoveryView: View {
 
     private func compatibilityRatings(for game: AppleGamingWikiGame) -> [AppleGamingWikiRating] {
         switch scope {
-        case .native: [game.native]
+        case .mac: [game.native, game.rosetta2]
         case .windows:
             switch windowsMethod {
             case .crossover: [game.crossover]
@@ -1312,7 +1313,7 @@ struct DiscoveryView: View {
             guideRow("Compatibility ratings", "Community reports for Native, Rosetta 2, CrossOver, Wine and Parallels.", "checkmark.seal")
             guideRow("Store links", "Open the game's verified store page or search another storefront.", "link")
             guideRow("Performance insights", "Read hardware and configuration reports on the source page.", "chart.bar")
-            guideRow("Add to library", "Save games you’re interested in. Purchase and installation are handled separately.", "plus")
+            guideRow("Save for later", "Save games you’re interested in Discovery. Adding to your library is a separate action.", "bookmark")
             Text("A macOS listing does not confirm Apple Silicon or current macOS compatibility. ‘Playable’ requires a Perfect or Playable community rating; reaching a menu is insufficient.")
                 .font(.caption).foregroundStyle(.secondary)
             Link("Open compatibility documentation ↗", destination: AppleGamingWikiDiscoveryService.masterListURL)
@@ -1331,7 +1332,7 @@ struct DiscoveryView: View {
         rating = "All ratings"
         storefront = "All stores"
         windowsMethod = .all
-        testedOnly = false
+        hasCompatibilityReportOnly = false
         sortOrder = "Recommended"
         scope = .all
         searchText = ""

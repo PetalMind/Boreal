@@ -110,6 +110,7 @@ final class BorealStore {
     private var storeDownloadRecords: [String: StoreDownloadRecord] = [:]
     private var lastDownloadRecordSave: [String: Date] = [:]
     private var steamMetadataRefreshes: Set<String> = []
+    private var steamPresentationFallbacks: Set<String> = []
     private var storeSizeEstimateLoads: Set<String> = []
     private let storeSizeEstimateGate = StoreSizeEstimateGate(limit: 3)
     private var installationTask: Task<UUID?, Never>?
@@ -638,6 +639,70 @@ final class BorealStore {
             storeGames[index] = value
             save()
         }
+    }
+
+    /// GOG and Epic catalog responses can omit the presentation fields used by
+    /// the product card. Steam is used only as a field-level fallback; the
+    /// game's provider and identity remain GOG/Epic.
+    func refreshSteamPresentationFallbackIfNeeded(for game: StoreLibraryGame) {
+        guard [.epic, .gog].contains(game.provider),
+              Self.needsSteamPresentationFallback(game),
+              steamPresentationFallbacks.insert(storePresentationKey(for: game)).inserted else { return }
+
+        Task { [weak self] in
+            guard let self,
+                  let fallback = await services.steamLibrary.searchStoreGame(named: game.name),
+                  let index = storeGames.firstIndex(where: { $0.storeReference == game.storeReference }) else { return }
+            var value = storeGames[index]
+            guard Self.mergeSteamPresentationFallback(from: fallback, into: &value) else { return }
+            storeGames[index] = value
+            save()
+        }
+    }
+
+    private func storePresentationKey(for game: StoreLibraryGame) -> String {
+        "\(game.provider.rawValue)::\(game.externalID)"
+    }
+
+    private static func needsSteamPresentationFallback(_ game: StoreLibraryGame) -> Bool {
+        guard [.epic, .gog].contains(game.provider) else { return false }
+        return isMissingPresentationText(game.summary)
+            || isMissingPresentationText(game.portraitImageURL)
+            || isMissingPresentationText(game.headerImageURL)
+            || isMissingPresentationText(game.backgroundImageURL)
+            || !hasUsableMedia(game.screenshotURLs)
+            || !hasUsableVideos(game.videos)
+    }
+
+    private static func mergeSteamPresentationFallback(
+        from fallback: StoreLibraryGame,
+        into game: inout StoreLibraryGame
+    ) -> Bool {
+        let original = game
+        if isMissingPresentationText(game.developer) { game.developer = fallback.developer }
+        if isMissingPresentationText(game.summary) { game.summary = fallback.summary }
+        if isMissingPresentationText(game.artworkPath) { game.artworkPath = fallback.artworkPath }
+        if isMissingPresentationText(game.portraitImageURL) { game.portraitImageURL = fallback.portraitImageURL }
+        if isMissingPresentationText(game.headerImageURL) { game.headerImageURL = fallback.headerImageURL }
+        if isMissingPresentationText(game.backgroundImageURL) { game.backgroundImageURL = fallback.backgroundImageURL }
+        if !hasUsableMedia(game.screenshotURLs) { game.screenshotURLs = fallback.screenshotURLs }
+        if !hasUsableVideos(game.videos) { game.videos = fallback.videos }
+        return game != original
+    }
+
+    private static func isMissingPresentationText(_ value: String?) -> Bool {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+    }
+
+    private static func hasUsableMedia(_ values: [String]?) -> Bool {
+        values?.contains { !isMissingPresentationText($0) && URL(string: $0) != nil } == true
+    }
+
+    private static func hasUsableVideos(_ values: [StoreVideo]?) -> Bool {
+        values?.contains {
+            (!isMissingPresentationText($0.videoURL) && URL(string: $0.videoURL) != nil)
+                || ($0.thumbnailURL.flatMap { URL(string: $0) } != nil)
+        } == true
     }
 
     func loadSteamCurrentPlayerCountIfNeeded(for gameID: UUID) async {
