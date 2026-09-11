@@ -60,7 +60,8 @@ actor EnvironmentManager: EnvironmentManaging {
             rootURL: environment.rootURL,
             prefixURL: stagingPrefix,
             logsURL: environment.logsURL,
-            state: .initializing
+            state: .initializing,
+            purpose: environment.purpose
         )
 
         do {
@@ -89,6 +90,11 @@ actor EnvironmentManager: EnvironmentManaging {
             // Some Wine and GPTK builds can return a non-zero status after they
             // have committed a usable prefix. Completeness remains the truth.
             try await applyConfiguration(stagingEnvironment, runtime: runtime)
+            for dependency in environment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
+                let current = await dependencyStatuses(stagingEnvironment, runtime: runtime)
+                guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
+                try await install(dependency, in: stagingEnvironment, runtime: runtime)
+            }
             let missing = missingPrefixPaths(at: stagingPrefix)
             guard missing.isEmpty else {
                 throw EnvironmentManagerError.validationFailed(

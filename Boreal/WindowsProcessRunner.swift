@@ -88,6 +88,13 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             // this runtime. Let Heroes 3 create its own Wine window instead.
             launchPlan.overlayCompatibleFullscreen = false
         }
+        if plan.executable.lastPathComponent.caseInsensitiveCompare("BoundByFlame.exe") == .orderedSame {
+            // Bound by Flame remains alive inside the virtual explorer
+            // desktop but does not expose its game window on this runtime.
+            // Always use Wine's native window path, including for older
+            // persisted profiles that still have overlay enabled.
+            launchPlan.overlayCompatibleFullscreen = false
+        }
         let wineArguments = WineLaunchArguments.make(
             for: launchPlan,
             environmentID: environment.id,
@@ -112,7 +119,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
         }
-        let prefixArchitecture = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue ? WinePrefixArchitecture.win32 : .win64
+        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
             let configuration = environment.rootURL.appending(path: "Darksiders2-dxvk.conf")
@@ -297,7 +304,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
         values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
-        let prefixArchitecture = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue ? WinePrefixArchitecture.win32 : .win64
+        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk {
             // MoltenVK dynamically grows exhausted descriptor pools. Its warning
             // for every allocation can otherwise write megabytes per minute.

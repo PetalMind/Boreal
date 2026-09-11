@@ -195,6 +195,8 @@ nonisolated struct CompatibilityFallbackEvent: Codable, Hashable, Sendable, Iden
     let reason: GraphicsFallbackReason
     let date: Date
     let logReference: URL?
+    let environmentID: UUID?
+    let resolverRevision: Int?
 
     init(
         id: UUID = UUID(),
@@ -202,7 +204,9 @@ nonisolated struct CompatibilityFallbackEvent: Codable, Hashable, Sendable, Iden
         fallbackBackend: GraphicsBackend,
         reason: GraphicsFallbackReason,
         date: Date = .now,
-        logReference: URL? = nil
+        logReference: URL? = nil,
+        environmentID: UUID? = nil,
+        resolverRevision: Int? = nil
     ) {
         self.id = id
         self.failedBackend = failedBackend
@@ -210,6 +214,8 @@ nonisolated struct CompatibilityFallbackEvent: Codable, Hashable, Sendable, Iden
         self.reason = reason
         self.date = date
         self.logReference = logReference
+        self.environmentID = environmentID
+        self.resolverRevision = resolverRevision
     }
 }
 
@@ -303,6 +309,7 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     /// launch phase on the supported Wine runtime. When set, the profile is
     /// applied even if an older persisted profile selected another backend.
     var enforcedBackend: WineGraphicsBackend? = nil
+    var enforcedAPI: GraphicsAPI? = nil
     var overlayCompatibleFullscreen: Bool? = nil
     // Optional so profiles persisted by older Boreal versions remain
     // decodable. These values are merged into the launch plan only when the
@@ -389,11 +396,13 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var disableSteamInputEquivalent = false
     var forceXInput = true
     var launchArguments = ""
+    var runtimeIDOverride: String? = nil
+    var requiredDependencies: Set<RuntimeDependency> = []
 
     private enum CodingKeys: String, CodingKey {
         case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
         case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
-        case disableSteamInputEquivalent, forceXInput, launchArguments
+        case disableSteamInputEquivalent, forceXInput, launchArguments, runtimeIDOverride, requiredDependencies
     }
 
     static let `default` = WineCompatibilityProfile()
@@ -451,6 +460,8 @@ extension WineCompatibilityProfile {
         disableSteamInputEquivalent = try values.decodeIfPresent(Bool.self, forKey: .disableSteamInputEquivalent) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         launchArguments = try values.decodeIfPresent(String.self, forKey: .launchArguments) ?? ""
+        runtimeIDOverride = try values.decodeIfPresent(String.self, forKey: .runtimeIDOverride)
+        requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []
     }
 }
 
@@ -1052,7 +1063,7 @@ enum InstallationStage: String, CaseIterable, Hashable, Sendable {
         case .creatingEnvironment: "Creating Windows environment…"
         case .startingInstaller: "Starting installer…"
         case .detectingApplication: "Detecting installed application…"
-        case .verifyingFirstLaunch: "Checking that the application opens correctly…"
+        case .verifyingFirstLaunch: "Validating prepared compatibility…"
         case .committing: "Finishing installation…"
         }
     }

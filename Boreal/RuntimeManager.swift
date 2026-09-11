@@ -1217,7 +1217,11 @@ actor RuntimeManager: RuntimeManaging {
             d3dmetal: runtime.resolvedEngine == .gamePortingToolkit,
             dxmt: false
         )
-        if runtime.origin == .localImport { features.wow64 = detectsWoW64(in: copiedApp) }
+        if runtime.origin == .localImport {
+            features.wow64 = detectsWoW64(in: copiedApp)
+            features.supportsWin32Execution = features.wow64
+            features.supportsWin64Execution = true
+        }
         features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
             && fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix/winemetal.so").path)
         features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["d3d10core.dll", "d3d11.dll"], in: runtime)

@@ -132,6 +132,14 @@ struct StoreGameDetailView: View {
                 store.refreshDependencies(for: environmentID, application: linkedApplication)
             }
         }
+        .task(id: "compatibility-preparation-\(game.id.uuidString)-\(store.isInstalled(currentGame))-\(linkedApplication?.id.uuidString ?? "none")") {
+            guard [.epic, .gog].contains(game.provider),
+                  store.usesManagedRuntime(for: currentGame),
+                  store.isInstalled(currentGame),
+                  linkedApplication == nil,
+                  store.storeGameOperation(for: currentGame) == nil else { return }
+            store.prepareStoreGame(currentGame)
+        }
         .task(id: game.id) {
             await store.loadStoreGameSizeIfNeeded(for: game.id)
         }
@@ -871,7 +879,7 @@ struct StoreGameDetailView: View {
                 if let app = linkedApplication {
                     runtimeLaunchControl(for: app, playTitle: .Library.play)
                 } else if store.usesManagedRuntime(for: currentGame), storeOperation == nil {
-                    runtimePreparationMenu
+                    primaryStatusButton("Preparing compatibility…", symbol: "gearshape.2.fill")
                 } else if store.installedPlatform(for: currentGame) == .nativeMacOS {
                     Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())

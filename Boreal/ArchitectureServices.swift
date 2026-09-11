@@ -241,6 +241,12 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
     let graphicsBackend: GraphicsBackend
     let graphicsStack: GraphicsStack?
     let compatibilityProfile: WineCompatibilityProfile?
+    let prefixMode: WinePrefixMode
+    let windowsVersion: WineWindowsVersion
+    let directXAPI: GraphicsAPI
+    let dependencies: [RuntimeDependency]
+    let environmentPurpose: EnvironmentPurpose
+    let executableArchitecture: WindowsExecutableArchitecture
     let overlayCompatibleFullscreen: Bool
     let overlayDisplayID: UInt32?
 
@@ -254,7 +260,13 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         windowsPlan: WindowsLaunchPlan,
         graphicsBackend: GraphicsBackend,
         compatibilityProfile: WineCompatibilityProfile?,
-        graphicsStack: GraphicsStack? = nil
+        graphicsStack: GraphicsStack? = nil,
+        prefixMode: WinePrefixMode = .wow64,
+        windowsVersion: WineWindowsVersion = .windows11,
+        directXAPI: GraphicsAPI = .automatic,
+        dependencies: [RuntimeDependency] = [],
+        environmentPurpose: EnvironmentPurpose = .game,
+        executableArchitecture: WindowsExecutableArchitecture = .unknown
     ) {
         self.applicationID = applicationID
         self.installationID = installationID
@@ -269,6 +281,12 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         self.graphicsBackend = graphicsBackend
         self.graphicsStack = graphicsStack
         self.compatibilityProfile = compatibilityProfile
+        self.prefixMode = prefixMode
+        self.windowsVersion = windowsVersion
+        self.directXAPI = directXAPI
+        self.dependencies = dependencies
+        self.environmentPurpose = environmentPurpose
+        self.executableArchitecture = executableArchitecture
         overlayCompatibleFullscreen = windowsPlan.overlayCompatibleFullscreen
         overlayDisplayID = windowsPlan.overlayDisplayID
     }

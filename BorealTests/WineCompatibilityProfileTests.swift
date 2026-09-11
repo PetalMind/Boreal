@@ -520,7 +520,7 @@ struct WineCompatibilityProfileTests {
         #expect(effective.graphicsAPI == .directX9)
     }
 
-    @Test func boundByFlameUsesWineD3DVulkanFallbackForGOGLaunches() {
+    @Test func boundByFlameUsesWineD3DOpenGLForGOGLaunches() {
         let application = WindowsApplication(
             name: "Bound By Flame",
             publisher: "Spiders",
@@ -546,7 +546,8 @@ struct WineCompatibilityProfileTests {
         #expect(profile?.defaultAPI == .directX9)
         #expect(profile?.preferredBackend == .wineD3D)
         #expect(profile?.enforcedBackend == .wineD3D)
-        #expect(profile?.launchEnvironment?["WINED3D_RENDERER"] == "vulkan")
+        #expect(profile?.overlayCompatibleFullscreen == false)
+        #expect(profile?.launchEnvironment?["WINED3D_RENDERER"] == "gl")
         #expect(effective.graphicsBackend == .wineD3D)
         #expect(effective.graphicsAPI == .directX9)
     }

@@ -261,7 +261,7 @@ struct InstallationSheet: View {
             }
         case .succeeded:
             Label(
-                selectedAction == .runOnly ? "Installer launched" : (selectedAction == .existing ? "Game added" : "First launch verified"),
+                selectedAction == .runOnly ? "Installer launched" : (selectedAction == .existing ? "Game added" : "Compatibility prepared"),
                 systemImage: selectedAction == .runOnly ? "shippingbox.fill" : "checkmark.seal.fill"
             )
                 .foregroundStyle(.green)

@@ -41,7 +41,9 @@ nonisolated struct GraphicsCompatibilityManager: Sendable {
                 configuration.graphicsBackend,
                 graphicsAPI: configuration.graphicsAPI ?? .automatic,
                 runtime: runtime,
-                architecture: configuration.architecture
+                architecture: environment.configuration.resolvedPrefixArchitecture(
+                    runtimeSupportsWoW64: runtime.features?.wow64 == true
+                )
             ),
             dllOverrides: wrapper.dllOverrides,
             files: wrapper.files

@@ -4,7 +4,7 @@ nonisolated struct InstallationCommit: Sendable {
     let environment: ManagedBorealEnvironment
     let runtime: InstalledRuntime
     let executable: URL
-    let firstLaunch: WindowsProcessSession
+    let firstLaunch: WindowsProcessSession?
     let installerResult: ProcessExecutionResult
 }
 
@@ -71,55 +71,11 @@ extension RuntimeManaging {
         preferredEngine: RuntimeEngine? = nil,
         executableArchitecture: WindowsExecutableArchitecture? = nil
     ) async throws -> InstalledRuntime {
-        let installed = try await installedRuntimes()
-        let orderedInstalled = installed.sorted { lhs, rhs in
-            guard let preferredEngine else { return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending }
-            let lhsPreferred = lhs.resolvedEngine == preferredEngine
-            let rhsPreferred = rhs.resolvedEngine == preferredEngine
-            if lhsPreferred != rhsPreferred { return lhsPreferred }
-            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
-        }
-        for runtime in orderedInstalled {
-            try Task.checkCancellation()
-            if let preferredEngine, runtime.resolvedEngine != preferredEngine { continue }
-            guard supports(executableArchitecture, runtime: runtime) else { continue }
-            if try await validate(runtime).isReady { return runtime }
-        }
-
-        let localCandidates = await localRuntimeCandidates()
-        if let local = localCandidates.first(where: {
-            (preferredEngine == nil || $0.engine == preferredEngine)
-                && supports(executableArchitecture, features: $0.features)
-        }) {
-            try Task.checkCancellation()
-            return try await importLocalRuntime(local)
-        }
-
-        guard let available = try await availableRuntimes().first(where: {
-            (preferredEngine == nil || ($0.features.d3dmetal ? RuntimeEngine.gamePortingToolkit : .wine) == preferredEngine)
-                && supports(executableArchitecture, features: $0.features)
-        }) else {
-            throw InstallerServiceError.noRuntimeAvailable
-        }
-        try Task.checkCancellation()
-        return try await install(available)
-    }
-
-    private func supports(
-        _ architecture: WindowsExecutableArchitecture?,
-        runtime: InstalledRuntime
-    ) -> Bool {
-        supports(architecture, features: runtime.features)
-    }
-
-    private func supports(
-        _ architecture: WindowsExecutableArchitecture?,
-        features: RuntimeFeatures?
-    ) -> Bool {
-        switch architecture {
-        case .x86: features?.wow64 == true
-        case .x86_64, .unknown, nil: true
-        }
+        let architectures = executableArchitecture.map { [$0] } ?? [.unknown]
+        return try await prepareReadyRuntime(for: RuntimeSelectionRequest(
+            architectures: architectures,
+            requiredEngine: preferredEngine
+        ))
     }
 }
 
@@ -161,18 +117,21 @@ actor InstallerService: Installing {
         // Steam's setup bootstrapper is commonly a 32-bit PE, but the resulting
         // bottle must also host 64-bit Steam games. Keep the shared Steam bottle
         // WoW64-capable instead of deriving its architecture from SteamSetup.exe.
-        let environmentArchitecture = name == "Steam for Windows"
-            ? "win64"
-            : (installerArchitecture == .x86 ? "win32" : "win64")
         let runtime = try await readyRuntime(
             preferredEngine: selectedEngine,
-            executableArchitecture: installerArchitecture
+            executableArchitecture: installerArchitecture,
+            requiredArchitectures: name == "Steam for Windows" ? [.x86, .x86_64] : nil
         )
+        let environmentArchitecture = installerArchitecture == .x86 ? "win32" : "win64"
+        let prefixMode: WinePrefixMode? = runtime.features?.wow64 == true
+            ? .wow64
+            : (installerArchitecture == .x86 ? .legacyWin32 : .legacyWin64)
         await progress(.creatingEnvironment)
-        let environment = try await environmentManager.create(
-            configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture),
+        var environment = try await environmentManager.create(
+            configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture, prefixMode: prefixMode),
             runtime: runtime
         )
+        environment.purpose = name == "Steam for Windows" ? .sharedStore : .game
         do {
             try await environmentManager.initialize(environment, runtime: runtime)
             let driveC = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory)
@@ -195,17 +154,48 @@ actor InstallerService: Installing {
                 throw InstallerServiceError.executableNotDiscovered
             }
             await progress(.verifyingFirstLaunch)
-            let firstLaunch = try await processRunner.run(executable: executable, arguments: [], environment: environment, runtime: runtime)
-            try await withTaskCancellationHandler {
-                try await Task.sleep(for: .milliseconds(750))
-            } onCancel: {
-                Task { try? await self.processRunner.stopApplication(firstLaunch) }
+            var preparedEnvironment = environment
+            let analysisRoot = environment.prefixURL.appending(path: "drive_c", directoryHint: .isDirectory)
+            let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                root: analysisRoot,
+                applicationName: name,
+                knownPrimary: executable
+            )
+            let gameProfile: GameGraphicsProfile? = nil
+            let userProfile = WineCompatibilityProfile.default
+            let resolved = try CompatibilityPreparationResolver.resolve(
+                analysis: analysis,
+                userProfile: userProfile,
+                gameProfile: gameProfile,
+                runtime: runtime
+            )
+            guard resolved.prefixMode == preparedEnvironment.configuration.resolvedPrefixMode(
+                runtimeSupportsWoW64: runtime.features?.wow64 == true
+            ) else {
+                throw CompatibilityPreparationError.noCompatibleRuntime(
+                    "The installed game requires a different prefix architecture than the installer environment."
+                )
             }
-            if case .terminated(let result) = try await processRunner.state(of: firstLaunch), result.exitCode != 0 {
-                throw InstallerServiceError.firstLaunchFailed(result.exitCode)
+            preparedEnvironment.configuration.architecture = resolved.executableArchitecture == .x86 ? "win32" : "win64"
+            preparedEnvironment.configuration.windowsVersion = resolved.windowsVersion.rawValue
+            preparedEnvironment.configuration.graphicsAPI = resolved.directXAPI
+            preparedEnvironment.configuration.graphicsBackend = resolved.graphicsStack.backend
+            preparedEnvironment.configuration.prefixMode = resolved.prefixMode
+            preparedEnvironment.configuration.requiredDependencies = Set(resolved.dependencies)
+            // Persist the resolved plan before installing components so a retry
+            // or later launch observes the same compatibility decision.
+            try await environmentManager.configure(preparedEnvironment, runtime: runtime)
+            for dependency in resolved.dependencies {
+                try await environmentManager.install(dependency, in: preparedEnvironment, runtime: runtime)
             }
             await progress(.committing)
-            return InstallationCommit(environment: environment, runtime: runtime, executable: executable, firstLaunch: firstLaunch, installerResult: installerResult)
+            let firstLaunch: WindowsProcessSession?
+            if name == "Steam for Windows" {
+                firstLaunch = try await processRunner.run(executable: executable, arguments: [], environment: preparedEnvironment, runtime: runtime)
+            } else {
+                firstLaunch = nil
+            }
+            return InstallationCommit(environment: preparedEnvironment, runtime: runtime, executable: resolved.executable, firstLaunch: firstLaunch, installerResult: installerResult)
         } catch {
             try? await environmentManager.remove(environment)
             throw error
@@ -234,9 +224,12 @@ actor InstallerService: Installing {
             preferredEngine: preferredEngine,
             executableArchitecture: installerArchitecture
         )
+        let prefixMode: WinePrefixMode? = runtime.features?.wow64 == true
+            ? .wow64
+            : (installerArchitecture == .x86 ? .legacyWin32 : .legacyWin64)
         await progress(.creatingEnvironment)
         let environment = try await environmentManager.create(
-            configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture),
+            configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture, prefixMode: prefixMode),
             runtime: runtime
         )
         var installerSession: WindowsProcessSession?
@@ -266,12 +259,13 @@ actor InstallerService: Installing {
 
     private func readyRuntime(
         preferredEngine: RuntimeEngine?,
-        executableArchitecture: WindowsExecutableArchitecture
+        executableArchitecture: WindowsExecutableArchitecture,
+        requiredArchitectures: [WindowsExecutableArchitecture]? = nil
     ) async throws -> InstalledRuntime {
-        try await runtimeManager.prepareReadyRuntime(
-            preferredEngine: preferredEngine,
-            executableArchitecture: executableArchitecture
-        )
+        try await runtimeManager.prepareReadyRuntime(for: RuntimeSelectionRequest(
+            architectures: requiredArchitectures ?? [executableArchitecture],
+            requiredEngine: preferredEngine
+        ))
     }
 
     private func portableExecutable(_ installer: URL) -> URL? {

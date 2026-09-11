@@ -2,6 +2,13 @@ import Foundation
 
 nonisolated enum ManagedEnvironmentState: String, Codable, Sendable { case created, initializing, ready, invalid }
 
+nonisolated enum EnvironmentPurpose: String, Codable, Sendable, Hashable {
+    case game
+    case sharedStore
+    case launcher
+    case temporary
+}
+
 nonisolated enum WinePrefixMode: String, Codable, CaseIterable, Sendable, Equatable, Hashable, Identifiable {
     case wow64
     case legacyWin32
@@ -63,6 +70,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var fullscreenFSREnabled: Bool = false
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
+    var requiredDependencies: Set<RuntimeDependency> = []
 
     var graphicsConfiguration: GraphicsBackendConfiguration {
         GraphicsBackendConfiguration(backend: graphicsBackend, api: graphicsAPI, fullscreenFSREnabled: fullscreenFSREnabled)
@@ -88,11 +96,12 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.fullscreenFSREnabled = profile?.fullscreenFSREnabled ?? false
         self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
         self.forceXInput = profile?.forceXInput ?? true
+        self.requiredDependencies = profile?.requiredDependencies ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput
+        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput, requiredDependencies
     }
 
     init(from decoder: Decoder) throws {
@@ -110,6 +119,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
+        requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []
     }
 
     func resolvedPrefixMode(runtimeSupportsWoW64: Bool) -> WinePrefixMode {
@@ -118,6 +128,16 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
             requestedArchitecture: architecture,
             runtimeSupportsWoW64: runtimeSupportsWoW64
         )
+    }
+
+    /// `architecture` is the executable constraint. WoW64 is a combined
+    /// prefix, so its graphics component layout is the Win64 layout even when
+    /// the selected game executable is x86.
+    func resolvedPrefixArchitecture(runtimeSupportsWoW64: Bool) -> WinePrefixArchitecture {
+        switch resolvedPrefixMode(runtimeSupportsWoW64: runtimeSupportsWoW64) {
+        case .wow64, .legacyWin64: .win64
+        case .legacyWin32: .win32
+        }
     }
 }
 
@@ -130,9 +150,10 @@ nonisolated struct ManagedBorealEnvironment: Codable, Identifiable, Sendable, Ha
     let prefixURL: URL
     let logsURL: URL
     var state: ManagedEnvironmentState
+    var purpose: EnvironmentPurpose = .game
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, configuration, runtimeID, rootURL, prefixURL, logsURL, state
+        case schemaVersion, id, configuration, runtimeID, rootURL, prefixURL, logsURL, state, purpose
     }
 
     init(
@@ -143,7 +164,8 @@ nonisolated struct ManagedBorealEnvironment: Codable, Identifiable, Sendable, Ha
         rootURL: URL,
         prefixURL: URL,
         logsURL: URL,
-        state: ManagedEnvironmentState
+        state: ManagedEnvironmentState,
+        purpose: EnvironmentPurpose = .game
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -153,6 +175,7 @@ nonisolated struct ManagedBorealEnvironment: Codable, Identifiable, Sendable, Ha
         self.prefixURL = prefixURL
         self.logsURL = logsURL
         self.state = state
+        self.purpose = purpose
     }
 
     init(from decoder: Decoder) throws {
@@ -168,6 +191,7 @@ nonisolated struct ManagedBorealEnvironment: Codable, Identifiable, Sendable, Ha
         prefixURL = try values.decode(URL.self, forKey: .prefixURL)
         logsURL = try values.decode(URL.self, forKey: .logsURL)
         state = try values.decode(ManagedEnvironmentState.self, forKey: .state)
+        purpose = try values.decodeIfPresent(EnvironmentPurpose.self, forKey: .purpose) ?? .game
     }
 }
 

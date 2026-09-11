@@ -61,7 +61,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         try reset(environment)
         var configuration = environment.configuration.graphicsConfiguration
         configuration.backend = requested
-        let architecture = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue ? WinePrefixArchitecture.win32 : .win64
+        let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         let backend = resolve(
             requested,
             graphicsAPI: configuration.api,
@@ -72,7 +72,12 @@ nonisolated struct GraphicsBackendManager: Sendable {
             return GraphicsBackendActivation(backend: backend, dllOverrides: [])
         }
 
-        guard supports(backend, runtime: runtime), let componentRoot = componentRoot(for: backend, runtime: runtime) else {
+        guard supports(backend, runtime: runtime),
+              let componentRoot = componentRoot(
+                  for: backend,
+                  api: configuration.api,
+                  runtime: runtime
+              ) else {
             throw GraphicsBackendManagerError.componentPackageMissing(backend)
         }
         if backend == .dxmt,
@@ -168,12 +173,21 @@ nonisolated struct GraphicsBackendManager: Sendable {
         }
     }
 
-    private func componentRoot(for backend: WineGraphicsBackend, runtime: InstalledRuntime) -> URL? {
+    private func componentRoot(
+        for backend: WineGraphicsBackend,
+        api: GraphicsAPI,
+        runtime: InstalledRuntime
+    ) -> URL? {
         let folders: [String]
         switch backend {
         case .dxmt: folders = ["DXMT"]
         case .vkd3d: folders = ["VKD3D"]
-        case .dxvk: folders = ["DXVK", "D9VK"]
+        case .dxvk:
+            // D9VK is persisted as part of the DXVK backend, but older
+            // macOS packages can contain both directories while shipping
+            // D3D9 only in D9VK. Prefer that component for D3D9 so activation
+            // installs the actual library needed by a 32-bit game.
+            folders = api == .directX9 ? ["D9VK", "DXVK"] : ["DXVK", "D9VK"]
         default: folders = ["DXVK"]
         }
         return folders.flatMap { folder in
@@ -196,15 +210,11 @@ nonisolated struct GraphicsBackendManager: Sendable {
             // 32-bit DLLs in syswow64. A requested 32-bit application still
             // uses the combined prefix; do not put an x32 renderer over the
             // 64-bit system32 copy.
-            layouts = environment.configuration.architecture == WinePrefixArchitecture.win64.rawValue
-                ? [("x64", "system32"), ("x32", "syswow64")]
-                : [("x32", "syswow64")]
+            layouts = [("x64", "system32"), ("x32", "syswow64")]
         case .legacyWin32:
             layouts = [("x32", "system32")]
         case .legacyWin64:
-            layouts = environment.configuration.architecture == WinePrefixArchitecture.win32.rawValue
-                ? [("x32", "syswow64")]
-                : [("x64", "system32")]
+            layouts = [("x64", "system32")]
         }
         var result: [(URL, URL)] = []
         for (sourceFolder, windowsFolder) in layouts {

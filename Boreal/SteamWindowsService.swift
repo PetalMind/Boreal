@@ -47,6 +47,7 @@ actor SteamWindowsService: SteamWindowsProviding {
     func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
         try await downloadCurrentInstaller()
         let installation = try await installer.install(installerURL, name: "Steam for Windows", progress: progress)
+        guard installation.firstLaunch != nil else { throw SteamWindowsError.clientExecutableMissing }
         guard let steamExecutable = Self.steamExecutable(
             in: installation.environment,
             discovered: installation.executable,

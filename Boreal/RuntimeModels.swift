@@ -77,6 +77,10 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
 
 nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wow64: Bool
+    /// Optional explicit capability metadata. Older manifests derive Win32
+    /// support from WoW64 and conservatively treat Win64 as available.
+    var supportsWin32Execution: Bool?
+    var supportsWin64Execution: Bool?
     var wineMono: Bool
     var wineGecko: Bool
     var d3dmetal: Bool
@@ -91,12 +95,14 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
+        case wow64, supportsWin32Execution, supportsWin64Execution, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
         case esync, msync, fullscreenFSR, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
+        self.supportsWin32Execution = supportsWin32Execution
+        self.supportsWin64Execution = supportsWin64Execution
         self.wineMono = wineMono
         self.wineGecko = wineGecko
         self.d3dmetal = d3dmetal
@@ -113,6 +119,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         wow64 = try values.decodeIfPresent(Bool.self, forKey: .wow64) ?? false
+        supportsWin32Execution = try values.decodeIfPresent(Bool.self, forKey: .supportsWin32Execution)
+        supportsWin64Execution = try values.decodeIfPresent(Bool.self, forKey: .supportsWin64Execution)
         wineMono = try values.decodeIfPresent(Bool.self, forKey: .wineMono) ?? false
         wineGecko = try values.decodeIfPresent(Bool.self, forKey: .wineGecko) ?? false
         d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
@@ -136,6 +144,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(wow64, forKey: .wow64)
+        try values.encodeIfPresent(supportsWin32Execution, forKey: .supportsWin32Execution)
+        try values.encodeIfPresent(supportsWin64Execution, forKey: .supportsWin64Execution)
         try values.encode(wineMono, forKey: .wineMono)
         try values.encode(wineGecko, forKey: .wineGecko)
         try values.encode(d3dmetal, forKey: .d3dmetal)
@@ -315,7 +325,7 @@ nonisolated struct RuntimeComponentUpdate: Identifiable, Sendable, Hashable {
     let state: State
 }
 
-nonisolated enum WindowsExecutableArchitecture: Equatable, Sendable {
+nonisolated enum WindowsExecutableArchitecture: String, Codable, Hashable, Sendable {
     case x86, x86_64, unknown
 
     static func inspect(_ url: URL) -> Self {
@@ -589,6 +599,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case localRuntimeInvalid(String)
     case incompatible32BitExecutable(runtime: String)
     case incompatible64BitExecutable
+    case noCompatibleRuntime(String)
 
     var errorDescription: String? {
         switch self {
@@ -630,6 +641,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .localRuntimeInvalid(let reason): return "The installed Wine app can’t be imported: \(reason)"
         case .incompatible32BitExecutable(let runtime): return "This game is 32-bit, but \(runtime) does not provide WoW64 support. Use a Wine runtime that supports 32-bit Windows applications."
         case .incompatible64BitExecutable: return "This application is 64-bit and cannot run in a 32-bit Wine prefix. Choose the Win64 architecture."
+        case .noCompatibleRuntime(let detail): return "No compatible runtime is available. \(detail)"
         }
     }
 }

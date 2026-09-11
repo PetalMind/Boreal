@@ -1325,10 +1325,10 @@ final class BorealStore {
             let environment = WindowsEnvironment(
                 id: managed.id,
                 name: managed.configuration.name,
-                windowsVersion: "Windows 11",
+                windowsVersion: (WineWindowsVersion(rawValue: managed.configuration.windowsVersion) ?? .windows11).displayName,
                 architecture: managed.configuration.architecture == "win64" ? "64-bit" : "32-bit",
                 runtime: commit.runtime.runtimeDescription,
-                graphics: commit.runtime.graphicsName,
+                graphics: managed.configuration.graphicsBackend.displayName,
                 runtimeID: commit.runtime.id,
                 rootPath: managed.rootURL.path,
                 prefixPath: managed.prefixURL.path,
@@ -1346,12 +1346,12 @@ final class BorealStore {
                 executablePath: commit.executable.path,
                 installerPath: candidate.url.path,
                 environmentID: environment.id,
-                status: .running,
+                status: commit.firstLaunch == nil ? .ready : .running,
                 compatibility: communityProfile?.tier.rating ?? .unknown,
-                graphics: commit.runtime.graphicsName,
+                graphics: managed.configuration.graphicsBackend.displayName,
                 lastOpened: .now,
                 iconSymbol: symbol(for: candidate.name),
-                lastResult: "First launch verified",
+                lastResult: commit.firstLaunch == nil ? "Compatibility prepared; ready to play" : "First launch verified",
                 storeProvider: gogIdentity == nil ? metadata?.provider : .gog,
                 storeExternalID: gogIdentity?.externalID ?? metadata?.externalID,
                 storeMetadataOnly: metadata == nil && gogIdentity == nil ? nil : true,
@@ -1371,17 +1371,21 @@ final class BorealStore {
                 adoptGOGInstallationIdentity(gogIdentity, forApplicationAt: appIndex)
             }
             await refreshAuxiliaryExecutables(for: app.id)
-            activeSessions[app.id] = commit.firstLaunch
-            beginPlaySession(appID: app.id)
-            performanceLogURLs[app.id] = commit.firstLaunch.stderrLog
-            activeEnvironments[app.id] = managed
-            activeRuntimes[app.id] = commit.runtime
+            if let firstLaunch = commit.firstLaunch {
+                activeSessions[app.id] = firstLaunch
+                beginPlaySession(appID: app.id)
+                performanceLogURLs[app.id] = firstLaunch.stderrLog
+                activeEnvironments[app.id] = managed
+                activeRuntimes[app.id] = commit.runtime
+            }
             save()
             installation.completedStages = Set(InstallationStage.allCases)
             installation.state = .succeeded(app.id)
             SoundService.shared.play(.installationCompleted)
-            monitorLauncher(session: commit.firstLaunch, appID: app.id)
-            monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
+            if let firstLaunch = commit.firstLaunch {
+                monitorLauncher(session: firstLaunch, appID: app.id)
+                monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
+            }
             await refreshRuntimeStatuses()
             return app.id
         } catch is CancellationError {
@@ -1910,6 +1914,9 @@ final class BorealStore {
 
     private func registerSteamRuntimeHost(_ prepared: SteamWindowsClientCommit) async throws {
         let managed = prepared.installation.environment
+        guard let firstLaunch = prepared.installation.firstLaunch else {
+            throw SteamWindowsError.clientExecutableMissing
+        }
         let environment = WindowsEnvironment(
             id: managed.id,
             name: "Steam for Windows",
@@ -1934,11 +1941,11 @@ final class BorealStore {
         )
         environments.append(environment)
         applications.append(host)
-        activeSessions[host.id] = prepared.installation.firstLaunch
+        activeSessions[host.id] = firstLaunch
         activeEnvironments[host.id] = managed
         activeRuntimes[host.id] = prepared.installation.runtime
         save()
-        monitorLauncher(session: prepared.installation.firstLaunch, appID: host.id)
+        monitorLauncher(session: firstLaunch, appID: host.id)
         monitorEnvironmentSession(environment: managed, runtime: prepared.installation.runtime, appID: host.id)
     }
 
@@ -2013,11 +2020,20 @@ final class BorealStore {
             $0.gameID == applicationID || $0.storeReference == storeReference
         }?.id
         let requestedBackend = profile?.graphicsBackend ?? .automatic
-        let selectedAPI = profile?.graphicsAPI ?? .automatic
-        let architecture = profile?.architecture ?? .win64
+        let selectedAPI = profile?.graphicsAPI ?? environment.configuration.graphicsAPI
+        let gameProfile = provider.flatMap { provider in
+            externalID.flatMap { externalID in GameGraphicsProfiles.profile(provider: provider, externalID: externalID) }
+        }
+        let resolvedAPI: GraphicsAPI = {
+            guard selectedAPI == .automatic else { return selectedAPI }
+            if let defaultAPI = gameProfile?.defaultAPI, defaultAPI != .automatic { return defaultAPI }
+            return GraphicsAPIDetector.detect(executable: windowsPlan.executable) ?? .automatic
+        }()
+        let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
         let graphicsResolution = GraphicsBackendResolver.resolve(
-            api: selectedAPI,
+            api: resolvedAPI,
             requestedBackend: requestedBackend,
+            gameProfile: gameProfile,
             runtime: runtime,
             architecture: architecture,
             fallback: profile?.graphicsFallback ?? .none
@@ -2032,7 +2048,13 @@ final class BorealStore {
             windowsPlan: windowsPlan,
             graphicsBackend: graphicsResolution.stack.backend,
             compatibilityProfile: profile,
-            graphicsStack: graphicsResolution.stack
+            graphicsStack: graphicsResolution.stack,
+            prefixMode: environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true),
+            windowsVersion: WineWindowsVersion(rawValue: environment.configuration.windowsVersion) ?? .windows11,
+            directXAPI: resolvedAPI,
+            dependencies: environment.configuration.requiredDependencies.sorted { $0.rawValue < $1.rawValue },
+            environmentPurpose: environment.purpose,
+            executableArchitecture: WindowsExecutableArchitecture.inspect(windowsPlan.executable)
         )
     }
 
@@ -2369,13 +2391,50 @@ final class BorealStore {
                     name: name,
                     gogIdentity: gogIdentity
                 )
-                let runtime = try await services.runtimeManager.prepareReadyRuntime(
-                    preferredEngine: engine,
-                    executableArchitecture: architecture
+                let gameProfile = metadata.flatMap {
+                    GameGraphicsProfiles.profile(provider: $0.provider, externalID: $0.externalID)
+                }
+                var automaticProfile = WineCompatibilityProfile.default
+                if let enforcedBackend = gameProfile?.enforcedBackend {
+                    automaticProfile.graphicsBackend = enforcedBackend
+                }
+                let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                    root: selected.deletingLastPathComponent(),
+                    applicationName: name,
+                    knownPrimary: selected
                 )
+                guard let primary = analysis.gameExecutable else {
+                    throw CompatibilityPreparationError.noGameExecutable(selected.deletingLastPathComponent())
+                }
+                let directXAPI = CompatibilityPreparationResolver.directXAPI(
+                    executable: primary.url,
+                    userProfile: automaticProfile,
+                    gameProfile: gameProfile
+                )
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(for: RuntimeSelectionRequest(
+                    architectures: analysis.requiredArchitectures.isEmpty ? [architecture] : analysis.requiredArchitectures,
+                    requestedBackend: automaticProfile.graphicsBackend,
+                    directXAPI: directXAPI,
+                    gameProfile: gameProfile,
+                    requiredEngine: metadata.flatMap {
+                        GameRuntimeProfiles.requiredEngine(provider: $0.provider, externalID: $0.externalID)
+                    } ?? engine,
+                    runtimeIDOverride: automaticProfile.runtimeIDOverride
+                ))
+                let resolved = try CompatibilityPreparationResolver.resolve(
+                    analysis: analysis,
+                    userProfile: automaticProfile,
+                    gameProfile: gameProfile,
+                    runtime: runtime
+                )
+                automaticProfile.graphicsAPI = resolved.directXAPI
+                automaticProfile.graphicsBackend = resolved.graphicsStack.backend
+                automaticProfile.prefixMode = resolved.prefixMode
+                automaticProfile.architecture = resolved.executableArchitecture == .x86 ? .win32 : .win64
+                automaticProfile.requiredDependencies = Set(resolved.dependencies)
                 await updateInstallation(.creatingEnvironment)
                 let managed = try await services.environmentManager.create(
-                    configuration: EnvironmentConfiguration(name: name, architecture: environmentArchitecture),
+                    configuration: EnvironmentConfiguration(name: name, profile: automaticProfile),
                     runtime: runtime
                 )
                 createdEnvironment = managed
@@ -2390,7 +2449,7 @@ final class BorealStore {
                     name: name,
                     architecture: environmentArchitecture == "win64" ? "64-bit" : "32-bit",
                     runtime: runtime.runtimeDescription,
-                    graphics: runtime.graphicsName,
+                    graphics: resolved.graphicsStack.backend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
                     prefixPath: managed.prefixURL.path,
@@ -2404,7 +2463,7 @@ final class BorealStore {
                     environmentID: managed.id,
                     status: .ready,
                     compatibility: communityProfile?.tier.rating ?? .unknown,
-                    graphics: runtime.graphicsName,
+                    graphics: resolved.graphicsStack.backend.displayName,
                     storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
                     iconSymbol: symbol(for: name),
                     lastResult: "Existing installation added",
@@ -2505,16 +2564,49 @@ final class BorealStore {
             do {
                 async let communityProfile = services.communityCompatibility.profile(for: game)
                 updateEnvironmentPreparation("Preparing a verified Wine runtime…", fraction: 0.15, key: key, token: token)
-                let runtime = try await services.runtimeManager.prepareReadyRuntime(
-                    executableArchitecture: WindowsExecutableArchitecture.inspect(selected)
+                let gameProfile = GameGraphicsProfiles.profile(provider: game.provider, externalID: game.externalID)
+                var automaticProfile = WineCompatibilityProfile.default
+                if let enforcedBackend = gameProfile?.enforcedBackend {
+                    automaticProfile.graphicsBackend = enforcedBackend
+                }
+                let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                    root: selected.deletingLastPathComponent(),
+                    applicationName: game.name,
+                    knownPrimary: selected
                 )
+                guard let primary = analysis.gameExecutable else {
+                    throw CompatibilityPreparationError.noGameExecutable(selected.deletingLastPathComponent())
+                }
+                let directXAPI = CompatibilityPreparationResolver.directXAPI(
+                    executable: primary.url,
+                    userProfile: automaticProfile,
+                    gameProfile: gameProfile
+                )
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(for: RuntimeSelectionRequest(
+                    architectures: analysis.requiredArchitectures.isEmpty
+                        ? [WindowsExecutableArchitecture.inspect(selected)]
+                        : analysis.requiredArchitectures,
+                    requestedBackend: automaticProfile.graphicsBackend,
+                    directXAPI: directXAPI,
+                    gameProfile: gameProfile,
+                    requiredEngine: GameRuntimeProfiles.requiredEngine(for: game) ?? recommendedRuntimeEngine(for: game),
+                    runtimeIDOverride: automaticProfile.runtimeIDOverride
+                ))
+                let resolved = try CompatibilityPreparationResolver.resolve(
+                    analysis: analysis,
+                    userProfile: automaticProfile,
+                    gameProfile: gameProfile,
+                    runtime: runtime
+                )
+                automaticProfile.graphicsAPI = resolved.directXAPI
+                automaticProfile.graphicsBackend = resolved.graphicsStack.backend
+                automaticProfile.prefixMode = resolved.prefixMode
+                automaticProfile.architecture = resolved.executableArchitecture == .x86 ? .win32 : .win64
+                automaticProfile.requiredDependencies = Set(resolved.dependencies)
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Creating an isolated Windows environment…", fraction: 0.4, key: key, token: token)
                 var managed = try await services.environmentManager.create(
-                    configuration: EnvironmentConfiguration(
-                        name: game.name,
-                        architecture: WindowsExecutableArchitecture.inspect(selected) == .x86 ? "win32" : "win64"
-                    ),
+                    configuration: EnvironmentConfiguration(name: game.name, profile: automaticProfile),
                     runtime: runtime
                 )
                 createdEnvironment = managed
@@ -2527,7 +2619,7 @@ final class BorealStore {
                     id: managed.id,
                     name: game.name,
                     runtime: runtime.runtimeDescription,
-                    graphics: runtime.graphicsName,
+                    graphics: resolved.graphicsStack.backend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
                     prefixPath: managed.prefixURL.path,
@@ -2542,7 +2634,7 @@ final class BorealStore {
                     installerPath: "existing-installation",
                     environmentID: managed.id,
                     compatibility: compatibility?.tier.rating ?? .unknown,
-                    graphics: runtime.graphicsName,
+                    graphics: resolved.graphicsStack.backend.displayName,
                     storageBytes: GameStorage.allocatedSize(of: selected.deletingLastPathComponent()) ?? 0,
                     iconSymbol: "gamecontroller.fill",
                     lastResult: "Existing installation added",
@@ -2955,6 +3047,7 @@ final class BorealStore {
     func prepareStoreGame(_ game: StoreLibraryGame, runtimeEngine: RuntimeEngine? = nil) {
         let key = storeOperationKey(for: game)
         guard [.epic, .gog].contains(game.provider),
+              usesManagedRuntime(for: game),
               isInstalled(game),
               linkedApplication(for: game) == nil,
               storeGameOperations[key] == nil else { return }
@@ -2971,29 +3064,60 @@ final class BorealStore {
             do {
                 async let communityProfile = services.communityCompatibility.profile(for: game)
                 updateEnvironmentPreparation("Preparing a verified \(selectedEngine.displayName) runtime…", fraction: 0.1, key: key, token: token)
-                let executableArchitecture = game.sizeEstimate?.executableArchitecture.map {
-                    $0 == .x86 ? WindowsExecutableArchitecture.x86 : .x86_64
+                updateEnvironmentPreparation("Analyzing game executables…", fraction: 0.08, key: key, token: token)
+                guard let installationRoot = installedLocation(for: game) else {
+                    throw CompatibilityPreparationError.noGameExecutable(URL(fileURLWithPath: game.installPath ?? "."))
                 }
-                let runtime = try await services.runtimeManager.prepareReadyRuntime(
-                    preferredEngine: selectedEngine,
-                    executableArchitecture: executableArchitecture
+                let gameProfile = GameGraphicsProfiles.profile(provider: game.provider, externalID: game.externalID)
+                var automaticProfile = WineCompatibilityProfile.default
+                if let enforcedBackend = gameProfile?.enforcedBackend {
+                    automaticProfile.graphicsBackend = enforcedBackend
+                }
+                let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                    root: installationRoot,
+                    applicationName: game.name
                 )
+                guard let primary = analysis.gameExecutable else {
+                    throw CompatibilityPreparationError.noGameExecutable(installationRoot)
+                }
+                let directXAPI = CompatibilityPreparationResolver.directXAPI(
+                    executable: primary.url,
+                    userProfile: automaticProfile,
+                    gameProfile: gameProfile
+                )
+                let request = RuntimeSelectionRequest(
+                    architectures: analysis.requiredArchitectures.isEmpty ? [.unknown] : analysis.requiredArchitectures,
+                    prefixMode: automaticProfile.prefixMode,
+                    requestedBackend: automaticProfile.graphicsBackend,
+                    directXAPI: directXAPI,
+                    gameProfile: gameProfile,
+                    requiredEngine: GameRuntimeProfiles.requiredEngine(provider: game.provider, externalID: game.externalID) ?? selectedEngine,
+                    runtimeIDOverride: automaticProfile.runtimeIDOverride
+                )
+                let runtime = try await services.runtimeManager.prepareReadyRuntime(for: request)
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Creating an isolated Windows environment…", fraction: 0.25, key: key, token: token)
-                var managed = try await services.environmentManager.create(
-                    configuration: EnvironmentConfiguration(
-                        name: game.name,
-                        architecture: executableArchitecture == .some(.x86) ? "win32" : "win64"
-                    ),
+                let resolved = try CompatibilityPreparationResolver.resolve(
+                    analysis: analysis,
+                    userProfile: automaticProfile,
+                    gameProfile: gameProfile,
                     runtime: runtime
                 )
+                automaticProfile.graphicsAPI = resolved.directXAPI
+                automaticProfile.graphicsBackend = resolved.graphicsStack.backend
+                automaticProfile.prefixMode = resolved.prefixMode
+                automaticProfile.architecture = resolved.executableArchitecture == .x86 ? .win32 : .win64
+                automaticProfile.requiredDependencies = Set(resolved.dependencies)
+                var configuration = EnvironmentConfiguration(name: game.name, profile: automaticProfile)
+                configuration.requiredDependencies = Set(resolved.dependencies)
+                var managed = try await services.environmentManager.create(configuration: configuration, runtime: runtime)
                 createdEnvironment = managed
                 try Task.checkCancellation()
-                updateEnvironmentPreparation("Initializing the Wine prefix…", fraction: 0.5, key: key, token: token)
+                updateEnvironmentPreparation("Preparing compatibility…", fraction: 0.5, key: key, token: token)
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 managed.state = .ready
                 try Task.checkCancellation()
-                updateEnvironmentPreparation("Validating the game launch task…", fraction: 0.75, key: key, token: token)
+                updateEnvironmentPreparation("Validating compatibility…", fraction: 0.75, key: key, token: token)
                 let plan = try await services.launchCoordinator.makeStoreLaunchPlan(
                     for: game,
                     runtime: runtime,
@@ -3004,7 +3128,7 @@ final class BorealStore {
                     id: managed.id,
                     name: game.name,
                     runtime: runtime.runtimeDescription,
-                    graphics: runtime.graphicsName,
+                    graphics: resolved.graphicsStack.backend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
                     prefixPath: managed.prefixURL.path,
@@ -3020,15 +3144,24 @@ final class BorealStore {
                     environmentID: managed.id,
                     status: .ready,
                     compatibility: resolvedCompatibility?.tier.rating ?? .unknown,
-                    graphics: runtime.graphicsName,
+                    graphics: resolved.graphicsStack.backend.displayName,
                     iconSymbol: "gamecontroller.fill",
-                    lastResult: "Ready to launch through \(game.provider.rawValue)",
+                    lastResult: "Compatibility prepared; ready to play through \(game.provider.rawValue)",
                     storeProvider: game.provider,
                     storeExternalID: game.externalID,
                     communityCompatibility: resolvedCompatibility
                 )
                 environments.append(environment)
                 applications.append(app)
+                lastLaunchPlans[app.id] = makeLaunchPlan(
+                    plan,
+                    applicationID: app.id,
+                    provider: game.provider,
+                    externalID: game.externalID,
+                    environment: managed,
+                    runtime: runtime,
+                    profile: automaticProfile
+                )
                 await refreshAuxiliaryExecutables(for: app.id)
                 if let resolvedCompatibility,
                    let gameIndex = storeGames.firstIndex(where: { $0.id == game.id }),
@@ -3928,6 +4061,18 @@ final class BorealStore {
                 throw InstallerServiceError.noRuntimeAvailable
             }
             var profile = compatibilityProfile(for: applications[index])
+            if applications[index].compatibilityProfile == nil {
+                // The persisted environment is the resolved automatic choice.
+                // Reuse it for this launch instead of re-running an older
+                // default profile and accidentally discarding the prepared
+                // backend/prefix decision.
+                profile.windowsVersion = WineWindowsVersion(rawValue: managed.configuration.windowsVersion) ?? profile.windowsVersion
+                profile.graphicsBackend = managed.configuration.graphicsBackend
+                profile.graphicsAPI = managed.configuration.graphicsAPI == .automatic ? nil : managed.configuration.graphicsAPI
+                profile.graphicsFallback = managed.configuration.graphicsFallback
+                profile.prefixMode = managed.configuration.prefixMode
+                profile.requiredDependencies = managed.configuration.requiredDependencies
+            }
             if GameGraphicsProfiles.profile(for: applications[index])?.enforcedBackend != nil,
                applications[index].compatibilityProfile != profile {
                 applications[index].compatibilityProfile = profile
@@ -4381,7 +4526,9 @@ final class BorealStore {
             failedBackend: failedBackend,
             fallbackBackend: .wineD3D,
             reason: .graphicsDeviceInitialization,
-            logReference: resolvedLogURL
+            logReference: resolvedLogURL,
+            environmentID: application.environmentID,
+            resolverRevision: 1
         ))
         applications[index].compatibilityFallbackEvents = events
         applications[index].lastResult = "Renderer initialization failed; switching to WineD3D/Vulkan"

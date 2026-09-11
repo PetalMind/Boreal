@@ -128,22 +128,27 @@ nonisolated enum GameGraphicsProfiles {
             launchOptions: [
                 GraphicsAPILaunchOption(api: .directX9, arguments: [])
             ],
-            // Bound by Flame's SilkEngine reaches D3D9, but the current
-            // DXVK path fails device creation on Apple Silicon. WineD3D
-            // through its Vulkan renderer initializes the same installation.
+            // Bound by Flame's SilkEngine reaches D3D9. The installed D9VK
+            // component can create an Apple M4 device, but MoltenVK then
+            // rejects the game's first buffer allocation. Keep WineD3D as
+            // the honest fallback until a Metal-native D3D9 path is present.
+            // The virtual explorer desktop hides this game's window on the
+            // current Wine runtime, so it must use a native Wine window.
             preferredBackend: .wineD3D,
             enforcedBackend: .wineD3D,
-            overlayCompatibleFullscreen: true,
-            launchEnvironment: [
-                "WINED3D_RENDERER": "vulkan"
-            ]
+            overlayCompatibleFullscreen: false,
+            launchEnvironment: ["WINED3D_RENDERER": "gl"]
         )
     ]
 
     static func profile(for application: WindowsApplication) -> GameGraphicsProfile? {
         guard let provider = application.storeProvider,
               let externalID = application.storeExternalID else { return nil }
-        return builtIn.first { $0.provider == provider && $0.externalID == externalID }
+        return profile(provider: provider, externalID: externalID)
+    }
+
+    static func profile(provider: GameLibraryProvider, externalID: String) -> GameGraphicsProfile? {
+        builtIn.first { $0.provider == provider && $0.externalID == externalID }
     }
 
     static func effectiveCompatibilityProfile(
@@ -151,10 +156,15 @@ nonisolated enum GameGraphicsProfiles {
         for application: WindowsApplication
     ) -> WineCompatibilityProfile {
         guard let builtIn = profile(for: application),
-              let enforcedBackend = builtIn.enforcedBackend else { return currentProfile }
+              builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil else { return currentProfile }
         var effective = currentProfile
         effective.graphicsAPI = builtIn.defaultAPI
-        effective.graphicsBackend = enforcedBackend
+        if let enforcedAPI = builtIn.enforcedAPI {
+            effective.graphicsAPI = enforcedAPI
+        }
+        if let enforcedBackend = builtIn.enforcedBackend {
+            effective.graphicsBackend = enforcedBackend
+        }
         return effective
     }
 
@@ -361,6 +371,17 @@ nonisolated enum GraphicsBackendResolver {
                     stack: explicit.withHostAPI(fallback == .wineD3DVulkan && explicit.backend == .wineD3D ? .vulkan : explicit.hostAPI),
                     score: 1_000,
                     reasons: ["Explicit renderer selection"]
+                )
+            }
+            if gameProfile?.enforcedBackend != nil || requestedBackend != .automatic {
+                return GraphicsStackResolution(
+                    stack: explicit,
+                    score: -1_000,
+                    reasons: [
+                        gameProfile?.enforcedBackend != nil
+                            ? "Enforced renderer is unavailable"
+                            : "User-selected renderer is unavailable"
+                    ]
                 )
             }
             if let compatibleFallback = ranked.max(by: { lhs, rhs in
