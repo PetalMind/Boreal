@@ -95,6 +95,8 @@ final class BorealStore {
     /// application. It is not used as a mutable process command afterward.
     private(set) var lastLaunchPlans: [UUID: LaunchPlan] = [:]
     private var performanceLogURLs: [UUID: URL] = [:]
+    private var performanceProcessIDs: [UUID: [Int32]] = [:]
+    private var performanceProcessTasks: [UUID: Task<Void, Never>] = [:]
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
     private var requestedStops: Set<UUID> = []
@@ -1311,6 +1313,53 @@ final class BorealStore {
         }
     }
 
+    func performanceProcessIDs(for applicationID: UUID) -> [Int32] {
+        performanceProcessIDs[applicationID] ?? []
+    }
+
+    func overlayGraphics(for applicationID: UUID) -> OverlayGraphicsDescriptor {
+        guard let application = application(id: applicationID) else { return .unavailable }
+        let plan = lastLaunchPlans[applicationID]
+        let environmentName = environment(id: application.environmentID)?.runtime
+        let gameAPI = plan?.directXAPI.displayName ?? "—"
+        let translator = plan?.graphicsStack?.backend.displayName
+            ?? plan?.graphicsBackend.displayName
+            ?? application.graphics
+        let hostAPI = plan?.graphicsStack?.hostAPI.displayName ?? "—"
+        let runtime = environmentName ?? plan?.runtimeID ?? "—"
+        return OverlayGraphicsDescriptor(gameAPI: gameAPI, translator: translator, hostAPI: hostAPI, runtime: runtime)
+    }
+
+    /// Process discovery is intentionally independent of overlay rendering.
+    /// Wine/Steam can take several seconds to hand the launch request to the
+    /// actual game, so refresh the exact executable match while it is running.
+    private func startPerformanceProcessTracking(
+        session: WindowsProcessSession,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        appID: UUID
+    ) {
+        performanceProcessTasks[appID]?.cancel()
+        performanceProcessIDs[appID] = []
+        performanceProcessTasks[appID] = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let ids = await self.services.processRunner.gameProcessIDs(
+                    session: session, environment: environment, runtime: runtime
+                )
+                guard !Task.isCancelled else { return }
+                self.performanceProcessIDs[appID] = ids
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    private func stopPerformanceProcessTracking(for appID: UUID) {
+        performanceProcessTasks[appID]?.cancel()
+        performanceProcessTasks[appID] = nil
+        performanceProcessIDs[appID] = nil
+    }
+
     func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
         guard game.provider == .steam,
               (game.screenshotURLs?.isEmpty != false || game.videos?.isEmpty != false),
@@ -2089,6 +2138,7 @@ final class BorealStore {
             installation.state = .succeeded(app.id)
             SoundService.shared.play(.installationCompleted)
             if let firstLaunch = commit.firstLaunch {
+                startPerformanceProcessTracking(session: firstLaunch, environment: managed, runtime: commit.runtime, appID: app.id)
                 monitorLauncher(session: firstLaunch, appID: app.id)
                 monitorEnvironmentSession(environment: managed, runtime: commit.runtime, appID: app.id)
             }
@@ -5298,6 +5348,7 @@ final class BorealStore {
             activeEnvironments[id] = managed
             activeRuntimes[id] = runtime
             save()
+            startPerformanceProcessTracking(session: session, environment: managed, runtime: runtime, appID: id)
             monitorLauncher(session: session, appID: id)
             monitorEnvironmentSession(environment: managed, runtime: runtime, appID: id)
         } catch {
@@ -5346,6 +5397,7 @@ final class BorealStore {
             ControllerManager.shared.deactivate(for: id)
             if !hasOtherApps { environments.removeAll { $0.id == app.environmentID } }
             activeSessions[id] = nil
+            stopPerformanceProcessTracking(for: id)
             performanceLogURLs[id] = nil
             activeEnvironments[id] = nil
             activeRuntimes[id] = nil
@@ -5420,6 +5472,7 @@ final class BorealStore {
             }
             executionStates[appID] = .terminated(exitCode: result?.exitCode)
             activeSessions[appID] = nil
+            stopPerformanceProcessTracking(for: appID)
             save()
             if !wasRequested,
                let application = application(id: appID),
@@ -5540,6 +5593,24 @@ final class BorealStore {
         )
     }
 
+    private func recoveredSessionForApplication(
+        application: WindowsApplication,
+        environment: ManagedBorealEnvironment
+    ) -> WindowsProcessSession {
+        let plan = lastLaunchPlans[application.id]
+        return WindowsProcessSession(
+            id: UUID(),
+            environmentID: environment.id,
+            launcherPID: 0,
+            startedAt: application.lastOpened ?? .now,
+            stdoutLog: environment.logsURL.appending(path: "recovered-\(application.id.uuidString).stdout.log"),
+            stderrLog: performanceLogURL(for: application.id) ?? environment.logsURL.appending(path: "recovered-\(application.id.uuidString).stderr.log"),
+            sessionScope: .exclusiveEnvironment,
+            processExecutableName: plan?.processExecutableName ?? URL(fileURLWithPath: application.executablePath).lastPathComponent,
+            processExecutablePath: plan?.processExecutablePath ?? application.executablePath
+        )
+    }
+
     private func recoverPersistedSessions(appIDs: [UUID]) async {
         for appID in appIDs {
             guard let app = application(id: appID),
@@ -5560,6 +5631,7 @@ final class BorealStore {
                 if let recoveredSession {
                     activeSessions[appID] = recoveredSession
                     performanceLogURLs[appID] = recoveredSession.stderrLog
+                    startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
                 }
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 executionStates[appID] = .running
@@ -5579,6 +5651,10 @@ final class BorealStore {
             }
             switch await services.processRunner.environmentSessionState(environment: managed, runtime: installedRuntime) {
             case .active:
+                let recoveredSession = activeSessions[appID] ?? recoveredSessionForApplication(application: app, environment: managed)
+                activeSessions[appID] = recoveredSession
+                performanceLogURLs[appID] = recoveredSession.stderrLog
+                startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 executionStates[appID] = .running
@@ -5609,6 +5685,7 @@ final class BorealStore {
 
     private func markEnvironmentEnded(appID: UUID, environmentSessionEnded: Bool = true) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+        stopPerformanceProcessTracking(for: appID)
         endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
         let wasRequested = requestedStops.remove(appID) != nil
@@ -5750,6 +5827,7 @@ final class BorealStore {
 
     private func markEnvironmentUnknown(appID: UUID, detail: String) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+        stopPerformanceProcessTracking(for: appID)
         applications[index].status = .needsAttention
         applications[index].lastErrorDetail = detail
         environmentSessionStates[applications[index].environmentID] = .unknown

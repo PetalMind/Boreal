@@ -374,10 +374,20 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
 
     func capabilities(runtime: InstalledRuntime) -> GraphicsBackendCapabilities {
         let resolved = resolvedBackend(runtime: runtime)
-        // An absent capability is intentionally left unverified. In particular,
-        // D3DMetal's presence does not prove that Metal HUD is safe for this
-        // runtime: enabling it can load MTLTools and crash during device setup.
-        return runtime.features?.graphicsCapabilities?[resolved.rawValue] ?? GraphicsBackendCapabilities()
+        var result = runtime.features?.graphicsCapabilities?[resolved.rawValue] ?? GraphicsBackendCapabilities()
+        // D3DMetal runtimes expose FPS through Apple's Metal HUD rather than
+        // Wine's +fps channel. Older GPTK imports do not carry the newer
+        // graphicsCapabilities metadata, so keep the telemetry path available
+        // for a runtime whose D3DMetal payload was actually detected. The
+        // launch runner strips Xcode/GPUTools validation before starting Wine;
+        // without that isolation, MTLTools can abort the game during a save
+        // load even when the HUD itself is requested.
+        if result.metalHUD == nil,
+           resolved == .d3dMetal,
+           runtime.features?.d3dmetal == true {
+            result.metalHUD = true
+        }
+        return result
     }
 
     func effectiveFullscreenFSR(

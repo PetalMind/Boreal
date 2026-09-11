@@ -54,6 +54,27 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         "MTL_HUD_OPACITY",
         "MTL_HUD_DISABLE_MENU_BAR"
     ]
+    // Xcode injects Metal/GPUTools validation into the app process when it is
+    // launched from a scheme with GPU diagnostics enabled. Wine inherits the
+    // parent environment, so forwarding these variables would also enable
+    // Apple's MTLTools validation inside the Windows game process. D3DMetal
+    // can then abort on resources still referenced by a command buffer while
+    // the game is loading a save.
+    private static let developerToolsEnvironmentKeys = [
+        "GPUTOOLS_LOAD_GTMTLCAPTURE",
+        "GPUTOOLS_XCODE_DEVELOPER_PATH",
+        "MTL_DEBUG_LAYER",
+        "MTL_DEBUG_LAYER_VALIDATE_LOAD_ACTIONS",
+        "MTL_DEBUG_LAYER_VALIDATE_STORE_ACTIONS",
+        "METAL_LOAD_INTERPOSER",
+        "MTLCAPTURE_DESTINATION_DEVELOPER_TOOLS_ENABLE",
+        "DYMTL_TOOLS_DYLIB_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "__XPC_DYLD_LIBRARY_PATH",
+        "__XPC_DYLD_FRAMEWORK_PATH"
+    ]
     private let processExecutor: any ProcessExecuting
     private let probeObservationWindow: Duration
     private var executorIDs: [UUID: UUID] = [:]
@@ -62,6 +83,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     init(processExecutor: any ProcessExecuting, probeObservationWindow: Duration = .milliseconds(250)) {
         self.processExecutor = processExecutor
         self.probeObservationWindow = probeObservationWindow
+    }
+
+    /// Returns the currently running process(es) belonging to the launched
+    /// game. The overlay uses these IDs for process-scoped CPU and memory
+    /// instead of presenting the Wine launcher as if it were the game.
+    func gameProcessIDs(
+        session: WindowsProcessSession,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async -> [Int32] {
+        await runningGameProcessIDs(session: session, environment: environment)
     }
 
     func run(executable: URL, arguments: [String], environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> WindowsProcessSession {
@@ -112,6 +144,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        Self.removeDeveloperToolsEnvironment(from: &processEnvironment)
         if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD != true {
             // A provider launch plan must not be able to opt into an
             // unverified HUD path after the managed environment sanitized it.
@@ -495,6 +528,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
 
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
+        Self.removeDeveloperToolsEnvironment(from: &values)
         values["WINEPREFIX"] = environment.prefixURL.path
         let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
@@ -572,5 +606,11 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         }
         values["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (values["PATH"] ?? "/usr/bin:/bin")
         return values
+    }
+
+    private static func removeDeveloperToolsEnvironment(from values: inout [String: String]) {
+        for key in developerToolsEnvironmentKeys {
+            values.removeValue(forKey: key)
+        }
     }
 }

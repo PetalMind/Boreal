@@ -180,12 +180,18 @@ struct ContentView: View {
             guard application.status == .running,
                   !application.isSteamRuntimeHost,
                   !application.isInstallerOnly else { return nil }
+            let graphics = store.overlayGraphics(for: application.id)
             return OverlayGame(
                 id: application.id,
                 name: application.name,
                 launchedAt: application.lastOpened ?? .distantPast,
                 performanceLogURL: store.performanceLogURL(for: application.id),
-                graphics: application.graphics
+                graphics: application.graphics,
+                processIDs: store.performanceProcessIDs(for: application.id),
+                gameAPI: graphics.gameAPI,
+                translator: graphics.translator,
+                hostAPI: graphics.hostAPI,
+                runtime: graphics.runtime
             )
         }
     }

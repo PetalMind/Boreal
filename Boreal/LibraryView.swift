@@ -4,14 +4,14 @@ import SwiftUI
 nonisolated enum LibrarySort: String, CaseIterable, Sendable {
     case nameAscending, nameDescending, lastUsed, playtime, compatibility, installedFirst
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .nameAscending: "Name A–Z"
-        case .nameDescending: "Name Z–A"
-        case .lastUsed: "Last Used"
-        case .playtime: "Playtime"
-        case .compatibility: "Compatibility"
-        case .installedFirst: "Installed First"
+        case .nameAscending: .Library.sortNameAscending
+        case .nameDescending: .Library.sortNameDescending
+        case .lastUsed: .Library.sortLastUsed
+        case .playtime: .Library.playtime
+        case .compatibility: .Library.compatibilityTitle
+        case .installedFirst: .Library.sortInstalledFirst
         }
     }
 
@@ -30,12 +30,12 @@ nonisolated enum LibrarySort: String, CaseIterable, Sendable {
 nonisolated enum LibraryGrouping: String, CaseIterable, Sendable {
     case source, availability, compatibility, none
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .source: "Source"
-        case .availability: "Availability"
-        case .compatibility: "Compatibility"
-        case .none: "None"
+        case .source: .Library.source
+        case .availability: .Library.availability
+        case .compatibility: .Library.compatibilityTitle
+        case .none: .Library.none
         }
     }
 }
@@ -43,7 +43,16 @@ nonisolated enum LibraryGrouping: String, CaseIterable, Sendable {
 nonisolated enum LibrarySourceFilter: String, CaseIterable, Sendable {
     case boreal, steam, epic, gog
 
-    var title: String {
+    var title: LocalizedStringResource {
+        switch self {
+        case .boreal: .Library.importedGames
+        case .steam: .Library.steam
+        case .epic: .Library.epicGames
+        case .gog: .Library.gog
+        }
+    }
+
+    var searchTitle: String {
         switch self {
         case .boreal: "Imported Games"
         case .steam: "Steam"
@@ -65,14 +74,14 @@ nonisolated enum LibrarySourceFilter: String, CaseIterable, Sendable {
 nonisolated enum LibraryAvailabilityFilter: String, CaseIterable, Sendable {
     case installed, notInstalled, readyToPlay, recent, neverUsed, needsAttention
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .installed: "Installed"
-        case .notInstalled: "Not Installed"
-        case .readyToPlay: "Ready to Play"
-        case .recent: "Recently Used"
-        case .neverUsed: "Never Used"
-        case .needsAttention: "Needs Attention"
+        case .installed: .Library.installed
+        case .notInstalled: .Library.notInstalled
+        case .readyToPlay: .Library.readyToPlay
+        case .recent: .Library.recentlyUsed
+        case .neverUsed: .Library.neverUsed
+        case .needsAttention: .Library.needsAttention
         }
     }
 }
@@ -80,14 +89,14 @@ nonisolated enum LibraryAvailabilityFilter: String, CaseIterable, Sendable {
 nonisolated enum LibraryCompatibilityFilter: String, CaseIterable, Sendable {
     case nativeMacOS, excellent, good, limited, unsupported, unknown
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .nativeMacOS: "Native macOS"
-        case .excellent: "Excellent"
-        case .good: "Good"
-        case .limited: "Limited"
-        case .unsupported: "Unsupported"
-        case .unknown: "Unknown"
+        case .nativeMacOS: .Library.nativeMacOS
+        case .excellent: .Compatibility.excellentTitle
+        case .good: .Compatibility.goodTitle
+        case .limited: .Compatibility.limitedTitle
+        case .unsupported: .Compatibility.unsupportedTitle
+        case .unknown: .Compatibility.unknownTitle
         }
     }
 
@@ -99,6 +108,66 @@ nonisolated enum LibraryCompatibilityFilter: String, CaseIterable, Sendable {
         case .limited: "exclamationmark.triangle.fill"
         case .unsupported: "xmark.octagon.fill"
         case .unknown: "questionmark.circle"
+        }
+    }
+}
+
+nonisolated enum LibraryStatus: String, Hashable, Sendable {
+    case missingFiles, needsAttention, installerRunning, installerReady
+    case ready, preparing, starting, running, installing, unavailable
+    case installed, available
+
+    var title: LocalizedStringResource {
+        switch self {
+        case .missingFiles: .Library.missingFiles
+        case .needsAttention: .Library.needsAttention
+        case .installerRunning: .Library.installerRunning
+        case .installerReady: .Library.installerReady
+        case .ready: .Library.ready
+        case .preparing: .Library.preparing
+        case .starting: .Library.starting
+        case .running: .Library.running
+        case .installing: .Library.installing
+        case .unavailable: .Library.unavailable
+        case .installed: .Library.installed
+        case .available: .Library.available
+        }
+    }
+
+    var searchTitle: String {
+        switch self {
+        case .missingFiles: "Missing files"
+        case .needsAttention: "Needs Attention"
+        case .installerRunning: "Installer running"
+        case .installerReady: "Installer ready"
+        case .ready: "Ready"
+        case .preparing: "Preparing"
+        case .starting: "Starting"
+        case .running: "Running"
+        case .installing: "Installing"
+        case .unavailable: "Unavailable"
+        case .installed: "Installed"
+        case .available: "Available"
+        }
+    }
+
+    static func application(_ status: ApplicationStatus, installerOnly: Bool) -> Self {
+        if installerOnly {
+            switch status {
+            case .running: return .installerRunning
+            case .ready: return .installerReady
+            default: break
+            }
+        }
+
+        switch status {
+        case .ready: return .ready
+        case .preparing: return .preparing
+        case .starting: return .starting
+        case .running: return .running
+        case .installing: return .installing
+        case .needsAttention: return .needsAttention
+        case .unavailable: return .unavailable
         }
     }
 }
@@ -124,7 +193,10 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     let storageIsEstimate: Bool
     let supportsNativeMacOS: Bool
     let compatibility: CompatibilityRating
-    let statusText: String
+    let status: LibraryStatus
+
+    var statusText: String { status.searchTitle }
+    var localizedStatusText: LocalizedStringResource { status.title }
 
     var favoriteKey: String {
         switch kind {
@@ -134,7 +206,7 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     }
 
     var searchText: String {
-        [name, subtitle, source.title, isInstallerOnly ? "installer" : "", installed ? "installed" : "not installed", readyToPlay ? "ready to play" : "", needsAttention ? "needs attention" : "", compatibility.rawValue, statusText]
+        [name, subtitle, source.searchTitle, isInstallerOnly ? "installer" : "", installed ? "installed" : "not installed", readyToPlay ? "ready to play" : "", needsAttention ? "needs attention" : "", compatibility.rawValue, status.searchTitle]
             .joined(separator: " ")
     }
 }
@@ -176,13 +248,11 @@ nonisolated enum LibraryProjector {
                 storageIsEstimate: false,
                 supportsNativeMacOS: false,
                 compatibility: app.compatibility,
-                statusText: installationState == .missing
-                    ? "Missing files"
+                status: installationState == .missing
+                    ? .missingFiles
                     : (installationState == .broken
-                        ? "Needs Attention"
-                        : (app.isInstallerOnly
-                            ? (app.status == .running ? "Installer running" : (app.status == .ready ? "Installer ready" : app.status.rawValue))
-                            : app.status.rawValue))
+                        ? .needsAttention
+                        : .application(app.status, installerOnly: app.isInstallerOnly))
             )
         }
         // Store metadata remains the canonical presentation after installation.
@@ -221,6 +291,24 @@ nonisolated enum LibraryProjector {
             let displayName: String
             if let linkedApp, linkedApp.usesStoreMetadataOnly { displayName = linkedApp.name }
             else { displayName = game.name }
+            let status: LibraryStatus
+            if let liveLinkedApp {
+                status = .application(liveLinkedApp.status, installerOnly: false)
+            } else if installationIsMissing {
+                status = .missingFiles
+            } else if installationState == .installing {
+                status = .installing
+            } else if installationState == .broken || attention {
+                status = .needsAttention
+            } else if running {
+                status = .running
+            } else if ready {
+                status = .ready
+            } else if installed {
+                status = .installed
+            } else {
+                status = .available
+            }
             return LibraryItem(
                 id: .storeGame(game.id), kind: .storeGame(game), name: displayName,
                 subtitle: game.developer ?? game.provider.rawValue,
@@ -233,14 +321,7 @@ nonisolated enum LibraryProjector {
                 storageIsEstimate: usableLinkedApp == nil && game.storageBytes == nil && game.sizeEstimate?.installedBytes != nil,
                 supportsNativeMacOS: game.supportsNativeMacOS == true,
                 compatibility: compatibility,
-                statusText: liveLinkedApp?.status.rawValue
-                    ?? (installationIsMissing
-                        ? "Missing files"
-                        : (installationState == .installing
-                            ? "Installing"
-                            : (installationState == .broken
-                                ? "Needs Attention"
-                                : (attention ? "Needs Attention" : (running ? "Running" : (ready ? "Ready" : (installed ? "Installed" : "Available")))))))
+                status: status
             )
         }
         return apps + games
@@ -365,14 +446,14 @@ struct LibraryToolbarControls: View {
 
     var body: some View {
         Menu {
-            Menu("Sort by: \(sort.title)", systemImage: "arrow.up.arrow.down") {
+            Menu(.Library.sortBy, systemImage: "arrow.up.arrow.down") {
                 ForEach(LibrarySort.allCases, id: \.self) { value in
                     Button { sort = value } label: {
                         Label(value.title, systemImage: sort == value ? "checkmark" : value.symbol)
                     }
                 }
             }
-            Menu("Group by: \(grouping.title)", systemImage: "rectangle.3.group") {
+            Menu(.Library.groupBy, systemImage: "rectangle.3.group") {
                 ForEach(LibraryGrouping.allCases, id: \.self) { value in
                     Button { grouping = value } label: {
                         Label(value.title, systemImage: grouping == value ? "checkmark" : "rectangle.3.group")
@@ -380,34 +461,37 @@ struct LibraryToolbarControls: View {
                 }
             }
             Divider()
-            Section("Source") {
+            Section(.Library.source) {
                 ForEach(LibrarySourceFilter.allCases, id: \.self) { filterButton($0, title: $0.title, raw: $sourceFilters) }
             }
-            Section("Availability") {
+            Section(.Library.availability) {
                 ForEach(LibraryAvailabilityFilter.allCases, id: \.self) { filterButton($0, title: $0.title, raw: $availabilityFilters) }
             }
-            Section("Compatibility") {
+            Section(.Library.compatibilityTitle) {
                 ForEach(LibraryCompatibilityFilter.allCases, id: \.self) { filterButton($0, title: $0.title, raw: $compatibilityFilters) }
             }
             if filterCount > 0 {
                 Divider()
-                Button("Clear Filters", systemImage: "xmark.circle") { clearFilters() }
+                Button(.Library.clearFilters, systemImage: "xmark.circle") { clearFilters() }
             }
         } label: {
-            Label(filterCount == 0 ? "View Options" : "View Options \(filterCount)", systemImage: "slider.horizontal.3")
+            Label(
+                filterCount == 0 ? .Library.viewOptions : .Library.viewOptionsCount(filterCount),
+                systemImage: "slider.horizontal.3"
+            )
         }
-        .help("Sort, group, and filter the Library")
+        .help(Text(.Library.sortGroupFilterHelp))
 
-        Picker("View", selection: $style) {
-            Label("Grid", systemImage: "square.grid.2x2").tag(ContentView.LibraryStyle.grid)
-            Label("List", systemImage: "list.bullet").tag(ContentView.LibraryStyle.list)
+        Picker(.Library.viewLayout, selection: $style) {
+            Label(.Library.grid, systemImage: "square.grid.2x2").tag(ContentView.LibraryStyle.grid)
+            Label(.Library.list, systemImage: "list.bullet").tag(ContentView.LibraryStyle.list)
         }
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 86)
     }
 
-    @ViewBuilder private func filterButton<Value>(_ value: Value, title: String, raw: Binding<String>) -> some View where Value: RawRepresentable & Hashable, Value.RawValue == String {
+    @ViewBuilder private func filterButton<Value>(_ value: Value, title: LocalizedStringResource, raw: Binding<String>) -> some View where Value: RawRepresentable & Hashable, Value.RawValue == String {
         let selected = rawSet(raw.wrappedValue, as: Value.self).contains(value)
         Button {
             var values = rawSet(raw.wrappedValue, as: Value.self)
@@ -465,7 +549,7 @@ struct LibraryView: View {
     }
 
     private var activeFilters: [ActiveLibraryFilter] {
-        (producerFilter.isEmpty ? [] : [ActiveLibraryFilter(id: "producer", title: producerFilter) {
+        (producerFilter.isEmpty ? [] : [ActiveLibraryFilter(id: "producer", title: .Library.producerFilter(producerFilter)) {
             producerFilter = ""
         }]) + rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self).map { value in
             ActiveLibraryFilter(id: "availability:\(value.rawValue)", title: value.title) { toggle(value, raw: $availabilityFilters) }
@@ -537,33 +621,33 @@ struct LibraryView: View {
             return true
         }
         .confirmationDialog(
-            "Remove \(removeCandidate?.name ?? "application")?",
+            Text(.Library.removeApplication(removeCandidate?.name ?? "application")),
             isPresented: Binding(get: { removeCandidate != nil }, set: { if !$0 { removeCandidate = nil } })
         ) {
-            Button("Remove App and Environment", role: .destructive) {
+            Button(.Library.removeAppAndEnvironment, role: .destructive) {
                 if let id = removeCandidate?.id { store.removeApplication(id) }
                 removeCandidate = nil
             }
-            Button("Cancel", role: .cancel) { removeCandidate = nil }
-        } message: { Text("This removes the app from Boreal. The original setup file is not deleted.") }
+            Button(.Library.cancel, role: .cancel) { removeCandidate = nil }
+        } message: { Text(.Library.removeApplicationMessage) }
         .confirmationDialog(
-            "Uninstall \(uninstallCandidate?.name ?? "game")?",
+            Text(.Library.uninstallGame(uninstallCandidate?.name ?? "game")),
             isPresented: Binding(get: { uninstallCandidate != nil }, set: { if !$0 { uninstallCandidate = nil } })
         ) {
-            Button("Uninstall Game", role: .destructive) {
+            Button(.Library.uninstallGameAction, role: .destructive) {
                 if let game = uninstallCandidate { store.uninstallStoreGame(game) }
                 uninstallCandidate = nil
             }
-            Button("Cancel", role: .cancel) { uninstallCandidate = nil }
+            Button(.Library.cancel, role: .cancel) { uninstallCandidate = nil }
         } message: {
-            Text("The installed game files and its Boreal environment will be removed.")
+            Text(.Library.uninstallGameMessage)
         }
     }
 
     @ViewBuilder private var discoveryProducerSection: some View {
         if !discoveryProducerGames.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("More from \(producerFilter) in Discovery").font(.headline)
+                Text(.Library.moreFromDiscovery(producerFilter)).font(.headline)
                 ScrollView(.horizontal) {
                     HStack(spacing: 12) {
                         ForEach(discoveryProducerGames) { game in
@@ -580,7 +664,7 @@ struct LibraryView: View {
         } else if store.discoveryProducerSearchState == .loading {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Looking for more games by \(producerFilter) in Discovery…")
+                Text(.Library.lookingForMoreGamesBy(producerFilter))
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 24)
@@ -598,7 +682,7 @@ struct LibraryView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     sourceButton(
-                        title: "All",
+                        title: .Library.all,
                         symbol: "square.grid.2x2",
                         count: allItems.count,
                         selected: selectedSources.isEmpty
@@ -626,12 +710,12 @@ struct LibraryView: View {
             Divider().opacity(0.55)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Text("Compatibility")
+                    Text(.Library.compatibilityTitle)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
 
                     compatibilityButton(
-                        title: "All",
+                        title: .Library.all,
                         symbol: "circle.grid.2x2",
                         count: compatibilityCountItems.count,
                         selected: selectedCompatibility.isEmpty
@@ -663,7 +747,7 @@ struct LibraryView: View {
     }
 
     private func sourceButton(
-        title: String,
+        title: LocalizedStringResource,
         symbol: String,
         count: Int,
         selected: Bool,
@@ -686,8 +770,8 @@ struct LibraryView: View {
             }
         }
         .buttonStyle(.plain)
-        .help(count == 0 ? "No items from \(title)" : "Show \(title) items")
-        .accessibilityLabel("\(title), \(count) items")
+        .help(Text(count == 0 ? .Library.noItemsFromSource : .Library.showSourceItems))
+        .accessibilityLabel(Text(.Library.sourceItemCount(count)))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -696,7 +780,7 @@ struct LibraryView: View {
     }
 
     private func compatibilityButton(
-        title: String,
+        title: LocalizedStringResource,
         symbol: String,
         count: Int,
         selected: Bool,
@@ -719,8 +803,8 @@ struct LibraryView: View {
             }
         }
         .buttonStyle(.plain)
-        .help(count == 0 ? "No games rated \(title)" : "Show \(title) games")
-        .accessibilityLabel("Compatibility \(title), \(count) games")
+        .help(Text(count == 0 ? .Library.noGamesWithCompatibility : .Library.showCompatibilityGames))
+        .accessibilityLabel(Text(.Library.compatibilityItemCount(count)))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -741,10 +825,10 @@ struct LibraryView: View {
                                 .background(.quaternary, in: Capsule())
                         }
                         .buttonStyle(.plain)
-                        .help("Remove \(filter.title) filter")
+                            .help(Text(.Library.removeFilter))
                     }
                     if activeFilters.count > 1 {
-                        Button("Clear All") { clearFilters() }.font(.caption).buttonStyle(.plain)
+                        Button(.Library.clearAll) { clearFilters() }.font(.caption).buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 24)
@@ -757,12 +841,21 @@ struct LibraryView: View {
 
     private var noResults: some View {
         ContentUnavailableView {
-            Label(favoritesOnly ? "No Favorites Yet" : "No Matching Items", systemImage: favoritesOnly ? "heart" : "line.3.horizontal.decrease.circle")
+            Label(
+                favoritesOnly ? .Library.noFavoritesYet : .Library.noMatchingItems,
+                systemImage: favoritesOnly ? "heart" : "line.3.horizontal.decrease.circle"
+            )
         } description: {
-            Text(favoritesOnly ? "Games and apps you mark with a heart will appear here." : (searchText.isEmpty ? "No items match the selected filters." : "No items match “\(searchText)” and the selected filters."))
+            Text(
+                favoritesOnly
+                    ? .Library.favoritesEmptyDescription
+                    : (searchText.isEmpty
+                        ? .Library.noItemsMatchSelectedFilters
+                        : .Library.noItemsMatchSearch(searchText))
+            )
         } actions: {
             if !favoritesOnly {
-                Button("Clear Search and Filters") { searchText = ""; clearFilters() }
+                Button(.Library.clearSearchAndFilters) { searchText = ""; clearFilters() }
                     .buttonStyle(.borderedProminent)
             }
         }
@@ -778,7 +871,7 @@ struct LibraryView: View {
                         if let title = group.title, showsHeader(for: group) {
                             HStack {
                                 Text(title).font(.title3).fontWeight(.semibold)
-                                Text("\(group.items.count.formatted()) apps").font(.caption).foregroundStyle(.secondary)
+                                Text(.Library.gameCount(group.items.count)).font(.caption).foregroundStyle(.secondary)
                                 Spacer()
                                 if grouping == .source, let source = group.source { syncButton(for: source) }
                             }
@@ -796,7 +889,7 @@ struct LibraryView: View {
 
     private var table: some View {
         Table(items) {
-            TableColumn("Name") { item in
+            TableColumn(.Library.name) { (item: LibraryItem) in
                 Button { select(item) } label: {
                     HStack(spacing: 9) {
                         itemIcon(item, compact: true)
@@ -810,15 +903,15 @@ struct LibraryView: View {
                 .contextMenu { itemContextMenu(item) }
             }
             .width(min: 220, ideal: 300)
-            TableColumn("Source") { item in
+            TableColumn(.Library.source) { (item: LibraryItem) in
                 Label(item.source.title, systemImage: item.source.symbol).foregroundStyle(.secondary)
             }
             .width(min: 90, ideal: 120)
-            TableColumn("Status") { item in
-                Label(item.statusText, systemImage: statusSymbol(item)).foregroundStyle(statusColor(item))
+            TableColumn(.Library.status) { (item: LibraryItem) in
+                Label(item.localizedStatusText, systemImage: statusSymbol(item)).foregroundStyle(statusColor(item))
             }
             .width(min: 105, ideal: 135)
-            TableColumn("Compatibility") { item in
+            TableColumn(.Library.compatibilityTitle) { (item: LibraryItem) in
                 if item.supportsNativeMacOS {
                     NativeMacOSBadge(compact: true)
                 } else {
@@ -826,12 +919,16 @@ struct LibraryView: View {
                 }
             }
                 .width(min: 115, ideal: 145)
-            TableColumn("Last Used") { item in
-                Text(item.lastUsed?.formatted(date: .abbreviated, time: .omitted) ?? "Never")
-                    .foregroundStyle(item.lastUsed == nil ? .secondary : .primary)
+            TableColumn(.Library.lastUsed) { (item: LibraryItem) in
+                if let lastUsed = item.lastUsed {
+                    Text(lastUsed, format: .dateTime.date(.abbreviated))
+                        .foregroundStyle(.primary)
+                } else {
+                    Text(.Library.never).foregroundStyle(.secondary)
+                }
             }
             .width(min: 90, ideal: 110)
-            TableColumn("Playtime") { item in
+            TableColumn(.Library.playtime) { (item: LibraryItem) in
                 Text(playtime(item.playtimeMinutes)).foregroundStyle(item.playtimeMinutes == nil ? .tertiary : .secondary)
             }
             .width(min: 70, ideal: 85)
@@ -849,13 +946,13 @@ struct LibraryView: View {
             }
         case .availability:
             [
-                ("Needs Attention", { (item: LibraryItem) in item.needsAttention }),
-                ("Ready to Play", { (item: LibraryItem) in !item.needsAttention && item.readyToPlay }),
-                ("Installed", { (item: LibraryItem) in !item.needsAttention && !item.readyToPlay && item.installed }),
-                ("Available", { (item: LibraryItem) in !item.installed })
-            ].compactMap { title, matches in
+                ("needsAttention", .Library.needsAttention, { (item: LibraryItem) in item.needsAttention }),
+                ("readyToPlay", .Library.readyToPlay, { (item: LibraryItem) in !item.needsAttention && item.readyToPlay }),
+                ("installed", .Library.installed, { (item: LibraryItem) in !item.needsAttention && !item.readyToPlay && item.installed }),
+                ("available", .Library.available, { (item: LibraryItem) in !item.installed })
+            ].compactMap { id, title, matches in
                 let values = items.filter(matches)
-                return values.isEmpty ? nil : LibraryGroup(id: title, title: title, source: nil, items: values)
+                return values.isEmpty ? nil : LibraryGroup(id: id, title: title, source: nil, items: values)
             }
         case .compatibility:
             LibraryCompatibilityFilter.allCases.compactMap { value in
@@ -880,7 +977,7 @@ struct LibraryView: View {
 
     private var attentionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Needs Attention", systemImage: "exclamationmark.triangle.fill")
+            Label(.Library.needsAttention, systemImage: "exclamationmark.triangle.fill")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.orange)
             VStack(spacing: 0) {
@@ -890,7 +987,7 @@ struct LibraryView: View {
                             itemIcon(item, compact: true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.name).fontWeight(.medium)
-                                Text(item.statusText).font(.caption).foregroundStyle(.secondary)
+                                Text(item.localizedStatusText).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Image(systemName: "chevron.right").foregroundStyle(.tertiary)
@@ -909,8 +1006,8 @@ struct LibraryView: View {
     private var continuePlayingSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Jump Back In").font(.title2.weight(.bold))
-                Text("Your most recent games").font(.callout).foregroundStyle(.secondary)
+                Text(.Library.jumpBackIn).font(.title2.weight(.bold))
+                Text(.Library.yourMostRecentGames).font(.callout).foregroundStyle(.secondary)
             }
 
             if let featured = recentItems.first {
@@ -937,10 +1034,10 @@ struct LibraryView: View {
             )
             HStack(alignment: .bottom, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Label("CONTINUE PLAYING", systemImage: "clock.arrow.circlepath")
+                    Label(.Library.continuePlaying, systemImage: "clock.arrow.circlepath")
                         .font(.caption2.weight(.bold)).tracking(1.1).foregroundStyle(.white.opacity(0.78))
                     Text(item.name).font(.title2.weight(.bold)).foregroundStyle(.white).lineLimit(1)
-                    Text(featuredMetadata(item)).font(.callout).foregroundStyle(.white.opacity(0.72)).lineLimit(1)
+                    featuredMetadata(item).font(.callout).foregroundStyle(.white.opacity(0.72)).lineLimit(1)
                 }
                 Spacer(minLength: 12)
                 Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
@@ -960,7 +1057,7 @@ struct LibraryView: View {
         .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onTapGesture { select(item) }
-        .accessibilityLabel("Continue \(item.name), \(item.statusText)")
+        .accessibilityLabel(Text(.Library.continueGame(item.name)))
     }
 
     private func recentRow(_ item: LibraryItem) -> some View {
@@ -971,7 +1068,7 @@ struct LibraryView: View {
                     Text(item.name).font(.callout.weight(.semibold)).lineLimit(1)
                     HStack(spacing: 5) {
                         Image(systemName: item.source.symbol)
-                        Text(relativeDate(item.lastUsed))
+                        relativeDate(item.lastUsed)
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1006,14 +1103,24 @@ struct LibraryView: View {
         }
     }
 
-    private func featuredMetadata(_ item: LibraryItem) -> String {
-        [item.source.title, playtime(item.playtimeMinutes), item.statusText]
-            .filter { $0 != "—" }.joined(separator: "  •  ")
+    @ViewBuilder private func featuredMetadata(_ item: LibraryItem) -> some View {
+        HStack(spacing: 0) {
+            Text(item.source.title)
+            if item.playtimeMinutes != nil {
+                Text("  •  ")
+                Text(playtime(item.playtimeMinutes))
+            }
+            Text("  •  ")
+            Text(item.localizedStatusText)
+        }
     }
 
-    private func relativeDate(_ date: Date?) -> String {
-        guard let date else { return "Not played yet" }
-        return date.formatted(.relative(presentation: .named))
+    @ViewBuilder private func relativeDate(_ date: Date?) -> some View {
+        if let date {
+            Text(date, style: .relative)
+        } else {
+            Text(.Library.notPlayedYet)
+        }
     }
 
     private func showsHeader(for group: LibraryGroup) -> Bool {
@@ -1058,7 +1165,7 @@ struct LibraryView: View {
                 Button { select(item) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.name).font(.headline).lineLimit(1)
-                        Label(item.statusText, systemImage: statusSymbol(item))
+                        Label(item.localizedStatusText, systemImage: statusSymbol(item))
                             .font(.caption).foregroundStyle(statusColor(item)).lineLimit(1)
                         if let storageBytes = item.storageBytes, storageBytes > 0 {
                             Label(
@@ -1087,7 +1194,9 @@ struct LibraryView: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .contextMenu { itemContextMenu(item) }
-            .accessibilityLabel("\(item.name), \(item.source.title), \(item.statusText)")
+            .accessibilityLabel(
+                Text(item.name) + Text(", ") + Text(item.source.title) + Text(", ") + Text(item.localizedStatusText)
+            )
         }
     }
 
@@ -1116,8 +1225,8 @@ struct LibraryView: View {
         .buttonStyle(.plain)
         .padding(10)
         .contentShape(Circle())
-        .help(favorite ? "Remove from Favorites" : "Add to Favorites")
-        .accessibilityLabel(favorite ? "Remove \(item.name) from Favorites" : "Add \(item.name) to Favorites")
+        .help(Text(favorite ? .Library.removeFromFavorites : .Library.addToFavorites))
+        .accessibilityLabel(Text(favorite ? .Library.removeItemFromFavorites(item.name) : .Library.addItemToFavorites(item.name)))
         .accessibilityAddTraits(favorite ? .isSelected : [])
         .animation(.spring(response: 0.28, dampingFraction: 0.55), value: favorite)
     }
@@ -1137,12 +1246,12 @@ struct LibraryView: View {
                 Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
                 Divider()
             }
-            Button("Show Details", systemImage: "info.circle") { select(item) }
+            Button(.Library.showDetails, systemImage: "info.circle") { select(item) }
             if case .storeGame(let game) = item.kind,
                store.isInstalled(game),
                [.epic, .gog].contains(game.provider) {
                 Divider()
-                Button("Uninstall…", systemImage: "trash", role: .destructive) {
+                Button(.Library.uninstall, systemImage: "trash", role: .destructive) {
                     uninstallCandidate = game
                 }
             }
@@ -1152,12 +1261,12 @@ struct LibraryView: View {
     @ViewBuilder private func syncButton(for source: LibrarySourceFilter) -> some View {
         if let provider = provider(source) {
             if libraryIsSyncing(provider) {
-                ProgressView().controlSize(.small).help("Importing \(provider.rawValue) Library")
+                ProgressView().controlSize(.small).help(Text(.Library.importingLibrary(provider.rawValue)))
             } else {
-                Button("Refresh", systemImage: "arrow.clockwise") {
+                Button(.Library.refresh, systemImage: "arrow.clockwise") {
                     store.syncLibrary(provider)
                 }
-                .labelStyle(.iconOnly).buttonStyle(.borderless).help("Refresh \(provider.rawValue) Library")
+                .labelStyle(.iconOnly).buttonStyle(.borderless).help(Text(.Library.refreshLibrary))
             }
         }
     }
@@ -1207,13 +1316,13 @@ struct LibraryView: View {
         }
     }
 
-    private func quickActionTitle(_ item: LibraryItem) -> String {
-        if item.running { return "Stop" }
-        if item.needsAttention { return "Details" }
-        if item.isInstallerOnly { return "Run Installer" }
-        if item.readyToPlay { return "Play" }
-        if item.installed { return "Prepare" }
-        return "Install"
+    private func quickActionTitle(_ item: LibraryItem) -> LocalizedStringResource {
+        if item.running { return .Library.stop }
+        if item.needsAttention { return .Library.details }
+        if item.isInstallerOnly { return .Library.runInstaller }
+        if item.readyToPlay { return .Library.play }
+        if item.installed { return .Library.prepare }
+        return .Library.install
     }
 
     private func quickActionSymbol(_ item: LibraryItem) -> String {
@@ -1240,11 +1349,12 @@ struct LibraryView: View {
         return .secondary
     }
 
-    private func playtime(_ minutes: Int?) -> String {
-        guard let minutes else { return "—" }
-        if minutes == 0 { return "Not played" }
-        if minutes < 60 { return "\(minutes) min" }
-        return String(format: "%.1f h", Double(minutes) / 60)
+    private func playtime(_ minutes: Int?) -> LocalizedStringResource {
+        guard let minutes else { return .Library.emDash }
+        if minutes == 0 { return .Library.notPlayed }
+        if minutes < 60 { return .Library.playtimeMinutesValue(minutes) }
+        let hours = (Double(minutes) / 60).formatted(.number.precision(.fractionLength(1)))
+        return .Library.playtimeHoursValue(hours)
     }
 
     private func clearFilters() {
@@ -1262,45 +1372,45 @@ struct LibraryView: View {
 
     @ViewBuilder private func appContextMenu(_ app: WindowsApplication) -> some View {
         if app.status == .running {
-            Button("Stop", systemImage: "stop.fill") { store.toggleRunning(app.id) }
+            Button(.Library.stop, systemImage: "stop.fill") { store.toggleRunning(app.id) }
         } else if app.status == .needsAttention {
-            Button("Try Again", systemImage: "arrow.clockwise") { store.retry(app.id) }
+            Button(.Library.tryAgain, systemImage: "arrow.clockwise") { store.retry(app.id) }
         } else {
-            Button(app.isInstallerOnly ? "Run Installer" : "Open", systemImage: "play.fill") { store.toggleRunning(app.id) }
+            Button(app.isInstallerOnly ? .Library.runInstaller : .Library.open, systemImage: "play.fill") { store.toggleRunning(app.id) }
                 .disabled(app.status.isBusy || app.status == .unavailable)
         }
         Divider()
-        Button("Show Details", systemImage: "info.circle") { selectAction(app.id) }
-        Button("Show in Finder", systemImage: "folder") {
+        Button(.Library.showDetails, systemImage: "info.circle") { selectAction(app.id) }
+        Button(.Library.showInFinder, systemImage: "folder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.executablePath)])
         }
         if developerMode {
             Divider()
             if let environment = store.environment(id: app.environmentID) {
-                Button("Open C: Drive", systemImage: "externaldrive") {
+                Button(.Library.openCDrive, systemImage: "externaldrive") {
                     if let prefix = environment.prefixPath { NSWorkspace.shared.open(URL(fileURLWithPath: prefix).appending(path: "drive_c")) }
                 }
-                Button("View Logs", systemImage: "doc.text.magnifyingglass") {
+                Button(.Library.viewLogs, systemImage: "doc.text.magnifyingglass") {
                     if let logs = environment.logsPath { NSWorkspace.shared.open(URL(fileURLWithPath: logs)) }
                 }
             }
-            if app.status == .running { Button("Force Quit", systemImage: "xmark.octagon", role: .destructive) { store.forceQuit(app.id) } }
+            if app.status == .running { Button(.Library.forceQuit, systemImage: "xmark.octagon", role: .destructive) { store.forceQuit(app.id) } }
         }
         Divider()
-        Button("Remove…", systemImage: "trash", role: .destructive) { removeCandidate = app }
+        Button(.Library.remove, systemImage: "trash", role: .destructive) { removeCandidate = app }
     }
 }
 
 private struct LibraryGroup: Identifiable {
     let id: String
-    let title: String?
+    let title: LocalizedStringResource?
     let source: LibrarySourceFilter?
     let items: [LibraryItem]
 }
 
 private struct ActiveLibraryFilter: Identifiable {
     let id: String
-    let title: String
+    let title: LocalizedStringResource
     let remove: () -> Void
 }
 

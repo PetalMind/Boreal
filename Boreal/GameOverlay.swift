@@ -2,6 +2,7 @@ import AppKit
 import Charts
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension Notification.Name {
     static let borealNativeGameDidStart = Notification.Name("BorealNativeGameDidStart")
@@ -14,40 +15,92 @@ nonisolated struct OverlayGame: Hashable, Sendable {
     let launchedAt: Date
     let performanceLogURL: URL?
     let graphics: String
+    let processIDs: [Int32]
+    let gameAPI: String
+    let translator: String
+    let hostAPI: String
+    let runtime: String
+
+    init(
+        id: UUID,
+        name: String,
+        launchedAt: Date,
+        performanceLogURL: URL?,
+        graphics: String,
+        processIDs: [Int32] = [],
+        gameAPI: String = "—",
+        translator: String? = nil,
+        hostAPI: String = "—",
+        runtime: String = "—"
+    ) {
+        self.id = id
+        self.name = name
+        self.launchedAt = launchedAt
+        self.performanceLogURL = performanceLogURL
+        self.graphics = graphics
+        self.processIDs = processIDs
+        self.gameAPI = gameAPI
+        self.translator = translator ?? graphics
+        self.hostAPI = hostAPI
+        self.runtime = runtime
+    }
 }
 
 nonisolated enum GameOverlayDetailLevel: String, CaseIterable, Sendable {
     case minimal, standard, diagnostic
 }
 
-nonisolated enum MemoryPressureLevel: String, Sendable {
+nonisolated enum MemoryPressureLevel: String, Codable, Equatable, Sendable {
     case normal = "Normal", warning = "Warning", critical = "Critical"
 }
 
-nonisolated struct GamePerformanceSnapshot: Equatable, Sendable {
+nonisolated struct GamePerformanceSnapshot: Codable, Equatable, Sendable {
     var framesPerSecond: Double?
-    var cpuUsage: Double?
-    var gpuUsage: Double?
-    var memoryUsedBytes: UInt64?
-    var memoryTotalBytes: UInt64?
+    var averageFramesPerSecond: Double?
+    var gameCPUUsage: Double?
+    var gameMemoryUsedBytes: UInt64?
+    var systemCPUUsage: Double?
+    var systemGPUUsage: Double?
+    var systemMemoryUsedBytes: UInt64?
+    var systemMemoryTotalBytes: UInt64?
     var cpuTemperatureCelsius: Double?
     var gpuTemperatureCelsius: Double?
     var frameTimeMilliseconds: Double?
+    var frameTimeIsMeasured = false
     var onePercentLowFPS: Double?
+    var zeroPointOnePercentLowFPS: Double?
+    var p95FrameTimeMilliseconds: Double?
+    var p99FrameTimeMilliseconds: Double?
     var thermalState: String?
     var memoryPressure: MemoryPressureLevel?
     var swapUsedBytes: UInt64?
     var gpuAllocatedBytes: UInt64?
+    var fpsSource: GameMetricSource?
+    var frameCount = 0
+    var capabilities = MetricsCapabilities.unavailable
 
     var hasMemoryPressure: Bool { memoryPressure == .warning || memoryPressure == .critical }
+
+    // Compatibility aliases keep old integrations source-compatible while the
+    // UI now makes the game/system ownership of each value explicit.
+    var cpuUsage: Double? { systemCPUUsage }
+    var gpuUsage: Double? { systemGPUUsage }
+    var memoryUsedBytes: UInt64? { systemMemoryUsedBytes }
+    var memoryTotalBytes: UInt64? { systemMemoryTotalBytes }
 
     static let unavailable = GamePerformanceSnapshot()
 }
 
-nonisolated struct GamePerformanceSample: Identifiable, Equatable, Sendable {
-    let id = UUID()
+nonisolated struct GamePerformanceSample: Codable, Identifiable, Equatable, Sendable {
+    let id: UUID
     let timestamp: Date
     let snapshot: GamePerformanceSnapshot
+
+    init(id: UUID = UUID(), timestamp: Date, snapshot: GamePerformanceSnapshot) {
+        self.id = id
+        self.timestamp = timestamp
+        self.snapshot = snapshot
+    }
 }
 
 nonisolated struct GamePerformanceChartPoint: Identifiable, Equatable, Sendable {
@@ -66,13 +119,22 @@ private final class GameOverlayViewModel {
     var sessionStartedAt: Date?
     var displayResolution = "—"
     var translationLayer = "—"
+    var gameAPI = "—"
+    var hostAPI = "—"
+    var runtime = "—"
     var processorName = "Apple Silicon"
+    var selectedMetrics = OverlayMetric.defaultSet
     private var sampledGameID: UUID?
 
     func prepare(for game: OverlayGame) {
         let isSameSession = sampledGameID == game.id && sessionStartedAt == game.launchedAt
         gameName = game.name
         sessionStartedAt = game.launchedAt
+        translationLayer = game.translator
+        gameAPI = game.gameAPI
+        hostAPI = game.hostAPI
+        runtime = game.runtime
+        selectedMetrics = OverlayMetric.deserialize(UserDefaults.standard.string(forKey: "gameOverlayMetrics"))
         guard !isSameSession else { return }
         sampledGameID = game.id
         snapshot = .unavailable
@@ -82,7 +144,7 @@ private final class GameOverlayViewModel {
     func record(_ snapshot: GamePerformanceSnapshot, at timestamp: Date = .now) {
         self.snapshot = snapshot
         samples.append(GamePerformanceSample(timestamp: timestamp, snapshot: snapshot))
-        samples = Array(samples.suffix(60))
+        samples = Array(samples.suffix(240))
     }
 
     func chartPoints(
@@ -110,8 +172,13 @@ final class GameOverlayController {
     static let shared = GameOverlayController()
     private let model = GameOverlayViewModel()
     private let sampler = GameMetricsSampler()
+    private let recorder = PerformanceSessionRecorder()
     private var panel: NSPanel?
     private var samplingTask: Task<Void, Never>?
+    private var uiRefreshTask: Task<Void, Never>?
+    private var latestSnapshot = GamePerformanceSnapshot.unavailable
+    private var recordingGameID: UUID?
+    private var recordingSessionStartedAt: Date?
     private var activeGames: [OverlayGame] = []
     private var managedGames: [OverlayGame] = []
     private var nativeGame: OverlayGame?
@@ -137,6 +204,7 @@ final class GameOverlayController {
             MainActor.assumeIsolated {
                 let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
                 self?.updatePreferredGameScreen(for: application)
+                if let self { self.synchronize(games: self.managedGames) }
                 self?.scheduleFullscreenVisibilityRefresh()
             }
         }
@@ -159,16 +227,28 @@ final class GameOverlayController {
         managedGames = games
         activeGames = (games + [nativeGame].compactMap { $0 }).sorted { $0.launchedAt > $1.launchedAt }
         if activeGames.isEmpty {
+            stopRecording()
             isTemporarilyHidden = false
             preferredGameScreen = nil
             gameUsesFullScreenFrame = false
         }
-        guard UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
-              let game = activeGames.first, !isTemporarilyHidden else { hide(); return }
+        guard let game = selectedGame else { hide(); return }
         model.prepare(for: game)
         model.detailLevel = configuredDetailLevel
-        model.translationLayer = game.graphics
         model.processorName = Self.processorName
+        synchronizeRecording(for: game)
+        Task { await sampler.configure(for: game) }
+        guard UserDefaults.standard.object(forKey: "gameOverlayEnabled") as? Bool ?? true,
+              !isTemporarilyHidden else {
+            uiRefreshTask?.cancel(); uiRefreshTask = nil
+            if UserDefaults.standard.bool(forKey: "gameOverlayRecordingEnabled") {
+                startSampling(showUI: false)
+            } else {
+                hide()
+            }
+            panel?.orderOut(nil)
+            return
+        }
         show()
     }
 
@@ -180,7 +260,7 @@ final class GameOverlayController {
         }
     }
 
-    func settingsChanged() { synchronize(games: activeGames); if let panel { position(panel) } }
+    func settingsChanged() { synchronize(games: managedGames); if let panel { position(panel) } }
     func setDetailLevel(_ level: GameOverlayDetailLevel) {
         UserDefaults.standard.set(level.rawValue, forKey: "gameOverlayDetailLevel")
         settingsChanged()
@@ -197,7 +277,28 @@ final class GameOverlayController {
 
     func toggleVisibility() {
         guard !activeGames.isEmpty else { return }
-        isTemporarilyHidden.toggle(); synchronize(games: activeGames)
+        isTemporarilyHidden.toggle(); synchronize(games: managedGames)
+    }
+
+    func exportLastPerformanceSession(format: String) {
+        Task { [weak self] in
+            guard let self, let document = await recorder.latest() else { return }
+            let savePanel = NSSavePanel()
+            let type: UTType = format == "csv" ? .commaSeparatedText : .json
+            savePanel.allowedContentTypes = [type]
+            savePanel.nameFieldStringValue = "\(document.gameName)-performance.\(format)"
+            guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+            do {
+                if format == "csv" { try await recorder.exportCSV(document, to: url) }
+                else { try await recorder.exportJSON(document, to: url) }
+            } catch {
+                // Export is a convenience action; it must not affect the game.
+            }
+        }
+    }
+
+    func latestPerformanceSession() async -> PerformanceSessionDocument? {
+        await recorder.latest()
     }
 
     private func show() {
@@ -207,8 +308,29 @@ final class GameOverlayController {
     }
 
     private func hide() {
-        samplingTask?.cancel(); samplingTask = nil; panel?.orderOut(nil); model.snapshot = .unavailable
+        samplingTask?.cancel(); samplingTask = nil
+        uiRefreshTask?.cancel(); uiRefreshTask = nil
+        latestSnapshot = .unavailable
+        panel?.orderOut(nil); model.snapshot = .unavailable
         Task { await sampler.reset() }
+    }
+
+    private func synchronizeRecording(for game: OverlayGame) {
+        if UserDefaults.standard.bool(forKey: "gameOverlayRecordingEnabled") {
+            guard recordingGameID != game.id || recordingSessionStartedAt != game.launchedAt else { return }
+            recordingGameID = game.id
+            recordingSessionStartedAt = game.launchedAt
+            Task { await recorder.start(for: game) }
+        } else if recordingGameID != nil {
+            recordingGameID = nil
+            stopRecording()
+        }
+    }
+
+    private func stopRecording() {
+        recordingGameID = nil
+        recordingSessionStartedAt = nil
+        Task { _ = await recorder.finish() }
     }
 
     private func nativeApplicationLaunched(_ notification: Notification) {
@@ -238,7 +360,12 @@ final class GameOverlayController {
             name: expectation.name,
             launchedAt: .now,
             performanceLogURL: nil,
-            graphics: "Native macOS"
+            graphics: "Native macOS",
+            processIDs: [application.processIdentifier],
+            gameAPI: "Native",
+            translator: "Native",
+            hostAPI: "Metal",
+            runtime: "macOS"
         )
         expectedNativeGame = nil
         updatePreferredGameScreen(for: application)
@@ -265,6 +392,20 @@ final class GameOverlayController {
         }
         position(panel, preferPointerScreen: preferPointerScreen)
         panel.orderFrontRegardless()
+    }
+
+    /// Prefer the game whose process owns the frontmost window. During launch
+    /// handoff process IDs can be temporarily unavailable, so the latest active
+    /// session remains the fallback.
+    private var selectedGame: OverlayGame? {
+        guard !activeGames.isEmpty else { return nil }
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if let frontmostPID,
+           let game = activeGames.first(where: { $0.processIDs.contains(frontmostPID) }) {
+            return game
+        }
+        if let nativeGame, nativeGameProcessID == frontmostPID { return nativeGame }
+        return activeGames.first
     }
 
     private func scheduleFullscreenVisibilityRefresh() {
@@ -305,8 +446,8 @@ final class GameOverlayController {
     private func position(_ panel: NSPanel, preferPointerScreen: Bool = false) {
         var size: NSSize = switch configuredDetailLevel {
         case .minimal: .init(width: 248, height: 250)
-        case .standard: .init(width: 300, height: 520)
-        case .diagnostic: .init(width: 520, height: 850)
+        case .standard: .init(width: 320, height: 570)
+        case .diagnostic: .init(width: 430, height: 760)
         }
         size.height = min(size.height, (preferredGameScreen ?? NSScreen.main)?.visibleFrame.height ?? size.height)
         panel.setContentSize(size)
@@ -383,19 +524,43 @@ final class GameOverlayController {
         return String(cString: value)
     }
 
-    private func startSampling() {
-        guard samplingTask == nil else { return }
+    private func startSampling(showUI: Bool = true) {
+        if samplingTask != nil {
+            if showUI { startUIRefresh() }
+            return
+        }
         samplingTask = Task { [weak self] in
+            var sampleIndex = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                let snapshot = await sampler.sample(
-                    frameRateLogURL: activeGames.first?.performanceLogURL,
-                    gameID: activeGames.first?.id,
-                    metalHUDEnabled: activeGames.first?.graphics.caseInsensitiveCompare("D3DMetal") == .orderedSame
-                )
-                model.record(snapshot)
+                guard let game = selectedGame else { return }
+                if UserDefaults.standard.bool(forKey: "gameOverlayRecordingEnabled") {
+                    await recorder.start(for: game)
+                }
+                await sampler.configure(for: game)
+                while !Task.isCancelled, let current = selectedGame, current.id == game.id {
+                    latestSnapshot = await sampler.sample()
+                    if UserDefaults.standard.bool(forKey: "gameOverlayRecordingEnabled"), sampleIndex.isMultiple(of: 2) {
+                        await recorder.append(latestSnapshot, for: game.id)
+                    }
+                    sampleIndex += 1
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                await sampler.reset()
+            }
+        }
+        if showUI { startUIRefresh() }
+    }
+
+    private func startUIRefresh() {
+        guard uiRefreshTask == nil else { return }
+        uiRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                model.record(latestSnapshot)
                 restoreOverlayVisibility()
-                try? await Task.sleep(for: .seconds(max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.5)))
+                let interval = min(max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.25), 1.0)
+                try? await Task.sleep(for: .seconds(interval))
             }
         }
     }
@@ -404,17 +569,17 @@ final class GameOverlayController {
 private struct GameOverlayView: View {
     let model: GameOverlayViewModel
     var body: some View {
-        ScrollView {
-        switch model.detailLevel {
-        case .minimal:
-            VStack(spacing: 8) { sessionInfo; performance; memoryWarning; hideShortcut }
-                .padding(16)
-                .card()
-        case .standard: standard
-        case .diagnostic: diagnostic
+        Group {
+            switch model.detailLevel {
+            case .minimal:
+                VStack(spacing: 8) { sessionInfo; performance; memoryWarning; hideShortcut }
+                    .padding(16)
+                    .card()
+            case .standard: standard
+            case .diagnostic: diagnostic
+            }
         }
-        }
-        .scrollIndicators(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func bytes(_ value: UInt64?) -> String {
@@ -435,80 +600,137 @@ private struct GameOverlayView: View {
 
     private var standard: some View {
         VStack(spacing: 12) {
-            sessionInfo; divider; performance; divider
-            row("GPU", percent(model.snapshot.gpuUsage), .green)
-            row("CPU", percent(model.snapshot.cpuUsage), .cyan)
-            row("Memory", "\(memory) / \(totalMemory)", .green)
-            row("Swap", bytes(model.snapshot.swapUsedBytes), .purple)
-            row("GPU mapped", bytes(model.snapshot.gpuAllocatedBytes), .purple)
-                .help("System-wide driver allocation in shared RAM, not dedicated VRAM or game-only usage.")
-            row("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—", .orange)
+            sessionInfo; divider; performance
+            if shows(.gameCPU) || shows(.gameMemory) {
+                divider; title("gamecontroller", "GAME", .cyan)
+                if shows(.gameCPU) { row("GAME CPU", percent(model.snapshot.gameCPUUsage), .cyan) }
+                if shows(.gameMemory) { row("GAME MEMORY", bytes(model.snapshot.gameMemoryUsedBytes), .cyan) }
+            }
+            if shows(.systemCPU) || shows(.systemGPU) || shows(.systemMemory) || shows(.swap) || shows(.gpuMappedMemory) || shows(.memoryPressure) || shows(.thermalState) {
+                divider; title("display", "SYSTEM", .green)
+                if shows(.systemGPU) { row("SYSTEM GPU", percent(model.snapshot.systemGPUUsage), .green) }
+                if shows(.systemCPU) { row("SYSTEM CPU", percent(model.snapshot.systemCPUUsage), .cyan) }
+                if shows(.systemMemory) { row("SYSTEM MEMORY", "\(memory) / \(totalMemory)", .green) }
+                if shows(.swap) { row("Swap", bytes(model.snapshot.swapUsedBytes), .purple) }
+                if shows(.gpuMappedMemory) {
+                    row("Driver-mapped memory", bytes(model.snapshot.gpuAllocatedBytes), .purple)
+                        .help("System-wide driver-mapped allocation in shared RAM; this is not dedicated VRAM or game-only memory.")
+                }
+                if shows(.memoryPressure) { row("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—", .orange) }
+                if shows(.thermalState) { row("Thermal", model.snapshot.thermalState ?? "—", .orange) }
+            }
             memoryWarning
-            divider; info("display", model.displayResolution); info("square.3.layers.3d", "Metal")
+            divider; info("display", "Display", model.displayResolution)
+            info("square.3.layers.3d", "Game API", model.gameAPI)
+            info("arrow.left.arrow.right", "Translator", model.translationLayer)
+            info("cube.transparent", "Host API", model.hostAPI)
+            info("shippingbox", "Runtime", model.runtime)
             divider; hideShortcut
         }.padding(16).card()
     }
 
     private var diagnostic: some View {
-        VStack(spacing: 14) {
+        var gameRows: [(String, String)] = []
+        if shows(.gameCPU) { gameRows.append(("GAME CPU", percent(model.snapshot.gameCPUUsage))) }
+        if shows(.gameMemory) { gameRows.append(("GAME MEMORY", bytes(model.snapshot.gameMemoryUsedBytes))) }
+        var systemRows: [(String, String)] = []
+        if shows(.systemCPU) { systemRows.append(("SYSTEM CPU", percent(model.snapshot.systemCPUUsage))) }
+        if shows(.systemGPU) { systemRows.append(("SYSTEM GPU", percent(model.snapshot.systemGPUUsage))) }
+        if shows(.systemMemory) { systemRows.append(("SYSTEM MEMORY", memory)) }
+        if shows(.gpuTemperature) { systemRows.append(("GPU temperature", temperature(model.snapshot.gpuTemperatureCelsius))) }
+        var memoryRows: [(String, String)] = []
+        if shows(.systemMemory) { memoryRows.append(("System total", totalMemory)) }
+        if shows(.swap) { memoryRows.append(("Swap", bytes(model.snapshot.swapUsedBytes))) }
+        if shows(.gpuMappedMemory) { memoryRows.append(("Driver mapped", bytes(model.snapshot.gpuAllocatedBytes))) }
+        if shows(.memoryPressure) { memoryRows.append(("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—")) }
+        return VStack(spacing: 6) {
             sessionInfo; divider
             title("chart.xyaxis.line", "PERFORMANCE", .cyan); performance; divider
-            HStack(alignment: .top, spacing: 16) {
-                column("GPU", "display", .green, [("GPU", percent(model.snapshot.gpuUsage)), ("Temperature", temperature(model.snapshot.gpuTemperatureCelsius))])
+            HStack(alignment: .top, spacing: 10) {
+                column("GAME", "gamecontroller", .cyan, gameRows)
                 divider
-                column("CPU", "cpu", .cyan, [("CPU", percent(model.snapshot.cpuUsage)), ("Temperature", temperature(model.snapshot.cpuTemperatureCelsius))])
+                column("SYSTEM", "display", .green, systemRows)
             }
             divider
-            HStack(alignment: .top, spacing: 16) {
-                column("MEMORY", "memorychip", .purple, [("Memory", memory), ("Total", totalMemory), ("Swap", bytes(model.snapshot.swapUsedBytes)), ("GPU mapped", bytes(model.snapshot.gpuAllocatedBytes)), ("Pressure", model.snapshot.memoryPressure?.rawValue ?? "—")])
+            HStack(alignment: .top, spacing: 10) {
+                column("MEMORY", "memorychip", .purple, memoryRows)
                 divider
-                column("THERMAL", "thermometer.medium", .orange, [("State", model.snapshot.thermalState ?? "—")])
+                thermalColumn
             }
             divider
             memoryWarning
             title("waveform.path.ecg", "LIVE HISTORY", .cyan)
-            liveChart(
-                title: "FPS",
-                color: .green,
-                points: model.chartPoints(for: \.framesPerSecond, series: "FPS"),
-                domain: nil
-            )
-            liveUtilizationChart
+            if shows(.fps) {
+                liveChart(
+                    title: "FPS",
+                    color: .green,
+                    points: model.chartPoints(for: \.framesPerSecond, series: "FPS"),
+                    domain: nil
+                )
+            }
+            if shows(.systemCPU) || shows(.systemGPU) { liveUtilizationChart }
             divider; title("gearshape", "SYSTEM", .cyan)
-            info("display", model.displayResolution); info("square.3.layers.3d", "API", "Metal")
-            info("arrow.left.arrow.right", "Translation", model.translationLayer); info("apple.logo", model.processorName)
+            diagnosticSystemInfo
             divider; hideShortcut
         }.padding(16).card()
     }
 
+    private var diagnosticSystemInfo: some View {
+        let details: [(String, String, String)] = [
+            ("display", "Display", model.displayResolution),
+            ("square.3.layers.3d", "Game API", model.gameAPI),
+            ("arrow.left.arrow.right", "Translator", model.translationLayer),
+            ("cube.transparent", "Host API", model.hostAPI),
+            ("shippingbox", "Runtime", model.runtime),
+            ("waveform.path.ecg", "FPS source", model.snapshot.fpsSource?.displayName ?? "—"),
+            ("apple.logo", "Processor", model.processorName),
+        ]
+        return LazyVGrid(
+            columns: [
+                GridItem(.flexible(minimum: 0), spacing: 8, alignment: .leading),
+                GridItem(.flexible(minimum: 0), spacing: 8, alignment: .leading),
+            ],
+            alignment: .leading,
+            spacing: 5
+        ) {
+            ForEach(Array(details.enumerated()), id: \.offset) { _, detail in
+                compactInfo(detail.0, detail.1, detail.2)
+            }
+        }
+    }
+
     private var liveUtilizationChart: some View {
-        let cpu = model.chartPoints(for: \.cpuUsage, series: "CPU")
-        let gpu = model.chartPoints(for: \.gpuUsage, series: "GPU")
+        let cpu = model.chartPoints(for: \.systemCPUUsage, series: "System CPU")
+        let gpu = model.chartPoints(for: \.systemGPUUsage, series: "System GPU")
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
-                chartLegend("CPU", color: .cyan)
-                chartLegend("GPU", color: .green)
+                if shows(.systemCPU) { chartLegend("CPU", color: .cyan) }
+                if shows(.systemGPU) { chartLegend("GPU", color: .green) }
             }
             Chart {
-                ForEach(cpu) { point in
-                    LineMark(
-                        x: .value("Time", point.timestamp),
-                        y: .value("CPU", point.value),
-                        series: .value("CPU segment", point.series)
-                    )
-                    .foregroundStyle(.cyan)
-                    .lineStyle(.init(lineWidth: 1.5))
-                    .interpolationMethod(.catmullRom)
+                if shows(.systemCPU) {
+                    ForEach(cpu) { point in
+                        LineMark(
+                            x: .value("Time", point.timestamp),
+                            y: .value("CPU", point.value),
+                            series: .value("CPU segment", point.series)
+                        )
+                        .foregroundStyle(.cyan)
+                        .lineStyle(.init(lineWidth: 1.5))
+                        .interpolationMethod(.catmullRom)
+                    }
                 }
-                ForEach(gpu) { point in
-                    LineMark(
-                        x: .value("Time", point.timestamp),
-                        y: .value("GPU", point.value),
-                        series: .value("GPU segment", point.series)
-                    )
-                    .foregroundStyle(.green)
-                    .lineStyle(.init(lineWidth: 1.5))
-                    .interpolationMethod(.catmullRom)
+                if shows(.systemGPU) {
+                    ForEach(gpu) { point in
+                        LineMark(
+                            x: .value("Time", point.timestamp),
+                            y: .value("GPU", point.value),
+                            series: .value("GPU segment", point.series)
+                        )
+                        .foregroundStyle(.green)
+                        .lineStyle(.init(lineWidth: 1.5))
+                        .interpolationMethod(.catmullRom)
+                    }
                 }
             }
             .chartXScale(domain: chartTimeDomain)
@@ -516,8 +738,17 @@ private struct GameOverlayView: View {
             .chartXAxis(.hidden)
             .chartYAxis { compactYAxis(suffix: "%") }
             .chartLegend(.hidden)
-            .frame(height: 72)
+            .frame(height: 56)
         }
+    }
+
+    private var thermalColumn: some View {
+        VStack(spacing: 4) {
+            title("thermometer.medium", "THERMAL", .orange)
+            if shows(.thermalState) { row("State", model.snapshot.thermalState ?? "—", .orange) }
+            if shows(.cpuTemperature) { row("CPU temp", temperature(model.snapshot.cpuTemperatureCelsius), .orange) }
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func liveChart(
@@ -543,14 +774,14 @@ private struct GameOverlayView: View {
             .chartXAxis(.hidden)
             .chartYAxis { compactYAxis(suffix: "") }
             .chartLegend(.hidden)
-            .frame(height: 72)
+            .frame(height: 56)
         }
     }
 
     private var chartTimeDomain: ClosedRange<Date> {
         let end = model.samples.last?.timestamp ?? .now
-        let interval = max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.5)
-        return end.addingTimeInterval(-interval * 59)...end
+        let interval = min(max(UserDefaults.standard.double(forKey: "gameOverlayRefreshInterval"), 0.25), 1.0)
+        return end.addingTimeInterval(-interval * 239)...end
     }
 
     private func automaticFPSDomain(_ points: [GamePerformanceChartPoint]) -> ClosedRange<Double> {
@@ -595,10 +826,39 @@ private struct GameOverlayView: View {
     }
 
     private var performance: some View {
-        VStack(spacing: 8) {
-            row("FPS", number(model.snapshot.framesPerSecond), .green)
-            row("Frametime", milliseconds(model.snapshot.frameTimeMilliseconds), .green)
-            row("1% Low", fps(model.snapshot.onePercentLowFPS), .green)
+        VStack(spacing: 4) {
+            if shows(.fps) { row("FPS", number(model.snapshot.framesPerSecond), .green) }
+            if shows(.frameTime) {
+                row("Frametime", milliseconds(model.snapshot.frameTimeMilliseconds), .green)
+                    .help(model.snapshot.frameTimeIsMeasured ? "Measured frame interval from renderer telemetry." : "Estimated as 1000 / FPS because measured frame intervals are unavailable.")
+            }
+            if shows(.onePercentLow) { row("1% Low", fps(model.snapshot.onePercentLowFPS), .green) }
+            if shows(.zeroPointOnePercentLow) { row("0.1% Low", fps(model.snapshot.zeroPointOnePercentLowFPS), .green) }
+            if shows(.p95FrameTime) { row("P95 frametime", milliseconds(model.snapshot.p95FrameTimeMilliseconds), .green) }
+            if shows(.p99FrameTime) { row("P99 frametime", milliseconds(model.snapshot.p99FrameTimeMilliseconds), .green) }
+        }
+    }
+
+    private func shows(_ metric: OverlayMetric) -> Bool {
+        guard model.selectedMetrics.contains(metric) else { return false }
+        switch metric {
+        case .fps: return model.snapshot.capabilities.fps != .unsupported
+        case .frameTime: return model.snapshot.capabilities.frameTime != .unsupported
+        case .onePercentLow: return model.snapshot.capabilities.onePercentLow != .unsupported
+        case .zeroPointOnePercentLow: return model.snapshot.capabilities.zeroPointOnePercentLow != .unsupported
+        case .p95FrameTime: return model.snapshot.capabilities.p95FrameTime != .unsupported
+        case .p99FrameTime: return model.snapshot.capabilities.p99FrameTime != .unsupported
+        case .gameCPU: return model.snapshot.capabilities.gameCPU != .unsupported
+        case .gameMemory: return model.snapshot.capabilities.gameMemory != .unsupported
+        case .systemCPU: return model.snapshot.capabilities.systemCPU != .unsupported
+        case .systemGPU: return model.snapshot.capabilities.systemGPU != .unsupported
+        case .systemMemory: return model.snapshot.capabilities.systemMemory != .unsupported
+        case .swap: return model.snapshot.capabilities.swap != .unsupported
+        case .gpuMappedMemory: return model.snapshot.capabilities.gpuMappedMemory != .unsupported
+        case .gpuTemperature: return model.snapshot.capabilities.gpuTemperature != .unsupported
+        case .cpuTemperature: return model.snapshot.capabilities.cpuTemperature != .unsupported
+        case .memoryPressure: return model.snapshot.capabilities.memoryPressure != .unsupported
+        case .thermalState: return model.snapshot.capabilities.thermalState != .unsupported
         }
     }
     private var sessionInfo: some View {
@@ -642,13 +902,27 @@ private struct GameOverlayView: View {
     private var divider: some View { Divider().overlay(.white.opacity(0.16)) }
     private func row(_ label: String, _ value: String, _ color: Color) -> some View {
         HStack { Text(label); Spacer(); Text(value).foregroundStyle(value == "—" ? Color.secondary : color).contentTransition(.numericText()) }
-            .font(.system(size: 15, weight: .medium, design: .monospaced))
+            .font(.system(size: 12.5, weight: .medium, design: .monospaced))
     }
     private func title(_ symbol: String, _ text: String, _ color: Color) -> some View {
         Label(text, systemImage: symbol).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundStyle(color).frame(maxWidth: .infinity, alignment: .leading)
     }
     private func column(_ text: String, _ symbol: String, _ color: Color, _ rows: [(String, String)]) -> some View {
-        VStack(spacing: 8) { title(symbol, text, color); ForEach(Array(rows.enumerated()), id: \.offset) { _, item in row(item.0, item.1, color) } }.frame(maxWidth: .infinity)
+        VStack(spacing: 4) { title(symbol, text, color); ForEach(Array(rows.enumerated()), id: \.offset) { _, item in row(item.0, item.1, color) } }.frame(maxWidth: .infinity)
+    }
+
+    private func compactInfo(_ symbol: String, _ text: String, _ trailing: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Label(text, systemImage: symbol)
+                .lineLimit(1)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            Text(trailing)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
     private func info(_ symbol: String, _ text: String, _ trailing: String? = nil) -> some View {
         HStack { Image(systemName: symbol).frame(width: 20); Text(text); Spacer(); if let trailing { Text(trailing) } }.font(.system(size: 14, weight: .medium, design: .monospaced))
@@ -660,8 +934,8 @@ private struct GameOverlayView: View {
     private func fps(_ value: Double?) -> String {
         value.map { $0 < 10 ? String(format: "%.1f FPS", $0) : "\(Int($0.rounded())) FPS" } ?? "—"
     }
-    private var memory: String { model.snapshot.memoryUsedBytes.map { String(format: "%.1f GB", Double($0) / 1_073_741_824) } ?? "—" }
-    private var totalMemory: String { model.snapshot.memoryTotalBytes.map { String(format: "%.0f GB", Double($0) / 1_073_741_824) } ?? "—" }
+    private var memory: String { model.snapshot.systemMemoryUsedBytes.map { String(format: "%.1f GB", Double($0) / 1_073_741_824) } ?? "—" }
+    private var totalMemory: String { model.snapshot.systemMemoryTotalBytes.map { String(format: "%.0f GB", Double($0) / 1_073_741_824) } ?? "—" }
 }
 
 private extension View {

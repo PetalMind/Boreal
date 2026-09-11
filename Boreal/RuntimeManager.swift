@@ -137,14 +137,21 @@ actor RuntimeManager: RuntimeManaging {
     func installedRuntimes() async throws -> [InstalledRuntime] {
         try prepareDirectories()
         let children = try fileManager.contentsOfDirectory(at: runtimesURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-        return children.compactMap { root in
+        var runtimes: [InstalledRuntime] = []
+        for root in children {
             let descriptor = root.appending(path: "installed-runtime.json")
-            guard let data = try? Data(contentsOf: descriptor), var runtime = try? JSONDecoder().decode(InstalledRuntime.self, from: data) else { return nil }
+            guard let data = try? Data(contentsOf: descriptor), var runtime = try? JSONDecoder().decode(InstalledRuntime.self, from: data) else { continue }
             if runtime.rootURL != root {
                 runtime = relocated(runtime, from: runtime.rootURL, to: root)
             }
-            return refreshingDetectedFeatures(of: runtime)
+            // Runtime packages published by older Boreal builds can still
+            // contain the duplicate MoltenVK image. Repair the immutable
+            // snapshot before any launch can load both Objective-C class
+            // implementations into the same Wine process.
+            try normalizeInstalledRuntimePayload(of: runtime)
+            runtimes.append(refreshingDetectedFeatures(of: runtime))
         }
+        return runtimes
     }
 
     func downloadAndInstallGraphicsComponent(
@@ -1243,6 +1250,36 @@ actor RuntimeManager: RuntimeManaging {
         guard fileManager.fileExists(atPath: primary.path),
               fileManager.fileExists(atPath: gStreamerCopy.path) else { return }
         try fileManager.removeItem(at: gStreamerCopy)
+    }
+
+    private func normalizeInstalledRuntimePayload(of runtime: InstalledRuntime) throws {
+        let wineApp = runtime.rootURL.appending(
+            path: "Runtime/Wine.app",
+            directoryHint: .isDirectory
+        )
+        let wineLibraries = wineApp.appending(
+            path: "Contents/Resources/wine/lib",
+            directoryHint: .isDirectory
+        )
+        let primary = wineLibraries.appending(path: "libMoltenVK.dylib")
+        let gStreamerCopy = wineLibraries.appending(
+            path: "GStreamer.framework/Versions/1.0/lib/libMoltenVK.dylib"
+        )
+        guard fileManager.fileExists(atPath: primary.path),
+              fileManager.fileExists(atPath: gStreamerCopy.path) else { return }
+
+        do {
+            // Published runtimes are immutable by design. Keep the repair
+            // transactional and restore the invariant even if removal fails.
+            try makeWritable(runtime.rootURL)
+            try removeBundledGStreamerMoltenVKDuplicate(from: wineApp)
+            try makeImmutable(runtime.rootURL)
+        } catch {
+            try? makeImmutable(runtime.rootURL)
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The installed runtime contains a duplicate MoltenVK library and could not be repaired safely."
+            )
+        }
     }
 
     private func runtimeEnvironment(_ runtime: InstalledRuntime) -> [String: String] {

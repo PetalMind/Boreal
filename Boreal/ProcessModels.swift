@@ -529,9 +529,12 @@ nonisolated protocol WindowsProcessRunning: Sendable {
     func terminateEnvironmentSession(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func forceQuitEnvironment(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func forceQuit(_ session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func gameProcessIDs(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [Int32]
 }
 
 nonisolated extension WindowsProcessRunning {
+    func gameProcessIDs(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [Int32] { [] }
+
     /// Runners that do not have a native process-group implementation retain
     /// the old launcher-stop behavior until they can provide one.
     func stopProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
