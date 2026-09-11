@@ -128,15 +128,17 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         }
         guard u32(data, at: 0) & 0xffff == 0x5a4d else { return .unknown }
         guard let peOffset = intOffset(data, at: 0x3c), peOffset >= 0,
-              peOffset + 26 <= data.count,
+              let peHeaderEnd = checkedAdd(peOffset, 26),
+              peHeaderEnd <= data.count,
               u32(data, at: peOffset) == 0x00004550 else { return .unknown }
 
         let fileHeader = peOffset + 4
         let machine = u16(data, at: fileHeader)
-        let sectionCount = Int(u16(data, at: fileHeader + 2))
-        let optionalSize = Int(u16(data, at: fileHeader + 16))
+        let sectionCount = Int(exactly: u16(data, at: fileHeader + 2)) ?? 0
+        let optionalSize = Int(exactly: u16(data, at: fileHeader + 16)) ?? 0
         let optionalHeader = fileHeader + 20
-        guard optionalHeader + optionalSize <= data.count,
+        guard let optionalHeaderEnd = checkedAdd(optionalHeader, optionalSize),
+              optionalHeaderEnd <= data.count,
               optionalSize >= 32 else { return .unknown }
         let magic = u16(data, at: optionalHeader)
         let architecture: WindowsExecutableArchitecture = switch machine {
@@ -148,14 +150,17 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
             return WindowsPEInspection(isPE: true, architecture: architecture, version: extractVersion(from: data), imports: [], exports: [])
         }
 
-        let dataDirectoryOffset = optionalHeader + (magic == 0x020b ? 112 : 96)
-        let numberOfDirectoriesOffset = optionalHeader + (magic == 0x020b ? 108 : 92)
-        let directoryCount = Int(u32(data, at: numberOfDirectoriesOffset))
-        let sectionTable = optionalHeader + optionalSize
+        guard let dataDirectoryOffset = checkedAdd(optionalHeader, magic == 0x020b ? 112 : 96),
+              let numberOfDirectoriesOffset = checkedAdd(optionalHeader, magic == 0x020b ? 108 : 92),
+              let sectionTable = checkedAdd(optionalHeader, optionalSize) else { return .unknown }
+        let directoryCount = Int(exactly: u32(data, at: numberOfDirectoriesOffset)) ?? 0
         var sections: [PESection] = []
-        if sectionCount > 0, sectionTable + sectionCount * 40 <= data.count {
+        if sectionCount > 0,
+           let sectionTableSize = checkedMultiply(sectionCount, 40),
+           let sectionTableEnd = checkedAdd(sectionTable, sectionTableSize),
+           sectionTableEnd <= data.count {
             for index in 0..<sectionCount {
-                let offset = sectionTable + index * 40
+                guard let offset = checkedAdd(sectionTable, index * 40) else { break }
                 sections.append(PESection(
                     virtualAddress: u32(data, at: offset + 12),
                     virtualSize: u32(data, at: offset + 8),
@@ -166,9 +171,10 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         }
 
         func directory(_ index: Int) -> (rva: UInt32, size: UInt32)? {
-            guard index < directoryCount,
-                  dataDirectoryOffset + (index + 1) * 8 <= data.count else { return nil }
-            let offset = dataDirectoryOffset + index * 8
+            guard index >= 0, index < directoryCount,
+                  let entryEnd = checkedAdd(dataDirectoryOffset, (index + 1) * 8),
+                  entryEnd <= data.count,
+                  let offset = checkedAdd(dataDirectoryOffset, index * 8) else { return nil }
             let rva = u32(data, at: offset)
             let size = u32(data, at: offset + 4)
             return rva == 0 ? nil : (rva, size)
@@ -205,11 +211,13 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         sections: [PESection],
         architecture: WindowsExecutableArchitecture
     ) -> Set<String> {
-        guard let directoryOffset = fileOffset(directory.rva, sections: sections) else { return [] }
+        guard let directoryOffset = fileOffset(directory.rva, sections: sections),
+              let directorySize = Int(exactly: directory.size),
+              let directoryEnd = checkedAdd(directoryOffset, directorySize) else { return [] }
         var result = Set<String>()
         var cursor = directoryOffset
-        let end = min(data.count, directoryOffset + Int(directory.size))
-        while cursor + 20 <= end {
+        let end = min(data.count, directoryEnd)
+        while let recordEnd = checkedAdd(cursor, 20), recordEnd <= end {
             let originalThunk = u32(data, at: cursor)
             let nameRVA = u32(data, at: cursor + 12)
             let firstThunk = u32(data, at: cursor + 16)
@@ -217,7 +225,8 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
             if let nameOffset = fileOffset(nameRVA, sections: sections), let name = asciiString(data, at: nameOffset) {
                 result.insert(name.lowercased())
             }
-            cursor += 20
+            guard let nextCursor = checkedAdd(cursor, 20) else { break }
+            cursor = nextCursor
         }
         // The architecture argument is deliberately consumed to keep this
         // parser's contract explicit: imports are metadata, not code loading.
@@ -230,14 +239,17 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         directory: (rva: UInt32, size: UInt32),
         sections: [PESection]
     ) -> Set<String> {
-        guard let offset = fileOffset(directory.rva, sections: sections), offset + 40 <= data.count else { return [] }
-        let count = Int(u32(data, at: offset + 24))
+        guard let offset = fileOffset(directory.rva, sections: sections),
+              let exportHeaderEnd = checkedAdd(offset, 40),
+              exportHeaderEnd <= data.count,
+              let count = Int(exactly: u32(data, at: offset + 24)) else { return [] }
         let namesRVA = u32(data, at: offset + 32)
         guard count > 0, count < 100_000, let namesOffset = fileOffset(namesRVA, sections: sections) else { return [] }
         var result = Set<String>()
         for index in 0..<count {
-            let pointer = namesOffset + index * 4
-            guard pointer + 4 <= data.count,
+            guard let pointer = checkedAdd(namesOffset, index * 4),
+                  let pointerEnd = checkedAdd(pointer, 4),
+                  pointerEnd <= data.count,
                   let nameOffset = fileOffset(u32(data, at: pointer), sections: sections),
                   let name = asciiString(data, at: nameOffset) else { continue }
             result.insert(name)
@@ -298,8 +310,17 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
 
     private static func intOffset(_ data: Data, at offset: Int) -> Int? {
         let value = u32(data, at: offset)
-        guard value <= UInt32(Int.max) else { return nil }
-        return Int(value)
+        return Int(exactly: value)
+    }
+
+    private static func checkedAdd(_ lhs: Int, _ rhs: Int) -> Int? {
+        let (value, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? nil : value
+    }
+
+    private static func checkedMultiply(_ lhs: Int, _ rhs: Int) -> Int? {
+        let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        return overflow ? nil : value
     }
 }
 
@@ -925,6 +946,57 @@ nonisolated struct TemporalComponentInjectionManifest: Codable, Sendable, Hashab
     let proxyStrategy: ProxyDLLStrategy?
 }
 
+/// OptiScaler's release archive does not contain Boreal's internal
+/// `injection.json`. Its package layout is nevertheless well-defined: the
+/// compiled hook is named OptiScaler.dll, the configuration is OptiScaler.ini,
+/// and runtime payloads live in the OptiScaler/ directory. Build a manifest
+/// only from that narrow, known layout instead of treating every DLL in an
+/// arbitrary source tree as injectable.
+nonisolated enum OptiScalerComponentManifestFactory {
+    private static let mainDLLNames: Set<String> = ["optiscaler.dll", "nvngx.dll"]
+    private static let supportedExtensions: Set<String> = [
+        "dll", "dylib", "so", "ini", "asi", "bin", "cso", "dat", "hlsl", "json", "spv", "ttf"
+    ]
+
+    static func installableFiles(from files: [String]) -> [String] {
+        let safeFiles = files.filter(TemporalComponentSecurity.isSafeRelativePath)
+        guard safeFiles.contains(where: { path in
+            mainDLLNames.contains(URL(fileURLWithPath: path).lastPathComponent.lowercased())
+        }) else { return [] }
+        return safeFiles.filter { path in
+            guard URL(fileURLWithPath: path).lastPathComponent.lowercased() != "injection.json" else { return false }
+            let components = path.split(separator: "/")
+            let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+            guard supportedExtensions.contains(ext) else { return false }
+            let isRootFile = components.count == 1
+            let isOptiPayload = components.first.map { String($0).lowercased() } == "optiscaler"
+            return isRootFile || isOptiPayload
+        }.sorted(by: pathOrder)
+    }
+
+    static func make(from requiredFiles: [String]) -> TemporalComponentInjectionManifest? {
+        let files = installableFiles(from: requiredFiles)
+        guard let main = files
+            .filter({ mainDLLNames.contains(URL(fileURLWithPath: $0).lastPathComponent.lowercased()) })
+            .sorted(by: pathOrder)
+            .first else {
+            return nil
+        }
+        guard files.contains(main) else { return nil }
+
+        let proxyStrategy: ProxyDLLStrategy = URL(fileURLWithPath: main).lastPathComponent.lowercased() == "optiscaler.dll"
+            ? .named("dxgi.dll")
+            : .automatic
+        return TemporalComponentInjectionManifest(files: files, proxyStrategy: proxyStrategy)
+    }
+
+    private static func pathOrder(_ lhs: String, _ rhs: String) -> Bool {
+        let lhsDepth = lhs.split(separator: "/").count
+        let rhsDepth = rhs.split(separator: "/").count
+        return lhsDepth == rhsDepth ? lhs < rhs : lhsDepth < rhsDepth
+    }
+}
+
 nonisolated enum TemporalComponentSource: String, Codable, CaseIterable, Sendable, Hashable {
     case curatedCatalog
     case userImport
@@ -1352,11 +1424,22 @@ nonisolated struct ManagedTemporalComponentStore: @unchecked Sendable {
         }
         files.sort()
         guard !files.isEmpty else { throw TemporalComponentError.invalidComponent("The component directory is empty.") }
-        let requiredFiles = files.filter { path in
+        let supportedFiles = files.filter { path in
             let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
             return ext == "dll" || ext == "dylib" || ext == "so" || ext == "ini"
         }
+        let requiredFiles: [String]
+        if id == .optiScaler {
+            requiredFiles = OptiScalerComponentManifestFactory.installableFiles(from: files)
+        } else {
+            requiredFiles = supportedFiles
+        }
         guard !requiredFiles.isEmpty else { throw TemporalComponentError.invalidComponent("The component contains no supported runtime/configuration files.") }
+        if id == .optiScaler, OptiScalerComponentManifestFactory.make(from: requiredFiles) == nil {
+            throw TemporalComponentError.invalidComponent(
+                "The selected OptiScaler folder does not contain a compiled OptiScaler.dll or legacy nvngx.dll. Choose a release/build artifact, not the project source folder."
+            )
+        }
         let dllFiles = files.filter { URL(fileURLWithPath: $0).pathExtension.lowercased() == "dll" }
         guard !dllFiles.isEmpty else {
             throw TemporalComponentError.invalidComponent("The component contains no Windows DLL.")
@@ -1486,11 +1569,30 @@ actor OptiScalerManager {
     init(store: ManagedTemporalComponentStore) { self.store = store }
 
     func installedReference(version: String? = nil) -> TemporalComponentReference? {
-        store.reference(for: .optiScaler, version: version)
+        store.references(for: .optiScaler).first {
+            (version == nil || $0.version == version)
+                && OptiScalerComponentManifestFactory.make(from: $0.requiredFiles) != nil
+                && store.contains($0)
+        }
     }
 
     func install(from source: URL, version: String, licenseMetadata: String? = nil) throws -> TemporalComponentReference {
-        try store.install(id: .optiScaler, version: version, source: source, sourceKind: .userImport, licenseMetadata: licenseMetadata)
+        let resolvedVersion: String
+        if let existing = store.references(for: .optiScaler).first(where: { $0.version == version }) {
+            let suffix = OptiScalerComponentManifestFactory.make(from: existing.requiredFiles) == nil
+                ? "repaired"
+                : "reimport"
+            resolvedVersion = "\(version)-\(suffix)-\(UUID().uuidString.prefix(8))"
+        } else {
+            resolvedVersion = version
+        }
+        return try store.install(
+            id: .optiScaler,
+            version: resolvedVersion,
+            source: source,
+            sourceKind: .userImport,
+            licenseMetadata: licenseMetadata
+        )
     }
 
     func validate(_ reference: TemporalComponentReference) -> Bool { store.contains(reference) }
@@ -1529,36 +1631,7 @@ actor OptiScalerManager {
     }
 
     func restore(_ receipt: ManagedInjectionReceipt, gameRoot: URL) throws {
-        let fileManager = FileManager.default
-        let root = gameRoot.standardizedFileURL
-        guard root.path == receipt.gameRootPath else { throw TemporalInjectionError.receiptRootMismatch }
-        for item in receipt.replacedFiles {
-            guard TemporalComponentSecurity.isSafeRelativePath(item.relativePath),
-                  !item.relativePath.contains("/"),
-                  item.backupRelativePath.map(TemporalComponentSecurity.isSafeRelativePath) ?? true else {
-                throw TemporalInjectionError.receiptRootMismatch
-            }
-            let destination = root.appending(path: item.relativePath)
-            let targetValues = try destination.resourceValues(forKeys: [.isSymbolicLinkKey])
-            guard targetValues.isSymbolicLink != true else {
-                throw TemporalInjectionError.gameFileIsSymlink(destination)
-            }
-            if let expected = item.replacementSHA256,
-               fileManager.fileExists(atPath: destination.path),
-               (try? RuntimeSecurity.sha256(of: destination)) != expected {
-                throw TemporalInjectionError.modifiedManagedFile(destination)
-            }
-            if item.originalExisted, let backupRelativePath = item.backupRelativePath {
-                let backup = root.appending(path: ".boreal-temporal-upscaling").appending(path: backupRelativePath)
-                guard fileManager.isReadableFile(atPath: backup.path) else { throw TemporalInjectionError.backupUnavailable(backup) }
-                try Data(contentsOf: backup).write(to: destination, options: .atomic)
-                if let permissions = item.originalPermissions { try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: destination.path) }
-            } else if fileManager.fileExists(atPath: destination.path) {
-                try fileManager.removeItem(at: destination)
-            }
-        }
-        let receiptURL = root.appending(path: ".boreal-temporal-upscaling").appending(path: "injections/\(receipt.id.uuidString)/receipt.json")
-        if fileManager.fileExists(atPath: receiptURL.path) { try fileManager.removeItem(at: receiptURL) }
+        try TemporalComponentInjection.restore(receipt, gameRoot: gameRoot)
     }
 
     private func makeConfigurationFingerprint(_ configuration: OptiScalerConfiguration) -> String {
@@ -1573,13 +1646,18 @@ actor OptiScalerManager {
 
     private func injectionManifest(for reference: TemporalComponentReference) throws -> TemporalComponentInjectionManifest {
         let url = store.componentURL(.optiScaler, version: reference.version).appending(path: "injection.json")
-        guard let data = try? Data(contentsOf: url),
-              let manifest = try? TemporalComponentSecurity.makeDecoder().decode(TemporalComponentInjectionManifest.self, from: data),
-              !manifest.files.isEmpty,
-              manifest.files.allSatisfy({ TemporalComponentSecurity.isSafeRelativePath($0) && reference.requiredFiles.contains($0) }) else {
-            throw TemporalInjectionError.componentUnavailable("OptiScaler injection.json is missing or does not declare a safe subset of required files.")
+        if let data = try? Data(contentsOf: url),
+           let manifest = try? TemporalComponentSecurity.makeDecoder().decode(TemporalComponentInjectionManifest.self, from: data),
+           !manifest.files.isEmpty,
+           manifest.files.allSatisfy({ TemporalComponentSecurity.isSafeRelativePath($0) && reference.requiredFiles.contains($0) }) {
+            return manifest
         }
-        return manifest
+        if let manifest = OptiScalerComponentManifestFactory.make(from: reference.requiredFiles) {
+            return manifest
+        }
+        throw TemporalInjectionError.componentUnavailable(
+            "The managed component does not contain a compiled OptiScaler.dll, legacy nvngx.dll, or a valid injection manifest."
+        )
     }
 }
 
@@ -1589,10 +1667,54 @@ nonisolated struct ManagedInjectionReceipt: Codable, Identifiable, Sendable, Has
     let bridgeID: String
     let componentVersion: String
     let createdFiles: [String]
+    let createdDirectories: [String]
     let replacedFiles: [ReplacedFileReceipt]
     let configurationFingerprint: String
     let createdAt: Date
     let gameRootPath: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, applicationID, bridgeID, componentVersion, createdFiles, createdDirectories
+        case replacedFiles, configurationFingerprint, createdAt, gameRootPath
+    }
+
+    init(
+        id: UUID,
+        applicationID: UUID,
+        bridgeID: String,
+        componentVersion: String,
+        createdFiles: [String],
+        createdDirectories: [String] = [],
+        replacedFiles: [ReplacedFileReceipt],
+        configurationFingerprint: String,
+        createdAt: Date,
+        gameRootPath: String
+    ) {
+        self.id = id
+        self.applicationID = applicationID
+        self.bridgeID = bridgeID
+        self.componentVersion = componentVersion
+        self.createdFiles = createdFiles
+        self.createdDirectories = createdDirectories
+        self.replacedFiles = replacedFiles
+        self.configurationFingerprint = configurationFingerprint
+        self.createdAt = createdAt
+        self.gameRootPath = gameRootPath
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        applicationID = try values.decode(UUID.self, forKey: .applicationID)
+        bridgeID = try values.decode(String.self, forKey: .bridgeID)
+        componentVersion = try values.decode(String.self, forKey: .componentVersion)
+        createdFiles = try values.decode([String].self, forKey: .createdFiles)
+        createdDirectories = try values.decodeIfPresent([String].self, forKey: .createdDirectories) ?? []
+        replacedFiles = try values.decode([ReplacedFileReceipt].self, forKey: .replacedFiles)
+        configurationFingerprint = try values.decode(String.self, forKey: .configurationFingerprint)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        gameRootPath = try values.decode(String.self, forKey: .gameRootPath)
+    }
 }
 
 nonisolated struct ReplacedFileReceipt: Codable, Sendable, Hashable {
@@ -1652,6 +1774,7 @@ nonisolated enum TemporalComponentInjection {
 
         var replaced: [ReplacedFileReceipt] = []
         var created: [String] = []
+        var createdDirectories: [String] = []
         var destinations = Set<String>()
         var destinationNames = Set<String>()
         do {
@@ -1665,6 +1788,8 @@ nonisolated enum TemporalComponentInjection {
                 let destinationName: String = if case .named(let proxy) = proxyStrategy,
                                                  sourceName.lowercased() == "optiscaler.dll" {
                     proxy
+                } else if bridgeID == "optiscaler" {
+                    relativeSource
                 } else {
                     sourceName
                 }
@@ -1714,6 +1839,12 @@ nonisolated enum TemporalComponentInjection {
                     created.append(destinationName)
                 }
 
+                try ensureDestinationParent(
+                    for: destinationName,
+                    root: root,
+                    fileManager: fileManager,
+                    createdDirectories: &createdDirectories
+                )
                 try Data(contentsOf: source).write(to: destination, options: .atomic)
                 replaced.append(ReplacedFileReceipt(
                     relativePath: destinationName,
@@ -1733,6 +1864,7 @@ nonisolated enum TemporalComponentInjection {
                 bridgeID: bridgeID,
                 componentVersion: reference.version,
                 createdFiles: created.sorted(),
+                createdDirectories: createdDirectories.sorted(),
                 replacedFiles: replaced.sorted { $0.relativePath < $1.relativePath },
                 configurationFingerprint: configurationFingerprint,
                 createdAt: Date(),
@@ -1745,6 +1877,7 @@ nonisolated enum TemporalComponentInjection {
                 receiptID: receiptID,
                 gameRoot: root,
                 createdFiles: created,
+                createdDirectories: createdDirectories,
                 replacedFiles: replaced
             )
             throw error
@@ -1765,7 +1898,6 @@ nonisolated enum TemporalComponentInjection {
         }
         for item in receipt.replacedFiles {
             guard TemporalComponentSecurity.isSafeRelativePath(item.relativePath),
-                  !item.relativePath.contains("/"),
                   item.backupRelativePath.map(TemporalComponentSecurity.isSafeRelativePath) ?? true else {
                 throw TemporalInjectionError.receiptRootMismatch
             }
@@ -1792,6 +1924,7 @@ nonisolated enum TemporalComponentInjection {
                 try fileManager.removeItem(at: destination)
             }
         }
+        removeCreatedDirectories(receipt.createdDirectories, from: root, fileManager: fileManager)
         let receiptURL = receiptRoot.appending(path: "receipt.json")
         if fileManager.fileExists(atPath: receiptURL.path) {
             try fileManager.removeItem(at: receiptURL)
@@ -1802,6 +1935,7 @@ nonisolated enum TemporalComponentInjection {
         receiptID: UUID,
         gameRoot: URL,
         createdFiles: [String],
+        createdDirectories: [String],
         replacedFiles: [ReplacedFileReceipt]
     ) {
         let fileManager = FileManager.default
@@ -1822,8 +1956,56 @@ nonisolated enum TemporalComponentInjection {
                 try? fileManager.removeItem(at: destination)
             }
         }
+        removeCreatedDirectories(createdDirectories, from: gameRoot, fileManager: fileManager)
         let transaction = gameRoot.appending(path: ".boreal-temporal-upscaling/injections/\(receiptID.uuidString)")
         try? fileManager.removeItem(at: transaction)
+    }
+
+    private static func ensureDestinationParent(
+        for destinationName: String,
+        root: URL,
+        fileManager: FileManager,
+        createdDirectories: inout [String]
+    ) throws {
+        let components = destinationName.split(separator: "/")
+        guard components.count > 1 else { return }
+        var current = root
+        for (index, component) in components.dropLast().enumerated() {
+            let name = String(component)
+            current.append(path: name, directoryHint: .isDirectory)
+            let values = try current.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if fileManager.fileExists(atPath: current.path) {
+                guard values.isSymbolicLink != true else {
+                    throw TemporalInjectionError.gameFileIsSymlink(current)
+                }
+                guard values.isDirectory == true else {
+                    throw TemporalInjectionError.componentUnavailable(
+                        "The injection destination parent is not a directory: \(current.lastPathComponent)"
+                    )
+                }
+            } else {
+                try fileManager.createDirectory(at: current, withIntermediateDirectories: false)
+                createdDirectories.append(components.prefix(index + 1).map(String.init).joined(separator: "/"))
+            }
+        }
+    }
+
+    private static func removeCreatedDirectories(
+        _ paths: [String],
+        from root: URL,
+        fileManager: FileManager
+    ) {
+        for path in paths.sorted(by: { $0.split(separator: "/").count > $1.split(separator: "/").count }) {
+            guard TemporalComponentSecurity.isSafeRelativePath(path) else { continue }
+            let directory = root.appending(path: path, directoryHint: .isDirectory)
+            guard let values = try? directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true,
+                  (try? fileManager.contentsOfDirectory(atPath: directory.path))?.isEmpty == true else {
+                continue
+            }
+            try? fileManager.removeItem(at: directory)
+        }
     }
 }
 

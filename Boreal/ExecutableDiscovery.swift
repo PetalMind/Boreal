@@ -382,8 +382,8 @@ nonisolated enum ExecutableDiscovery {
         guard let dosHeader = try? handle.read(upToCount: 64),
               dosHeader.count >= 64,
               dosHeader[0] == 0x4d, dosHeader[1] == 0x5a else { return nil }
-        let peOffset = Int(readUInt32LE(dosHeader, at: 0x3c))
-        guard peOffset >= 0, peOffset < 16 * 1_024 * 1_024 else { return nil }
+        guard let peOffset = Int(exactly: readUInt32LE(dosHeader, at: 0x3c)),
+              peOffset >= 0, peOffset < 16 * 1_024 * 1_024 else { return nil }
         do {
             try handle.seek(toOffset: UInt64(peOffset))
             guard let header = try handle.read(upToCount: 96),

@@ -1128,7 +1128,7 @@ actor EnvironmentSnapshotManager {
             return restored
         } catch {
             try? fileManager.removeItem(at: staging)
-            if fileManager.fileExists(atPath: displaced) {
+            if fileManager.fileExists(atPath: displaced.path) {
                 try? fileManager.removeItem(at: environment.rootURL)
                 try? fileManager.moveItem(at: displaced, to: environment.rootURL)
             }

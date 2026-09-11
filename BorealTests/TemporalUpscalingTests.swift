@@ -95,28 +95,25 @@ struct TemporalUpscalingTests {
         #expect(SpatialUpscalingResolver.resolve(runtimeFeatures: features, backend: .dxvk).status == .candidate)
     }
 
-    @Test func optiScalerInjectionRequiresManifestAndRestoresOriginalFile() async throws {
+    @Test func optiScalerReleaseLayoutIsImportedWithoutInternalManifestAndRestored() async throws {
         let root = try temporaryDirectory("temporal-opti")
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appending(path: "opti-source", directoryHint: .isDirectory)
+        let payload = source.appending(path: "OptiScaler/shaders", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        try makePE(architecture: .x86_64).write(to: source.appending(path: "optiscaler.dll"))
-        try Data(#"{"files":["optiscaler.dll"],"proxyStrategy":{"mode":"automatic"}}"#.utf8)
-            .write(to: source.appending(path: "injection.json"))
+        try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
+        try makePE(architecture: .x86_64).write(to: source.appending(path: "OptiScaler.dll"))
+        try makePE(architecture: .x86_64).write(to: payload.appending(path: "shader.dll"))
+        try Data("OptiScaler configuration".utf8).write(to: source.appending(path: "OptiScaler.ini"))
 
         let store = ManagedTemporalComponentStore(rootURL: root.appending(path: "Components", directoryHint: .isDirectory))
-        let reference = try store.install(
-            id: .optiScaler,
-            version: "test-1",
-            source: source,
-            sourceKind: .userImport
-        )
+        let manager = OptiScalerManager(store: store)
+        let reference = try await manager.install(from: source, version: "test-1")
         #expect(store.contains(reference))
         let game = root.appending(path: "game", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
-        try Data("original game proxy".utf8).write(to: game.appending(path: "optiscaler.dll"))
+        try Data("original game proxy".utf8).write(to: game.appending(path: "dxgi.dll"))
         let applicationID = UUID()
-        let manager = OptiScalerManager(store: store)
         var injectionConfiguration = OptiScalerConfiguration()
         injectionConfiguration.enabled = true
 
@@ -146,11 +143,41 @@ struct TemporalUpscalingTests {
             confirmUnknownInjectionPolicy: true
         )
         #expect(receipt.bridgeID == "optiscaler")
-        #expect(receipt.replacedFiles.map(\.relativePath) == ["optiscaler.dll"])
-        #expect(try Data(contentsOf: game.appending(path: "optiscaler.dll")) != Data("original game proxy".utf8))
+        #expect(receipt.replacedFiles.map(\.relativePath) == ["OptiScaler.ini", "OptiScaler/shaders/shader.dll", "dxgi.dll"])
+        #expect(receipt.createdDirectories == ["OptiScaler", "OptiScaler/shaders"])
+        #expect(try Data(contentsOf: game.appending(path: "dxgi.dll")) != Data("original game proxy".utf8))
+        #expect(FileManager.default.fileExists(atPath: game.appending(path: "OptiScaler/shaders/shader.dll").path))
 
         try await manager.restore(receipt, gameRoot: game)
-        #expect(try Data(contentsOf: game.appending(path: "optiscaler.dll")) == Data("original game proxy".utf8))
+        #expect(try Data(contentsOf: game.appending(path: "dxgi.dll")) == Data("original game proxy".utf8))
+        #expect(!FileManager.default.fileExists(atPath: game.appending(path: "OptiScaler.ini").path))
+        #expect(!FileManager.default.fileExists(atPath: game.appending(path: "OptiScaler").path))
+    }
+
+    @Test func optiScalerProjectSourceWithoutCompiledHookIsRejected() throws {
+        let root = try temporaryDirectory("temporal-opti-source")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appending(path: "OptiScaler-master", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try makePE(architecture: .x86_64).write(to: source.appending(path: "OptiScaler/shaders/shader_tools/dxcompiler.dll"))
+        try Data("source configuration".utf8).write(to: source.appending(path: "OptiScaler.ini"))
+
+        let store = ManagedTemporalComponentStore(rootURL: root.appending(path: "Components", directoryHint: .isDirectory))
+        do {
+            _ = try store.install(
+                id: .optiScaler,
+                version: "source-tree",
+                source: source,
+                sourceKind: .userImport
+            )
+            Issue.record("A project source tree without a compiled OptiScaler hook was accepted.")
+        } catch let error as TemporalComponentError {
+            guard case .invalidComponent(let detail) = error else {
+                Issue.record("Unexpected OptiScaler source validation error: \(error.localizedDescription)")
+                return
+            }
+            #expect(detail.contains("compiled OptiScaler.dll"))
+        }
     }
 
     @Test func managedDLSSRuntimeReplacementBacksUpAndRestoresExactOriginal() async throws {

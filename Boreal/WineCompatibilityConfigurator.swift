@@ -346,7 +346,7 @@ struct WineCompatibilityConfigurator: View {
                 if application.usesSharedSteamEnvironment {
                     CompatibilityCallout(text: String(localized: "Steam uses a shared Windows environment. Registry and injected DLL changes can affect more than one game."), symbol: "person.2.fill", tint: .blue)
                 }
-                if let inspector {
+                if let inspector = temporalInspector {
                     DisclosureGroup("DLSS / NGX Inspector") {
                         inspectorContent(inspector)
                     }
@@ -522,9 +522,17 @@ struct WineCompatibilityConfigurator: View {
     private var availableDisplays: [DisplayChoice] {
         NSScreen.screens.enumerated().compactMap { index, screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            guard let displayID = UInt32(exactly: number.int64Value) else { return nil }
             let size = screen.convertRectToBacking(screen.frame).size
-            return DisplayChoice(id: number.uint32Value, label: "\(String(localized: "Display")) \(index + 1) — \(Int(size.width))×\(Int(size.height))")
+            guard let width = Self.displayDimension(size.width),
+                  let height = Self.displayDimension(size.height) else { return nil }
+            return DisplayChoice(id: displayID, label: "\(String(localized: "Display")) \(index + 1) — \(width)×\(height)")
         }
+    }
+
+    private static func displayDimension(_ value: CGFloat) -> Int? {
+        guard value.isFinite else { return nil }
+        return Int(exactly: Double(value.rounded()))
     }
     private var graphicsProfile: GameGraphicsProfile? { GameGraphicsProfiles.profile(for: application) }
     private var graphicsBackendIssue: String? { store.graphicsBackendIssue(profile.graphicsBackend, for: application) }
@@ -575,9 +583,9 @@ struct WineCompatibilityConfigurator: View {
     private func temporalStatus(_ compatibility: TemporalBridgeCompatibility?) -> UpscalingDetectionStatus {
         guard let compatibility else { return .candidate }
         switch compatibility {
-        case .unsupported: .unavailable
-        case .candidate, .experimental: .candidate
-        case .verified: .verified
+        case .unsupported: return .unavailable
+        case .candidate, .experimental: return .candidate
+        case .verified: return .verified
         }
     }
 
@@ -588,15 +596,29 @@ struct WineCompatibilityConfigurator: View {
         component: TemporalComponentID
     ) -> some View {
         let installed = status?.installed == true
+        let explanation: String = if component == .optiScaler {
+            installed
+                ? String(localized: "Versioned and hash-validated; selecting a release folder installs it next to the game executable.")
+                : String(localized: "Select a compiled OptiScaler release folder; Boreal copies its payload and installs dxgi.dll next to the game executable.")
+        } else {
+            installed
+                ? String(localized: "Versioned and hash-validated before a game injection is attempted.")
+                : String(localized: "Import a user-supplied component folder; Boreal will store it immutably and record its SHA-256.")
+        }
+        let importLabel: String = if component == .optiScaler {
+            installed ? String(localized: "Reinstall") : String(localized: "Install")
+        } else {
+            installed ? String(localized: "Re-import") : String(localized: "Import")
+        }
         HStack(alignment: .top, spacing: 10) {
             CompatibilityUpscalingRow(
                 title: title,
                 detail: installed ? "\(status?.version ?? String(localized: "Unknown version")) · \(String(localized: "managed ComponentStore"))" : String(localized: "Not installed"),
                 status: installed ? .detected : .notDetected,
-                explanation: installed ? String(localized: "Versioned and hash-validated before a game injection is attempted.") : String(localized: "Import a user-supplied component folder; Boreal will store it immutably and record its SHA-256." )
+                explanation: explanation
             )
             Spacer(minLength: 4)
-            Button(installed ? String(localized: "Re-import") : String(localized: "Import"), systemImage: "square.and.arrow.down") {
+            Button(importLabel, systemImage: "square.and.arrow.down") {
                 temporalComponentToImport = component
                 isImportingTemporalComponent = true
             }

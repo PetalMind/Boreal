@@ -47,6 +47,13 @@ nonisolated enum WineLaunchArguments {
 }
 
 actor WindowsProcessRunner: WindowsProcessRunning {
+    private static let metalHUDEnvironmentKeys = [
+        "MTL_HUD_ENABLED",
+        "MTL_HUD_LOG_ENABLED",
+        "MTL_HUD_ELEMENTS",
+        "MTL_HUD_OPACITY",
+        "MTL_HUD_DISABLE_MENU_BAR"
+    ]
     private let processExecutor: any ProcessExecuting
     private let probeObservationWindow: Duration
     private var executorIDs: [UUID: UUID] = [:]
@@ -105,6 +112,13 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD != true {
+            // A provider launch plan must not be able to opt into an
+            // unverified HUD path after the managed environment sanitized it.
+            for key in Self.metalHUDEnvironmentKeys {
+                processEnvironment.removeValue(forKey: key)
+            }
+        }
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(
             runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
         )
@@ -539,6 +553,12 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // recent FPS record out of the sampler's bounded read window.
         let debugChannels = environment.configuration.debugLoggingEnabled ? "+all" : (values["WINEDEBUG"] ?? "-all")
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
+        // Never inherit Metal HUD settings from Boreal's parent process. HUD
+        // creates MTLTools resources and is unsafe when the selected runtime
+        // has not explicitly declared support for it.
+        for key in Self.metalHUDEnvironmentKeys {
+            values.removeValue(forKey: key)
+        }
         if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD == true {
             // D3DMetal does not pass its presents through Wine's +fps channel.
             // Ask Metal HUD to emit per-frame present intervals to macOS's

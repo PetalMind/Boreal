@@ -43,6 +43,20 @@ wine_app=$(/usr/bin/find "$upstream_root" -type d -name 'Wine*.app' -print -quit
 /bin/cp "$runtime_manifest" "$package_root/runtime.json"
 /bin/cp "$sbom_source" "$package_root/SBOM.spdx.json"
 
+# GPTK 3.0.2 may contain a second MoltenVK image in GStreamer's private
+# directory. When both images are loaded into one Wine process, Objective-C
+# sees duplicate MVKBlockObserver classes and Metal can abort while creating a
+# device. Keep the canonical Wine copy; GStreamer's @rpath resolves to it.
+primary_moltenvk="$package_root/Runtime/Wine.app/Contents/Resources/wine/lib/libMoltenVK.dylib"
+gstreamer_moltenvk="$package_root/Runtime/Wine.app/Contents/Resources/wine/lib/GStreamer.framework/Versions/1.0/lib/libMoltenVK.dylib"
+if [[ -f "$primary_moltenvk" && -f "$gstreamer_moltenvk" ]]; then
+  /bin/rm -f "$gstreamer_moltenvk"
+fi
+[[ ! -e "$primary_moltenvk" || ! -e "$gstreamer_moltenvk" ]] || {
+  echo "The normalized runtime still contains duplicate MoltenVK images." >&2
+  exit 65
+}
+
 for executable in wine wineserver wineboot; do
   path="$package_root/Runtime/Wine.app/Contents/Resources/wine/bin/$executable"
   [[ -x "$path" ]] || { echo "Missing executable in normalized layout: $path" >&2; exit 65; }

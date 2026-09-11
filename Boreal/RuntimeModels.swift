@@ -374,12 +374,10 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
 
     func capabilities(runtime: InstalledRuntime) -> GraphicsBackendCapabilities {
         let resolved = resolvedBackend(runtime: runtime)
-        var result = runtime.features?.graphicsCapabilities?[resolved.rawValue] ?? GraphicsBackendCapabilities()
-        // Existing D3DMetal HUD integration is known independently of GPTK version.
-        if result.metalHUD == nil, resolved == .d3dMetal, runtime.features?.d3dmetal == true {
-            result.metalHUD = true
-        }
-        return result
+        // An absent capability is intentionally left unverified. In particular,
+        // D3DMetal's presence does not prove that Metal HUD is safe for this
+        // runtime: enabling it can load MTLTools and crash during device setup.
+        return runtime.features?.graphicsCapabilities?[resolved.rawValue] ?? GraphicsBackendCapabilities()
     }
 
     func effectiveFullscreenFSR(
@@ -793,11 +791,12 @@ nonisolated enum WindowsExecutableArchitecture: String, Codable, Hashable, Senda
               header[0] == 0x4D,
               header[1] == 0x5A else { return .unknown }
 
-        let peOffset = Int(header[60])
-            | (Int(header[61]) << 8)
-            | (Int(header[62]) << 16)
-            | (Int(header[63]) << 24)
-        guard peOffset >= 0,
+        let peOffsetValue = UInt32(header[60])
+            | (UInt32(header[61]) << 8)
+            | (UInt32(header[62]) << 16)
+            | (UInt32(header[63]) << 24)
+        guard let peOffset = Int(exactly: peOffsetValue),
+              peOffset >= 0,
               (try? handle.seek(toOffset: UInt64(peOffset))) != nil,
               let peHeader = try? handle.read(upToCount: 26),
               peHeader.count >= 26,

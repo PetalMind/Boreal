@@ -137,26 +137,47 @@ final class ControllerManager {
     }
 
     private func process(_ gamepad: GCExtendedGamepad, controller: GCController) {
-        let deadZone = min(max(activeApplications.values.first?.controllerProfile.deadZone ?? Double(mapping.stickDeadZone), 0), 1)
-        let states: [(Bool, ControllerInput)] = [
-            (gamepad.buttonA.isPressed, .buttonA), (gamepad.buttonB.isPressed, .buttonB),
-            (gamepad.buttonX.isPressed, .buttonX), (gamepad.buttonY.isPressed, .buttonY),
-            (gamepad.leftShoulder.isPressed, .leftShoulder), (gamepad.rightShoulder.isPressed, .rightShoulder),
-            (gamepad.leftTrigger.value > 0.5, .leftTrigger), (gamepad.rightTrigger.value > 0.5, .rightTrigger),
-            (gamepad.buttonMenu.isPressed, .menu), (gamepad.buttonOptions?.isPressed == true, .options),
+        let configuredDeadZone = activeApplications.values.first?.controllerProfile.deadZone ?? Double(mapping.stickDeadZone)
+        let deadZone = Float(min(max(configuredDeadZone, 0), 1))
+        let buttonStates: [(Bool, ControllerInput)] = [
+            (gamepad.buttonA.isPressed, .buttonA),
+            (gamepad.buttonB.isPressed, .buttonB),
+            (gamepad.buttonX.isPressed, .buttonX),
+            (gamepad.buttonY.isPressed, .buttonY),
+            (gamepad.leftShoulder.isPressed, .leftShoulder),
+            (gamepad.rightShoulder.isPressed, .rightShoulder)
+        ]
+        let triggerAndMenuStates: [(Bool, ControllerInput)] = [
+            (gamepad.leftTrigger.value > 0.5, .leftTrigger),
+            (gamepad.rightTrigger.value > 0.5, .rightTrigger),
+            (gamepad.buttonMenu.isPressed, .menu),
+            (gamepad.buttonOptions?.isPressed == true, .options),
+        ]
+        let thumbstickButtonAndDPadStates: [(Bool, ControllerInput)] = [
             (gamepad.leftThumbstickButton?.isPressed == true, .leftThumbstickButton),
             (gamepad.rightThumbstickButton?.isPressed == true, .rightThumbstickButton),
-            (gamepad.dpad.up.isPressed, .dpadUp), (gamepad.dpad.down.isPressed, .dpadDown),
-            (gamepad.dpad.left.isPressed, .dpadLeft), (gamepad.dpad.right.isPressed, .dpadRight),
+            (gamepad.dpad.up.isPressed, .dpadUp),
+            (gamepad.dpad.down.isPressed, .dpadDown),
+            (gamepad.dpad.left.isPressed, .dpadLeft),
+            (gamepad.dpad.right.isPressed, .dpadRight)
+        ]
+        let leftStickStates: [(Bool, ControllerInput)] = [
             (gamepad.leftThumbstick.yAxis.value > deadZone, .leftStickUp),
             (gamepad.leftThumbstick.yAxis.value < -deadZone, .leftStickDown),
             (gamepad.leftThumbstick.xAxis.value < -deadZone, .leftStickLeft),
-            (gamepad.leftThumbstick.xAxis.value > deadZone, .leftStickRight),
+            (gamepad.leftThumbstick.xAxis.value > deadZone, .leftStickRight)
+        ]
+        let rightStickStates: [(Bool, ControllerInput)] = [
             (gamepad.rightThumbstick.yAxis.value > deadZone, .rightStickUp),
             (gamepad.rightThumbstick.yAxis.value < -deadZone, .rightStickDown),
             (gamepad.rightThumbstick.xAxis.value < -deadZone, .rightStickLeft),
             (gamepad.rightThumbstick.xAxis.value > deadZone, .rightStickRight)
         ]
+        var states = buttonStates
+        states.append(contentsOf: triggerAndMenuStates)
+        states.append(contentsOf: thumbstickButtonAndDPadStates)
+        states.append(contentsOf: leftStickStates)
+        states.append(contentsOf: rightStickStates)
         let current = Set(states.compactMap { isPressed, input in isPressed ? input : nil })
         liveState = ControllerLiveState(
             pressedInputs: current,

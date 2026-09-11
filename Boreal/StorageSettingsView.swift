@@ -298,6 +298,8 @@ private struct StorageUsageBar: View {
         case .caches: .orange
         case .downloads: .green
         case .logs: .gray
+        case .snapshots: .pink
+        case .saveBackups: .brown
         }
     }
 }

@@ -675,6 +675,13 @@ actor RuntimeManager: RuntimeManaging {
         do {
             try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
             try fileManager.copyItem(at: source, to: copiedApp)
+            // Some GPTK app bundles ship a second MoltenVK image inside
+            // GStreamer's private library directory. Keeping both copies in
+            // one Wine process makes Objective-C class resolution ambiguous
+            // and can crash Metal during device setup. The copied snapshot is
+            // still staging here, so normalize it before publishing it as an
+            // immutable runtime.
+            try removeBundledGStreamerMoltenVKDuplicate(from: copiedApp)
             try fileManager.createDirectory(at: staging.appending(path: "Dependencies", directoryHint: .isDirectory), withIntermediateDirectories: true)
             try fileManager.createDirectory(at: staging.appending(path: "Support", directoryHint: .isDirectory), withIntermediateDirectories: true)
             try fileManager.createDirectory(at: staging.appending(path: "Licenses", directoryHint: .isDirectory), withIntermediateDirectories: true)
@@ -822,6 +829,12 @@ actor RuntimeManager: RuntimeManaging {
             }
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
             try await extract(downloadURL, to: staging)
+            // Normalize older catalog artifacts as well as newly built ones;
+            // this runs only in the disposable staging tree, before the
+            // runtime is published read-only.
+            try removeBundledGStreamerMoltenVKDuplicate(
+                from: staging.appending(path: "Runtime/Wine.app", directoryHint: .isDirectory)
+            )
             try validateExtractedTree(staging)
             let packageManifestURL = staging.appending(path: "runtime.json")
             guard let packageData = try? Data(contentsOf: packageManifestURL),
@@ -1216,6 +1229,20 @@ actor RuntimeManager: RuntimeManaging {
                 guard target.path.hasPrefix(canonicalRoot.path + "/") else { throw RuntimeManagerError.unsafeArchive(url.path) }
             }
         }
+    }
+
+    private func removeBundledGStreamerMoltenVKDuplicate(from wineApp: URL) throws {
+        let wineLibraries = wineApp.appending(
+            path: "Contents/Resources/wine/lib",
+            directoryHint: .isDirectory
+        )
+        let primary = wineLibraries.appending(path: "libMoltenVK.dylib")
+        let gStreamerCopy = wineLibraries.appending(
+            path: "GStreamer.framework/Versions/1.0/lib/libMoltenVK.dylib"
+        )
+        guard fileManager.fileExists(atPath: primary.path),
+              fileManager.fileExists(atPath: gStreamerCopy.path) else { return }
+        try fileManager.removeItem(at: gStreamerCopy)
     }
 
     private func runtimeEnvironment(_ runtime: InstalledRuntime) -> [String: String] {
@@ -1662,7 +1689,7 @@ actor RuntimeManager: RuntimeManaging {
                 }
                 return UInt32(bytes[offset]) << 24 | UInt32(bytes[offset + 1]) << 16 | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
             }
-            let count = min(Int(value(at: 4)), 20)
+            let count = min(Int(exactly: value(at: 4)) ?? 0, 20)
             var architectures = Set<RuntimeArchitecture>()
             for index in 0..<count {
                 let offset = 8 + index * 20

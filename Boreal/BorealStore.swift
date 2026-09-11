@@ -358,7 +358,12 @@ final class BorealStore {
     /// the diagnostic model. The caller owns the confirmation step; this
     /// method always snapshots the environment before installing anything.
     func repairLastLaunchFailure(for applicationID: UUID) async throws {
-        let diagnosis = lastLaunchDiagnoses[applicationID] ?? await diagnoseLaunchFailure(for: applicationID)
+        let diagnosis: LaunchFailureDiagnosis?
+        if let cachedDiagnosis = lastLaunchDiagnoses[applicationID] {
+            diagnosis = cachedDiagnosis
+        } else {
+            diagnosis = await diagnoseLaunchFailure(for: applicationID)
+        }
         guard let diagnosis else { throw LaunchRepairError.unsupported(.unknown) }
         guard diagnosis.category == .missingDependency else {
             throw LaunchRepairError.unsupported(diagnosis.category)
@@ -576,7 +581,103 @@ final class BorealStore {
         let diagnosis = lastLaunchDiagnoses[applicationID]
         let configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
         let temporalInspector = await temporalUpscalingInspector(for: applicationID)
-        let payload: [String: Any] = [
+        let optiScalerConfiguration: Any
+        if let temporalInspector {
+            let value = temporalInspector.temporalPlan.requested.optiScaler
+            optiScalerConfiguration = [
+                "enabled": value.enabled,
+                "inputAPI": value.inputAPI?.rawValue ?? NSNull(),
+                "outputUpscaler": value.outputUpscaler?.rawValue ?? NSNull(),
+                "frameGeneration": value.frameGeneration.mode.rawValue,
+                "proxyStrategy": value.proxyStrategy.displayName
+            ] as [String: Any]
+        } else {
+            optiScalerConfiguration = NSNull()
+        }
+        let dlsstweaksConfiguration: Any
+        if let temporalInspector {
+            let value = temporalInspector.temporalPlan.requested.dlsstweaks
+            dlsstweaksConfiguration = [
+                "enabled": value.enabled,
+                "forceDLAA": value.forceDLAA,
+                "scalingRatio": value.scalingRatio ?? NSNull(),
+                "presetOverride": value.presetOverride ?? NSNull(),
+                "sharpening": value.sharpening ?? NSNull(),
+                "autoExposureOverride": value.autoExposureOverride,
+                "debugIndicatorEnabled": value.debugIndicatorEnabled
+            ] as [String: Any]
+        } else {
+            dlsstweaksConfiguration = NSNull()
+        }
+        let temporalInterfaces: [[String: Any]] = temporalInspector?.game.detectedTemporalInterfaces.map { interface -> [String: Any] in
+            [
+                "kind": interface.kind.rawValue,
+                "detected": interface.detected,
+                "version": interface.version ?? NSNull(),
+                "confidence": interface.confidence.rawValue,
+                "sources": interface.sources.map(\.rawValue),
+                "files": interface.fileURLs.map { redactedPath($0.path) }
+            ]
+        } ?? []
+        func inspectorDictionary(_ make: (TemporalUpscalingInspectorSnapshot) -> [String: Any]) -> Any {
+            guard let temporalInspector else { return NSNull() }
+            return make(temporalInspector)
+        }
+        let managedDLSSRuntime = inspectorDictionary { inspector in
+            [
+                "installed": inspector.managedDLSSRuntime.installed,
+                "version": inspector.managedDLSSRuntime.version ?? NSNull(),
+                "sha256": inspector.managedDLSSRuntime.sha256 ?? NSNull()
+            ]
+        }
+        let dlsstweaks = inspectorDictionary { inspector in
+            [
+                "installed": inspector.dlsstweaks.installed,
+                "version": inspector.dlsstweaks.version ?? NSNull(),
+                "sha256": inspector.dlsstweaks.sha256 ?? NSNull(),
+                "supportedControls": inspector.dlsstweaksCapabilities?.supportedControls.map(\.rawValue).sorted() ?? []
+            ]
+        }
+        let optiScaler = inspectorDictionary { inspector in
+            [
+                "installed": inspector.optiScaler.installed,
+                "version": inspector.optiScaler.version ?? NSNull(),
+                "sha256": inspector.optiScaler.sha256 ?? NSNull()
+            ]
+        }
+        let metalFXCapability = inspectorDictionary { inspector in
+            [
+                "available": inspector.metalFX.available,
+                "installed": inspector.metalFX.installed,
+                "source": inspector.metalFX.source.rawValue,
+                "supportsSpatial": inspector.metalFX.supportsSpatial,
+                "supportsTemporal": inspector.metalFX.supportsTemporal,
+                "requiredEnvironmentVariables": inspector.metalFX.requiredEnvironmentVariables,
+                "requiredDLLs": inspector.metalFX.requiredDLLs
+            ]
+        }
+        let ngxDebugIndicator = inspectorDictionary { inspector in
+            [
+                "available": inspector.ngxDebugIndicator.available,
+                "enabled": inspector.ngxDebugIndicator.enabled ?? NSNull(),
+                "detail": inspector.ngxDebugIndicator.detail
+            ]
+        }
+        let launchPlan: Any
+        if let plan {
+            launchPlan = [
+                "executable": redactedPath(plan.executable.path),
+                "workingDirectory": redactedPath(plan.workingDirectory.path),
+                "argumentCount": plan.arguments.count,
+                "graphicsBackend": plan.graphicsBackend.rawValue,
+                "prefixMode": plan.prefixMode.rawValue,
+                "directXAPI": plan.directXAPI.rawValue,
+                "environmentKeys": plan.environmentVariables.keys.sorted()
+            ] as [String: Any]
+        } else {
+            launchPlan = NSNull()
+        }
+        var payload: [String: Any] = [
             "borealVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
             "game": application.name,
@@ -587,100 +688,45 @@ final class BorealStore {
             "graphics": application.graphics,
             "lastExitCode": application.lastExitCode ?? NSNull(),
             "lastDiagnosticCategory": diagnosis?.category.rawValue ?? NSNull(),
-            "lastDiagnosticSummary": diagnosis?.summary ?? NSNull(),
-            "detectedTemporalAPIs": temporalInspector?.game.detectedTemporalInterfaces.map { $0.kind.rawValue } ?? [],
-            "temporalInterfaces": temporalInspector?.game.detectedTemporalInterfaces.map { interface in [
-                "kind": interface.kind.rawValue,
-                "detected": interface.detected,
-                "version": interface.version ?? NSNull(),
-                "confidence": interface.confidence.rawValue,
-                "sources": interface.sources.map(\.rawValue),
-                "files": interface.fileURLs.map { redactedPath($0.path) }
-            ] } ?? [],
-            "dlssDLLVersions": temporalInspector?.game.dlss?.version ?? NSNull(),
-            "dlssActiveFile": temporalInspector?.dlssRuntime.map { redactedPath($0.activeFileURL.path) } ?? NSNull(),
-            "dlssDLLFingerprints": temporalInspector?.dlssRuntime?.activeSHA256 ?? NSNull(),
-            "dlssRuntimeSource": temporalInspector?.dlssRuntime?.source.rawValue ?? NSNull(),
-            "managedDLSSRuntime": temporalInspector.map { [
-                "installed": $0.managedDLSSRuntime.installed,
-                "version": $0.managedDLSSRuntime.version ?? NSNull(),
-                "sha256": $0.managedDLSSRuntime.sha256 ?? NSNull()
-            ] } ?? NSNull(),
-            "dlsstweaks": temporalInspector.map { [
-                "installed": $0.dlsstweaks.installed,
-                "version": $0.dlsstweaks.version ?? NSNull(),
-                "sha256": $0.dlsstweaks.sha256 ?? NSNull(),
-                "supportedControls": $0.dlsstweaksCapabilities?.supportedControls.map(\.rawValue).sorted() ?? []
-            ] } ?? NSNull(),
-            "dlsstweaksConfiguration": temporalInspector.map { configuration in
-                let value = configuration.temporalPlan.requested.dlsstweaks
-                return [
-                    "enabled": value.enabled,
-                    "forceDLAA": value.forceDLAA,
-                    "scalingRatio": value.scalingRatio ?? NSNull(),
-                    "presetOverride": value.presetOverride ?? NSNull(),
-                    "sharpening": value.sharpening ?? NSNull(),
-                    "autoExposureOverride": value.autoExposureOverride,
-                    "debugIndicatorEnabled": value.debugIndicatorEnabled
-                ]
-            } ?? NSNull(),
-            "optiScaler": temporalInspector.map { [
-                "installed": $0.optiScaler.installed,
-                "version": $0.optiScaler.version ?? NSNull(),
-                "sha256": $0.optiScaler.sha256 ?? NSNull()
-            ] } ?? NSNull(),
-            "optiScalerConfiguration": temporalInspector.map { configuration in
-                let value = configuration.temporalPlan.requested.optiScaler
-                return [
-                    "enabled": value.enabled,
-                    "inputAPI": value.inputAPI?.rawValue ?? NSNull(),
-                    "outputUpscaler": value.outputUpscaler?.rawValue ?? NSNull(),
-                    "frameGeneration": value.frameGeneration.mode.rawValue,
-                    "proxyStrategy": value.proxyStrategy.displayName
-                ]
-            } ?? NSNull(),
-            "temporalComponentVersions": temporalInspector?.temporalPlan.componentVersions ?? [:],
-            "metalFXCapability": temporalInspector.map { [
-                "available": $0.metalFX.available,
-                "installed": $0.metalFX.installed,
-                "source": $0.metalFX.source.rawValue,
-                "supportsSpatial": $0.metalFX.supportsSpatial,
-                "supportsTemporal": $0.metalFX.supportsTemporal,
-                "requiredEnvironmentVariables": $0.metalFX.requiredEnvironmentVariables,
-                "requiredDLLs": $0.metalFX.requiredDLLs
-            ] } ?? NSNull(),
-            "effectiveTemporalPath": temporalInspector?.temporalPlan.effective.rawValue ?? NSNull(),
-            "temporalCompatibility": temporalInspector?.temporalPlan.compatibility.label ?? NSNull(),
-            "temporalCompatibilityReason": temporalInspector?.temporalPlan.reason ?? NSNull(),
-            "temporalInjectionSafety": temporalInspector?.temporalPlan.injectionSafety.rawValue ?? NSNull(),
-            "temporalProxyStrategy": temporalInspector?.temporalPlan.proxyStrategy.displayName ?? NSNull(),
-            "frameGeneration": temporalInspector?.game.frameGeneration.support.rawValue ?? NSNull(),
-            "ngxDebugIndicator": temporalInspector.map { [
-                "available": $0.ngxDebugIndicator.available,
-                "enabled": $0.ngxDebugIndicator.enabled ?? NSNull(),
-                "detail": $0.ngxDebugIndicator.detail
-            ] } ?? NSNull(),
-            "temporalConfigurationFingerprint": plan?.configurationFingerprint ?? NSNull(),
-            "traceID": plan?.traceID.description ?? NSNull(),
-            "launchPlan": plan.map { [
-                "executable": redactedPath($0.executable.path),
-                "workingDirectory": redactedPath($0.workingDirectory.path),
-                "argumentCount": $0.arguments.count,
-                "graphicsBackend": $0.graphicsBackend.rawValue,
-                "prefixMode": $0.prefixMode.rawValue,
-                "directXAPI": $0.directXAPI.rawValue,
-                "environmentKeys": $0.environmentVariables.keys.sorted()
-            ] } ?? NSNull(),
-            "dllOverrides": configuration.dllOverrides.map { ["library": $0.library, "mode": $0.mode.rawValue] },
-            "environmentVariables": configuration.environmentVariables.filter(\.enabled).map(\.key)
+            "lastDiagnosticSummary": diagnosis?.summary ?? NSNull()
         ]
+        payload["detectedTemporalAPIs"] = temporalInspector?.game.detectedTemporalInterfaces.map { $0.kind.rawValue } ?? []
+        payload["temporalInterfaces"] = temporalInterfaces
+        payload["dlssDLLVersions"] = temporalInspector?.game.dlss?.version ?? NSNull()
+        payload["dlssActiveFile"] = temporalInspector?.dlssRuntime.map { redactedPath($0.activeFileURL.path) } ?? NSNull()
+        payload["dlssDLLFingerprints"] = temporalInspector?.dlssRuntime?.activeSHA256 ?? NSNull()
+        payload["dlssRuntimeSource"] = temporalInspector?.dlssRuntime?.source.rawValue ?? NSNull()
+        payload["managedDLSSRuntime"] = managedDLSSRuntime
+        payload["dlsstweaks"] = dlsstweaks
+        payload["dlsstweaksConfiguration"] = dlsstweaksConfiguration
+        payload["optiScaler"] = optiScaler
+        payload["optiScalerConfiguration"] = optiScalerConfiguration
+        payload["temporalComponentVersions"] = temporalInspector?.temporalPlan.componentVersions ?? [:]
+        payload["metalFXCapability"] = metalFXCapability
+        payload["effectiveTemporalPath"] = temporalInspector?.temporalPlan.effective.rawValue ?? NSNull()
+        payload["temporalCompatibility"] = temporalInspector?.temporalPlan.compatibility.label ?? NSNull()
+        payload["temporalCompatibilityReason"] = temporalInspector?.temporalPlan.reason ?? NSNull()
+        payload["temporalInjectionSafety"] = temporalInspector?.temporalPlan.injectionSafety.rawValue ?? NSNull()
+        payload["temporalProxyStrategy"] = temporalInspector?.temporalPlan.proxyStrategy.displayName ?? NSNull()
+        payload["frameGeneration"] = temporalInspector?.game.frameGeneration.support.rawValue ?? NSNull()
+        payload["ngxDebugIndicator"] = ngxDebugIndicator
+        payload["temporalConfigurationFingerprint"] = plan?.configurationFingerprint ?? NSNull()
+        payload["traceID"] = plan?.traceID.description ?? NSNull()
+        payload["launchPlan"] = launchPlan
+        payload["dllOverrides"] = configuration.dllOverrides.map { ["library": $0.library, "mode": $0.mode.rawValue] }
+        payload["environmentVariables"] = configuration.environmentVariables.filter(\.enabled).map(\.key)
         guard JSONSerialization.isValidJSONObject(payload), let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
     func saveCompatibilityReport(for applicationID: UUID) async throws -> LocalCompatibilityReport {
         guard let application = application(id: applicationID) else { throw CompatibilityReportError.noInstalledRuntime }
-        let resolution = lastCompatibilityResolutions[applicationID] ?? await resolveCompatibility(for: applicationID)
+        let resolution: CompatibilityResolution?
+        if let cachedResolution = lastCompatibilityResolutions[applicationID] {
+            resolution = cachedResolution
+        } else {
+            resolution = await resolveCompatibility(for: applicationID)
+        }
         guard let resolution,
               let runtimeID = resolution.runtimeRecommendation.runtimeID,
               let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == runtimeID }) else {
@@ -2717,10 +2763,6 @@ final class BorealStore {
             temporalConfiguration.mode = .metalFXBridge
         }
         let temporalRoot = (gameRoot ?? launchWindowsPlan.executable.deletingLastPathComponent()).standardizedFileURL
-        let temporalGame = GameUpscalerAnalysisEngine.analyze(
-            gameRoot: temporalRoot,
-            executable: launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) } ?? launchWindowsPlan.executable
-        )
         let temporalComponentStore = ManagedTemporalComponentStore(
             rootURL: runtime.rootURL
                 .deletingLastPathComponent()
@@ -6137,7 +6179,9 @@ final class BorealStore {
                 reference = try await services.dlssRuntimeManager.install(from: source, version: version, licenseMetadata: "User-imported; redistribution not assumed")
             }
             runtimeOperationDetail = nil
-            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+            if component == .optiScaler {
+                await injectOptiScaler(reference: reference, for: applicationID)
+            } else if let index = applications.firstIndex(where: { $0.id == applicationID }) {
                 applications[index].lastResult = "\(component.displayName) \(reference.version) imported into ComponentStore"
                 applications[index].lastErrorDetail = nil
                 save()
@@ -6190,10 +6234,24 @@ final class BorealStore {
     }
 
     func injectOptiScaler(for applicationID: UUID, confirmUnknownPolicy: Bool = true) async {
+        guard let reference = await services.optiScalerManager.installedReference() else { return }
+        await injectOptiScaler(
+            reference: reference,
+            for: applicationID,
+            confirmUnknownPolicy: confirmUnknownPolicy
+        )
+    }
+
+    private func injectOptiScaler(
+        reference: TemporalComponentReference,
+        for applicationID: UUID,
+        confirmUnknownPolicy: Bool = true
+    ) async {
         guard let application = applications.first(where: { $0.id == applicationID }),
               application.status != .running,
-              !application.status.isBusy,
-              let reference = await services.optiScalerManager.installedReference() else { return }
+              !application.status.isBusy else { return }
+        runtimeOperationDetail = "Backing up game files and installing OptiScaler next to the game executable…"
+        defer { runtimeOperationDetail = nil }
         let gameRoot = temporalGameRoot(for: application)
         let executable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
             ?? URL(fileURLWithPath: application.executablePath)
