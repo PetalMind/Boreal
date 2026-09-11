@@ -104,6 +104,12 @@ final class BorealStore {
     private var environmentSessionStates: [UUID: EnvironmentSessionState] = [:]
     private var environmentMonitorIDs: [UUID: UUID] = [:]
     private var activePlaySessions: [UUID: ActivePlaySession] = [:]
+    private var advancedConfigurations: [UUID: GameAdvancedConfiguration] = [:]
+    /// Long-running reliability operations are keyed by their trace instead
+    /// of sharing the older global loading flags used by store downloads.
+    private(set) var operationStates: [OperationTraceID: BorealOperationState] = [:]
+    private(set) var lastCompatibilityResolutions: [UUID: CompatibilityResolution] = [:]
+    private(set) var lastLaunchDiagnoses: [UUID: LaunchFailureDiagnosis] = [:]
     private var playSessionCheckpointTasks: [UUID: Task<Void, Never>] = [:]
     private var storeOperationTasks: [String: Task<Void, Never>] = [:]
     private var storeOperationTokens: [String: UUID] = [:]
@@ -230,6 +236,546 @@ final class BorealStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try? String(data: encoder.encode(plan), encoding: .utf8)
+    }
+
+    /// Resolves the actual executable and installed runtime at the orchestration
+    /// boundary. The resolver owns heuristics; BorealStore only projects the
+    /// result into observable state for SwiftUI.
+    func resolveCompatibility(for applicationID: UUID) async -> CompatibilityResolution? {
+        guard let application = application(id: applicationID) else { return nil }
+        let executableURL = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        let root = executableURL.deletingLastPathComponent()
+        let inventory = await Task.detached(priority: .utility) {
+            let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                root: root,
+                applicationName: application.name,
+                knownPrimary: executableURL
+            )
+            let architecture: ExecutableArchitecture? = switch WindowsExecutableArchitecture.inspect(executableURL) {
+            case .x86: .x86
+            case .x86_64: .x86_64
+            case .unknown: nil
+            }
+            let relatedFiles = (try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ))?.filter {
+                $0.pathExtension.caseInsensitiveCompare("dll") == .orderedSame
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }.prefix(64).map { $0 } ?? []
+            return (analysis, architecture, relatedFiles)
+        }.value
+        let executable = GameExecutable(
+            relativePath: executableURL.lastPathComponent,
+            role: .game,
+            architecture: inventory.1
+        )
+        let runtimes = (try? await services.runtimeManager.installedRuntimes()) ?? []
+        let environmentRecord = environment(id: application.environmentID)
+        let request = CompatibilityResolutionRequest(
+            applicationID: applicationID,
+            installation: storeGames.first(where: { $0.storeReference == application.storeReference }).flatMap { installation(for: $0) },
+            executable: executable,
+            executableAnalysis: inventory.0,
+            storeReference: application.storeReference,
+            gameProfile: application.storeProvider.flatMap { provider in
+                application.storeExternalID.flatMap { GameGraphicsProfiles.profile(provider: provider, externalID: $0) }
+            },
+            userProfile: compatibilityProfile(for: application),
+            installedRuntimes: runtimes,
+            executableURL: executableURL,
+            relatedFiles: inventory.2,
+            prefixURL: environmentRecord?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        )
+        let trace = OperationTraceID()
+        operationStates[trace] = BorealOperationState(id: trace, kind: .analyzingCompatibility, progress: nil, phase: "Analyzing executable and runtime capabilities", canCancel: false)
+        let resolution = await services.compatibilityResolver.resolve(request)
+        operationStates[trace] = BorealOperationState(id: trace, kind: .analyzingCompatibility, progress: 1, phase: "Compatibility analysis complete", canCancel: false)
+        lastCompatibilityResolutions[applicationID] = resolution
+        return resolution
+    }
+
+    func analyzeDependencies(for applicationID: UUID) async -> [DependencyRequirement] {
+        guard let application = application(id: applicationID) else { return [] }
+        let executable = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        let root = executable.deletingLastPathComponent()
+        let relatedFiles = await Task.detached(priority: .utility) {
+            (try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ))?.filter {
+                $0.pathExtension.caseInsensitiveCompare("dll") == .orderedSame
+            } ?? []
+        }.value
+        let prefix = environment(id: application.environmentID)?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        return await services.dependencyAnalyzer.analyze(
+            executable: executable,
+            relatedFiles: relatedFiles,
+            prefixURL: prefix,
+            userDependencies: compatibilityProfile(for: application).requiredDependencies
+        )
+    }
+
+    func diagnoseLaunchFailure(
+        for applicationID: UUID,
+        stdout: String = "",
+        stderr: String = "",
+        wineLogs: [String] = [],
+        rendererLogs: [String] = []
+    ) async -> LaunchFailureDiagnosis? {
+        guard let application = application(id: applicationID) else { return nil }
+        let environmentRecord = environment(id: application.environmentID)
+        let plan = lastLaunchPlans[applicationID]
+        let managed = environmentRecord.flatMap(managedEnvironment(from:))
+        let recentLogs = await recentLaunchLogs(in: managed?.logsURL)
+        let runtime: InstalledRuntime?
+        if let managed {
+            runtime = try? await awaitRuntime(id: managed.runtimeID)
+        } else {
+            runtime = nil
+        }
+        let combinedStdout = [stdout, recentLogs.stdout].filter { !$0.isEmpty }.joined(separator: "\n")
+        let combinedStderr = [stderr, recentLogs.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+        let input = LaunchFailureInput(
+            exitCode: application.lastExitCode,
+            stdout: combinedStdout,
+            stderr: combinedStderr.isEmpty ? (application.lastErrorDetail ?? "") : combinedStderr,
+            wineLogs: wineLogs + [recentLogs.stdout, recentLogs.stderr].filter { !$0.isEmpty },
+            rendererLogs: rendererLogs + [recentLogs.stderr].filter { !$0.isEmpty },
+            launchPlan: plan,
+            runtime: runtime,
+            environment: managed,
+            dependencyStatuses: application.environmentID == environmentRecord?.id ? dependencyStatuses(for: application.environmentID, application: application) : []
+        )
+        let diagnosis = await services.launchFailureAnalyzer.analyze(input)
+        lastLaunchDiagnoses[applicationID] = diagnosis
+        return diagnosis
+    }
+
+    /// Runs only the confirmed, prefix-mutating repair currently supported by
+    /// the diagnostic model. The caller owns the confirmation step; this
+    /// method always snapshots the environment before installing anything.
+    func repairLastLaunchFailure(for applicationID: UUID) async throws {
+        let diagnosis = lastLaunchDiagnoses[applicationID] ?? await diagnoseLaunchFailure(for: applicationID)
+        guard let diagnosis else { throw LaunchRepairError.unsupported(.unknown) }
+        guard diagnosis.category == .missingDependency else {
+            throw LaunchRepairError.unsupported(diagnosis.category)
+        }
+        guard let application = application(id: applicationID),
+              let record = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: record),
+              let runtime = try await awaitRuntime(id: managed.runtimeID) else {
+            throw InstallerServiceError.noRuntimeAvailable
+        }
+
+        let analyzed = await analyzeDependencies(for: applicationID)
+        let analyzedMissing = analyzed.filter { !$0.isInstalled && $0.confidence == .high }.map(\.dependency)
+        let statuses = dependencyStatuses(for: application.environmentID, application: application)
+        let statusRequired = statuses
+            .filter { ($0.state == .missing || $0.state == .failed) && $0.recommendation == .required }
+            .map(\.dependency)
+        let installed = Set(statuses.filter { $0.state == .installed }.map(\.dependency))
+        let profileRequired = compatibilityProfile(for: application).requiredDependencies.filter { !installed.contains($0) }
+        let dependencies = Set(analyzedMissing + statusRequired + profileRequired).sorted { $0.rawValue < $1.rawValue }
+        guard !dependencies.isEmpty else { throw LaunchRepairError.noActionableDependency }
+
+        let trace = OperationTraceID()
+        operationStates[trace] = BorealOperationState(id: trace, kind: .repairingEnvironment, progress: 0, phase: "Preparing dependency repair")
+        do {
+            if FileManager.default.fileExists(atPath: managed.rootURL.appending(path: "environment.json").path) {
+                _ = try await createEnvironmentSnapshot(for: application.environmentID, reason: .environmentRepair, traceID: trace)
+            }
+            for (index, dependency) in dependencies.enumerated() {
+                operationStates[trace] = BorealOperationState(
+                    id: trace,
+                    kind: .repairingEnvironment,
+                    progress: Double(index) / Double(max(dependencies.count, 1)),
+                    phase: "Installing \(dependency.displayName)",
+                    canCancel: false
+                )
+                try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
+            }
+            refreshDependencies(for: application.environmentID, application: application)
+            operationStates[trace] = BorealOperationState(id: trace, kind: .repairingEnvironment, progress: 1, phase: "Dependency repair complete", canCancel: false)
+        } catch {
+            operationStates[trace] = BorealOperationState(id: trace, kind: .repairingEnvironment, progress: nil, phase: error.localizedDescription, canCancel: false)
+            throw error
+        }
+    }
+
+    func createEnvironmentSnapshot(
+        for environmentID: UUID,
+        reason: SnapshotReason,
+        traceID: OperationTraceID = OperationTraceID()
+    ) async throws -> EnvironmentSnapshot {
+        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { throw SnapshotError.sourceMissing }
+        operationStates[traceID] = BorealOperationState(id: traceID, kind: .creatingSnapshot, progress: 0, phase: "Creating environment snapshot")
+        do {
+            let snapshot = try await services.environmentSnapshotManager.createSnapshot(for: managed, reason: reason, traceID: traceID)
+            operationStates[traceID] = BorealOperationState(id: traceID, kind: .creatingSnapshot, progress: 1, phase: "Snapshot published")
+            return snapshot
+        } catch {
+            operationStates[traceID] = BorealOperationState(id: traceID, kind: .creatingSnapshot, progress: nil, phase: error.localizedDescription, canCancel: false)
+            throw error
+        }
+    }
+
+    func restoreEnvironmentSnapshot(
+        _ snapshot: EnvironmentSnapshot,
+        environmentID: UUID,
+        preserveCurrent: Bool = true,
+        traceID: OperationTraceID = OperationTraceID()
+    ) async throws {
+        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { throw SnapshotError.sourceMissing }
+        let active = activeEnvironments.values.contains { $0.id == environmentID } || activeSessions.values.contains { $0.environmentID == environmentID }
+        operationStates[traceID] = BorealOperationState(id: traceID, kind: .restoringSnapshot, progress: 0, phase: "Checking active game sessions")
+        guard !active else {
+            operationStates[traceID] = BorealOperationState(id: traceID, kind: .restoringSnapshot, progress: nil, phase: SnapshotError.activeSession.localizedDescription, canCancel: false)
+            throw SnapshotError.activeSession
+        }
+        do {
+            for application in applications where application.environmentID == environmentID && !application.isInstallerOnly {
+                _ = try? await createSaveBackup(for: application.id, trigger: .beforeSnapshotRestore)
+            }
+            let restored = try await services.environmentSnapshotManager.restore(snapshot, to: managed, activeSession: active, preserveCurrent: preserveCurrent, traceID: traceID)
+            if let index = environments.firstIndex(where: { $0.id == environmentID }) {
+                environments[index].windowsVersion = restored.configuration.windowsVersion
+                environments[index].architecture = restored.configuration.architecture == "win32" ? "32-bit" : "64-bit"
+                environments[index].graphics = restored.configuration.graphicsBackend.displayName
+                environments[index].components = restored.configuration.requiredDependencies.map(\.displayName).sorted()
+            }
+            operationStates[traceID] = BorealOperationState(id: traceID, kind: .restoringSnapshot, progress: 1, phase: "Snapshot restored and environment validated", canCancel: false)
+            save()
+        } catch {
+            operationStates[traceID] = BorealOperationState(id: traceID, kind: .restoringSnapshot, progress: nil, phase: error.localizedDescription, canCancel: false)
+            throw error
+        }
+    }
+
+    func environmentSnapshots(for environmentID: UUID) async -> [EnvironmentSnapshot] {
+        await services.environmentSnapshotManager.snapshots(for: environmentID)
+    }
+
+    func deleteEnvironmentSnapshot(_ snapshot: EnvironmentSnapshot) async throws {
+        try await services.environmentSnapshotManager.delete(snapshot)
+    }
+
+    func storageReport() async -> BorealStorageReport {
+        let trace = OperationTraceID()
+        operationStates[trace] = BorealOperationState(id: trace, kind: .calculatingStorage, progress: 0, phase: "Calculating Boreal storage usage")
+        let report = await services.storageAnalyzer.scan(
+            layout: storageLayout,
+            applications: applications,
+            storeGames: storeGames,
+            environments: environments,
+            installations: installations
+        )
+        operationStates[trace] = BorealOperationState(id: trace, kind: .calculatingStorage, progress: 1, phase: "Storage calculation complete", canCancel: false)
+        return report
+    }
+
+    func clearShaderCache(for applicationID: UUID) async throws -> Int {
+        guard let application = application(id: applicationID) else { return 0 }
+        let gameURL = URL(fileURLWithPath: application.executablePath).deletingLastPathComponent()
+        let prefixURL = environment(id: application.environmentID)?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let backend = compatibilityProfile(for: application).graphicsBackend
+        let manager = services.shaderCacheManager
+        return try await Task.detached(priority: .utility) {
+            let locations = manager.locations(gameURL: gameURL, prefixURL: prefixURL, backend: backend)
+            try manager.clear(locations)
+            return locations.filter(\.safeToDelete).count
+        }.value
+    }
+
+    func advancedConfiguration(for applicationID: UUID) async -> GameAdvancedConfiguration {
+        await services.advancedConfigurationStore.configuration(for: applicationID)
+    }
+
+    func updateAdvancedConfiguration(_ configuration: GameAdvancedConfiguration) async throws {
+        try await services.advancedConfigurationStore.save(configuration)
+        advancedConfigurations[configuration.applicationID] = configuration
+    }
+
+    func detectedSaveLocations(for applicationID: UUID) async -> [GameSaveLocation] {
+        guard let application = application(id: applicationID) else { return [] }
+        let executableURL = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        let installationURL = storeGames.first(where: { $0.storeReference == application.storeReference })
+            .flatMap { installedLocation(for: $0) }
+            ?? executableURL.deletingLastPathComponent()
+        let environmentURL = environment(id: application.environmentID)?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let advanced = await services.advancedConfigurationStore.configuration(for: applicationID)
+        let trace = OperationTraceID()
+        operationStates[trace] = BorealOperationState(id: trace, kind: .scanningSaves, progress: 0, phase: "Scanning known save locations")
+        let locations = await services.gameSaveManager.detect(
+            applicationID: applicationID,
+            installationURL: installationURL,
+            prefixURL: environmentURL,
+            manualRelativePaths: advanced.manualSavePaths
+        )
+        operationStates[trace] = BorealOperationState(id: trace, kind: .scanningSaves, progress: 1, phase: "Save location scan complete", canCancel: false)
+        return locations
+    }
+
+    func saveBackups(for applicationID: UUID) async -> [GameSaveBackup] {
+        await services.gameSaveManager.backups(for: applicationID)
+    }
+
+    func pruneSaveBackups(for applicationID: UUID, policy: SaveBackupRetentionPolicy = .default) async throws {
+        _ = try await services.gameSaveManager.prune(applicationID: applicationID, policy: policy)
+    }
+
+    func createSaveBackup(for applicationID: UUID, trigger: SaveBackupTrigger = .manual) async throws -> GameSaveBackup {
+        guard let application = application(id: applicationID) else { throw SaveManagerError.noSaveData }
+        let executableURL = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        let installationURL = storeGames.first(where: { $0.storeReference == application.storeReference })
+            .flatMap { installedLocation(for: $0) }
+            ?? executableURL.deletingLastPathComponent()
+        let environmentURL = environment(id: application.environmentID)?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let locations = await detectedSaveLocations(for: applicationID)
+        let absoluteLocations = locations.compactMap { location -> URL? in
+            if let environmentURL, location.relativePath.lowercased().hasPrefix("drive_c/") {
+                return environmentURL.appending(path: location.relativePath, directoryHint: .isDirectory)
+            }
+            return installationURL.appending(path: location.relativePath, directoryHint: .isDirectory)
+        }
+        let trace = OperationTraceID()
+        operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: 0, phase: "Backing up detected save locations")
+        do {
+            let backup = try await services.gameSaveManager.backup(applicationID: applicationID, locations: absoluteLocations, trigger: trigger, traceID: trace)
+            operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: 1, phase: "Save backup created", canCancel: false)
+            return backup
+        } catch {
+            operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: nil, phase: error.localizedDescription, canCancel: false)
+            throw error
+        }
+    }
+
+    func restoreSaveBackup(_ backup: GameSaveBackup) async throws {
+        guard let application = application(id: backup.applicationID) else { throw SaveManagerError.invalidBackup }
+        let executableURL = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        let installationURL = storeGames.first(where: { $0.storeReference == application.storeReference })
+            .flatMap { installedLocation(for: $0) }
+            ?? executableURL.deletingLastPathComponent()
+        let prefixURL = environment(id: application.environmentID)?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let trace = backup.traceID
+        operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: 0, phase: "Restoring save backup")
+        do {
+            try await services.gameSaveManager.restore(backup, allowedRoots: [installationURL] + (prefixURL.map { [$0] } ?? []))
+            operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: 1, phase: "Save backup restored", canCancel: false)
+        } catch {
+            operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: nil, phase: error.localizedDescription, canCancel: false)
+            throw error
+        }
+    }
+
+    func copyDiagnostics(for applicationID: UUID) async -> String? {
+        guard let application = application(id: applicationID) else { return nil }
+        let plan = lastLaunchPlans[applicationID]
+        let diagnosis = lastLaunchDiagnoses[applicationID]
+        let configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
+        let temporalInspector = await temporalUpscalingInspector(for: applicationID)
+        let payload: [String: Any] = [
+            "borealVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+            "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
+            "game": application.name,
+            "storeProvider": application.storeProvider?.rawValue ?? NSNull(),
+            "storeExternalID": application.storeExternalID ?? NSNull(),
+            "runtime": environment(id: application.environmentID)?.runtime ?? NSNull(),
+            "environment": environment(id: application.environmentID)?.id.uuidString ?? NSNull(),
+            "graphics": application.graphics,
+            "lastExitCode": application.lastExitCode ?? NSNull(),
+            "lastDiagnosticCategory": diagnosis?.category.rawValue ?? NSNull(),
+            "lastDiagnosticSummary": diagnosis?.summary ?? NSNull(),
+            "detectedTemporalAPIs": temporalInspector?.game.detectedTemporalInterfaces.map { $0.kind.rawValue } ?? [],
+            "temporalInterfaces": temporalInspector?.game.detectedTemporalInterfaces.map { interface in [
+                "kind": interface.kind.rawValue,
+                "detected": interface.detected,
+                "version": interface.version ?? NSNull(),
+                "confidence": interface.confidence.rawValue,
+                "sources": interface.sources.map(\.rawValue),
+                "files": interface.fileURLs.map { redactedPath($0.path) }
+            ] } ?? [],
+            "dlssDLLVersions": temporalInspector?.game.dlss?.version ?? NSNull(),
+            "dlssActiveFile": temporalInspector?.dlssRuntime.map { redactedPath($0.activeFileURL.path) } ?? NSNull(),
+            "dlssDLLFingerprints": temporalInspector?.dlssRuntime?.activeSHA256 ?? NSNull(),
+            "dlssRuntimeSource": temporalInspector?.dlssRuntime?.source.rawValue ?? NSNull(),
+            "managedDLSSRuntime": temporalInspector.map { [
+                "installed": $0.managedDLSSRuntime.installed,
+                "version": $0.managedDLSSRuntime.version ?? NSNull(),
+                "sha256": $0.managedDLSSRuntime.sha256 ?? NSNull()
+            ] } ?? NSNull(),
+            "dlsstweaks": temporalInspector.map { [
+                "installed": $0.dlsstweaks.installed,
+                "version": $0.dlsstweaks.version ?? NSNull(),
+                "sha256": $0.dlsstweaks.sha256 ?? NSNull(),
+                "supportedControls": $0.dlsstweaksCapabilities?.supportedControls.map(\.rawValue).sorted() ?? []
+            ] } ?? NSNull(),
+            "dlsstweaksConfiguration": temporalInspector.map { configuration in
+                let value = configuration.temporalPlan.requested.dlsstweaks
+                return [
+                    "enabled": value.enabled,
+                    "forceDLAA": value.forceDLAA,
+                    "scalingRatio": value.scalingRatio ?? NSNull(),
+                    "presetOverride": value.presetOverride ?? NSNull(),
+                    "sharpening": value.sharpening ?? NSNull(),
+                    "autoExposureOverride": value.autoExposureOverride,
+                    "debugIndicatorEnabled": value.debugIndicatorEnabled
+                ]
+            } ?? NSNull(),
+            "optiScaler": temporalInspector.map { [
+                "installed": $0.optiScaler.installed,
+                "version": $0.optiScaler.version ?? NSNull(),
+                "sha256": $0.optiScaler.sha256 ?? NSNull()
+            ] } ?? NSNull(),
+            "optiScalerConfiguration": temporalInspector.map { configuration in
+                let value = configuration.temporalPlan.requested.optiScaler
+                return [
+                    "enabled": value.enabled,
+                    "inputAPI": value.inputAPI?.rawValue ?? NSNull(),
+                    "outputUpscaler": value.outputUpscaler?.rawValue ?? NSNull(),
+                    "frameGeneration": value.frameGeneration.mode.rawValue,
+                    "proxyStrategy": value.proxyStrategy.displayName
+                ]
+            } ?? NSNull(),
+            "temporalComponentVersions": temporalInspector?.temporalPlan.componentVersions ?? [:],
+            "metalFXCapability": temporalInspector.map { [
+                "available": $0.metalFX.available,
+                "installed": $0.metalFX.installed,
+                "source": $0.metalFX.source.rawValue,
+                "supportsSpatial": $0.metalFX.supportsSpatial,
+                "supportsTemporal": $0.metalFX.supportsTemporal,
+                "requiredEnvironmentVariables": $0.metalFX.requiredEnvironmentVariables,
+                "requiredDLLs": $0.metalFX.requiredDLLs
+            ] } ?? NSNull(),
+            "effectiveTemporalPath": temporalInspector?.temporalPlan.effective.rawValue ?? NSNull(),
+            "temporalCompatibility": temporalInspector?.temporalPlan.compatibility.label ?? NSNull(),
+            "temporalCompatibilityReason": temporalInspector?.temporalPlan.reason ?? NSNull(),
+            "temporalInjectionSafety": temporalInspector?.temporalPlan.injectionSafety.rawValue ?? NSNull(),
+            "temporalProxyStrategy": temporalInspector?.temporalPlan.proxyStrategy.displayName ?? NSNull(),
+            "frameGeneration": temporalInspector?.game.frameGeneration.support.rawValue ?? NSNull(),
+            "ngxDebugIndicator": temporalInspector.map { [
+                "available": $0.ngxDebugIndicator.available,
+                "enabled": $0.ngxDebugIndicator.enabled ?? NSNull(),
+                "detail": $0.ngxDebugIndicator.detail
+            ] } ?? NSNull(),
+            "temporalConfigurationFingerprint": plan?.configurationFingerprint ?? NSNull(),
+            "traceID": plan?.traceID.description ?? NSNull(),
+            "launchPlan": plan.map { [
+                "executable": redactedPath($0.executable.path),
+                "workingDirectory": redactedPath($0.workingDirectory.path),
+                "argumentCount": $0.arguments.count,
+                "graphicsBackend": $0.graphicsBackend.rawValue,
+                "prefixMode": $0.prefixMode.rawValue,
+                "directXAPI": $0.directXAPI.rawValue,
+                "environmentKeys": $0.environmentVariables.keys.sorted()
+            ] } ?? NSNull(),
+            "dllOverrides": configuration.dllOverrides.map { ["library": $0.library, "mode": $0.mode.rawValue] },
+            "environmentVariables": configuration.environmentVariables.filter(\.enabled).map(\.key)
+        ]
+        guard JSONSerialization.isValidJSONObject(payload), let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func saveCompatibilityReport(for applicationID: UUID) async throws -> LocalCompatibilityReport {
+        guard let application = application(id: applicationID) else { throw CompatibilityReportError.noInstalledRuntime }
+        let resolution = lastCompatibilityResolutions[applicationID] ?? await resolveCompatibility(for: applicationID)
+        guard let resolution,
+              let runtimeID = resolution.runtimeRecommendation.runtimeID,
+              let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == runtimeID }) else {
+            throw CompatibilityReportError.noInstalledRuntime
+        }
+        guard let graphicsStack = GraphicsStackCatalog.stack(for: resolution.recommendedGraphicsStack.backend) else {
+            throw CompatibilityReportError.noGraphicsStack
+        }
+        let profile = compatibilityProfile(for: application)
+        let configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
+        let notes = resolution.warnings.map(\.detail).joined(separator: " ")
+        let runtimeFingerprint = [runtime.id, runtime.wineVersion, runtime.resolvedEngine.rawValue]
+            .joined(separator: "|")
+        var temporalConfigurationFingerprint = profile.upscalingBridge.rawValue
+        if let temporalPlan = lastLaunchPlans[applicationID]?.temporalUpscalingPlan {
+            temporalConfigurationFingerprint = temporalPlan.fingerprintSegment
+        } else {
+            var temporalConfiguration = profile.temporalUpscaling
+            if temporalConfiguration.mode == .automatic, profile.upscalingBridge == .ngxToMetalFX {
+                temporalConfiguration.mode = .metalFXBridge
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let data = try? encoder.encode(temporalConfiguration),
+               let value = String(data: data, encoding: .utf8) {
+                temporalConfigurationFingerprint = value
+            }
+        }
+        let fingerprint = ConfigurationFingerprint.make(
+            runtimeFingerprint: runtimeFingerprint,
+            graphicsStack: graphicsStack,
+            componentVersions: runtime.features.map { ["runtime-features": String(describing: $0)] } ?? [:],
+            prefixMode: resolution.recommendedPrefixMode,
+            windowsVersion: resolution.recommendedWindowsVersion,
+            dependencies: profile.requiredDependencies.sorted { $0.rawValue < $1.rawValue },
+            dllOverrides: configuration.dllOverrides,
+            environmentVariables: configuration.environmentVariables,
+            upscalingConfiguration: temporalConfigurationFingerprint
+        )
+        let report = LocalCompatibilityReport(
+            id: UUID(),
+            applicationID: applicationID,
+            gameVersion: nil,
+            runtimeID: runtime.id,
+            runtimeFingerprint: runtimeFingerprint,
+            configurationFingerprint: fingerprint,
+            graphicsStack: graphicsStack,
+            windowsVersion: resolution.recommendedWindowsVersion,
+            result: application.compatibility,
+            notes: notes.isEmpty ? nil : notes,
+            createdAt: .now,
+            traceID: OperationTraceID()
+        )
+        try await services.compatibilityReports.save(report)
+        return report
+    }
+
+    private func awaitRuntime(id: String) async throws -> InstalledRuntime? {
+        try await services.runtimeManager.installedRuntimes().first { $0.id == id }
+    }
+
+    private func recentLaunchLogs(in directory: URL?) async -> (stdout: String, stderr: String) {
+        guard let directory else { return ("", "") }
+        return await Task.detached(priority: .utility) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            let launchLogs = files.filter {
+                guard (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return false }
+                let name = $0.lastPathComponent.lowercased()
+                return name.hasPrefix("launch-") && (name.hasSuffix(".stdout.log") || name.hasSuffix(".stderr.log"))
+            }.sorted {
+                let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return left > right
+            }
+
+            func read(_ url: URL) -> String {
+                guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
+                defer { try? handle.close() }
+                return String(decoding: (try? handle.read(upToCount: 512 * 1_024)) ?? Data(), as: UTF8.self)
+            }
+
+            let stdoutURL = launchLogs.first { $0.lastPathComponent.lowercased().hasSuffix(".stdout.log") }
+            let stderrURL = launchLogs.first { $0.lastPathComponent.lowercased().hasSuffix(".stderr.log") }
+            return (stdoutURL.map(read) ?? "", stderrURL.map(read) ?? "")
+        }.value
+    }
+
+    private func redactedPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard path.hasPrefix(home) else { return "<user-path>" }
+        return "<user>" + String(path.dropFirst(home.count))
     }
 
     func renameCustomApplication(_ applicationID: UUID, to requestedName: String) {
@@ -680,6 +1226,22 @@ final class BorealStore {
         Task { await runWindowsInstallerAsync(installer, for: applicationID) }
     }
 
+    func dlssUnlockerInstalled(for application: WindowsApplication) -> Bool {
+        guard GameLaunchCompatibility.supportsDLSSUnlocker(for: application),
+              let environmentRecord = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let executable = dlssUnlockerExecutable(for: application, in: managed) else { return false }
+        return GameLaunchCompatibility.isDLSSUnlockerInstalled(nextTo: executable)
+    }
+
+    func installDLSSUnlocker(_ archive: URL, for applicationID: UUID) {
+        Task { await installDLSSUnlockerAsync(archive, for: applicationID) }
+    }
+
+    func uninstallDLSSUnlocker(for applicationID: UUID) {
+        Task { await uninstallDLSSUnlockerAsync(for: applicationID) }
+    }
+
     func toggleFavorite(key: String) {
         if favoriteKeys.contains(key) { favoriteKeys.remove(key) }
         else { favoriteKeys.insert(key) }
@@ -953,11 +1515,28 @@ final class BorealStore {
         environmentDependencyStatuses[environmentID]?[index].state = .installing
         Task { [weak self] in
             guard let self else { return }
+            var recoverySnapshot: EnvironmentSnapshot?
             do {
                 guard let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { throw InstallerServiceError.noRuntimeAvailable }
+                // Dependency installation mutates the prefix. Keep a restore
+                // point before invoking the existing installer so a failed
+                // winetricks/configuration operation does not leave the user
+                // with an untracked partial environment.
+                if FileManager.default.fileExists(atPath: managed.rootURL.appending(path: "environment.json").path) {
+                    recoverySnapshot = try await createEnvironmentSnapshot(for: environmentID, reason: .dependencyInstallation)
+                }
                 try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
                 refreshDependencies(for: environmentID)
             } catch {
+                if let recoverySnapshot {
+                    _ = try? await services.environmentSnapshotManager.restore(
+                        recoverySnapshot,
+                        to: managed,
+                        activeSession: false,
+                        preserveCurrent: false,
+                        traceID: recoverySnapshot.traceID
+                    )
+                }
                 if let index = environmentDependencyStatuses[environmentID]?.firstIndex(where: { $0.dependency == dependency }) {
                     environmentDependencyStatuses[environmentID]?[index].state = .failed
                     environmentDependencyStatuses[environmentID]?[index].detail = error.localizedDescription
@@ -980,15 +1559,28 @@ final class BorealStore {
         }
         Task { [weak self] in
             guard let self else { return }
+            var recoverySnapshot: EnvironmentSnapshot?
             do {
                 guard let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { throw InstallerServiceError.noRuntimeAvailable }
                 // The actor executes each command serially so winetricks never
                 // changes the same prefix concurrently.
+                if FileManager.default.fileExists(atPath: managed.rootURL.appending(path: "environment.json").path) {
+                    recoverySnapshot = try await createEnvironmentSnapshot(for: environmentID, reason: .dependencyInstallation)
+                }
                 for dependency in dependencies {
                     try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
                 }
                 refreshDependencies(for: environmentID)
             } catch {
+                if let recoverySnapshot {
+                    _ = try? await services.environmentSnapshotManager.restore(
+                        recoverySnapshot,
+                        to: managed,
+                        activeSession: false,
+                        preserveCurrent: false,
+                        traceID: recoverySnapshot.traceID
+                    )
+                }
                 refreshDependencies(for: environmentID)
                 present(error, title: "Dependencies couldn’t be installed", stage: "Installing Windows libraries into the selected environment")
             }
@@ -1184,6 +1776,11 @@ final class BorealStore {
             if !features.wineBusControllerMapping { profile.forceXInput = false }
             if !features.dgVoodoo2 { profile.legacyWrapper = .none }
         }
+        if profile.temporalUpscaling.mode == .metalFXBridge {
+            profile.upscalingBridge = .ngxToMetalFX
+        } else if profile.temporalUpscaling.mode != .automatic {
+            profile.upscalingBridge = .none
+        }
         let previousProfile = applications[index].resolvedCompatibilityProfile
         let previousWindowsVersion = applications[index].windowsVersion
         let previousGraphics = applications[index].graphics
@@ -1255,6 +1852,10 @@ final class BorealStore {
                       let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }) else {
                     throw InstallerServiceError.noRuntimeAvailable
                 }
+                _ = try? await createSaveBackup(for: applicationID, trigger: .beforeEnvironmentRebuild)
+                if FileManager.default.fileExists(atPath: managed.rootURL.appending(path: "environment.json").path) {
+                    _ = try await createEnvironmentSnapshot(for: managed.id, reason: .manualCompatibilityChange)
+                }
                 let existingComponentReferences = managed.configuration.graphicsComponentReferences
                 managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: profile)
                 managed.configuration.graphicsComponentReferences = existingComponentReferences
@@ -1300,6 +1901,12 @@ final class BorealStore {
             guard let self else { return }
             var replacement: ManagedBorealEnvironment?
             do {
+                _ = try? await createSaveBackup(for: applicationID, trigger: .beforeEnvironmentRebuild)
+                if let oldRecord = environment(id: oldEnvironmentID),
+                   let oldManaged = managedEnvironment(from: oldRecord),
+                   FileManager.default.fileExists(atPath: oldManaged.rootURL.appending(path: "environment.json").path) {
+                    _ = try await createEnvironmentSnapshot(for: oldEnvironmentID, reason: .manualCompatibilityChange)
+                }
                 let executableArchitecture = WindowsExecutableArchitecture.inspect(executable)
                 let runtime = try await prepareRuntime(
                     supporting: profile.graphicsBackend,
@@ -2026,7 +2633,7 @@ final class BorealStore {
     ) async throws {
         let bootstrapWindowsPlan = SteamWindowsService.bootstrapPlan(steamExecutable: steamExecutable)
         let bootstrap = try await services.launchCoordinator.start(
-            plan: makeLaunchPlan(
+            plan: await makeLaunchPlan(
                 bootstrapWindowsPlan,
                 applicationID: applicationID,
                 provider: .steam,
@@ -2042,7 +2649,7 @@ final class BorealStore {
         try await Task.sleep(for: .milliseconds(400))
         let windowsPlan = SteamWindowsService.protocolPlan("steam://install/\(game.externalID)", steamExecutable: steamExecutable)
         let session = try await services.launchCoordinator.start(
-            plan: makeLaunchPlan(
+            plan: await makeLaunchPlan(
                 windowsPlan,
                 applicationID: applicationID,
                 provider: .steam,
@@ -2065,10 +2672,16 @@ final class BorealStore {
         environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime,
         profile: WineCompatibilityProfile?,
-        directXAPIOverride: GraphicsAPI? = nil
-    ) -> LaunchPlan {
+        directXAPIOverride: GraphicsAPI? = nil,
+        gameRoot: URL? = nil
+    ) async -> LaunchPlan {
         let storeReference = provider.flatMap { provider in
             externalID.map { externalID in StoreReference(provider: provider, externalID: externalID) }
+        }
+        var launchWindowsPlan = windowsPlan
+        let advancedConfiguration = advancedConfigurations[applicationID]
+        if let advancedConfiguration {
+            launchWindowsPlan = applying(advancedConfiguration, to: launchWindowsPlan)
         }
         let installationID = installations.first {
             $0.gameID == applicationID || $0.storeReference == storeReference
@@ -2095,14 +2708,69 @@ final class BorealStore {
             architecture: architecture,
             fallback: profile?.graphicsFallback ?? .none
         )
+        var temporalWindowsPlan = launchWindowsPlan
+        var temporalConfiguration = profile?.temporalUpscaling ?? environment.configuration.temporalUpscaling
+        if temporalConfiguration.mode == .automatic,
+           profile?.upscalingBridge == .ngxToMetalFX || environment.configuration.upscalingBridge == .ngxToMetalFX {
+            // Preserve older persisted profiles while exposing the explicit
+            // requested/effective temporal path in the new launch plan.
+            temporalConfiguration.mode = .metalFXBridge
+        }
+        let temporalRoot = (gameRoot ?? launchWindowsPlan.executable.deletingLastPathComponent()).standardizedFileURL
+        let temporalGame = GameUpscalerAnalysisEngine.analyze(
+            gameRoot: temporalRoot,
+            executable: launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) } ?? launchWindowsPlan.executable
+        )
+        let temporalComponentStore = ManagedTemporalComponentStore(
+            rootURL: runtime.rootURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Components", directoryHint: .isDirectory)
+        )
+        let temporalGame = await services.gameUpscalerAnalyzer.analyze(
+            gameRoot: temporalRoot,
+            executable: launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) } ?? launchWindowsPlan.executable
+        )
+        let metalFX = await Task.detached(priority: .utility) {
+            MetalFXBridgeAnalyzer.inspect(runtime: runtime)
+        }.value
+        let componentReferences = await Task.detached(priority: .utility) {
+            (
+                temporalComponentStore.reference(for: .dlsstweaks),
+                temporalComponentStore.reference(for: .optiScaler)
+            )
+        }.value
+        let temporalPlan = TemporalUpscalingResolutionEngine.resolve(
+            game: temporalGame,
+            runtime: runtime,
+            graphicsStack: graphicsResolution.stack,
+            configuration: temporalConfiguration,
+            metalFX: metalFX,
+            dlsstweaks: componentReferences.0,
+            optiScaler: componentReferences.1,
+            applicationID: applicationID
+        )
+        temporalWindowsPlan.temporalUpscalingPlan = temporalPlan
+        temporalWindowsPlan.configurationFingerprint = ConfigurationFingerprint.make(
+            runtimeFingerprint: "\(runtime.id):\(runtime.wineVersion)",
+            graphicsStack: graphicsResolution.stack,
+            componentVersions: temporalPlan.componentVersions,
+            prefixMode: environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true),
+            windowsVersion: WineWindowsVersion(rawValue: environment.configuration.windowsVersion) ?? .windows11,
+            dependencies: environment.configuration.requiredDependencies.sorted { $0.rawValue < $1.rawValue },
+            dllOverrides: advancedConfiguration?.dllOverrides ?? [],
+            environmentVariables: advancedConfiguration?.environmentVariables ?? [],
+            upscalingConfiguration: temporalPlan.fingerprintSegment
+        )
         return LaunchPlan(
+            traceID: OperationTraceID(),
             applicationID: applicationID,
             installationID: installationID,
             environmentID: environment.id,
             runtimeID: runtime.id,
             provider: provider,
             externalID: externalID,
-            windowsPlan: windowsPlan,
+            windowsPlan: temporalWindowsPlan,
             graphicsBackend: graphicsResolution.stack.backend,
             compatibilityProfile: profile,
             graphicsStack: graphicsResolution.stack,
@@ -2111,8 +2779,52 @@ final class BorealStore {
             directXAPI: resolvedAPI,
             dependencies: environment.configuration.requiredDependencies.sorted { $0.rawValue < $1.rawValue },
             environmentPurpose: environment.purpose,
-            executableArchitecture: WindowsExecutableArchitecture.inspect(windowsPlan.executable)
+            executableArchitecture: WindowsExecutableArchitecture.inspect(windowsPlan.executable),
+            temporalUpscalingPlan: temporalPlan,
+            configurationFingerprint: temporalWindowsPlan.configurationFingerprint
         )
+    }
+
+    private func applying(
+        _ configuration: GameAdvancedConfiguration,
+        to windowsPlan: WindowsLaunchPlan
+    ) -> WindowsLaunchPlan {
+        var result = windowsPlan
+        let owned = result.environment.filter { EnvironmentVariableSanitizer.borealOwnedKeys.contains($0.key.uppercased()) }
+        let sanitized = EnvironmentVariableSanitizer.merge(
+            base: result.environment,
+            custom: configuration.environmentVariables,
+            borealOwned: owned,
+            developerMode: UserDefaults.standard.bool(forKey: "developerMode")
+        )
+        result.environment = sanitized.values
+
+        let managedOverrides = result.environment["WINEDLLOVERRIDES"].map(parseDLLOverrides) ?? []
+        let mergedOverrides = DLLOverrideMerger.merge(managed: managedOverrides, manual: configuration.dllOverrides)
+        result.environment.removeValue(forKey: "WINEDLLOVERRIDES")
+        if !mergedOverrides.overrides.isEmpty {
+            result.environment["WINEDLLOVERRIDES"] = mergedOverrides.overrides.map {
+                "\($0.library)=\($0.mode.wineValue)"
+            }.joined(separator: ";")
+        }
+        return result
+    }
+
+    private func parseDLLOverrides(_ value: String) -> [DLLOverride] {
+        value.split(separator: ";").compactMap { entry in
+            let parts = entry.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { return nil }
+            let mode: DLLOverrideMode
+            switch String(parts[1]) {
+            case "n": mode = .native
+            case "b": mode = .builtin
+            case "n,b": mode = .nativeThenBuiltin
+            case "b,n": mode = .builtinThenNative
+            case "": mode = .disabled
+            default: return nil
+            }
+            return DLLOverride(library: String(parts[0]), mode: mode)
+        }
     }
 
     func refreshEpicConnection() {
@@ -3210,7 +3922,7 @@ final class BorealStore {
                 )
                 environments.append(environment)
                 applications.append(app)
-                lastLaunchPlans[app.id] = makeLaunchPlan(
+                lastLaunchPlans[app.id] = await makeLaunchPlan(
                     plan,
                     applicationID: app.id,
                     provider: game.provider,
@@ -3910,6 +4622,7 @@ final class BorealStore {
             return
         }
 
+        advancedConfigurations[applicationID] = await services.advancedConfigurationStore.configuration(for: applicationID)
         do {
             guard let environmentRecord = environment(id: application.environmentID),
                   var managed = managedEnvironment(from: environmentRecord),
@@ -3938,7 +4651,7 @@ final class BorealStore {
                 environment: [:],
                 workingDirectory: executable.deletingLastPathComponent()
             )
-            let launchPlan = makeLaunchPlan(
+            let launchPlan = await makeLaunchPlan(
                 windowsPlan,
                 applicationID: application.id,
                 provider: application.storeProvider,
@@ -3980,6 +4693,118 @@ final class BorealStore {
                 error,
                 title: "\(action.displayName) couldn’t open",
                 stage: "Starting the tool in \(application.name)’s Windows environment"
+            )
+        }
+    }
+
+    private func dlssUnlockerExecutable(
+        for application: WindowsApplication,
+        in environment: ManagedBorealEnvironment
+    ) -> URL? {
+        if application.storeProvider == .steam,
+           application.storeExternalID == GameLaunchCompatibility.gtaSanAndreasDefinitiveEditionSteamAppID,
+           let gameRoot = SteamWindowsService.installedGameDirectory(
+               appID: GameLaunchCompatibility.gtaSanAndreasDefinitiveEditionSteamAppID,
+               in: environment
+           ) {
+            return GameLaunchCompatibility.gtaSanAndreasExecutable(in: gameRoot)
+                ?? SteamWindowsService.primaryExecutable(in: gameRoot, applicationName: application.name)
+        }
+        let executable = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        if let gameExecutable = GameLaunchCompatibility.gtaSanAndreasExecutable(
+            in: executable.deletingLastPathComponent()
+        ) {
+            return gameExecutable
+        }
+        return FileManager.default.isReadableFile(atPath: executable.path) ? executable : nil
+    }
+
+    private func installDLSSUnlockerAsync(_ requestedArchive: URL, for applicationID: UUID) async {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        let application = applications[index]
+        guard GameLaunchCompatibility.supportsDLSSUnlocker(for: application),
+              application.status != .running,
+              !application.status.isBusy,
+              runtimeOperationDetail == nil else { return }
+
+        let archive = requestedArchive.standardizedFileURL
+        let hasSecurityScope = archive.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { archive.stopAccessingSecurityScopedResource() } }
+        do {
+            guard let environmentRecord = environment(id: application.environmentID),
+                  let managed = managedEnvironment(from: environmentRecord),
+                  let runtime = try await runtime(for: environmentRecord),
+                  let gameExecutable = dlssUnlockerExecutable(for: application, in: managed) else {
+                throw GameLaunchCompatibilityError.dlssUnlockerTargetUnavailable(
+                    URL(fileURLWithPath: application.executablePath)
+                )
+            }
+            let environmentManager = services.environmentManager
+            try await GameLaunchCompatibility.installDLSSUnlocker(
+                from: archive,
+                nextTo: gameExecutable,
+                importRegistry: { registryFile in
+                    try await environmentManager.importRegistry(
+                        registryFile,
+                        in: managed,
+                        runtime: runtime
+                    )
+                }
+            )
+            if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[currentIndex].lastResult = "GTA SA DLSS Unlocker installed"
+                applications[currentIndex].lastErrorDetail = "FSR 2.1 replacement is enabled for the next DX12 launch."
+                save()
+            }
+            SoundService.shared.play(.confirmation)
+        } catch {
+            present(
+                error,
+                title: "GTA SA DLSS Unlocker couldn’t be installed",
+                stage: "Validating the archive, backing up game DLLs, and importing the Wine signature override"
+            )
+        }
+    }
+
+    private func uninstallDLSSUnlockerAsync(for applicationID: UUID) async {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        let application = applications[index]
+        guard GameLaunchCompatibility.supportsDLSSUnlocker(for: application),
+              application.status != .running,
+              !application.status.isBusy,
+              runtimeOperationDetail == nil else { return }
+
+        do {
+            guard let environmentRecord = environment(id: application.environmentID),
+                  let managed = managedEnvironment(from: environmentRecord),
+                  let runtime = try await runtime(for: environmentRecord),
+                  let gameExecutable = dlssUnlockerExecutable(for: application, in: managed) else {
+                throw GameLaunchCompatibilityError.dlssUnlockerTargetUnavailable(
+                    URL(fileURLWithPath: application.executablePath)
+                )
+            }
+            let environmentManager = services.environmentManager
+            try await GameLaunchCompatibility.uninstallDLSSUnlocker(
+                nextTo: gameExecutable,
+                importRegistry: { registryFile in
+                    try await environmentManager.importRegistry(
+                        registryFile,
+                        in: managed,
+                        runtime: runtime
+                    )
+                }
+            )
+            if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[currentIndex].lastResult = "GTA SA DLSS Unlocker removed"
+                applications[currentIndex].lastErrorDetail = nil
+                save()
+            }
+            SoundService.shared.play(.confirmation)
+        } catch {
+            present(
+                error,
+                title: "GTA SA DLSS Unlocker couldn’t be removed",
+                stage: "Restoring the original GTA San Andreas DLLs and disabling the Wine signature override"
             )
         }
     }
@@ -4121,6 +4946,7 @@ final class BorealStore {
             return
         }
         guard !applications[index].status.isBusy else { return }
+        advancedConfigurations[id] = await services.advancedConfigurationStore.configuration(for: id)
         if let requiredEngine = GameRuntimeProfiles.requiredEngine(for: applications[index]),
            let environmentRecord = environment(id: applications[index].environmentID),
            let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }),
@@ -4278,7 +5104,7 @@ final class BorealStore {
                     bootstrapPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
                     bootstrapPlan.overlayDisplayID = profile.overlayDisplayID
                     let bootstrap = try await services.launchCoordinator.start(
-                        plan: makeLaunchPlan(
+                        plan: await makeLaunchPlan(
                             bootstrapPlan,
                             applicationID: applications[index].id,
                             provider: provider,
@@ -4305,6 +5131,9 @@ final class BorealStore {
                 case .epic, .gog:
                     guard let game = storeGames.first(where: { $0.provider == provider && $0.externalID == appID }) else {
                         throw GameStoreProviderError.installationMissing(provider)
+                    }
+                    if let installPath = game.installPath {
+                        gameDirectory = URL(fileURLWithPath: installPath, isDirectory: true)
                     }
                     plan = try await services.launchCoordinator.makeStoreLaunchPlan(
                         for: game,
@@ -4337,7 +5166,12 @@ final class BorealStore {
                     )
                     configuredPlan = graphicsCompatibilityManager.applying(graphicsPlan, to: configuredPlan)
                 }
-                let launchPlan = makeLaunchPlan(
+                configuredPlan = GameLaunchCompatibility.applying(
+                    to: configuredPlan,
+                    application: applications[index],
+                    gameDirectory: gameDirectory
+                )
+                let launchPlan = await makeLaunchPlan(
                     configuredPlan,
                     applicationID: applications[index].id,
                     provider: provider,
@@ -4345,7 +5179,8 @@ final class BorealStore {
                     environment: managed,
                     runtime: runtime,
                     profile: environmentProfile,
-                    directXAPIOverride: applications[index].usesSharedSteamGameSession ? selectedGraphicsAPI : nil
+                    directXAPIOverride: applications[index].usesSharedSteamGameSession ? selectedGraphicsAPI : nil,
+                    gameRoot: gameDirectory
                 )
                 lastLaunchPlans[applications[index].id] = launchPlan
                 applications[index].graphics = launchPlan.graphicsStack?.backend.displayName ?? launchPlan.graphicsBackend.displayName
@@ -4381,7 +5216,11 @@ final class BorealStore {
                     runtime: runtime
                 )
                 configuredPlan = graphicsCompatibilityManager.applying(graphicsPlan, to: configuredPlan)
-                let launchPlan = makeLaunchPlan(
+                configuredPlan = GameLaunchCompatibility.applying(
+                    to: configuredPlan,
+                    application: applications[index]
+                )
+                let launchPlan = await makeLaunchPlan(
                     configuredPlan,
                     applicationID: applications[index].id,
                     provider: applications[index].storeProvider,
@@ -4409,6 +5248,8 @@ final class BorealStore {
                     for: id,
                     profileName: applications[index].name,
                     keyboardMappingEnabled: !profile.disableSteamInputEquivalent
+                        && (advancedConfigurations[id]?.controllerProfile.desktopNavigationEnabled ?? true),
+                    controllerProfile: advancedConfigurations[id]?.controllerProfile ?? .default
                 )
             }
             performanceLogURLs[id] = session.stderrLog
@@ -4418,10 +5259,11 @@ final class BorealStore {
             monitorLauncher(session: session, appID: id)
             monitorEnvironmentSession(environment: managed, runtime: runtime, appID: id)
         } catch {
+            let diagnosis = await diagnoseLaunchFailure(for: id, stderr: error.localizedDescription)
             executionStates[id] = .failed(error.localizedDescription)
             applications[index].status = .needsAttention
-            applications[index].lastResult = "Couldn’t open"
-            applications[index].lastFailureStage = "Starting application"
+            applications[index].lastResult = diagnosis?.summary ?? "Couldn’t open"
+            applications[index].lastFailureStage = diagnosis.map { "Launch diagnosis: \($0.category.rawValue)" } ?? "Starting application"
             applications[index].lastErrorDetail = error.localizedDescription
             save()
             present(error, title: "\(applications[index].name) couldn’t open", stage: "Boreal was preparing or starting the application.", retryApplicationID: id)
@@ -4444,6 +5286,14 @@ final class BorealStore {
                     )
                 } else {
                     try? await services.processRunner.forceQuitEnvironment(environment: environment, runtime: runtime)
+                }
+            }
+            if !app.isInstallerOnly {
+                _ = try? await createSaveBackup(for: id, trigger: .beforeUninstall)
+                if let record = environment(id: app.environmentID),
+                   let managed = managedEnvironment(from: record),
+                   FileManager.default.fileExists(atPath: managed.rootURL.appending(path: "environment.json").path) {
+                    _ = try? await createEnvironmentSnapshot(for: app.environmentID, reason: .manualCompatibilityChange)
                 }
             }
             let hasOtherApps = applications.contains { $0.id != id && $0.environmentID == app.environmentID }
@@ -4517,6 +5367,9 @@ final class BorealStore {
                 applications[index].lastExitCode = result.exitCode
                 applications[index].lastFailureStage = applications[index].isInstallerOnly ? "Running installer" : "Running application"
                 applications[index].lastErrorDetail = "The application process exited with code \(result.exitCode)."
+                if !applications[index].isInstallerOnly {
+                    _ = await diagnoseLaunchFailure(for: appID, stderr: applications[index].lastErrorDetail ?? "")
+                }
             } else {
                 applications[index].lastResult = applications[index].isInstallerOnly
                     ? (wasRequested ? "Installer stopped" : "Installer exited normally")
@@ -4656,6 +5509,7 @@ final class BorealStore {
             }
             activeEnvironments[appID] = managed
             activeRuntimes[appID] = installedRuntime
+            advancedConfigurations[appID] = await services.advancedConfigurationStore.configuration(for: appID)
             if app.usesSharedSteamGameSession {
                 let recoveredSession = recoveredSessionForSharedSteam(
                     application: app,
@@ -4673,6 +5527,8 @@ final class BorealStore {
                         for: appID,
                         profileName: app.name,
                         keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
+                            && (advancedConfigurations[appID]?.controllerProfile.desktopNavigationEnabled ?? true),
+                        controllerProfile: advancedConfigurations[appID]?.controllerProfile ?? .default
                     )
                 }
                 save()
@@ -4690,6 +5546,8 @@ final class BorealStore {
                         for: appID,
                         profileName: app.name,
                         keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
+                            && (advancedConfigurations[appID]?.controllerProfile.desktopNavigationEnabled ?? true),
+                        controllerProfile: advancedConfigurations[appID]?.controllerProfile ?? .default
                     )
                 }
                 save()
@@ -5172,6 +6030,267 @@ final class BorealStore {
         return references.first(where: { $0.version == version })?.version
     }
 
+    func temporalUpscalingInspector(for applicationID: UUID) async -> TemporalUpscalingInspectorSnapshot? {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              let environmentRecord = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else {
+            return nil
+        }
+        let gameRoot = temporalGameRoot(for: application)
+        let executable = lastLaunchPlans[applicationID]?.processExecutablePath.map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: application.executablePath)
+        let game = await services.gameUpscalerAnalyzer.analyze(gameRoot: gameRoot, executable: executable)
+        let profile = compatibilityProfile(for: application)
+        let architecture = managed.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
+        let gameProfile = application.storeProvider.flatMap { provider in
+            application.storeExternalID.flatMap { GameGraphicsProfiles.profile(provider: provider, externalID: $0) }
+        }
+        let graphics = GraphicsBackendResolver.resolve(
+            api: profile.graphicsAPI ?? .automatic,
+            requestedBackend: profile.graphicsBackend,
+            gameProfile: application.usesSharedSteamEnvironment ? nil : gameProfile,
+            runtime: runtime,
+            architecture: architecture,
+            fallback: profile.graphicsFallback
+        ).stack
+        var temporalConfiguration = profile.temporalUpscaling
+        if temporalConfiguration.mode == .automatic, profile.upscalingBridge == .ngxToMetalFX {
+            temporalConfiguration.mode = .metalFXBridge
+        }
+        let dlsstweaks = await services.dlsstweaksManager.installedReference()
+        let optiScaler = await services.optiScalerManager.installedReference()
+        let dlsstweaksCapabilities: DLSSTweaksCapabilities? = if let dlsstweaks {
+            // The manager exposes only controls declared by this exact
+            // component version; no release-wide assumptions are made here.
+            await services.dlsstweaksManager.capabilities(for: dlsstweaks)
+        } else {
+            nil
+        }
+        let metalFX = await Task.detached(priority: .utility) {
+            MetalFXBridgeAnalyzer.inspect(runtime: runtime)
+        }.value
+        let managedDLSSRuntime = await services.dlssRuntimeManager.installedReference()
+        let plan = await services.temporalUpscalingResolver.resolve(
+            game: game,
+            runtime: runtime,
+            graphicsStack: graphics,
+            configuration: temporalConfiguration,
+            metalFX: metalFX,
+            dlsstweaks: dlsstweaks,
+            optiScaler: optiScaler,
+            applicationID: applicationID
+        )
+        let dlssRuntime = await services.dlssRuntimeManager.detect(in: gameRoot)
+        let ngxIndicator = await services.environmentManager.ngxDebugIndicatorState(in: managed, runtime: runtime)
+        return TemporalUpscalingInspectorSnapshot(
+            game: game,
+            dlssRuntime: dlssRuntime,
+            dlssRuntimeStatus: TemporalComponentStatus(installation: dlssRuntime),
+            managedDLSSRuntime: TemporalComponentStatus(reference: managedDLSSRuntime),
+            dlsstweaks: TemporalComponentStatus(reference: dlsstweaks),
+            dlsstweaksCapabilities: dlsstweaksCapabilities,
+            optiScaler: TemporalComponentStatus(reference: optiScaler),
+            metalFX: metalFX,
+            temporalPlan: plan,
+            graphicsStack: graphics,
+            runtimeDescription: runtime.runtimeDescription,
+            ngxDebugIndicator: ngxIndicator
+        )
+    }
+
+    private func temporalGameRoot(for application: WindowsApplication) -> URL {
+        if let path = lastLaunchPlans[application.id]?.processExecutablePath {
+            return URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL
+        }
+        if let reference = application.storeReference,
+           let game = storeGames.first(where: { $0.storeReference == reference }),
+           let installPath = game.installPath {
+            return URL(fileURLWithPath: installPath, isDirectory: true).standardizedFileURL
+        }
+        return URL(fileURLWithPath: application.executablePath).deletingLastPathComponent().standardizedFileURL
+    }
+
+    func importTemporalComponent(
+        _ component: TemporalComponentID,
+        from source: URL,
+        version requestedVersion: String? = nil,
+        for applicationID: UUID
+    ) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy,
+              runtimeOperationDetail == nil else { return }
+        let version = requestedVersion ?? source.lastPathComponent
+        guard !version.isEmpty else { return }
+        let scope = source.startAccessingSecurityScopedResource()
+        defer { if scope { source.stopAccessingSecurityScopedResource() } }
+        runtimeOperationDetail = "Importing \(component.displayName)…"
+        do {
+            let reference: TemporalComponentReference
+            switch component {
+            case .dlsstweaks:
+                reference = try await services.dlsstweaksManager.install(from: source, version: version, licenseMetadata: "User-imported; redistribution not assumed")
+            case .optiScaler:
+                reference = try await services.optiScalerManager.install(from: source, version: version, licenseMetadata: "User-imported; redistribution not assumed")
+            case .dlssRuntime:
+                reference = try await services.dlssRuntimeManager.install(from: source, version: version, licenseMetadata: "User-imported; redistribution not assumed")
+            }
+            runtimeOperationDetail = nil
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].lastResult = "\(component.displayName) \(reference.version) imported into ComponentStore"
+                applications[index].lastErrorDetail = nil
+                save()
+            }
+        } catch {
+            runtimeOperationDetail = nil
+            present(error, title: "\(component.displayName) couldn’t be imported", stage: "Validating and storing the immutable temporal component")
+        }
+    }
+
+    func installManagedDLSSRuntime(for applicationID: UUID) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy,
+              let reference = await services.dlssRuntimeManager.installedReference() else { return }
+        let gameRoot = temporalGameRoot(for: application)
+        let executable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: application.executablePath)
+        do {
+            let installation = try await services.dlssRuntimeManager.installManagedVersion(
+                reference,
+                in: gameRoot,
+                applicationID: applicationID,
+                targetArchitecture: WindowsExecutableArchitecture.inspect(executable)
+            )
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].lastResult = "DLSS runtime \(reference.version) installed; original backup retained"
+                applications[index].lastErrorDetail = "Active SHA-256: \(installation.activeSHA256)"
+                save()
+            }
+        } catch {
+            present(error, title: "DLSS runtime couldn’t be installed", stage: "Backing up the original DLL and applying the validated managed runtime")
+        }
+    }
+
+    func restoreManagedDLSSRuntime(for applicationID: UUID) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy else { return }
+        do {
+            let installation = try await services.dlssRuntimeManager.removeManagedOverride(in: temporalGameRoot(for: application))
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].lastResult = "Original DLSS runtime restored"
+                applications[index].lastErrorDetail = "Restored SHA-256: \(installation.activeSHA256)"
+                save()
+            }
+        } catch {
+            present(error, title: "Original DLSS runtime couldn’t be restored", stage: "Validating the managed file and restoring the protected backup")
+        }
+    }
+
+    func injectOptiScaler(for applicationID: UUID, confirmUnknownPolicy: Bool = true) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy,
+              let reference = await services.optiScalerManager.installedReference() else { return }
+        let gameRoot = temporalGameRoot(for: application)
+        let executable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: application.executablePath)
+        let game = await services.gameUpscalerAnalyzer.analyze(gameRoot: gameRoot, executable: executable)
+        let profile = compatibilityProfile(for: application)
+        var configuration = profile.temporalUpscaling.optiScaler
+        configuration.enabled = true
+        do {
+            let receipt = try await services.optiScalerManager.inject(
+                reference: reference,
+                configuration: configuration,
+                gameRoot: gameRoot,
+                applicationID: applicationID,
+                targetArchitecture: WindowsExecutableArchitecture.inspect(executable),
+                antiCheat: game.antiCheat,
+                confirmUnknownInjectionPolicy: confirmUnknownPolicy
+            )
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].compatibilityProfile?.temporalUpscaling.mode = .optiScaler
+                applications[index].compatibilityProfile?.temporalUpscaling.optiScaler = configuration
+                applications[index].lastResult = "OptiScaler \(reference.version) injected with receipt \(receipt.id.uuidString.prefix(8))"
+                applications[index].lastErrorDetail = nil
+                save()
+            }
+        } catch {
+            present(error, title: "OptiScaler couldn’t be injected", stage: "Backing up game files and applying the managed DLL transaction")
+        }
+    }
+
+    func injectDLSSTweaks(for applicationID: UUID, confirmUnknownPolicy: Bool = true) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy,
+              let reference = await services.dlsstweaksManager.installedReference() else { return }
+        let gameRoot = temporalGameRoot(for: application)
+        let executable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: application.executablePath)
+        let game = await services.gameUpscalerAnalyzer.analyze(gameRoot: gameRoot, executable: executable)
+        guard game.dlss?.detected == true else {
+            present(
+                CocoaError(.featureUnsupported),
+                title: "DLSSTweaks couldn’t be injected",
+                stage: "A native DLSS interface was not detected in the game files"
+            )
+            return
+        }
+        do {
+            let receipt = try await services.dlsstweaksManager.inject(
+                reference: reference,
+                gameRoot: gameRoot,
+                applicationID: applicationID,
+                targetArchitecture: WindowsExecutableArchitecture.inspect(executable),
+                antiCheat: game.antiCheat,
+                confirmUnknownInjectionPolicy: confirmUnknownPolicy
+            )
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].compatibilityProfile?.temporalUpscaling.mode = .dlsstweaks
+                applications[index].compatibilityProfile?.temporalUpscaling.dlsstweaks.enabled = true
+                applications[index].lastResult = "DLSSTweaks \(reference.version) injected with receipt \(receipt.id.uuidString.prefix(8))"
+                applications[index].lastErrorDetail = nil
+                save()
+            }
+        } catch {
+            present(error, title: "DLSSTweaks couldn’t be injected", stage: "Backing up game files and applying the declared DLL transaction")
+        }
+    }
+
+    func setNGXDebugIndicator(_ enabled: Bool, for applicationID: UUID) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              let environmentRecord = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let runtime = try? await runtime(for: environmentRecord) else { return }
+        do {
+            let receipt = try await services.environmentManager.setNGXDebugIndicator(enabled, in: managed, runtime: runtime)
+            let receiptURL = managed.rootURL.appending(path: "ngx-indicator-receipt.json")
+            try TemporalComponentSecurity.makeEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
+        } catch {
+            present(error, title: "NGX debug indicator couldn’t be changed", stage: "Updating the selected Wine prefix registry")
+        }
+    }
+
+    func restoreNGXDebugIndicator(for applicationID: UUID) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              let environmentRecord = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: environmentRecord),
+              let runtime = try? await runtime(for: environmentRecord) else { return }
+        let receiptURL = managed.rootURL.appending(path: "ngx-indicator-receipt.json")
+        guard let data = try? Data(contentsOf: receiptURL),
+              let receipt = try? TemporalComponentSecurity.makeDecoder().decode(NGXDebugIndicatorReceipt.self, from: data) else { return }
+        do {
+            try await services.environmentManager.restoreNGXDebugIndicator(receipt, in: managed, runtime: runtime)
+            try? FileManager.default.removeItem(at: receiptURL)
+        } catch {
+            present(error, title: "NGX debug indicator couldn’t be restored", stage: "Restoring the previous Wine prefix registry value")
+        }
+    }
+
     /// Copies a bridge into Boreal's immutable component store. The selected
     /// game profile is intentionally not changed here; the user chooses the
     /// bridge in the configurator and saves that choice explicitly.
@@ -5186,7 +6305,8 @@ final class BorealStore {
               !application.status.isBusy,
               let environmentRecord = environment(id: application.environmentID),
               let runtimeID = environmentRecord.runtimeID else { return }
-        runtimeOperationDetail = "Installing " + bridge.displayName + " from the selected Game Porting Toolkit runtime…"
+        let bridgeName = bridge == .ngxToMetalFX ? String(localized: "NGX → MetalFX") : String(localized: "Disabled")
+        runtimeOperationDetail = String(localized: "Installing \(bridgeName) from the selected Game Porting Toolkit runtime…")
         do {
             _ = try await services.runtimeManager.installUpscalingBridge(
                 bridge,
@@ -5194,7 +6314,7 @@ final class BorealStore {
             )
             runtimeOperationDetail = nil
             if let index = applications.firstIndex(where: { $0.id == applicationID }) {
-                applications[index].lastResult = bridge.displayName + " installed"
+                applications[index].lastResult = String(localized: "\(bridgeName) installed")
                 applications[index].lastErrorDetail = nil
                 save()
             }
@@ -5202,8 +6322,8 @@ final class BorealStore {
             runtimeOperationDetail = nil
             present(
                 error,
-                title: bridge.displayName + " couldn’t be installed",
-                stage: "Copying and validating the immutable temporal upscaling bridge"
+                title: String(localized: "\(bridgeName) couldn’t be installed"),
+                stage: String(localized: "Copying and validating the immutable temporal upscaling bridge")
             )
         }
     }

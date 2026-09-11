@@ -18,6 +18,20 @@ nonisolated struct BorealServices: Sendable {
     let discoveryCatalog: any DiscoveryCatalogLoading
     let gogRevivedCatalog: any GOGRevivedCatalogLoading
     let discoveryPricing: any DiscoveryPricingLoading
+    let compatibilityResolver: CompatibilityResolver
+    let dependencyAnalyzer: DependencyAnalyzer
+    let launchFailureAnalyzer: LaunchFailureAnalyzer
+    let environmentSnapshotManager: EnvironmentSnapshotManager
+    let gameSaveManager: GameSaveManager
+    let advancedConfigurationStore: GameAdvancedConfigurationStore
+    let storageAnalyzer: StorageAnalyzer
+    let shaderCacheManager: any ShaderCacheManaging
+    let compatibilityReports: any CompatibilityReportProviding
+    let gameUpscalerAnalyzer: GameUpscalerAnalyzer
+    let dlsstweaksManager: DLSSTweaksManager
+    let optiScalerManager: OptiScalerManager
+    let dlssRuntimeManager: DLSSRuntimeManager
+    let temporalUpscalingResolver: TemporalUpscalingResolver
 
     init(
         runtimeManager: any RuntimeManaging,
@@ -36,7 +50,22 @@ nonisolated struct BorealServices: Sendable {
         communityCompatibility: any CommunityCompatibilityLoading = ProtonStoreCompatibilityService(),
         discoveryCatalog: any DiscoveryCatalogLoading = AppleGamingWikiDiscoveryService(),
         gogRevivedCatalog: any GOGRevivedCatalogLoading = GOGRevivedCatalogService(),
-        discoveryPricing: any DiscoveryPricingLoading = ITADPriceService()
+        discoveryPricing: any DiscoveryPricingLoading = ITADPriceService(),
+        applicationSupportURL: URL? = nil,
+        compatibilityResolver: CompatibilityResolver = CompatibilityResolver(),
+        dependencyAnalyzer: DependencyAnalyzer = DependencyAnalyzer(),
+        launchFailureAnalyzer: LaunchFailureAnalyzer = LaunchFailureAnalyzer(),
+        environmentSnapshotManager: EnvironmentSnapshotManager? = nil,
+        gameSaveManager: GameSaveManager? = nil,
+        advancedConfigurationStore: GameAdvancedConfigurationStore? = nil,
+        storageAnalyzer: StorageAnalyzer = StorageAnalyzer(),
+        shaderCacheManager: any ShaderCacheManaging = FileSystemShaderCacheManager(),
+        compatibilityReports: (any CompatibilityReportProviding)? = nil,
+        gameUpscalerAnalyzer: GameUpscalerAnalyzer? = nil,
+        dlsstweaksManager: DLSSTweaksManager? = nil,
+        optiScalerManager: OptiScalerManager? = nil,
+        dlssRuntimeManager: DLSSRuntimeManager? = nil,
+        temporalUpscalingResolver: TemporalUpscalingResolver? = nil
     ) {
         self.runtimeManager = runtimeManager
         self.environmentManager = environmentManager
@@ -59,6 +88,23 @@ nonisolated struct BorealServices: Sendable {
         self.discoveryCatalog = discoveryCatalog
         self.gogRevivedCatalog = gogRevivedCatalog
         self.discoveryPricing = discoveryPricing
+        self.compatibilityResolver = compatibilityResolver
+        self.dependencyAnalyzer = dependencyAnalyzer
+        self.launchFailureAnalyzer = launchFailureAnalyzer
+        let supportURL = applicationSupportURL
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appending(path: "Boreal")
+        self.environmentSnapshotManager = environmentSnapshotManager ?? EnvironmentSnapshotManager(applicationSupportURL: supportURL)
+        self.gameSaveManager = gameSaveManager ?? GameSaveManager(applicationSupportURL: supportURL)
+        self.advancedConfigurationStore = advancedConfigurationStore ?? GameAdvancedConfigurationStore(applicationSupportURL: supportURL)
+        self.storageAnalyzer = storageAnalyzer
+        self.shaderCacheManager = shaderCacheManager
+        self.compatibilityReports = compatibilityReports ?? CompatibilityReportStore(applicationSupportURL: supportURL)
+        let temporalComponentStore = ManagedTemporalComponentStore(applicationSupportURL: supportURL)
+        self.gameUpscalerAnalyzer = gameUpscalerAnalyzer ?? GameUpscalerAnalyzer()
+        self.dlsstweaksManager = dlsstweaksManager ?? DLSSTweaksManager(store: temporalComponentStore)
+        self.optiScalerManager = optiScalerManager ?? OptiScalerManager(store: temporalComponentStore)
+        self.dlssRuntimeManager = dlssRuntimeManager ?? DLSSRuntimeManager(store: temporalComponentStore)
+        self.temporalUpscalingResolver = temporalUpscalingResolver ?? TemporalUpscalingResolver()
     }
 
     @MainActor static func live(applicationSupportURL: URL) -> BorealServices {
@@ -98,7 +144,8 @@ nonisolated struct BorealServices: Sendable {
             communityCompatibility: ProtonStoreCompatibilityService(),
             discoveryCatalog: AppleGamingWikiDiscoveryService(applicationSupportURL: applicationSupportURL),
             gogRevivedCatalog: GOGRevivedCatalogService(applicationSupportURL: applicationSupportURL),
-            discoveryPricing: ITADPriceService(applicationSupportURL: applicationSupportURL)
+            discoveryPricing: ITADPriceService(applicationSupportURL: applicationSupportURL),
+            applicationSupportURL: applicationSupportURL
         )
     }
 }

@@ -7,7 +7,7 @@ struct StorageSettingsView: View {
     @State private var report: BorealStorageReport?
     @State private var isScanning = false
 
-    private let categories: [BorealStorageCategory] = [.games, .environments, .runtimes, .caches, .downloads, .logs]
+    private let categories: [BorealStorageCategory] = [.games, .environments, .runtimes, .caches, .downloads, .logs, .snapshots, .saveBackups]
 
     var body: some View {
         ScrollView {
@@ -226,6 +226,8 @@ struct StorageSettingsView: View {
         case .caches: .Settings.storageCachesTitle
         case .downloads: .Settings.storageDownloadsTitle
         case .logs: .Settings.storageLogsTitle
+        case .snapshots: "Environment snapshots"
+        case .saveBackups: "Save backups"
         }
     }
 
@@ -237,6 +239,8 @@ struct StorageSettingsView: View {
         case .caches: .Settings.storageCachesSubtitle
         case .downloads: .Settings.storageDownloadsSubtitle
         case .logs: .Settings.storageLogsSubtitle
+        case .snapshots: "Restore points created before compatibility changes."
+        case .saveBackups: "Detected save locations copied before destructive operations."
         }
     }
 
@@ -257,20 +261,7 @@ struct StorageSettingsView: View {
     private func scan() async {
         guard !isScanning else { return }
         isScanning = true
-        let layout = store.managedStorageLayout
-        let applications = store.applications
-        let storeGames = store.storeGames
-        let installations = store.installations
-        let environments = store.environments
-        let value = await Task.detached(priority: .utility) {
-            BorealStorageScanner.scan(
-                layout: layout,
-                applications: applications,
-                storeGames: storeGames,
-                environments: environments,
-                installations: installations
-            )
-        }.value
+        let value = await store.storageReport()
         report = value
         isScanning = false
     }

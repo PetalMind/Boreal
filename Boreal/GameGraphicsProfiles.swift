@@ -71,6 +71,19 @@ nonisolated enum GameGraphicsProfiles {
         ),
         GameGraphicsProfile(
             provider: .steam,
+            externalID: GameLaunchCompatibility.gtaSanAndreasDefinitiveEditionSteamAppID,
+            availableAPIs: [.directX12],
+            defaultAPI: .directX12,
+            launchOptions: [
+                // GTA SA Definitive Edition's DLSS integration and the
+                // linked DLSS Unlocker both require the game's DX12 path.
+                GraphicsAPILaunchOption(api: .directX12, arguments: ["-dx12"])
+            ],
+            preferredBackend: .d3dMetal,
+            overlayCompatibleFullscreen: true
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
             externalID: "475150",
             availableAPIs: [.directX11, .directX9],
             defaultAPI: .directX11,

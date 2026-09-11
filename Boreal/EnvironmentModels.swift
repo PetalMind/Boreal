@@ -72,6 +72,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var fullscreenFSRStrength: Int = 2
     var fullscreenFSRCustomMode: String? = nil
     var upscalingBridge: TemporalUpscalingBridge = .none
+    var temporalUpscaling: TemporalUpscalingConfiguration = .default
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
     var requiredDependencies: Set<RuntimeDependency> = []
@@ -112,6 +113,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.fullscreenFSRStrength = profile?.fullscreenFSRStrength ?? 2
         self.fullscreenFSRCustomMode = profile?.fullscreenFSRCustomMode
         self.upscalingBridge = profile?.upscalingBridge ?? .none
+        self.temporalUpscaling = profile?.temporalUpscaling ?? .default
         self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
         self.forceXInput = profile?.forceXInput ?? true
         self.requiredDependencies = profile?.requiredDependencies ?? []
@@ -119,7 +121,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
+        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
     }
 
     init(from decoder: Decoder) throws {
@@ -139,6 +141,15 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         fullscreenFSRStrength = try values.decodeIfPresent(Int.self, forKey: .fullscreenFSRStrength) ?? 2
         fullscreenFSRCustomMode = try values.decodeIfPresent(String.self, forKey: .fullscreenFSRCustomMode)
         upscalingBridge = try values.decodeIfPresent(TemporalUpscalingBridge.self, forKey: .upscalingBridge) ?? .none
+        if let temporalUpscaling = try values.decodeIfPresent(TemporalUpscalingConfiguration.self, forKey: .temporalUpscaling) {
+            self.temporalUpscaling = temporalUpscaling
+        } else if upscalingBridge == .ngxToMetalFX {
+            var legacyTemporal = TemporalUpscalingConfiguration.default
+            legacyTemporal.mode = .metalFXBridge
+            self.temporalUpscaling = legacyTemporal
+        } else {
+            self.temporalUpscaling = .default
+        }
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []
@@ -242,6 +253,7 @@ nonisolated struct EnvironmentFailureDiagnostics: Sendable, Equatable {
 nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
     case initializationFailed(exitCode: Int32, stderrLog: URL)
     case configurationFailed(exitCode: Int32, stderrLog: URL)
+    case registryImportFailed(exitCode: Int32, stderrLog: URL)
     case validationFailed(EnvironmentValidation)
     case unsupportedPrefixMode(mode: WinePrefixMode, runtime: String)
     case runtimeMismatch
@@ -253,6 +265,7 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
         switch self {
         case .initializationFailed(let code, _): "Wine couldn’t initialize the environment (exit code \(code))."
         case .configurationFailed(let code, _): "Wine couldn’t apply the compatibility profile (exit code \(code))."
+        case .registryImportFailed(let code, _): "Wine couldn’t import the registry override (exit code \(code))."
         case .validationFailed: "The Windows environment is incomplete."
         case .unsupportedPrefixMode(let mode, let runtime): "The \(mode.displayName) prefix is unavailable in the selected runtime (\(runtime))."
         case .runtimeMismatch: "The selected runtime does not match this environment."
@@ -267,6 +280,10 @@ nonisolated protocol EnvironmentManaging: Sendable {
     func create(configuration: EnvironmentConfiguration, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment
     func initialize(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment
+    func importRegistry(_ registryFile: URL, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func ngxDebugIndicatorState(in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> NGXDebugIndicatorState
+    func setNGXDebugIndicator(_ enabled: Bool, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> NGXDebugIndicatorReceipt
+    func restoreNGXDebugIndicator(_ receipt: NGXDebugIndicatorReceipt, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func validate(_ environment: ManagedBorealEnvironment) async throws -> EnvironmentValidation
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus]
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
@@ -276,6 +293,19 @@ nonisolated protocol EnvironmentManaging: Sendable {
 
 extension EnvironmentManaging {
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment { environment }
+    func importRegistry(_ registryFile: URL, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { throw CocoaError(.featureUnsupported) }
+    func ngxDebugIndicatorState(in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> NGXDebugIndicatorState {
+        _ = environment; _ = runtime
+        return NGXDebugIndicatorState(available: false, enabled: nil, detail: "NGX registry diagnostics are unavailable for this environment implementation.")
+    }
+    func setNGXDebugIndicator(_ enabled: Bool, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> NGXDebugIndicatorReceipt {
+        _ = enabled; _ = environment; _ = runtime
+        throw CocoaError(.featureUnsupported)
+    }
+    func restoreNGXDebugIndicator(_ receipt: NGXDebugIndicatorReceipt, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        _ = receipt; _ = environment; _ = runtime
+        throw CocoaError(.featureUnsupported)
+    }
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics? { nil }
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] { [] }
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { throw CocoaError(.featureUnsupported) }

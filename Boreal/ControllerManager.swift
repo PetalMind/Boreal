@@ -109,10 +109,16 @@ final class ControllerManager {
         GCController.stopWirelessControllerDiscovery()
     }
 
-    func activate(for applicationID: UUID, profileName: String, keyboardMappingEnabled: Bool = true) {
+    func activate(
+        for applicationID: UUID,
+        profileName: String,
+        keyboardMappingEnabled: Bool = true,
+        controllerProfile: GameControllerProfile = .default
+    ) {
         activeApplications[applicationID] = ActiveControllerApplication(
             profileName: profileName,
-            keyboardMappingEnabled: keyboardMappingEnabled
+            keyboardMappingEnabled: keyboardMappingEnabled,
+            controllerProfile: controllerProfile
         )
     }
 
@@ -131,7 +137,7 @@ final class ControllerManager {
     }
 
     private func process(_ gamepad: GCExtendedGamepad, controller: GCController) {
-        let deadZone = mapping.stickDeadZone
+        let deadZone = min(max(activeApplications.values.first?.controllerProfile.deadZone ?? Double(mapping.stickDeadZone), 0), 1)
         let states: [(Bool, ControllerInput)] = [
             (gamepad.buttonA.isPressed, .buttonA), (gamepad.buttonB.isPressed, .buttonB),
             (gamepad.buttonX.isPressed, .buttonX), (gamepad.buttonY.isPressed, .buttonY),
@@ -260,6 +266,7 @@ final class ControllerManager {
 private struct ActiveControllerApplication {
     let profileName: String
     let keyboardMappingEnabled: Bool
+    let controllerProfile: GameControllerProfile
 }
 
 private extension GCControllerPlayerIndex {

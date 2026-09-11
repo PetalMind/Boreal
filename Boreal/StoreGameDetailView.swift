@@ -33,6 +33,7 @@ struct StoreGameDetailView: View {
     @State private var showsProgressDetails = false
     @State private var selectedMedia: StoreMediaSelection?
     @State private var showsUninstallConfirmation = false
+    @State private var showsDLSSUnlockerUninstallConfirmation = false
     @State private var activityWidth: CGFloat = 0
     @State private var activityDayCount = 7
     @State private var selectedActivityDate: Date?
@@ -191,6 +192,16 @@ struct StoreGameDetailView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes only data Boreal identified as disposable. Game files and the Windows prefix are not touched.")
+        }
+        .confirmationDialog("Remove GTA SA DLSS Unlocker?", isPresented: $showsDLSSUnlockerUninstallConfirmation) {
+            Button("Remove Unlocker", role: .destructive) {
+                if let application = linkedApplication {
+                    store.uninstallDLSSUnlocker(for: application.id)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Boreal will disable the signature override and restore the original DLLs saved before installation.")
         }
         .alert("Rename Game", isPresented: $showsRenameDialog) {
             TextField("Game name", text: $renameValue)
@@ -934,6 +945,19 @@ struct StoreGameDetailView: View {
                         selectWindowsInstaller(for: app)
                     }
                     .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
+                }
+                if GameLaunchCompatibility.supportsDLSSUnlocker(for: app) {
+                    if store.dlssUnlockerInstalled(for: app) {
+                        Button("Remove GTA SA DLSS Unlocker", systemImage: "arrow.uturn.backward", role: .destructive) {
+                            showsDLSSUnlockerUninstallConfirmation = true
+                        }
+                        .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
+                    } else {
+                        Button("Install GTA SA DLSS Unlocker…", systemImage: "arrow.down.app") {
+                            selectDLSSUnlockerArchive(for: app)
+                        }
+                        .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
+                    }
                 }
                 let gameActions = store.auxiliaryExecutables(for: app)
                 if !gameActions.isEmpty {
@@ -2137,6 +2161,19 @@ struct StoreGameDetailView: View {
         ]
         guard panel.runModal() == .OK, let installer = panel.url else { return }
         store.runWindowsInstaller(installer, for: application.id)
+    }
+
+    private func selectDLSSUnlockerArchive(for application: WindowsApplication) {
+        let panel = NSOpenPanel()
+        panel.title = "Install GTA SA DLSS Unlocker"
+        panel.message = "Choose the ZIP downloaded from the linked mod page. Boreal will validate and install only the unlocker files."
+        panel.prompt = "Install Unlocker"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let archive = panel.url else { return }
+        store.installDLSSUnlocker(archive, for: application.id)
     }
 
     private func openStorePage() {

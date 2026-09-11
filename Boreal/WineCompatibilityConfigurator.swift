@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private func compatibilityLocalizedBackendName(_ backend: WineGraphicsBackend) -> String {
     backend == .automatic ? String(localized: "Automatic") : backend.displayName
@@ -30,10 +31,18 @@ private func compatibilityLocalizedLegacyWrapperName(_ wrapper: LegacyGraphicsWr
     wrapper == .none ? String(localized: "Disabled") : wrapper.displayName
 }
 
+private func compatibilityLocalizedTemporalBridgeName(_ bridge: TemporalUpscalingBridge) -> String {
+    switch bridge {
+    case .none: String(localized: "Disabled")
+    case .ngxToMetalFX: String(localized: "NGX → MetalFX")
+    }
+}
+
 private func compatibilityLocalizedCapabilityTitle(_ capability: UpscalingCapability) -> String {
     switch capability.id {
     case "wine-fsr1": String(localized: "Wine FSR 1")
     case "temporal-fsr-replacement": String(localized: "FSR replacement")
+    case "cyberfsr": String(localized: "GTA SA DLSS Unlocker")
     case "optiscaler": String(localized: "Bridge")
     default: capability.title
     }
@@ -45,6 +54,8 @@ private func compatibilityLocalizedCapabilityDetail(_ capability: UpscalingCapab
     case "Verified for the selected runtime and graphics path": String(localized: "Verified for the selected runtime and graphics path")
     case "Detected, but not verified on this macOS graphics path": String(localized: "Detected, but not verified on this macOS graphics path")
     case "Game interface detected": String(localized: "Game interface detected")
+    case "GTA SA DLSS Unlocker detected; compatibility is not verified": String(localized: "GTA SA DLSS Unlocker detected; compatibility is not verified")
+    case "GTA SA DLSS Unlocker detected; output and compatibility are not verified": String(localized: "GTA SA DLSS Unlocker detected; output and compatibility are not verified")
     case "Experimental temporal replacement through OptiScaler": String(localized: "Experimental temporal replacement through OptiScaler")
     case "No temporal replacement bridge detected": String(localized: "No temporal replacement bridge detected")
     case "OptiScaler detected; output and compatibility are not verified": String(localized: "OptiScaler detected; output and compatibility are not verified")
@@ -90,6 +101,9 @@ struct WineCompatibilityConfigurator: View {
     @State private var controllerManager = ControllerManager.shared
     @State private var showsControllerMapping = false
     @State private var installedUpscalingBridgeVersion: String?
+    @State private var temporalInspector: TemporalUpscalingInspectorSnapshot?
+    @State private var isImportingTemporalComponent = false
+    @State private var temporalComponentToImport: TemporalComponentID?
 
     init(application: WindowsApplication) {
         self.application = application
@@ -139,6 +153,20 @@ struct WineCompatibilityConfigurator: View {
                 for: application,
                 bridge: .ngxToMetalFX
             )
+            temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+        }
+        .fileImporter(
+            isPresented: $isImportingTemporalComponent,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            guard let component = temporalComponentToImport else { return }
+            temporalComponentToImport = nil
+            guard case .success(let urls) = result, let source = urls.first else { return }
+            Task {
+                await store.importTemporalComponent(component, from: source, for: application.id)
+                temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+            }
         }
     }
 
@@ -196,88 +224,133 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var upscalingSection: some View {
-        let resolution = upscalingResolution
-        let metalFXCapability = metalFXBridgeCapability(for: resolution)
-        return CompatibilitySettingsSection(title: "Upscaling", subtitle: "Inspect native game interfaces and compatible spatial or temporal upscaling paths.", symbol: "arrow.up.left.and.arrow.down.right", tint: .orange) {
-            CompatibilityUpscalingRow(title: "Spatial upscaling", detail: compatibilityLocalizedCapabilityTitle(resolution.spatial), status: resolution.spatial.status, explanation: compatibilityLocalizedCapabilityDetail(resolution.spatial))
-            Divider()
-            CompatibilityUpscalingRow(title: "Game interface", detail: nativeInterfaceLabel(for: resolution), status: nativeInterfaceStatus(for: resolution), explanation: nativeInterfaceDetail(for: resolution))
-            CompatibilityUpscalingRow(title: "FSR replacement", detail: compatibilityLocalizedCapabilityTitle(resolution.temporalReplacement), status: resolution.temporalReplacement.status, explanation: compatibilityLocalizedCapabilityDetail(resolution.temporalReplacement))
-            CompatibilityUpscalingRow(title: "Bridge", detail: compatibilityLocalizedCapabilityDetail(resolution.bridge), status: resolution.bridge.status, explanation: compatibilityLocalizedCapabilityTitle(resolution.bridge))
-            CompatibilityUpscalingRow(title: "MetalFX path", detail: compatibilityLocalizedCapabilityTitle(metalFXCapability), status: metalFXCapability.status, explanation: compatibilityLocalizedCapabilityDetail(metalFXCapability))
-            CompatibilityUpscalingRow(title: "Output", detail: resolution.bridge.status == .candidate ? String(localized: "FSR replacement (unverified)") : String(localized: "Not configured"), status: resolution.bridge.status == .candidate ? .candidate : .notDetected, explanation: String(localized: "The exact output version is not inferred from the bridge library. Boreal does not enable an experimental bridge automatically."))
-            CompatibilityUpscalingRow(title: "Current renderer", detail: compatibilityLocalizedBackendName(resolution.currentRenderer), status: .detected, explanation: String(localized: "Resolved graphics renderer for this profile."))
-            CompatibilityUpscalingRow(title: "Compatibility", detail: compatibilityLabel(resolution.compatibility), status: resolution.compatibility, explanation: String(localized: "A verified smoke test is required before a bridge can be enabled."))
-            CompatibilityPickerRow(title: "Temporal bridge", detail: String(localized: "Choose an installed bridge for this game. Bridges are loaded only at game launch.")) {
-                Picker("Temporal bridge", selection: $profile.upscalingBridge) {
-                    ForEach(TemporalUpscalingBridge.allCases) { bridge in
-                        Text(bridge.displayName).tag(bridge)
+        let spatialCapability = spatialUpscalingCapability
+        return VStack(spacing: 12) {
+            CompatibilitySettingsSection(title: "Spatial upscaling", subtitle: "Wine Fullscreen FSR1 is a separate spatial mechanism.", symbol: "arrow.up.left.and.arrow.down.right", tint: .orange) {
+                CompatibilityUpscalingRow(title: "Wine Fullscreen FSR 1", detail: compatibilityLocalizedCapabilityTitle(spatialCapability), status: spatialCapability.status, explanation: compatibilityLocalizedCapabilityDetail(spatialCapability))
+                CompatibilityToggleRow(title: "Enable spatial upscaling", detail: "Requested preference for Wine's fullscreen FSR path. It becomes active only with a verified compatible Vulkan path and no active temporal path.", isOn: $profile.fullscreenFSREnabled)
+                if fullscreenFSRCapabilities.supportsMode {
+                    CompatibilityPickerRow(title: "FSR preset", detail: String(localized: "Controls the render resolution used by the fullscreen FSR patch.")) {
+                        Picker("FSR preset", selection: $profile.fullscreenFSRMode) {
+                            ForEach(FullscreenFSRMode.allCases) { mode in Text(compatibilityLocalizedFSRModeName(mode)).tag(mode) }
+                        }.labelsHidden().disabled(!profile.fullscreenFSREnabled)
                     }
                 }
-                .labelsHidden()
+                if let reason = fullscreenFSRUnavailableReason {
+                    CompatibilityCallout(text: reason, symbol: "exclamationmark.triangle.fill", tint: .orange)
+                }
             }
-            if profile.upscalingBridge == .ngxToMetalFX {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(installedUpscalingBridgeVersion == nil ? String(localized: "Bridge not installed") : String(localized: "Bridge installed"))
-                            .fontWeight(.medium)
-                        Text(installedUpscalingBridgeVersion.map { "GPTK snapshot " + $0 } ?? String(localized: "Copies nvngx-on-metalfx, nvapi64, and nvngx from the selected GPTK runtime."))
+
+            CompatibilitySettingsSection(title: "Temporal upscaling", subtitle: "The game interface, bridge, and effective launch path are resolved independently from Wine FSR1.", symbol: "waveform.path.ecg", tint: .purple) {
+                let game = temporalInspector?.game
+                let plan = temporalInspector?.temporalPlan
+                CompatibilityUpscalingRow(
+                    title: "Detected game interface",
+                    detail: game.map { detectedTemporalInterfaceLabel($0) } ?? String(localized: "Analyzing game files…"),
+                    status: game.map { $0.hasTemporalInterface ? .detected : .notDetected } ?? .candidate,
+                    explanation: game.map { temporalInterfaceExplanation($0) } ?? String(localized: "No game files have been analyzed yet.")
+                )
+                CompatibilityPickerRow(title: "Temporal upscaling mode", detail: String(localized: "Automatic recommends only from real detection data. Manual bridge paths remain experimental until a live smoke test verifies them.")) {
+                    Picker("Temporal upscaling mode", selection: temporalModeBinding) {
+                        ForEach(TemporalUpscalingMode.allCases) { mode in Text(mode.displayName).tag(mode) }
+                    }
+                    .labelsHidden()
+                }
+                CompatibilityUpscalingRow(
+                    title: "Effective temporal path",
+                    detail: plan?.effective.displayName ?? String(localized: "Unavailable"),
+                    status: temporalStatus(plan?.compatibility),
+                    explanation: plan?.reason ?? String(localized: "The selected runtime or game capability is unavailable.")
+                )
+                CompatibilityUpscalingRow(
+                    title: "NGX → MetalFX bridge",
+                    detail: temporalInspector?.metalFX.installed == true
+                        ? String(localized: "Installed from selected GPTK runtime")
+                        : (temporalInspector?.metalFX.available == true
+                            ? String(localized: "Available in selected GPTK runtime")
+                            : String(localized: "Not detected in selected runtime")),
+                    status: temporalInspector?.metalFX.installed == true
+                        ? .detected
+                        : (temporalInspector?.metalFX.available == true ? .candidate : .unavailable),
+                    explanation: temporalInspector?.metalFX.installed == true
+                        ? String(localized: "Managed ComponentStore copy is available; this macOS game path is not live verified.")
+                        : (temporalInspector?.metalFX.available == true
+                            ? String(localized: "Runtime payload detected; install the managed bridge copy before selecting this path.")
+                            : String(localized: "Boreal did not find the bridge payload in this immutable runtime."))
+                )
+                if temporalInspector?.metalFX.available == true {
+                    HStack {
+                        Text(installedUpscalingBridgeVersion == nil ? String(localized: "Bridge component not installed") : String(localized: "Bridge component installed"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(installedUpscalingBridgeVersion == nil ? String(localized: "Install bridge") : String(localized: "Refresh bridge"), systemImage: "arrow.down.circle") {
-                        Task {
-                            await store.installUpscalingBridge(.ngxToMetalFX, for: application.id)
-                            let installedVersion = await store.installedUpscalingBridgeVersion(
-                                for: application,
-                                bridge: .ngxToMetalFX
-                            )
-                            installedUpscalingBridgeVersion = installedVersion
-                            if installedVersion != nil {
-                                profile.upscalingBridge = .ngxToMetalFX
+                        Spacer()
+                        Button(installedUpscalingBridgeVersion == nil ? String(localized: "Install bridge") : String(localized: "Refresh bridge"), systemImage: "arrow.down.circle") {
+                            Task {
+                                await store.installUpscalingBridge(.ngxToMetalFX, for: application.id)
+                                installedUpscalingBridgeVersion = await store.installedUpscalingBridgeVersion(for: application, bridge: .ngxToMetalFX)
+                                temporalInspector = await store.temporalUpscalingInspector(for: application.id)
                             }
                         }
+                        .buttonStyle(.bordered)
+                        .disabled(store.runtimeOperationDetail != nil || application.status == .running || application.status.isBusy || fullscreenFSRResolvedBackend != .d3dMetal)
                     }
-                    .disabled(store.runtimeOperationDetail != nil || application.status == .running || application.status.isBusy || fullscreenFSRResolvedBackend != .d3dMetal)
                 }
-                if fullscreenFSRResolvedBackend != .d3dMetal {
-                    CompatibilityCallout(text: String(localized: "Select D3DMetal as the current renderer before enabling the NGX → MetalFX bridge."), symbol: "exclamationmark.triangle.fill", tint: .orange)
-                }
-            }
-            Divider()
-            CompatibilityToggleRow(title: "Fullscreen upscaling (Wine FSR 1)", detail: "Requested preference for Wine's fullscreen FSR path. It becomes active only with a verified compatible Vulkan path.", isOn: $profile.fullscreenFSREnabled)
-            if fullscreenFSRCapabilities.supportsMode {
-                CompatibilityPickerRow(title: "FSR preset", detail: String(localized: "Controls the render resolution used by the fullscreen FSR patch.")) {
-                    Picker("FSR preset", selection: $profile.fullscreenFSRMode) {
-                        ForEach(FullscreenFSRMode.allCases) { mode in Text(compatibilityLocalizedFSRModeName(mode)).tag(mode) }
-                    }.labelsHidden().disabled(!profile.fullscreenFSREnabled)
-                }
-            }
-            if fullscreenFSRCapabilities.supportsStrength {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Sharpening")
+                temporalComponentRow(
+                    title: "DLSSTweaks",
+                    status: temporalInspector?.dlsstweaks,
+                    component: .dlsstweaks
+                )
+                temporalComponentRow(
+                    title: "OptiScaler",
+                    status: temporalInspector?.optiScaler,
+                    component: .optiScaler
+                )
+                temporalComponentRow(
+                    title: "DLSS Runtime",
+                    status: temporalInspector?.managedDLSSRuntime,
+                    component: .dlssRuntime
+                )
+                if let inspector = temporalInspector {
+                    HStack(spacing: 8) {
+                        Text(inspector.dlssRuntime?.source == .borealManaged
+                            ? String(localized: "Managed DLSS runtime is active")
+                            : (inspector.dlssRuntime == nil
+                                ? String(localized: "No active DLSS runtime detected")
+                                : String(localized: "Game-original DLSS runtime is active")))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(uiSharpening)").monospacedDigit().foregroundStyle(.secondary)
+                        Button("Use managed") {
+                            Task {
+                                await store.installManagedDLSSRuntime(for: application.id)
+                                temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!inspector.managedDLSSRuntime.installed || inspector.dlssRuntime?.source == .borealManaged || application.status == .running || application.status.isBusy)
+                        Button("Restore original") {
+                            Task {
+                                await store.restoreManagedDLSSRuntime(for: application.id)
+                                temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(inspector.dlssRuntime?.source != .borealManaged || application.status == .running || application.status.isBusy)
                     }
-                    HStack {
-                        Text("Less").font(.caption).foregroundStyle(.secondary)
-                        Slider(value: sharpeningBinding, in: 0...5, step: 1)
-                        Text("More").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .disabled(!profile.fullscreenFSREnabled)
                 }
-            }
-            if fullscreenFSRCapabilities.supportsCustomMode {
-                CompatibilityTextFieldRow(title: "Custom render resolution", detail: String(localized: "Adds a custom render resolution exposed to the game, such as 1920x1080."), text: Binding(
-                    get: { profile.fullscreenFSRCustomMode ?? "" },
-                    set: { profile.fullscreenFSRCustomMode = $0.isEmpty ? nil : $0 }
-                ))
-                .disabled(!profile.fullscreenFSREnabled)
-            }
-            if let reason = fullscreenFSRUnavailableReason {
-                CompatibilityCallout(text: reason, symbol: "exclamationmark.triangle.fill", tint: .orange)
+                if let plan, plan.injectionSafety != .allowed {
+                    CompatibilityCallout(text: plan.injectionSafety == .blockedAntiCheat
+                        ? String(localized: "External DLL injection is disabled for this game because anti-cheat or integrity protection may be active.")
+                        : String(localized: "External DLL injection requires an explicit user action because this game's policy is unknown."), symbol: "shield.lefthalf.filled", tint: .orange)
+                }
+                if application.usesSharedSteamEnvironment {
+                    CompatibilityCallout(text: String(localized: "Steam uses a shared Windows environment. Registry and injected DLL changes can affect more than one game."), symbol: "person.2.fill", tint: .blue)
+                }
+                if let inspector {
+                    DisclosureGroup("DLSS / NGX Inspector") {
+                        inspectorContent(inspector)
+                    }
+                }
             }
         }
     }
@@ -461,44 +534,149 @@ struct WineCompatibilityConfigurator: View {
         runtimeFeatures?.fullscreenFSRCapabilities
             ?? FullscreenFSRCapabilities(available: runtimeFeatures?.fullscreenFSR == true, source: .payloadInspection)
     }
-    private var upscalingResolution: UpscalingResolution {
-        UpscalingResolver.resolve(
-            application: application,
+    private var spatialUpscalingCapability: UpscalingCapability {
+        SpatialUpscalingResolver.resolve(
             runtimeFeatures: runtimeFeatures,
             backend: fullscreenFSRResolvedBackend
         )
     }
-    private func metalFXBridgeCapability(for resolution: UpscalingResolution) -> UpscalingCapability {
-        guard installedUpscalingBridgeVersion != nil else { return resolution.metalFXBridge }
-        return UpscalingCapability(
-            id: resolution.metalFXBridge.id,
-            title: resolution.metalFXBridge.title,
-            status: .candidate,
-            detail: "Bridge installed from GPTK; compatibility is not verified"
+
+    private var temporalModeBinding: Binding<TemporalUpscalingMode> {
+        Binding(
+            get: {
+                if profile.temporalUpscaling.mode == .automatic, profile.upscalingBridge == .ngxToMetalFX {
+                    return .metalFXBridge
+                }
+                return profile.temporalUpscaling.mode
+            },
+            set: {
+                profile.temporalUpscaling.mode = $0
+                profile.upscalingBridge = $0 == .metalFXBridge ? .ngxToMetalFX : .none
+            }
         )
     }
-    private func nativeInterfaceLabel(for resolution: UpscalingResolution) -> String {
-        resolution.nativeInterfaces.isEmpty
-            ? String(localized: "None detected")
-            : resolution.nativeInterfaces.map(compatibilityLocalizedCapabilityTitle).joined(separator: ", ")
+
+    private func detectedTemporalInterfaceLabel(_ game: GameUpscalingCapabilities) -> String {
+        guard !game.detectedTemporalInterfaces.isEmpty else { return String(localized: "None detected") }
+        return game.detectedTemporalInterfaces.map { capability in
+            "\(capability.kind.displayName) · \(capability.version ?? String(localized: "Unknown version"))"
+        }.joined(separator: ", ")
     }
-    private func nativeInterfaceStatus(for resolution: UpscalingResolution) -> UpscalingDetectionStatus {
-        resolution.nativeInterfaces.isEmpty ? .notDetected : .detected
+
+    private func temporalInterfaceExplanation(_ game: GameUpscalingCapabilities) -> String {
+        guard !game.detectedTemporalInterfaces.isEmpty else {
+            return String(localized: "No DLSS, FSR 2+ or XeSS interface was detected in the game files.")
+        }
+        return game.detectedTemporalInterfaces.map { capability in
+            "\(capability.kind.displayName): \(capability.confidence.rawValue) confidence; runtime operation is not proven."
+        }.joined(separator: " ")
     }
-    private func nativeInterfaceDetail(for resolution: UpscalingResolution) -> String {
-        resolution.nativeInterfaces.isEmpty
-            ? String(localized: "No DLSS, FSR or XeSS interface was detected in the game files.")
-            : resolution.nativeInterfaces.map(compatibilityLocalizedCapabilityDetail).joined(separator: ", ")
-    }
-    private func compatibilityLabel(_ status: UpscalingDetectionStatus) -> String {
-        switch status {
-        case .verified: String(localized: "Verified")
-        case .candidate: String(localized: "Not verified")
-        case .detected: String(localized: "Detected")
-        case .unavailable: String(localized: "Unavailable")
-        case .notDetected: String(localized: "Not detected")
+
+    private func temporalStatus(_ compatibility: TemporalBridgeCompatibility?) -> UpscalingDetectionStatus {
+        guard let compatibility else { return .candidate }
+        switch compatibility {
+        case .unsupported: .unavailable
+        case .candidate, .experimental: .candidate
+        case .verified: .verified
         }
     }
+
+    @ViewBuilder
+    private func temporalComponentRow(
+        title: LocalizedStringResource,
+        status: TemporalComponentStatus?,
+        component: TemporalComponentID
+    ) -> some View {
+        let installed = status?.installed == true
+        HStack(alignment: .top, spacing: 10) {
+            CompatibilityUpscalingRow(
+                title: title,
+                detail: installed ? "\(status?.version ?? String(localized: "Unknown version")) · \(String(localized: "managed ComponentStore"))" : String(localized: "Not installed"),
+                status: installed ? .detected : .notDetected,
+                explanation: installed ? String(localized: "Versioned and hash-validated before a game injection is attempted.") : String(localized: "Import a user-supplied component folder; Boreal will store it immutably and record its SHA-256." )
+            )
+            Spacer(minLength: 4)
+            Button(installed ? String(localized: "Re-import") : String(localized: "Import"), systemImage: "square.and.arrow.down") {
+                temporalComponentToImport = component
+                isImportingTemporalComponent = true
+            }
+            .buttonStyle(.bordered)
+            if component == .dlsstweaks,
+               installed,
+               temporalInspector?.dlsstweaksCapabilities?.injectionFiles.isEmpty == false {
+                Button("Inject", systemImage: "arrow.down.to.line") {
+                    Task {
+                        await store.injectDLSSTweaks(for: application.id)
+                        temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(application.status == .running || application.status.isBusy)
+            }
+            if component == .optiScaler, installed {
+                Button("Inject", systemImage: "arrow.down.to.line") {
+                    Task {
+                        await store.injectOptiScaler(for: application.id)
+                        temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(application.status == .running || application.status.isBusy)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func inspectorContent(_ inspector: TemporalUpscalingInspectorSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            InspectorValueRow(title: "Game interface", value: detectedTemporalInterfaceLabel(inspector.game))
+            InspectorValueRow(title: "Detected DLL", value: inspector.dlssRuntime?.activeFileURL.lastPathComponent ?? String(localized: "Not detected"))
+            InspectorValueRow(title: "Version", value: inspector.dlssRuntime?.detectedVersion ?? String(localized: "Unknown"))
+            InspectorValueRow(
+                title: "Source",
+                value: inspector.dlssRuntime.map { $0.source == .gameOriginal ? String(localized: "Game installation") : String(localized: "Boreal managed") }
+                    ?? String(localized: "Unavailable")
+            )
+            InspectorValueRow(title: "Native DLSS availability", value: inspector.game.dlss?.detected == true ? String(localized: "Detected") : String(localized: "Not detected"))
+            InspectorValueRow(title: "SHA-256", value: inspector.dlssRuntime?.activeSHA256 ?? String(localized: "Unavailable"), monospaced: true)
+            InspectorValueRow(title: "DLSSTweaks", value: inspector.dlsstweaks.version ?? String(localized: "Not installed"))
+            InspectorValueRow(
+                title: "DLSSTweaks controls",
+                value: inspector.dlsstweaksCapabilities?.supportedControls.map(\.rawValue).sorted().joined(separator: ", ")
+                    ?? String(localized: "Not declared by component")
+            )
+            InspectorValueRow(title: "OptiScaler", value: inspector.optiScaler.version ?? String(localized: "Not installed"))
+            InspectorValueRow(title: "MetalFX bridge", value: inspector.metalFX.available ? String(localized: "Available in runtime") : String(localized: "Unsupported / not detected"))
+            InspectorValueRow(title: "Graphics stack", value: inspector.graphicsStack.backend.displayName)
+            InspectorValueRow(title: "Runtime", value: inspector.runtimeDescription)
+            InspectorValueRow(title: "Effective temporal path", value: inspector.temporalPlan.effective.displayName)
+            InspectorValueRow(title: "Status", value: inspector.temporalPlan.compatibility.label)
+            InspectorValueRow(title: "Injection policy", value: inspector.temporalPlan.injectionSafety.rawValue)
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("DLSS Debug Indicator").fontWeight(.medium)
+                    Text("Shows NVIDIA NGX/DLSS diagnostic information when supported by the game/runtime.").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("DLSS Debug Indicator", isOn: Binding(
+                    get: { inspector.ngxDebugIndicator.enabled == true },
+                    set: { enabled in
+                        Task {
+                            await store.setNGXDebugIndicator(enabled, for: application.id)
+                            temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .disabled(!inspector.ngxDebugIndicator.available)
+            }
+            if !inspector.ngxDebugIndicator.available {
+                Text(inspector.ngxDebugIndicator.detail).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 6)
+    }
+
     private var fullscreenFSRResolvedBackend: GraphicsBackend {
         switch profile.graphicsBackend {
         case .automatic:
@@ -680,6 +858,24 @@ private struct CompatibilityUpscalingRow: View {
     }
 }
 
+private struct InspectorValueRow: View {
+    let title: String
+    let value: String
+    var monospaced = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.caption.weight(.medium))
+                .fontDesign(monospaced ? .monospaced : .default)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 private struct CompatibilityTextFieldRow: View {
     let title: LocalizedStringResource
     let detail: String?
@@ -726,7 +922,7 @@ private struct CompatibilityResultCard: View {
             row("Game display", displayLabel, "display")
             row("Overlay compatible", profile.overlayCompatibleFullscreen ? String(localized: "Yes") : String(localized: "No"), "rectangle.on.rectangle")
             if profile.upscalingBridge != .none {
-                row("Temporal bridge", profile.upscalingBridge.displayName, "arrow.triangle.branch")
+                row("Temporal bridge", compatibilityLocalizedTemporalBridgeName(profile.upscalingBridge), "arrow.triangle.branch")
             }
             if let compatibility = application.communityCompatibility {
                 row("Community reports", compatibility.reportCount.formatted(), "person.2.fill")

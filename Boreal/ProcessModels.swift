@@ -47,6 +47,7 @@ nonisolated struct WindowsProcessSession: Identifiable, Sendable, Hashable {
 }
 
 nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
+    var traceID: OperationTraceID? = nil
     var executable: URL
     var arguments: [String]
     var environment: [String: String]
@@ -56,6 +57,8 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
     var sessionScope: SessionScope = .exclusiveEnvironment
     var processExecutableName: String? = nil
     var processExecutablePath: String? = nil
+    var temporalUpscalingPlan: TemporalUpscalingPlan? = nil
+    var configurationFingerprint: String? = nil
 }
 
 nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
@@ -143,7 +146,7 @@ nonisolated enum GameLaunchCompatibility {
         let root = directory.appending(path: dlssUnlockerDirectoryName, directoryHint: .isDirectory)
         let manifestURL = root.appending(path: "manifest.json")
         guard let data = try? Data(contentsOf: manifestURL),
-              let manifest = try? JSONDecoder().decode(DLSSUnlockerManifest.self, from: data),
+              let manifest = try? makeDecoder().decode(DLSSUnlockerManifest.self, from: data),
               manifest.originalFiles.allSatisfy({ dlssUnlockerFiles.contains($0) }) else { return false }
         return dlssUnlockerFiles.allSatisfy {
             let values = try? directory.appending(path: $0).resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -162,11 +165,18 @@ nonisolated enum GameLaunchCompatibility {
     ) -> WindowsLaunchPlan {
         guard supportsDLSSUnlocker(for: application) else { return plan }
         let gameExecutable: URL? = {
+            if let gameDirectory,
+               let executable = gtaSanAndreasExecutable(in: gameDirectory, fileManager: fileManager) {
+                return executable
+            }
             if let processPath = plan.processExecutablePath {
                 return URL(fileURLWithPath: processPath)
             }
-            if let gameDirectory {
-                return gtaSanAndreasExecutable(in: gameDirectory, fileManager: fileManager)
+            if let executable = gtaSanAndreasExecutable(
+                in: plan.executable.deletingLastPathComponent(),
+                fileManager: fileManager
+            ) {
+                return executable
             }
             return plan.executable
         }()
@@ -274,7 +284,7 @@ nonisolated enum GameLaunchCompatibility {
             for name in dlssUnlockerFiles {
                 let destination = target.appending(path: name)
                 let values = try destination.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                guard values.isRegularFile != true || values.isSymbolicLink != true else {
+                guard values.isSymbolicLink != true else {
                     throw GameLaunchCompatibilityError.dlssUnlockerOperationFailed("The target file \(name) is a symbolic link.")
                 }
                 if values.isRegularFile == true {
@@ -300,7 +310,7 @@ nonisolated enum GameLaunchCompatibility {
             try await importRegistry(sourceFiles["EnableSignatureOverride.reg"]!)
             try makeEncoder().encode(backup).write(to: manifestURL, options: .atomic)
         } catch {
-            restoreOriginalFiles(
+            try restoreOriginalFiles(
                 target: target,
                 originalRoot: originalRoot,
                 originalFiles: originalFiles,
@@ -320,7 +330,7 @@ nonisolated enum GameLaunchCompatibility {
         let managedRoot = target.appending(path: dlssUnlockerDirectoryName, directoryHint: .isDirectory)
         let manifestURL = managedRoot.appending(path: "manifest.json")
         guard let data = try? Data(contentsOf: manifestURL),
-              let manifest = try? JSONDecoder().decode(DLSSUnlockerManifest.self, from: data) else {
+              let manifest = try? makeDecoder().decode(DLSSUnlockerManifest.self, from: data) else {
             throw GameLaunchCompatibilityError.dlssUnlockerIncompleteInstallation(managedRoot)
         }
         let disableRegistry = managedRoot.appending(path: "DisableSignatureOverride.reg")
@@ -330,7 +340,7 @@ nonisolated enum GameLaunchCompatibility {
 
         try await importRegistry(disableRegistry)
         let originalRoot = managedRoot.appending(path: "original", directoryHint: .isDirectory)
-        restoreOriginalFiles(
+        try restoreOriginalFiles(
             target: target,
             originalRoot: originalRoot,
             originalFiles: manifest.originalFiles,
@@ -344,15 +354,16 @@ nonisolated enum GameLaunchCompatibility {
         originalRoot: URL,
         originalFiles: [String],
         fileManager: FileManager
-    ) {
+    ) throws {
         for name in dlssUnlockerFiles {
             let destination = target.appending(path: name)
             if originalFiles.contains(name), fileManager.isReadableFile(atPath: originalRoot.appending(path: name).path) {
-                if let data = try? Data(contentsOf: originalRoot.appending(path: name)) {
-                    try? data.write(to: destination, options: .atomic)
-                }
+                let data = try Data(contentsOf: originalRoot.appending(path: name))
+                try data.write(to: destination, options: .atomic)
             } else {
-                try? fileManager.removeItem(at: destination)
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
             }
         }
     }
@@ -388,6 +399,12 @@ nonisolated enum GameLaunchCompatibility {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return encoder
+    }
+
+    private static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 
     static func prepare(

@@ -228,6 +228,7 @@ nonisolated enum ExecutionState: Hashable, Sendable {
 /// `WindowsLaunchPlan` for compatibility with existing adapters, but the
 /// application creates this value before any process is started.
 nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
+    let traceID: OperationTraceID
     let applicationID: UUID
     let installationID: UUID?
     let environmentID: UUID
@@ -252,8 +253,11 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
     let sessionScope: SessionScope
     let processExecutableName: String?
     let processExecutablePath: String?
+    let temporalUpscalingPlan: TemporalUpscalingPlan?
+    let configurationFingerprint: String?
 
     init(
+        traceID: OperationTraceID? = nil,
         applicationID: UUID,
         installationID: UUID?,
         environmentID: UUID,
@@ -272,8 +276,14 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         executableArchitecture: WindowsExecutableArchitecture = .unknown,
         sessionScope: SessionScope? = nil,
         processExecutableName: String? = nil,
-        processExecutablePath: String? = nil
+        processExecutablePath: String? = nil,
+        temporalUpscalingPlan: TemporalUpscalingPlan? = nil,
+        configurationFingerprint: String? = nil
     ) {
+        // Keep the façade deterministic for callers that only describe a
+        // plan, while the orchestration path passes a fresh operation trace
+        // explicitly for every real launch.
+        self.traceID = traceID ?? windowsPlan.traceID ?? OperationTraceID(applicationID)
         self.applicationID = applicationID
         self.installationID = installationID
         self.environmentID = environmentID
@@ -298,10 +308,83 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         self.sessionScope = sessionScope ?? windowsPlan.sessionScope
         self.processExecutableName = processExecutableName ?? windowsPlan.processExecutableName
         self.processExecutablePath = processExecutablePath ?? windowsPlan.processExecutablePath
+        self.temporalUpscalingPlan = temporalUpscalingPlan ?? windowsPlan.temporalUpscalingPlan
+        self.configurationFingerprint = configurationFingerprint ?? windowsPlan.configurationFingerprint
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case traceID, applicationID, installationID, environmentID, runtimeID, provider, externalID
+        case executable, workingDirectory, arguments, environmentVariables, graphicsBackend, graphicsStack
+        case compatibilityProfile, prefixMode, windowsVersion, directXAPI, dependencies, environmentPurpose
+        case executableArchitecture, overlayCompatibleFullscreen, overlayDisplayID, sessionScope
+        case processExecutableName, processExecutablePath, temporalUpscalingPlan, configurationFingerprint
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        applicationID = try values.decode(UUID.self, forKey: .applicationID)
+        traceID = try values.decodeIfPresent(OperationTraceID.self, forKey: .traceID) ?? OperationTraceID(applicationID)
+        installationID = try values.decodeIfPresent(UUID.self, forKey: .installationID)
+        environmentID = try values.decode(UUID.self, forKey: .environmentID)
+        runtimeID = try values.decode(String.self, forKey: .runtimeID)
+        provider = try values.decodeIfPresent(GameLibraryProvider.self, forKey: .provider)
+        externalID = try values.decodeIfPresent(String.self, forKey: .externalID)
+        executable = try values.decode(URL.self, forKey: .executable)
+        workingDirectory = try values.decode(URL.self, forKey: .workingDirectory)
+        arguments = try values.decode([String].self, forKey: .arguments)
+        environmentVariables = try values.decode([String: String].self, forKey: .environmentVariables)
+        graphicsBackend = try values.decode(GraphicsBackend.self, forKey: .graphicsBackend)
+        graphicsStack = try values.decodeIfPresent(GraphicsStack.self, forKey: .graphicsStack)
+        compatibilityProfile = try values.decodeIfPresent(WineCompatibilityProfile.self, forKey: .compatibilityProfile)
+        prefixMode = try values.decodeIfPresent(WinePrefixMode.self, forKey: .prefixMode) ?? .wow64
+        windowsVersion = try values.decodeIfPresent(WineWindowsVersion.self, forKey: .windowsVersion) ?? .windows11
+        directXAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .directXAPI) ?? .automatic
+        dependencies = try values.decodeIfPresent([RuntimeDependency].self, forKey: .dependencies) ?? []
+        environmentPurpose = try values.decodeIfPresent(EnvironmentPurpose.self, forKey: .environmentPurpose) ?? .game
+        executableArchitecture = try values.decodeIfPresent(WindowsExecutableArchitecture.self, forKey: .executableArchitecture) ?? .unknown
+        overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? false
+        overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
+        sessionScope = try values.decodeIfPresent(SessionScope.self, forKey: .sessionScope) ?? .exclusiveEnvironment
+        processExecutableName = try values.decodeIfPresent(String.self, forKey: .processExecutableName)
+        processExecutablePath = try values.decodeIfPresent(String.self, forKey: .processExecutablePath)
+        temporalUpscalingPlan = try values.decodeIfPresent(TemporalUpscalingPlan.self, forKey: .temporalUpscalingPlan)
+        configurationFingerprint = try values.decodeIfPresent(String.self, forKey: .configurationFingerprint)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(traceID, forKey: .traceID)
+        try values.encode(applicationID, forKey: .applicationID)
+        try values.encodeIfPresent(installationID, forKey: .installationID)
+        try values.encode(environmentID, forKey: .environmentID)
+        try values.encode(runtimeID, forKey: .runtimeID)
+        try values.encodeIfPresent(provider, forKey: .provider)
+        try values.encodeIfPresent(externalID, forKey: .externalID)
+        try values.encode(executable, forKey: .executable)
+        try values.encode(workingDirectory, forKey: .workingDirectory)
+        try values.encode(arguments, forKey: .arguments)
+        try values.encode(environmentVariables, forKey: .environmentVariables)
+        try values.encode(graphicsBackend, forKey: .graphicsBackend)
+        try values.encodeIfPresent(graphicsStack, forKey: .graphicsStack)
+        try values.encodeIfPresent(compatibilityProfile, forKey: .compatibilityProfile)
+        try values.encode(prefixMode, forKey: .prefixMode)
+        try values.encode(windowsVersion, forKey: .windowsVersion)
+        try values.encode(directXAPI, forKey: .directXAPI)
+        try values.encode(dependencies, forKey: .dependencies)
+        try values.encode(environmentPurpose, forKey: .environmentPurpose)
+        try values.encode(executableArchitecture, forKey: .executableArchitecture)
+        try values.encode(overlayCompatibleFullscreen, forKey: .overlayCompatibleFullscreen)
+        try values.encodeIfPresent(overlayDisplayID, forKey: .overlayDisplayID)
+        try values.encode(sessionScope, forKey: .sessionScope)
+        try values.encodeIfPresent(processExecutableName, forKey: .processExecutableName)
+        try values.encodeIfPresent(processExecutablePath, forKey: .processExecutablePath)
+        try values.encodeIfPresent(temporalUpscalingPlan, forKey: .temporalUpscalingPlan)
+        try values.encodeIfPresent(configurationFingerprint, forKey: .configurationFingerprint)
     }
 
     var windowsPlan: WindowsLaunchPlan {
         WindowsLaunchPlan(
+            traceID: traceID,
             executable: executable,
             arguments: arguments,
             environment: environmentVariables,
@@ -310,7 +393,9 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
             overlayDisplayID: overlayDisplayID,
             sessionScope: sessionScope,
             processExecutableName: processExecutableName,
-            processExecutablePath: processExecutablePath
+            processExecutablePath: processExecutablePath,
+            temporalUpscalingPlan: temporalUpscalingPlan,
+            configurationFingerprint: configurationFingerprint
         )
     }
 }

@@ -11,6 +11,10 @@ struct AppDetailView: View {
     @State private var renameValue = ""
     @State private var showsAdvanced = false
     @State private var showsCompatibilityConfigurator = false
+    @State private var showsEnvironmentInspector = false
+    @State private var showsSaves = false
+    @State private var showsAdvancedGameConfiguration = false
+    @State private var showsDLSSUnlockerUninstallConfirmation = false
     @AppStorage("developerMode") private var developerMode = false
 
     var body: some View {
@@ -32,11 +36,29 @@ struct AppDetailView: View {
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             Menu {
                                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") { showsCompatibilityConfigurator = true }
+                                if !app.isInstallerOnly {
+                                    Button("Saves…", systemImage: "externaldrive.badge.timemachine") { showsSaves = true }
+                                    Button("Per-game Overrides…", systemImage: "gearshape.2") { showsAdvancedGameConfiguration = true }
+                                }
                                 if !app.isInstallerOnly, !app.isSteamRuntimeHost {
                                     Button("Install Patch or DLC…", systemImage: "shippingbox.and.arrow.backward") {
                                         selectWindowsInstaller()
                                     }
                                     .disabled(app.status == .running || app.status.isBusy)
+                                }
+                                if GameLaunchCompatibility.supportsDLSSUnlocker(for: app) {
+                                    Divider()
+                                    if store.dlssUnlockerInstalled(for: app) {
+                                        Button("Remove GTA SA DLSS Unlocker", systemImage: "arrow.uturn.backward", role: .destructive) {
+                                            showsDLSSUnlockerUninstallConfirmation = true
+                                        }
+                                        .disabled(app.status == .running || app.status.isBusy)
+                                    } else {
+                                        Button("Install GTA SA DLSS Unlocker…", systemImage: "arrow.down.app") {
+                                            selectDLSSUnlockerArchive()
+                                        }
+                                        .disabled(app.status == .running || app.status.isBusy)
+                                    }
                                 }
                                 let gameActions = store.auxiliaryExecutables(for: app)
                                 if !gameActions.isEmpty {
@@ -63,6 +85,7 @@ struct AppDetailView: View {
                                 }
                                 if developerMode, let environment = store.environment(id: app.environmentID) {
                                     Divider()
+                                    Button("Environment Inspector…", systemImage: "stethoscope") { showsEnvironmentInspector = true }
                                     Button("Open C: Drive", systemImage: "externaldrive") { openCDrive(environment) }
                                     Button("View Logs", systemImage: "doc.text.magnifyingglass") { openLogs(environment) }
                                 }
@@ -144,6 +167,12 @@ struct AppDetailView: View {
             Button("Remove App and Environment", role: .destructive) { store.removeApplication(app.id); didRemove() }
             Button("Cancel", role: .cancel) { }
         } message: { Text("This removes the app from Boreal. The original setup file is not deleted.") }
+        .confirmationDialog("Remove GTA SA DLSS Unlocker?", isPresented: $showsDLSSUnlockerUninstallConfirmation) {
+            Button("Remove Unlocker", role: .destructive) { store.uninstallDLSSUnlocker(for: app.id) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Boreal will disable the signature override and restore the original DLLs saved before installation.")
+        }
         .alert("Rename Game", isPresented: $showsRenameDialog) {
             TextField("Game name", text: $renameValue)
             Button("Cancel", role: .cancel) { renameValue = "" }
@@ -157,6 +186,15 @@ struct AppDetailView: View {
         }
         .sheet(isPresented: $showsCompatibilityConfigurator) {
             WineCompatibilityConfigurator(application: store.application(id: app.id) ?? app)
+        }
+        .sheet(isPresented: $showsEnvironmentInspector) {
+            EnvironmentInspectorView(application: store.application(id: app.id) ?? app)
+        }
+        .sheet(isPresented: $showsSaves) {
+            GameSavesView(application: store.application(id: app.id) ?? app)
+        }
+        .sheet(isPresented: $showsAdvancedGameConfiguration) {
+            GameAdvancedConfigurationView(application: store.application(id: app.id) ?? app)
         }
     }
 
@@ -178,6 +216,19 @@ struct AppDetailView: View {
         ]
         guard panel.runModal() == .OK, let installer = panel.url else { return }
         store.runWindowsInstaller(installer, for: app.id)
+    }
+
+    private func selectDLSSUnlockerArchive() {
+        let panel = NSOpenPanel()
+        panel.title = "Install GTA SA DLSS Unlocker"
+        panel.message = "Choose the ZIP downloaded from the linked mod page. Boreal will validate and install only the unlocker files."
+        panel.prompt = "Install Unlocker"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let archive = panel.url else { return }
+        store.installDLSSUnlocker(archive, for: app.id)
     }
 
     @ViewBuilder private var primaryAction: some View {
@@ -218,6 +269,22 @@ struct AppDetailView: View {
                         Text(detail).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(.top, 6)
                     }
                 }
+            }
+            if let diagnosis = store.lastLaunchDiagnoses[app.id] {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Likely cause: \(diagnosis.summary)")
+                        .font(.subheadline.weight(.medium))
+                    Text("\(diagnosis.category.rawValue) · \(diagnosis.confidence.rawValue) confidence")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let evidence = diagnosis.evidence.first {
+                        Text("Evidence: \(evidence.detail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.top, 4)
             }
         }
         .padding(16)

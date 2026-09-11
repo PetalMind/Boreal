@@ -277,20 +277,25 @@ nonisolated enum UpscalingResolver {
             return UpscalingCapability(id: id, title: title, status: .detected, detail: "Game interface detected")
         }
 
+        let cyberFSRDetected = ["nvngx.dll", "nvngx.ini", "winmm.dll"].allSatisfy(files.contains)
         let optiScalerDetected = files.contains("optiscaler.dll")
         let temporalReplacement = UpscalingCapability(
             id: "temporal-fsr-replacement",
             title: "FSR replacement",
-            status: optiScalerDetected ? .candidate : .notDetected,
-            detail: optiScalerDetected
+            status: optiScalerDetected || cyberFSRDetected ? .candidate : .notDetected,
+            detail: cyberFSRDetected
+                ? "GTA SA DLSS Unlocker detected; compatibility is not verified"
+                : optiScalerDetected
                 ? "Experimental temporal replacement through OptiScaler"
                 : "No temporal replacement bridge detected"
         )
         let bridge = UpscalingCapability(
-            id: "optiscaler",
-            title: "Bridge",
-            status: optiScalerDetected ? .candidate : .notDetected,
-            detail: optiScalerDetected
+            id: cyberFSRDetected ? "cyberfsr" : "optiscaler",
+            title: cyberFSRDetected ? "GTA SA DLSS Unlocker" : "Bridge",
+            status: optiScalerDetected || cyberFSRDetected ? .candidate : .notDetected,
+            detail: cyberFSRDetected
+                ? "GTA SA DLSS Unlocker detected; output and compatibility are not verified"
+                : optiScalerDetected
                 ? "OptiScaler detected; output and compatibility are not verified"
                 : "OptiScaler is not installed for this game"
         )
@@ -311,7 +316,7 @@ nonisolated enum UpscalingResolver {
                     ? "Runtime reports an upscaling path; the NVIDIA NGX bridge is not verified"
                 : "No verified NVIDIA NGX to MetalFX bridge detected"
         )
-        let compatibility: UpscalingDetectionStatus = optiScalerDetected ? .candidate : .notDetected
+        let compatibility: UpscalingDetectionStatus = optiScalerDetected || cyberFSRDetected ? .candidate : .notDetected
         return UpscalingResolution(
             spatial: spatial,
             nativeInterfaces: nativeInterfaces,

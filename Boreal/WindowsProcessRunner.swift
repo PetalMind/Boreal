@@ -26,7 +26,7 @@ nonisolated enum WineLaunchArguments {
         ] + plan.arguments
     }
 
-    private static func windowsPath(for executable: URL, prefixURL: URL) -> String {
+    static func windowsPath(for executable: URL, prefixURL: URL) -> String {
         let executablePath = executable.standardizedFileURL.path
         let driveCPath = prefixURL.appending(path: "drive_c", directoryHint: .isDirectory).standardizedFileURL.path
         let separator = "\\"
@@ -69,7 +69,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
 
     func run(plan: WindowsLaunchPlan, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> WindowsProcessSession {
         let sessionID = UUID()
-        let stem = "launch-\(ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-"))-\(sessionID.uuidString.prefix(8))"
+        let traceSegment = plan.traceID?.description ?? sessionID.uuidString.lowercased()
+        let stem = "launch-\(traceSegment)"
         let displayID = plan.overlayDisplayID.flatMap {
             let candidate = CGDirectDisplayID($0)
             let bounds = CGDisplayBounds(candidate)
@@ -109,17 +110,29 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
         var fullscreenFSRConfiguration = environment.configuration.graphicsConfiguration
         fullscreenFSRConfiguration.overlayCompatibleFullscreen = launchPlan.overlayCompatibleFullscreen
+        // Wine Fullscreen FSR1 is spatial and remains a separate setting. Do
+        // not activate it on the same launch when the resolved temporal path
+        // owns upscaling for the game.
+        if launchPlan.temporalUpscalingPlan?.isActive == true {
+            fullscreenFSRConfiguration.fullscreenFSREnabled = false
+        }
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR")
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_MODE")
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_STRENGTH")
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_CUSTOM_MODE")
         processEnvironment.removeValue(forKey: "D3DM_ENABLE_METALFX")
         processEnvironment.merge(fullscreenFSRConfiguration.launchEnvironment(runtime: runtime, architecture: prefixArchitecture)) { _, configured in configured }
-        let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
-            runtime: runtime,
-            architecture: prefixArchitecture
-        )
-        if environment.configuration.upscalingBridge == .ngxToMetalFX,
+        // The launch plan is the source of truth here. A per-game profile may
+        // select D3DMetal even when the shared environment's persisted
+        // renderer is different; using the environment alone would silently
+        // skip the bridge for that launch.
+        let resolvedGraphicsBackend = launchPlan.temporalUpscalingPlan?.effective == .metalFXBridge
+            ? GraphicsBackend.d3dMetal
+            : environment.configuration.graphicsConfiguration.resolvedBackend(
+                runtime: runtime,
+                architecture: prefixArchitecture
+            )
+        if launchPlan.temporalUpscalingPlan?.effective == .metalFXBridge,
            resolvedGraphicsBackend == .d3dMetal {
             applyMetalFXBridge(to: &processEnvironment, runtime: runtime)
         }

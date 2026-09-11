@@ -233,6 +233,8 @@ nonisolated enum BorealStorageCategory: String, CaseIterable, Hashable, Identifi
     case caches
     case downloads
     case logs
+    case snapshots
+    case saveBackups
 
     var id: Self { self }
 
@@ -244,6 +246,8 @@ nonisolated enum BorealStorageCategory: String, CaseIterable, Hashable, Identifi
         case .caches: "Caches"
         case .downloads: "Downloads"
         case .logs: "Diagnostics & Logs"
+        case .snapshots: "Environment snapshots"
+        case .saveBackups: "Save backups"
         }
     }
 
@@ -255,6 +259,8 @@ nonisolated enum BorealStorageCategory: String, CaseIterable, Hashable, Identifi
         case .caches: "Regeneratable shader and metadata data."
         case .downloads: "Downloaded installers and transfer data."
         case .logs: "Environment and diagnostic logs."
+        case .snapshots: "Restore points for environment changes."
+        case .saveBackups: "Copies of detected game save locations."
         }
     }
 
@@ -266,6 +272,8 @@ nonisolated enum BorealStorageCategory: String, CaseIterable, Hashable, Identifi
         case .caches: "sparkles"
         case .downloads: "arrow.down.circle.fill"
         case .logs: "doc.text.magnifyingglass"
+        case .snapshots: "clock.arrow.circlepath"
+        case .saveBackups: "externaldrive.badge.timemachine"
         }
     }
 }
@@ -437,6 +445,23 @@ nonisolated enum BorealStorageScanner {
                 category: .downloads,
                 name: downloadTitle(for: root),
                 detail: "Downloaded files",
+                bytes: bytes,
+                risk: .safe,
+                isEstimated: false,
+                location: root
+            ))
+        }
+
+        let durableRoots: [(BorealStorageCategory, String, URL)] = [
+            (.snapshots, "Environment snapshots", layout.rootURL.appending(path: "Snapshots", directoryHint: .isDirectory)),
+            (.saveBackups, "Save backups", layout.rootURL.appending(path: "SaveBackups", directoryHint: .isDirectory))
+        ]
+        for (category, name, root) in durableRoots {
+            guard let bytes = size(of: root, excluding: [], fileManager: fileManager), bytes > 0 else { continue }
+            measurements.append(BorealStorageItem(
+                category: category,
+                name: name,
+                detail: "Boreal recovery data",
                 bytes: bytes,
                 risk: .safe,
                 isEstimated: false,

@@ -133,6 +133,156 @@ actor EnvironmentManager: EnvironmentManaging {
         return configuredEnvironment
     }
 
+    /// Imports a registry file into the selected prefix without opening a
+    /// native macOS registry editor. The temporary copy lives inside drive_c
+    /// so the Wine path is unambiguous and is removed after the import.
+    func importRegistry(
+        _ registryFile: URL,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        guard environment.runtimeID == runtime.id,
+              registryFile.pathExtension.caseInsensitiveCompare("reg") == .orderedSame,
+              fileManager.isReadableFile(atPath: registryFile.path) else {
+            throw EnvironmentManagerError.registryImportFailed(
+                exitCode: -1,
+                stderrLog: environment.logsURL.appending(path: "registry-import.stderr.log")
+            )
+        }
+        let values = try registryFile.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw EnvironmentManagerError.registryImportFailed(
+                exitCode: -1,
+                stderrLog: environment.logsURL.appending(path: "registry-import.stderr.log")
+            )
+        }
+        let temporaryDirectory = environment.prefixURL.appending(path: "drive_c/windows/temp", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        let temporaryFile = temporaryDirectory.appending(path: "boreal-registry-\(UUID().uuidString).reg")
+        try fileManager.copyItem(at: registryFile, to: temporaryFile)
+        defer { try? fileManager.removeItem(at: temporaryFile) }
+
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineExecutable,
+            arguments: ["regedit", "/S", WineLaunchArguments.windowsPath(for: temporaryFile, prefixURL: environment.prefixURL)],
+            environment: wineEnvironment(for: environment, runtime: runtime),
+            currentDirectory: environment.rootURL,
+            stdoutLog: environment.logsURL.appending(path: "registry-import.stdout.log"),
+            stderrLog: environment.logsURL.appending(path: "registry-import.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 else {
+            throw EnvironmentManagerError.registryImportFailed(exitCode: result.exitCode, stderrLog: result.stderrLog)
+        }
+    }
+
+    func ngxDebugIndicatorState(in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> NGXDebugIndicatorState {
+        guard let query = try? await queryNGXIndicator(in: environment, runtime: runtime) else {
+            return NGXDebugIndicatorState(available: false, enabled: nil, detail: "The Wine registry could not be queried.")
+        }
+        return NGXDebugIndicatorState(
+            available: true,
+            enabled: query.value.map { parseRegistryBool($0) },
+            detail: query.value == nil
+                ? "ShowDlssIndicator is not set in this prefix."
+                : "ShowDlssIndicator was read from the Wine prefix registry."
+        )
+    }
+
+    func setNGXDebugIndicator(
+        _ enabled: Bool,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws -> NGXDebugIndicatorReceipt {
+        let previous = try await queryNGXIndicator(in: environment, runtime: runtime)
+        try await runConfigurationCommand(
+            executable: runtime.wineExecutable,
+            arguments: [
+                "reg", "add", #"HKCU\Software\NVIDIA Corporation\NGXCore"#,
+                "/v", "ShowDlssIndicator", "/t", "REG_DWORD", "/d", enabled ? "1" : "0", "/f"
+            ],
+            logName: "ngx-indicator-set",
+            environment: environment,
+            runtime: runtime
+        )
+        return NGXDebugIndicatorReceipt(
+            registryPath: #"HKCU\Software\NVIDIA Corporation\NGXCore\ShowDlssIndicator"#,
+            previousValue: previous.value,
+            previousType: previous.type,
+            wasPresent: previous.value != nil,
+            enabledAt: Date()
+        )
+    }
+
+    func restoreNGXDebugIndicator(
+        _ receipt: NGXDebugIndicatorReceipt,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        guard receipt.registryPath.hasSuffix(#"NGXCore\ShowDlssIndicator"#) else {
+            throw EnvironmentManagerError.registryImportFailed(
+                exitCode: -1,
+                stderrLog: environment.logsURL.appending(path: "ngx-indicator-restore.stderr.log")
+            )
+        }
+        if receipt.wasPresent, let value = receipt.previousValue {
+            try await runConfigurationCommand(
+                executable: runtime.wineExecutable,
+                arguments: [
+                    "reg", "add", #"HKCU\Software\NVIDIA Corporation\NGXCore"#,
+                    "/v", "ShowDlssIndicator", "/t", receipt.previousType ?? "REG_DWORD", "/d", value, "/f"
+                ],
+                logName: "ngx-indicator-restore",
+                environment: environment,
+                runtime: runtime
+            )
+        } else {
+            try await runConfigurationCommand(
+                executable: runtime.wineExecutable,
+                arguments: ["reg", "delete", #"HKCU\Software\NVIDIA Corporation\NGXCore"#, "/v", "ShowDlssIndicator", "/f"],
+                logName: "ngx-indicator-restore",
+                environment: environment,
+                runtime: runtime,
+                allowsFailure: true
+            )
+        }
+    }
+
+    private struct RegistryValue {
+        let type: String?
+        let value: String?
+    }
+
+    private func queryNGXIndicator(in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> RegistryValue {
+        let stdout = environment.logsURL.appending(path: "ngx-indicator-query.stdout.log")
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineExecutable,
+            arguments: ["reg", "query", #"HKCU\Software\NVIDIA Corporation\NGXCore"#, "/v", "ShowDlssIndicator"],
+            environment: wineEnvironment(for: environment, runtime: runtime),
+            currentDirectory: environment.rootURL,
+            stdoutLog: stdout,
+            stderrLog: environment.logsURL.appending(path: "ngx-indicator-query.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 || result.exitCode == 1 else {
+            throw EnvironmentManagerError.registryImportFailed(exitCode: result.exitCode, stderrLog: result.stderrLog)
+        }
+        guard let output = try? String(contentsOf: stdout, encoding: .utf8) else {
+            return RegistryValue(type: nil, value: nil)
+        }
+        let line = output.split(whereSeparator: \.isNewline).first { $0.localizedCaseInsensitiveContains("ShowDlssIndicator") }
+        let fields = line?.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init) ?? []
+        guard fields.count >= 3 else { return RegistryValue(type: nil, value: nil) }
+        return RegistryValue(type: fields[1], value: fields.dropFirst(2).joined(separator: " "))
+    }
+
+    private func parseRegistryBool(_ value: String) -> Bool {
+        let normalized = value.lowercased()
+        return normalized == "1" || normalized == "0x1" || normalized == "true"
+    }
+
     private func applyConfiguration(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
         let winecfg = runtime.wineExecutable.deletingLastPathComponent().appending(path: "winecfg")
         let hasWinecfgLauncher = fileManager.isExecutableFile(atPath: winecfg.path)
