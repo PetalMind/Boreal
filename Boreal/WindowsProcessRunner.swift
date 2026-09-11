@@ -113,7 +113,16 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_MODE")
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_STRENGTH")
         processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_CUSTOM_MODE")
+        processEnvironment.removeValue(forKey: "D3DM_ENABLE_METALFX")
         processEnvironment.merge(fullscreenFSRConfiguration.launchEnvironment(runtime: runtime, architecture: prefixArchitecture)) { _, configured in configured }
+        let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
+            runtime: runtime,
+            architecture: prefixArchitecture
+        )
+        if environment.configuration.upscalingBridge == .ngxToMetalFX,
+           resolvedGraphicsBackend == .d3dMetal {
+            applyMetalFXBridge(to: &processEnvironment, runtime: runtime)
+        }
         if environment.configuration.graphicsBackend == .wineD3D,
            environment.configuration.graphicsFallback == .wineD3DVulkan {
             // The prefix may still contain a previously activated DXVK
@@ -429,6 +438,34 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
     }
 
+    private func applyMetalFXBridge(to values: inout [String: String], runtime: InstalledRuntime) {
+        guard runtime.resolvedEngine == .gamePortingToolkit else { return }
+        let componentStoreRoot = runtime.rootURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Components", directoryHint: .isDirectory)
+        let componentStore = GraphicsComponentStore(rootURL: componentStoreRoot)
+        let version = "gptk-" + runtime.id
+        guard let reference = componentStore.upscalingReference(for: .ngxToMetalFX, version: version),
+              componentStore.contains(reference) else { return }
+        let bridgeDirectory = componentStore
+            .upscalingComponentURL(.ngxToMetalFX, version: reference.version)
+            .appending(path: "x64-windows", directoryHint: .isDirectory)
+        let requiredFiles = ["nvngx.dll", "nvapi64.dll"]
+        guard requiredFiles.allSatisfy({ FileManager.default.isReadableFile(atPath: bridgeDirectory.appending(path: $0).path) }) else { return }
+
+        values["D3DM_ENABLE_METALFX"] = "1"
+        let existingPaths = values["WINEDLLPATH"]?.split(separator: ":").map(String.init) ?? []
+        values["WINEDLLPATH"] = ([bridgeDirectory.path] + existingPaths).joined(separator: ":")
+        let bridgeOverrides = ["nvngx=n", "nvapi64=n"]
+        let existingOverrides = values["WINEDLLOVERRIDES"]?.split(separator: ";").map(String.init) ?? []
+        let preserved = existingOverrides.filter { entry in
+            let library = entry.split(separator: "=", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+            return !["nvngx", "nvapi64"].contains(library)
+        }
+        values["WINEDLLOVERRIDES"] = (preserved + bridgeOverrides).joined(separator: ";")
+    }
+
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
@@ -446,6 +483,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR_MODE")
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR_STRENGTH")
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR_CUSTOM_MODE")
+        values.removeValue(forKey: "D3DM_ENABLE_METALFX")
         values.removeValue(forKey: "WINEDLLPATH")
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }

@@ -176,11 +176,45 @@ nonisolated enum UpscalingDetectionStatus: String, Codable, Sendable, Hashable {
     case verified
 }
 
+/// A temporal upscaling bridge is an optional, immutable component snapshot.
+/// The bridge is selected per game; it is never inferred from a renderer
+/// name and it is never copied into the read-only GPTK runtime itself.
+nonisolated enum TemporalUpscalingBridge: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case none
+    case ngxToMetalFX
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .none: "Disabled"
+        case .ngxToMetalFX: "NGX → MetalFX"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .none: "Do not load a temporal bridge for this game."
+        case .ngxToMetalFX: "Uses the GPTK NVIDIA NGX forwarder with Apple's MetalFX path."
+        }
+    }
+}
+
 nonisolated struct UpscalingCapability: Codable, Sendable, Hashable, Identifiable {
     let id: String
     let title: String
     let status: UpscalingDetectionStatus
     let detail: String
+}
+
+/// Exact immutable snapshot of a temporal bridge copied from a runtime or
+/// imported as a managed component. The launch path validates this receipt
+/// before exposing any bridge DLLs to Wine.
+nonisolated struct UpscalingBridgeReference: Codable, Sendable, Hashable {
+    let bridge: TemporalUpscalingBridge
+    let version: String
+    let sha256: String
+    let installedFiles: [String]
 }
 
 nonisolated struct UpscalingResolution: Codable, Sendable, Hashable {
@@ -707,6 +741,31 @@ nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
     }
 }
 
+nonisolated struct UpscalingBridgeReceipt: Codable, Sendable, Hashable {
+    let bridge: TemporalUpscalingBridge
+    let version: String
+    let sourceRuntimeID: String
+    let installedAt: Date
+    let sha256: String
+    let installedFiles: [String]
+
+    init(
+        bridge: TemporalUpscalingBridge,
+        version: String,
+        sourceRuntimeID: String,
+        installedAt: Date,
+        sha256: String,
+        installedFiles: [String]
+    ) {
+        self.bridge = bridge
+        self.version = version
+        self.sourceRuntimeID = sourceRuntimeID
+        self.installedAt = installedAt
+        self.sha256 = sha256
+        self.installedFiles = installedFiles
+    }
+}
+
 nonisolated struct RuntimeComponentUpdate: Identifiable, Sendable, Hashable {
     enum State: Sendable, Hashable { case notInstalled, current, available }
     var id: String { "\(runtimeID):\(component.rawValue)" }
@@ -1121,6 +1180,8 @@ nonisolated protocol RuntimeManaging: Sendable {
     ) async throws -> InstalledRuntime
     func componentUpdates() async throws -> [RuntimeComponentUpdate]
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime
+    func installUpscalingBridge(_ bridge: TemporalUpscalingBridge, fromRuntimeID runtimeID: String) async throws -> UpscalingBridgeReference
+    func upscalingBridgeReferences(_ bridge: TemporalUpscalingBridge) async throws -> [UpscalingBridgeReference]
 }
 
 nonisolated extension RuntimeManaging {
@@ -1130,6 +1191,12 @@ nonisolated extension RuntimeManaging {
         if component == .dxvk { return try await downloadAndInstallGraphicsComponent(.dxvk, into: runtimeID) }
         throw CocoaError(.featureUnsupported)
     }
+
+    func installUpscalingBridge(_ bridge: TemporalUpscalingBridge, fromRuntimeID runtimeID: String) async throws -> UpscalingBridgeReference {
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func upscalingBridgeReferences(_ bridge: TemporalUpscalingBridge) async throws -> [UpscalingBridgeReference] { [] }
     func installGraphicsComponent(
         _ backend: WineGraphicsBackend,
         from source: URL,

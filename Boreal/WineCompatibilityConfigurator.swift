@@ -52,6 +52,7 @@ private func compatibilityLocalizedCapabilityDetail(_ capability: UpscalingCapab
     case "NVIDIA NGX forwarder detected; the MetalFX bridge is not verified": String(localized: "NVIDIA NGX forwarder detected; the MetalFX bridge is not verified")
     case "Runtime reports an upscaling path; the NVIDIA NGX bridge is not verified": String(localized: "Runtime reports an upscaling path; the NVIDIA NGX bridge is not verified")
     case "No verified NVIDIA NGX to MetalFX bridge detected": String(localized: "No verified NVIDIA NGX to MetalFX bridge detected")
+    case "Bridge installed from GPTK; compatibility is not verified": String(localized: "Bridge installed from GPTK; compatibility is not verified")
     default: capability.detail
     }
 }
@@ -88,6 +89,7 @@ struct WineCompatibilityConfigurator: View {
     @State private var detectedGraphicsAPI: GraphicsAPI?
     @State private var controllerManager = ControllerManager.shared
     @State private var showsControllerMapping = false
+    @State private var installedUpscalingBridgeVersion: String?
 
     init(application: WindowsApplication) {
         self.application = application
@@ -131,6 +133,12 @@ struct WineCompatibilityConfigurator: View {
             guard !Task.isCancelled else { return }
             detectedGraphicsAPI = detected
             if profile.graphicsAPI == nil { profile.graphicsAPI = detected }
+        }
+        .task(id: application.environmentID) {
+            installedUpscalingBridgeVersion = await store.installedUpscalingBridgeVersion(
+                for: application,
+                bridge: .ngxToMetalFX
+            )
         }
     }
 
@@ -189,16 +197,54 @@ struct WineCompatibilityConfigurator: View {
 
     private var upscalingSection: some View {
         let resolution = upscalingResolution
+        let metalFXCapability = metalFXBridgeCapability(for: resolution)
         return CompatibilitySettingsSection(title: "Upscaling", subtitle: "Inspect native game interfaces and compatible spatial or temporal upscaling paths.", symbol: "arrow.up.left.and.arrow.down.right", tint: .orange) {
             CompatibilityUpscalingRow(title: "Spatial upscaling", detail: compatibilityLocalizedCapabilityTitle(resolution.spatial), status: resolution.spatial.status, explanation: compatibilityLocalizedCapabilityDetail(resolution.spatial))
             Divider()
             CompatibilityUpscalingRow(title: "Game interface", detail: nativeInterfaceLabel(for: resolution), status: nativeInterfaceStatus(for: resolution), explanation: nativeInterfaceDetail(for: resolution))
             CompatibilityUpscalingRow(title: "FSR replacement", detail: compatibilityLocalizedCapabilityTitle(resolution.temporalReplacement), status: resolution.temporalReplacement.status, explanation: compatibilityLocalizedCapabilityDetail(resolution.temporalReplacement))
             CompatibilityUpscalingRow(title: "Bridge", detail: compatibilityLocalizedCapabilityDetail(resolution.bridge), status: resolution.bridge.status, explanation: compatibilityLocalizedCapabilityTitle(resolution.bridge))
-            CompatibilityUpscalingRow(title: "MetalFX path", detail: compatibilityLocalizedCapabilityTitle(resolution.metalFXBridge), status: resolution.metalFXBridge.status, explanation: compatibilityLocalizedCapabilityDetail(resolution.metalFXBridge))
+            CompatibilityUpscalingRow(title: "MetalFX path", detail: compatibilityLocalizedCapabilityTitle(metalFXCapability), status: metalFXCapability.status, explanation: compatibilityLocalizedCapabilityDetail(metalFXCapability))
             CompatibilityUpscalingRow(title: "Output", detail: resolution.bridge.status == .candidate ? String(localized: "FSR replacement (unverified)") : String(localized: "Not configured"), status: resolution.bridge.status == .candidate ? .candidate : .notDetected, explanation: String(localized: "The exact output version is not inferred from the bridge library. Boreal does not enable an experimental bridge automatically."))
             CompatibilityUpscalingRow(title: "Current renderer", detail: compatibilityLocalizedBackendName(resolution.currentRenderer), status: .detected, explanation: String(localized: "Resolved graphics renderer for this profile."))
             CompatibilityUpscalingRow(title: "Compatibility", detail: compatibilityLabel(resolution.compatibility), status: resolution.compatibility, explanation: String(localized: "A verified smoke test is required before a bridge can be enabled."))
+            CompatibilityPickerRow(title: "Temporal bridge", detail: String(localized: "Choose an installed bridge for this game. Bridges are loaded only at game launch.")) {
+                Picker("Temporal bridge", selection: $profile.upscalingBridge) {
+                    ForEach(TemporalUpscalingBridge.allCases) { bridge in
+                        Text(bridge.displayName).tag(bridge)
+                    }
+                }
+                .labelsHidden()
+            }
+            if profile.upscalingBridge == .ngxToMetalFX {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(installedUpscalingBridgeVersion == nil ? String(localized: "Bridge not installed") : String(localized: "Bridge installed"))
+                            .fontWeight(.medium)
+                        Text(installedUpscalingBridgeVersion.map { "GPTK snapshot " + $0 } ?? String(localized: "Copies nvngx-on-metalfx, nvapi64, and nvngx from the selected GPTK runtime."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(installedUpscalingBridgeVersion == nil ? String(localized: "Install bridge") : String(localized: "Refresh bridge"), systemImage: "arrow.down.circle") {
+                        Task {
+                            await store.installUpscalingBridge(.ngxToMetalFX, for: application.id)
+                            let installedVersion = await store.installedUpscalingBridgeVersion(
+                                for: application,
+                                bridge: .ngxToMetalFX
+                            )
+                            installedUpscalingBridgeVersion = installedVersion
+                            if installedVersion != nil {
+                                profile.upscalingBridge = .ngxToMetalFX
+                            }
+                        }
+                    }
+                    .disabled(store.runtimeOperationDetail != nil || application.status == .running || application.status.isBusy || fullscreenFSRResolvedBackend != .d3dMetal)
+                }
+                if fullscreenFSRResolvedBackend != .d3dMetal {
+                    CompatibilityCallout(text: String(localized: "Select D3DMetal as the current renderer before enabling the NGX → MetalFX bridge."), symbol: "exclamationmark.triangle.fill", tint: .orange)
+                }
+            }
             Divider()
             CompatibilityToggleRow(title: "Fullscreen upscaling (Wine FSR 1)", detail: "Requested preference for Wine's fullscreen FSR path. It becomes active only with a verified compatible Vulkan path.", isOn: $profile.fullscreenFSREnabled)
             if fullscreenFSRCapabilities.supportsMode {
@@ -420,6 +466,15 @@ struct WineCompatibilityConfigurator: View {
             application: application,
             runtimeFeatures: runtimeFeatures,
             backend: fullscreenFSRResolvedBackend
+        )
+    }
+    private func metalFXBridgeCapability(for resolution: UpscalingResolution) -> UpscalingCapability {
+        guard installedUpscalingBridgeVersion != nil else { return resolution.metalFXBridge }
+        return UpscalingCapability(
+            id: resolution.metalFXBridge.id,
+            title: resolution.metalFXBridge.title,
+            status: .candidate,
+            detail: "Bridge installed from GPTK; compatibility is not verified"
         )
     }
     private func nativeInterfaceLabel(for resolution: UpscalingResolution) -> String {
@@ -670,6 +725,9 @@ private struct CompatibilityResultCard: View {
             row("Wine prefix", compatibilityLocalizedPrefixModeName(profile.prefixMode ?? .wow64), "shippingbox")
             row("Game display", displayLabel, "display")
             row("Overlay compatible", profile.overlayCompatibleFullscreen ? String(localized: "Yes") : String(localized: "No"), "rectangle.on.rectangle")
+            if profile.upscalingBridge != .none {
+                row("Temporal bridge", profile.upscalingBridge.displayName, "arrow.triangle.branch")
+            }
             if let compatibility = application.communityCompatibility {
                 row("Community reports", compatibility.reportCount.formatted(), "person.2.fill")
                 Divider(); Label("Based on available community reports.", systemImage: "info.circle.fill").font(.caption).foregroundStyle(.secondary)

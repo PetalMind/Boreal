@@ -5158,6 +5158,56 @@ final class BorealStore {
         }
     }
 
+    func installedUpscalingBridgeVersion(
+        for application: WindowsApplication,
+        bridge: TemporalUpscalingBridge
+    ) async -> String? {
+        guard bridge != .none,
+              let environment = environment(id: application.environmentID),
+              let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == environment.runtimeID }),
+              let references = try? await services.runtimeManager.upscalingBridgeReferences(bridge) else {
+            return nil
+        }
+        let version = "gptk-" + runtime.id
+        return references.first(where: { $0.version == version })?.version
+    }
+
+    /// Copies a bridge into Boreal's immutable component store. The selected
+    /// game profile is intentionally not changed here; the user chooses the
+    /// bridge in the configurator and saves that choice explicitly.
+    func installUpscalingBridge(
+        _ bridge: TemporalUpscalingBridge,
+        for applicationID: UUID
+    ) async {
+        guard bridge != .none,
+              runtimeOperationDetail == nil,
+              let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy,
+              let environmentRecord = environment(id: application.environmentID),
+              let runtimeID = environmentRecord.runtimeID else { return }
+        runtimeOperationDetail = "Installing " + bridge.displayName + " from the selected Game Porting Toolkit runtime…"
+        do {
+            _ = try await services.runtimeManager.installUpscalingBridge(
+                bridge,
+                fromRuntimeID: runtimeID
+            )
+            runtimeOperationDetail = nil
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].lastResult = bridge.displayName + " installed"
+                applications[index].lastErrorDetail = nil
+                save()
+            }
+        } catch {
+            runtimeOperationDetail = nil
+            present(
+                error,
+                title: bridge.displayName + " couldn’t be installed",
+                stage: "Copying and validating the immutable temporal upscaling bridge"
+            )
+        }
+    }
+
     func retry(_ id: UUID) {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         applications[index].status = .ready

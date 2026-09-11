@@ -71,6 +71,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var fullscreenFSRMode: FullscreenFSRMode = .balanced
     var fullscreenFSRStrength: Int = 2
     var fullscreenFSRCustomMode: String? = nil
+    var upscalingBridge: TemporalUpscalingBridge = .none
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
     var requiredDependencies: Set<RuntimeDependency> = []
@@ -110,6 +111,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.fullscreenFSRMode = profile?.fullscreenFSRMode ?? .balanced
         self.fullscreenFSRStrength = profile?.fullscreenFSRStrength ?? 2
         self.fullscreenFSRCustomMode = profile?.fullscreenFSRCustomMode
+        self.upscalingBridge = profile?.upscalingBridge ?? .none
         self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
         self.forceXInput = profile?.forceXInput ?? true
         self.requiredDependencies = profile?.requiredDependencies ?? []
@@ -117,7 +119,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
+        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
     }
 
     init(from decoder: Decoder) throws {
@@ -136,6 +138,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         fullscreenFSRMode = try values.decodeIfPresent(FullscreenFSRMode.self, forKey: .fullscreenFSRMode) ?? .balanced
         fullscreenFSRStrength = try values.decodeIfPresent(Int.self, forKey: .fullscreenFSRStrength) ?? 2
         fullscreenFSRCustomMode = try values.decodeIfPresent(String.self, forKey: .fullscreenFSRCustomMode)
+        upscalingBridge = try values.decodeIfPresent(TemporalUpscalingBridge.self, forKey: .upscalingBridge) ?? .none
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []

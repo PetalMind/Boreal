@@ -20,6 +20,13 @@ nonisolated struct GraphicsComponentStore: Sendable {
             .appending(path: version, directoryHint: .isDirectory)
     }
 
+    func upscalingComponentURL(_ bridge: TemporalUpscalingBridge, version: String) -> URL {
+        rootURL
+            .appending(path: "Upscaling", directoryHint: .isDirectory)
+            .appending(path: bridge.directoryName, directoryHint: .isDirectory)
+            .appending(path: version, directoryHint: .isDirectory)
+    }
+
     static func isSafeVersion(_ version: String) -> Bool {
         !version.isEmpty
             && version != "."
@@ -88,6 +95,74 @@ nonisolated struct GraphicsComponentStore: Sendable {
         let installedFiles = Set(value.installedFiles).union(reference.installedFiles)
         return !installedFiles.isEmpty && installedFiles.allSatisfy {
             fileManager.fileExists(atPath: root.appending(path: $0).path)
+        }
+    }
+
+    func upscalingReferences(
+        for bridge: TemporalUpscalingBridge,
+        fileManager: FileManager = .default
+    ) -> [UpscalingBridgeReference] {
+        let bridgeRoot = rootURL
+            .appending(path: "Upscaling", directoryHint: .isDirectory)
+            .appending(path: bridge.directoryName, directoryHint: .isDirectory)
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: bridgeRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return children.compactMap { root in
+            guard (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
+            let receiptURL = root.appending(path: "bridge.json")
+            guard let data = try? Data(contentsOf: receiptURL),
+                  let receipt = try? JSONDecoder().decode(UpscalingBridgeReceipt.self, from: data),
+                  root.lastPathComponent == receipt.version,
+                  Self.isSafeVersion(receipt.version),
+                  receipt.bridge == bridge,
+                  receipt.sha256.count == 64,
+                  receipt.sha256.allSatisfy({ $0.isHexDigit }),
+                  receipt.installedFiles.allSatisfy(Self.isSafeRelativePath) else { return nil }
+            return UpscalingBridgeReference(
+                bridge: bridge,
+                version: receipt.version,
+                sha256: receipt.sha256,
+                installedFiles: receipt.installedFiles
+            )
+        }.sorted { $0.version.localizedStandardCompare($1.version) == .orderedDescending }
+    }
+
+    func upscalingReference(
+        for bridge: TemporalUpscalingBridge,
+        version: String? = nil,
+        fileManager: FileManager = .default
+    ) -> UpscalingBridgeReference? {
+        let values = upscalingReferences(for: bridge, fileManager: fileManager)
+        if let version { return values.first { $0.version == version } }
+        return values.first
+    }
+
+    func contains(_ reference: UpscalingBridgeReference, fileManager: FileManager = .default) -> Bool {
+        guard reference.bridge != .none, Self.isSafeVersion(reference.version) else { return false }
+        let root = upscalingComponentURL(reference.bridge, version: reference.version)
+        guard fileManager.fileExists(atPath: root.path),
+              let data = try? Data(contentsOf: root.appending(path: "bridge.json")),
+              let receipt = try? JSONDecoder().decode(UpscalingBridgeReceipt.self, from: data) else { return false }
+        guard receipt.bridge == reference.bridge,
+              receipt.version == reference.version,
+              receipt.sha256 == reference.sha256,
+              receipt.installedFiles.allSatisfy(Self.isSafeRelativePath),
+              reference.installedFiles.allSatisfy(Self.isSafeRelativePath) else { return false }
+        let installedFiles = Set(receipt.installedFiles).union(reference.installedFiles)
+        return !installedFiles.isEmpty && installedFiles.allSatisfy {
+            fileManager.fileExists(atPath: root.appending(path: $0).path)
+        }
+    }
+}
+
+nonisolated extension TemporalUpscalingBridge {
+    var directoryName: String {
+        switch self {
+        case .none: "Disabled"
+        case .ngxToMetalFX: "MetalFXBridge"
         }
     }
 }

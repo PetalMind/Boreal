@@ -290,6 +290,108 @@ actor RuntimeManager: RuntimeManaging {
         )
     }
 
+    func installUpscalingBridge(
+        _ bridge: TemporalUpscalingBridge,
+        fromRuntimeID runtimeID: String
+    ) async throws -> UpscalingBridgeReference {
+        guard bridge == .ngxToMetalFX else {
+            throw RuntimeManagerError.localRuntimeInvalid("There is no installable component for the disabled bridge selection.")
+        }
+        try prepareDirectories()
+        guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains(".."),
+              let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
+        }
+        guard runtime.resolvedEngine == .gamePortingToolkit else {
+            throw RuntimeManagerError.localRuntimeInvalid("The NGX → MetalFX bridge is supplied by Game Porting Toolkit and requires a D3DMetal runtime.")
+        }
+
+        let sourceCandidates = [
+            runtime.rootURL.appending(path: "Runtime/Wine.app/Contents/Resources/wine/lib/wine/x86_64-windows", directoryHint: .isDirectory),
+            runtime.rootURL.appending(path: "Runtime/Wine.app/Contents/Resources/wine/lib64/wine/x86_64-windows", directoryHint: .isDirectory)
+        ]
+        let requiredFiles = ["nvngx-on-metalfx.dll", "nvapi64.dll"]
+        guard let source = sourceCandidates.first(where: { root in
+            requiredFiles.allSatisfy { fileManager.isReadableFile(atPath: root.appending(path: $0).path) }
+        }) else {
+            throw RuntimeManagerError.localRuntimeInvalid("This GPTK runtime does not contain the nvngx-on-metalfx and nvapi64 bridge files.")
+        }
+
+        let version = "gptk-" + runtime.id
+        guard GraphicsComponentStore.isSafeVersion(version) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The GPTK bridge version contains an unsafe path.")
+        }
+        let destination = componentStore.upscalingComponentURL(bridge, version: version)
+        let staging = componentStore.rootURL.appending(path: ".installing/" + UUID().uuidString, directoryHint: .isDirectory)
+        let existingDigest = componentStore.upscalingReference(for: bridge, version: version, fileManager: fileManager)
+        if let existingDigest {
+            if componentStore.contains(existingDigest, fileManager: fileManager) {
+                return existingDigest
+            }
+            throw RuntimeManagerError.localRuntimeInvalid("The existing GPTK bridge snapshot is incomplete and cannot be replaced in place.")
+        }
+
+        var published = false
+        do {
+            let destinationFolder = staging.appending(path: "x64-windows", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+            let windowsFiles: [(source: String, destination: String)] = [
+                // GPTK keeps the bridge under its descriptive name. Wine games
+                // request the normal NGX entry point, so the managed snapshot
+                // publishes the bridge as nvngx.dll.
+                ("nvngx-on-metalfx.dll", "nvngx.dll"),
+                ("nvapi64.dll", "nvapi64.dll")
+            ]
+            for file in windowsFiles {
+                try fileManager.copyItem(
+                    at: source.appending(path: file.source),
+                    to: destinationFolder.appending(path: file.destination)
+                )
+            }
+            let unixSource = source.appending(path: "../x86_64-unix/nvngx-on-metalfx.so").standardizedFileURL
+            var installedFiles = windowsFiles.map { "x64-windows/\($0.destination)" }
+            if fileManager.isReadableFile(atPath: unixSource.path) {
+                let unixFolder = staging.appending(path: "x64-unix", directoryHint: .isDirectory)
+                try fileManager.createDirectory(at: unixFolder, withIntermediateDirectories: true)
+                try fileManager.copyItem(at: unixSource, to: unixFolder.appending(path: "nvngx.so"))
+                installedFiles.append("x64-unix/nvngx.so")
+            }
+            let digest = try RuntimeSecurity.sha256(ofDirectory: staging)
+            installedFiles.sort()
+            let receipt = UpscalingBridgeReceipt(
+                bridge: bridge,
+                version: version,
+                sourceRuntimeID: runtime.id,
+                installedAt: Date(),
+                sha256: digest,
+                installedFiles: installedFiles
+            )
+            try makeEncoder().encode(receipt).write(to: staging.appending(path: "bridge.json"), options: .atomic)
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: staging, to: destination)
+            published = true
+            try makeImmutable(destination)
+            return UpscalingBridgeReference(
+                bridge: bridge,
+                version: version,
+                sha256: digest,
+                installedFiles: installedFiles
+            )
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            if published {
+                try? makeWritable(destination)
+                try? fileManager.removeItem(at: destination)
+            }
+            throw error
+        }
+    }
+
+    func upscalingBridgeReferences(_ bridge: TemporalUpscalingBridge) async throws -> [UpscalingBridgeReference] {
+        try prepareDirectories()
+        return componentStore.upscalingReferences(for: bridge, fileManager: fileManager)
+    }
+
     func installGraphicsComponent(
         _ backend: WineGraphicsBackend,
         from source: URL,
