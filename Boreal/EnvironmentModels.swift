@@ -68,6 +68,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var msyncEnabled: Bool = true
     var retinaModeEnabled: Bool = false
     var fullscreenFSREnabled: Bool = false
+    var fullscreenFSRMode: FullscreenFSRMode = .balanced
+    var fullscreenFSRStrength: Int = 2
+    var fullscreenFSRCustomMode: String? = nil
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
     var requiredDependencies: Set<RuntimeDependency> = []
@@ -76,7 +79,14 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var graphicsComponentReferences: [GraphicsComponentReference] = []
 
     var graphicsConfiguration: GraphicsBackendConfiguration {
-        GraphicsBackendConfiguration(backend: graphicsBackend, api: graphicsAPI, fullscreenFSREnabled: fullscreenFSREnabled)
+        GraphicsBackendConfiguration(
+            backend: graphicsBackend,
+            api: graphicsAPI,
+            fullscreenFSREnabled: fullscreenFSREnabled,
+            fullscreenFSRMode: fullscreenFSRMode,
+            fullscreenFSRStrength: fullscreenFSRStrength,
+            fullscreenFSRCustomMode: fullscreenFSRCustomMode
+        )
     }
 
     init(
@@ -97,6 +107,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.msyncEnabled = profile?.msyncEnabled ?? true
         self.retinaModeEnabled = profile?.retinaModeEnabled ?? false
         self.fullscreenFSREnabled = profile?.fullscreenFSREnabled ?? false
+        self.fullscreenFSRMode = profile?.fullscreenFSRMode ?? .balanced
+        self.fullscreenFSRStrength = profile?.fullscreenFSRStrength ?? 2
+        self.fullscreenFSRCustomMode = profile?.fullscreenFSRCustomMode
         self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
         self.forceXInput = profile?.forceXInput ?? true
         self.requiredDependencies = profile?.requiredDependencies ?? []
@@ -104,7 +117,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
+        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
     }
 
     init(from decoder: Decoder) throws {
@@ -120,6 +133,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
         retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? false
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
+        fullscreenFSRMode = try values.decodeIfPresent(FullscreenFSRMode.self, forKey: .fullscreenFSRMode) ?? .balanced
+        fullscreenFSRStrength = try values.decodeIfPresent(Int.self, forKey: .fullscreenFSRStrength) ?? 2
+        fullscreenFSRCustomMode = try values.decodeIfPresent(String.self, forKey: .fullscreenFSRCustomMode)
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []

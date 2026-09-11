@@ -1436,7 +1436,24 @@ actor RuntimeManager: RuntimeManaging {
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
         features.esync = runtimePayloadContains("WINEESYNC", in: runtime)
         features.msync = runtimePayloadContains("WINEMSYNC", in: runtime)
-        features.fullscreenFSR = runtimePayloadContains("WINE_FULLSCREEN_FSR", in: runtime)
+        let declaredFullscreenFSR = features.fullscreenFSRCapabilities
+        let payloadHasFullscreenFSR = runtimePayloadContains("WINE_FULLSCREEN_FSR", in: runtime)
+        features.fullscreenFSR = payloadHasFullscreenFSR && (declaredFullscreenFSR?.available ?? true)
+        let confidence: FullscreenFSRCapabilityConfidence = if !features.fullscreenFSR {
+            .detected
+        } else if declaredFullscreenFSR?.confidence == .verified {
+            .verified
+        } else {
+            .detected
+        }
+        features.fullscreenFSRCapabilities = FullscreenFSRCapabilities(
+            available: features.fullscreenFSR,
+            source: .payloadInspection,
+            confidence: confidence,
+            supportsMode: runtimePayloadContains("WINE_FULLSCREEN_FSR_MODE", in: runtime) && (declaredFullscreenFSR?.supportsMode ?? true),
+            supportsStrength: runtimePayloadContains("WINE_FULLSCREEN_FSR_STRENGTH", in: runtime) && (declaredFullscreenFSR?.supportsStrength ?? true),
+            supportsCustomMode: runtimePayloadContains("WINE_FULLSCREEN_FSR_CUSTOM_MODE", in: runtime) && (declaredFullscreenFSR?.supportsCustomMode ?? true)
+        )
         let wineRoot = copiedApp.appending(path: "Contents/Resources/wine", directoryHint: .isDirectory)
         let hasWineBus = ["lib/wine/x86_64-windows/winebus.sys", "lib/wine/i386-windows/winebus.sys"]
             .contains { fileManager.fileExists(atPath: wineRoot.appending(path: $0).path) }

@@ -104,6 +104,16 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         )
         var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(
+            runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
+        )
+        var fullscreenFSRConfiguration = environment.configuration.graphicsConfiguration
+        fullscreenFSRConfiguration.overlayCompatibleFullscreen = launchPlan.overlayCompatibleFullscreen
+        processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR")
+        processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_MODE")
+        processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_STRENGTH")
+        processEnvironment.removeValue(forKey: "WINE_FULLSCREEN_FSR_CUSTOM_MODE")
+        processEnvironment.merge(fullscreenFSRConfiguration.launchEnvironment(runtime: runtime, architecture: prefixArchitecture)) { _, configured in configured }
         if environment.configuration.graphicsBackend == .wineD3D,
            environment.configuration.graphicsFallback == .wineD3DVulkan {
             // The prefix may still contain a previously activated DXVK
@@ -119,7 +129,6 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
         }
-        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true)
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
             let configuration = environment.rootURL.appending(path: "Darksiders2-dxvk.conf")
@@ -434,10 +443,12 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values.removeValue(forKey: "WINEESYNC")
         values.removeValue(forKey: "WINEMSYNC")
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR")
+        values.removeValue(forKey: "WINE_FULLSCREEN_FSR_MODE")
+        values.removeValue(forKey: "WINE_FULLSCREEN_FSR_STRENGTH")
+        values.removeValue(forKey: "WINE_FULLSCREEN_FSR_CUSTOM_MODE")
         values.removeValue(forKey: "WINEDLLPATH")
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
-        values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
             runtime: runtime,
@@ -479,8 +490,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
         if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD == true {
             // D3DMetal does not pass its presents through Wine's +fps channel.
-            // Ask Metal HUD to emit per-frame present intervals to the launch
-            // console instead. The native HUD stays transparent because Boreal
+            // Ask Metal HUD to emit per-frame present intervals to macOS's
+            // unified log. The native HUD stays transparent because Boreal
             // renders those metrics in its own overlay.
             values["MTL_HUD_ENABLED"] = "1"
             values["MTL_HUD_LOG_ENABLED"] = "1"

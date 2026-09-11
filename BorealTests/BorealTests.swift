@@ -431,7 +431,7 @@ struct BorealTests {
         #expect(captured.contains(#"ARGS:reg add HKCU\Software\Wine\Mac Driver /v RetinaMode /t REG_SZ /d N /f"#))
         let environmentLines = captured.split(separator: "\n").filter { $0.hasPrefix("ENV:") }
         #expect(!environmentLines.isEmpty)
-        #expect(environmentLines.allSatisfy { $0 == "ENV:win32|0|0|1" })
+        #expect(environmentLines.allSatisfy { $0 == "ENV:win32|0|0|" })
         let stored = try await manager.load(at: environment.rootURL)
         #expect(stored.state == .ready)
         #expect(stored.configuration == EnvironmentConfiguration(name: "Configured", profile: profile))

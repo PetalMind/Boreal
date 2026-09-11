@@ -395,7 +395,6 @@ actor EnvironmentManager: EnvironmentManaging {
         values.removeValue(forKey: "WINEDLLPATH")
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
-        values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(
             runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
         )

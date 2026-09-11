@@ -1181,7 +1181,6 @@ final class BorealStore {
         if let features = compatibilityRuntimeFeatures(for: applications[index], backend: profile.graphicsBackend) {
             if !features.esync { profile.esyncEnabled = false }
             if !features.msync { profile.msyncEnabled = false }
-            if !features.fullscreenFSR { profile.fullscreenFSREnabled = false }
             if !features.wineBusControllerMapping { profile.forceXInput = false }
             if !features.dgVoodoo2 { profile.legacyWrapper = .none }
         }

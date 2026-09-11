@@ -159,6 +159,13 @@ nonisolated struct GraphicsStack: Codable, Hashable, Sendable, Identifiable {
 
     var id: GraphicsBackend { backend }
 
+    /// DXVK/VKD3D on macOS are only candidates until a concrete runtime probe
+    /// confirms the fullscreen path. Metal and OpenGL paths remain unsupported
+    /// unless a future runtime explicitly reports a verified capability.
+    var fullscreenFSRSupportLevel: FullscreenFSRSupportLevel {
+        hostAPI == .vulkan && (backend == .dxvk || backend == .vkd3d) ? .candidate : .unsupported
+    }
+
     func supports(api: GraphicsAPI, architecture: WinePrefixArchitecture) -> Bool {
         (api == .automatic || supportedAPIs.contains(api))
             && supportedArchitectures.contains(architecture)
@@ -389,6 +396,9 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var msyncEnabled = true
     var retinaModeEnabled = false
     var fullscreenFSREnabled = false
+    var fullscreenFSRMode: FullscreenFSRMode = .balanced
+    var fullscreenFSRStrength = 2
+    var fullscreenFSRCustomMode: String? = nil
     var overlayCompatibleFullscreen = true
     /// Selected CoreGraphics display ID for the Wine desktop; nil follows the main display.
     var overlayDisplayID: UInt32? = nil
@@ -401,7 +411,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
-        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
+        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
         case disableSteamInputEquivalent, forceXInput, launchArguments, runtimeIDOverride, requiredDependencies
     }
 
@@ -454,6 +464,9 @@ extension WineCompatibilityProfile {
         msyncEnabled = try values.decodeIfPresent(Bool.self, forKey: .msyncEnabled) ?? true
         retinaModeEnabled = try values.decodeIfPresent(Bool.self, forKey: .retinaModeEnabled) ?? false
         fullscreenFSREnabled = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSREnabled) ?? false
+        fullscreenFSRMode = try values.decodeIfPresent(FullscreenFSRMode.self, forKey: .fullscreenFSRMode) ?? .balanced
+        fullscreenFSRStrength = try values.decodeIfPresent(Int.self, forKey: .fullscreenFSRStrength) ?? 2
+        fullscreenFSRCustomMode = try values.decodeIfPresent(String.self, forKey: .fullscreenFSRCustomMode)
         overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? true
         overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false

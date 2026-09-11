@@ -11,11 +11,20 @@ actor GameMetricsSampler {
     private var previousTicks: CPUTicks?
     private var recentFrameRates: [Double] = []
     private var sampledGameID: UUID?
+    private var metalHUDProcess: Process?
+    private var metalHUDOutputPipe: Pipe?
+    private var metalHUDBuffer = ""
+    private var latestMetalHUDFrameRate: (value: Double, receivedAt: Date)?
 
-    func sample(frameRateLogURL: URL? = nil, gameID: UUID? = nil) -> GamePerformanceSnapshot {
+    func sample(
+        frameRateLogURL: URL? = nil,
+        gameID: UUID? = nil,
+        metalHUDEnabled: Bool = false
+    ) -> GamePerformanceSnapshot {
         if sampledGameID != gameID {
             sampledGameID = gameID
             recentFrameRates.removeAll(keepingCapacity: true)
+            stopMetalHUDReader()
         }
         let currentTicks = cpuTicks()
         let cpuUsage: Double?
@@ -30,7 +39,11 @@ actor GameMetricsSampler {
 
         let memory = memoryUsage()
         let gpu = gpuStatistics()
+        // WineD3D writes +fps records to the launch stderr log. D3DMetal's
+        // Metal HUD writes the same telemetry to macOS's unified log instead,
+        // so GTA SA and other D3DMetal games need the system-log fallback.
         let framesPerSecond = frameRate(in: frameRateLogURL)
+            ?? (metalHUDEnabled ? metalHUDFrameRate() : nil)
         if let framesPerSecond {
             recentFrameRates.append(framesPerSecond)
             recentFrameRates = Array(recentFrameRates.suffix(120))
@@ -50,6 +63,12 @@ actor GameMetricsSampler {
             swapUsedBytes: swapUsage(),
             gpuAllocatedBytes: gpu.allocated
         )
+    }
+
+    func reset() {
+        sampledGameID = nil
+        recentFrameRates.removeAll(keepingCapacity: true)
+        stopMetalHUDReader()
     }
 
     private var onePercentLow: Double? {
@@ -100,6 +119,89 @@ actor GameMetricsSampler {
             return nil
         }
         return Self.frameRate(inLogText: text)
+    }
+
+    /// Metal Performance HUD records are emitted to the unified log once per
+    /// second rather than to Wine's stdout/stderr pipes. Keep one bounded
+    /// stream for the session instead of running a blocking `log show` query
+    /// on every overlay refresh.
+    private func metalHUDFrameRate() -> Double? {
+        startMetalHUDReader()
+        guard let latestMetalHUDFrameRate,
+              latestMetalHUDFrameRate.receivedAt.timeIntervalSinceNow > -3 else {
+            return nil
+        }
+        return latestMetalHUDFrameRate.value
+    }
+
+    private func startMetalHUDReader() {
+        guard metalHUDProcess == nil else { return }
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        process.arguments = [
+            "stream",
+            "--style", "compact",
+            "--info",
+            "--predicate", "subsystem == \"com.apple.metal.hud\""
+        ]
+        process.standardOutput = output
+        process.standardError = Pipe()
+        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            Task { [weak self] in
+                await self?.consumeMetalHUDOutput(data)
+            }
+        }
+        process.terminationHandler = { [weak self, output] _ in
+            output.fileHandleForReading.readabilityHandler = nil
+            Task { [weak self] in
+                await self?.metalHUDProcessTerminated()
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            return
+        }
+        metalHUDProcess = process
+        metalHUDOutputPipe = output
+    }
+
+    private func consumeMetalHUDOutput(_ data: Data) {
+        guard let chunk = String(data: data, encoding: .utf8) else { return }
+        metalHUDBuffer.append(chunk)
+
+        let lines = metalHUDBuffer.split(separator: "\n", omittingEmptySubsequences: false)
+        guard !lines.isEmpty else { return }
+        metalHUDBuffer = String(lines.last ?? "")
+        for line in lines.dropLast() {
+            guard let value = Self.frameRate(inLogText: String(line)) else { continue }
+            latestMetalHUDFrameRate = (value: value, receivedAt: .now)
+        }
+        if metalHUDBuffer.count > 16_384 {
+            metalHUDBuffer = String(metalHUDBuffer.suffix(16_384))
+        }
+    }
+
+    private func metalHUDProcessTerminated() {
+        metalHUDProcess = nil
+        metalHUDOutputPipe = nil
+    }
+
+    private func stopMetalHUDReader() {
+        metalHUDOutputPipe?.fileHandleForReading.readabilityHandler = nil
+        if let process = metalHUDProcess, process.isRunning {
+            process.terminate()
+        }
+        metalHUDProcess = nil
+        metalHUDOutputPipe = nil
+        metalHUDBuffer.removeAll(keepingCapacity: true)
+        latestMetalHUDFrameRate = nil
     }
 
     /// Supports both Wine's `+fps` trace and Metal HUD's once-per-second CSV.

@@ -344,7 +344,7 @@ Runtime jest read-only po publikacji. Prefix gry pozostaje osobnym, mutable kata
 
 runtime.json opisuje id, wersję Wine, revision Boreal, architekturę, minimalny macOS, kanał, requirements, features, components i layout.
 
-Features obejmują WoW64, Mono, Gecko, D3DMetal, DXMT, DXVK, VKD3D, esync, msync, fullscreen FSR i capabilities grafiki.
+Features obejmują WoW64, Mono, Gecko, D3DMetal, DXMT, DXVK, VKD3D, esync, msync, fullscreen FSR, `UpscalingResolver` i capabilities grafiki. `UpscalingResolver` rozdziela wykrywanie natywnych interfejsów gry od eksperymentalnych bridge'y temporalnych i nie aktywuje ścieżek bez weryfikacji.
 
 BorealRuntime jest wpisem katalogowym z artefaktem, hashem i rozmiarem. InstalledRuntime jest opisem rzeczywistego snapshotu na dysku.
 
@@ -545,12 +545,16 @@ WINEARCH=win32|win64          # tylko tryby legacy
 PATH=<runtime>/wine/bin:<system-path>
 WINEESYNC=1|0                 # jeśli runtime ma esync
 WINEMSYNC=1|0                 # jeśli runtime ma msync
-WINE_FULLSCREEN_FSR=1|0      # jeśli runtime ma FSR
+WINE_FULLSCREEN_FSR=1        # tylko przy uruchomieniu gry i zgodnym stacku Vulkan
+WINE_FULLSCREEN_FSR_MODE=... # jeśli runtime deklaruje obsługę trybów
+WINE_FULLSCREEN_FSR_STRENGTH=0..5 # jeśli runtime deklaruje obsługę strength
 WINEDLLPATH=<DXMT unix path>  # tylko DXMT
 WINEDEBUG=-all,+fps           # lub +all,+fps
 ~~~
 
 Boreal resetuje odziedziczone WINEARCH, WINEDLLPATH, WINEDLLOVERRIDES, WINEESYNC, WINEMSYNC i WINE_FULLSCREEN_FSR, po czym dodaje tylko wartości wynikające z konfiguracji.
+
+`WINE_FULLSCREEN_FSR` jest ustawiane wyłącznie w środowisku uruchamianej gry, po sprawdzeniu capability runtime'u, aktywnego stacku Vulkan oraz trybu fullscreen. Przy wyłączeniu FSR zmienna i jej opcjonalne parametry są usuwane.
 
 ### 7.5. Registry i dependencies
 

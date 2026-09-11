@@ -208,6 +208,7 @@ final class GameOverlayController {
 
     private func hide() {
         samplingTask?.cancel(); samplingTask = nil; panel?.orderOut(nil); model.snapshot = .unavailable
+        Task { await sampler.reset() }
     }
 
     private func nativeApplicationLaunched(_ notification: Notification) {
@@ -389,7 +390,8 @@ final class GameOverlayController {
                 guard let self else { return }
                 let snapshot = await sampler.sample(
                     frameRateLogURL: activeGames.first?.performanceLogURL,
-                    gameID: activeGames.first?.id
+                    gameID: activeGames.first?.id,
+                    metalHUDEnabled: activeGames.first?.graphics.caseInsensitiveCompare("D3DMetal") == .orderedSame
                 )
                 model.record(snapshot)
                 restoreOverlayVisibility()

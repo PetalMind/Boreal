@@ -58,12 +58,268 @@ nonisolated struct GraphicsBackendCapabilities: Codable, Sendable, Hashable {
     var metalHUD: Bool?
     var gpuCapture: Bool?
     var metalSystemTrace: Bool?
+    var fullscreenFSRSupport: FullscreenFSRSupportLevel?
+}
+
+nonisolated enum FullscreenFSRCapabilitySource: String, Codable, Sendable, Hashable {
+    case runtimeManifest
+    case payloadInspection
+    case runtimeProbe
+}
+
+nonisolated enum FullscreenFSRCapabilityConfidence: String, Codable, Sendable, Hashable {
+    case declared
+    case detected
+    case verified
+}
+
+nonisolated enum FullscreenFSRSupportLevel: String, Codable, Sendable, Hashable {
+    case unsupported
+    case candidate
+    case verified
+}
+
+nonisolated struct FullscreenFSRCapabilities: Codable, Sendable, Hashable {
+    var available: Bool
+    var source: FullscreenFSRCapabilitySource
+    var confidence: FullscreenFSRCapabilityConfidence
+    var supportsMode: Bool
+    var supportsStrength: Bool
+    var supportsCustomMode: Bool
+
+    init(
+        available: Bool,
+        source: FullscreenFSRCapabilitySource,
+        confidence: FullscreenFSRCapabilityConfidence = .detected,
+        supportsMode: Bool = false,
+        supportsStrength: Bool = false,
+        supportsCustomMode: Bool = false
+    ) {
+        self.available = available
+        self.source = source
+        self.confidence = confidence
+        self.supportsMode = supportsMode
+        self.supportsStrength = supportsStrength
+        self.supportsCustomMode = supportsCustomMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case available, source, confidence, supportsMode, supportsStrength, supportsCustomMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        available = try values.decode(Bool.self, forKey: .available)
+        source = try values.decode(FullscreenFSRCapabilitySource.self, forKey: .source)
+        confidence = try values.decodeIfPresent(FullscreenFSRCapabilityConfidence.self, forKey: .confidence) ?? .detected
+        supportsMode = try values.decodeIfPresent(Bool.self, forKey: .supportsMode) ?? false
+        supportsStrength = try values.decodeIfPresent(Bool.self, forKey: .supportsStrength) ?? false
+        supportsCustomMode = try values.decodeIfPresent(Bool.self, forKey: .supportsCustomMode) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(available, forKey: .available)
+        try values.encode(source, forKey: .source)
+        try values.encode(confidence, forKey: .confidence)
+        try values.encode(supportsMode, forKey: .supportsMode)
+        try values.encode(supportsStrength, forKey: .supportsStrength)
+        try values.encode(supportsCustomMode, forKey: .supportsCustomMode)
+    }
+}
+
+nonisolated extension FullscreenFSRSupportLevel {
+    var isUsable: Bool { self == .verified }
+}
+
+nonisolated enum FullscreenFSRMode: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case ultra
+    case quality
+    case balanced
+    case performance
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .ultra: "Ultra Quality"
+        case .quality: "Quality"
+        case .balanced: "Balanced"
+        case .performance: "Performance"
+        }
+    }
+}
+
+nonisolated enum FullscreenFSRUnavailableReason: String, Codable, Sendable, Hashable {
+    case runtimeUnsupported
+    case runtimeNotVerified
+    case graphicsStackUnsupported
+    case graphicsStackNotVerified
+    case windowModeUnsupported
+}
+
+nonisolated struct EffectiveFullscreenFSR: Codable, Sendable, Hashable {
+    let requestedEnabled: Bool
+    let enabled: Bool
+    let availability: FullscreenFSRUnavailableReason?
+    let capabilities: FullscreenFSRCapabilities
+    let supportLevel: FullscreenFSRSupportLevel
+    let mode: FullscreenFSRMode
+    let strength: Int
+    let customMode: String?
+}
+
+nonisolated enum UpscalingDetectionStatus: String, Codable, Sendable, Hashable {
+    case unavailable
+    case notDetected
+    case detected
+    case candidate
+    case verified
+}
+
+nonisolated struct UpscalingCapability: Codable, Sendable, Hashable, Identifiable {
+    let id: String
+    let title: String
+    let status: UpscalingDetectionStatus
+    let detail: String
+}
+
+nonisolated struct UpscalingResolution: Codable, Sendable, Hashable {
+    let spatial: UpscalingCapability
+    let nativeInterfaces: [UpscalingCapability]
+    let temporalReplacement: UpscalingCapability
+    let bridge: UpscalingCapability
+    let metalFXBridge: UpscalingCapability
+    let currentRenderer: GraphicsBackend
+    let compatibility: UpscalingDetectionStatus
+}
+
+/// Describes upscaling paths without claiming that an experimental bridge is
+/// installed or functional. Detection is deliberately file/metadata based;
+/// only a real runtime smoke test may promote a candidate to verified.
+nonisolated enum UpscalingResolver {
+    static func resolve(
+        application: WindowsApplication,
+        runtimeFeatures: RuntimeFeatures?,
+        backend: GraphicsBackend
+    ) -> UpscalingResolution {
+        let files = gameFiles(for: application)
+        let runtimeCapabilities = runtimeFeatures?.fullscreenFSRCapabilities
+            ?? (runtimeFeatures?.fullscreenFSR == true
+                ? FullscreenFSRCapabilities(available: true, source: .payloadInspection)
+                : FullscreenFSRCapabilities(available: false, source: .payloadInspection))
+        let stackLevel = runtimeFeatures?.graphicsCapabilities?[backend.rawValue]?.fullscreenFSRSupport
+            ?? GraphicsStackCatalog.stack(for: backend)?.fullscreenFSRSupportLevel
+            ?? .unsupported
+        let spatial: UpscalingCapability
+        if !runtimeCapabilities.available || stackLevel == .unsupported {
+            spatial = UpscalingCapability(
+                id: "wine-fsr1",
+                title: "Wine FSR 1",
+                status: .unavailable,
+                detail: "Requires compatible Vulkan graphics path"
+            )
+        } else if runtimeCapabilities.confidence == .verified && stackLevel == .verified {
+            spatial = UpscalingCapability(
+                id: "wine-fsr1",
+                title: "Wine FSR 1",
+                status: .verified,
+                detail: "Verified for the selected runtime and graphics path"
+            )
+        } else {
+            spatial = UpscalingCapability(
+                id: "wine-fsr1",
+                title: "Wine FSR 1",
+                status: .candidate,
+                detail: "Detected, but not verified on this macOS graphics path"
+            )
+        }
+
+        let nativeInterfaces = [
+            ("dlss", "DLSS", ["nvngx_dlss.dll", "nvngx_dlssg.dll", "libnvngx.so"]),
+            ("fsr", "FSR", ["amd_fidelityfx_dx12.dll", "ffx_fsr2_api_x64.dll", "ffx_fsr3_x64.dll"]),
+            ("xess", "XeSS", ["libxess.dll", "libxess.so", "xess.dll"])
+        ].compactMap { id, title, names -> UpscalingCapability? in
+            guard names.contains(where: { files.contains($0) }) else { return nil }
+            return UpscalingCapability(id: id, title: title, status: .detected, detail: "Game interface detected")
+        }
+
+        let optiScalerDetected = files.contains("optiscaler.dll")
+        let temporalReplacement = UpscalingCapability(
+            id: "temporal-fsr-replacement",
+            title: "FSR replacement",
+            status: optiScalerDetected ? .candidate : .notDetected,
+            detail: optiScalerDetected
+                ? "Experimental temporal replacement through OptiScaler"
+                : "No temporal replacement bridge detected"
+        )
+        let bridge = UpscalingCapability(
+            id: "optiscaler",
+            title: "Bridge",
+            status: optiScalerDetected ? .candidate : .notDetected,
+            detail: optiScalerDetected
+                ? "OptiScaler detected; output and compatibility are not verified"
+                : "OptiScaler is not installed for this game"
+        )
+        let metalFXForwarderDetected = files.contains("nvngx-on-metalfx.dll")
+            || files.contains("nvngx_on_metalfx.dll")
+            || files.contains("libnvngx-on-metalfx.dylib")
+        let metalFXReported = backend == .d3dMetal && (
+            runtimeFeatures?.graphicsCapabilities?[backend.rawValue]?.upscaling == true
+                || metalFXForwarderDetected
+        )
+        let metalFXBridge = UpscalingCapability(
+            id: "metalfx-bridge",
+            title: "NGX → MetalFX",
+            status: metalFXReported ? .candidate : .notDetected,
+            detail: metalFXForwarderDetected
+                ? "NVIDIA NGX forwarder detected; the MetalFX bridge is not verified"
+                : metalFXReported
+                    ? "Runtime reports an upscaling path; the NVIDIA NGX bridge is not verified"
+                : "No verified NVIDIA NGX to MetalFX bridge detected"
+        )
+        let compatibility: UpscalingDetectionStatus = optiScalerDetected ? .candidate : .notDetected
+        return UpscalingResolution(
+            spatial: spatial,
+            nativeInterfaces: nativeInterfaces,
+            temporalReplacement: temporalReplacement,
+            bridge: bridge,
+            metalFXBridge: metalFXBridge,
+            currentRenderer: backend,
+            compatibility: compatibility
+        )
+    }
+
+    private static func gameFiles(for application: WindowsApplication) -> Set<String> {
+        let executable = URL(fileURLWithPath: application.executablePath)
+        let gameRoot = executable.deletingLastPathComponent()
+        let searchRoots = [
+            gameRoot,
+            gameRoot.appending(path: "Binaries/Win64", directoryHint: .isDirectory),
+            gameRoot.appending(path: "Engine/Binaries/Win64", directoryHint: .isDirectory),
+            gameRoot.appending(path: "Plugins", directoryHint: .isDirectory)
+        ]
+        var names = Set<String>()
+        let fileManager = FileManager.default
+        for root in searchRoots where fileManager.fileExists(atPath: root.path) {
+            guard let entries = try? fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            names.formUnion(entries.map { $0.lastPathComponent.lowercased() })
+        }
+        return names
+    }
 }
 
 nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
     var backend: GraphicsBackend
     var api: GraphicsAPI
     var fullscreenFSREnabled: Bool
+    var fullscreenFSRMode: FullscreenFSRMode = .balanced
+    var fullscreenFSRStrength: Int = 2
+    var fullscreenFSRCustomMode: String? = nil
+    var overlayCompatibleFullscreen: Bool = true
 
     func resolvedBackend(
         runtime: InstalledRuntime,
@@ -87,9 +343,61 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
         return result
     }
 
-    func environment(runtime: InstalledRuntime) -> [String: String] {
-        guard runtime.features?.fullscreenFSR == true else { return [:] }
-        return ["WINE_FULLSCREEN_FSR": fullscreenFSREnabled ? "1" : "0"]
+    func effectiveFullscreenFSR(
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture = .win64
+    ) -> EffectiveFullscreenFSR {
+        let runtimeCapabilities = runtime.features?.fullscreenFSRCapabilities
+            ?? (runtime.features?.fullscreenFSR == true
+                ? FullscreenFSRCapabilities(available: true, source: .payloadInspection)
+                : FullscreenFSRCapabilities(available: false, source: .payloadInspection))
+        let resolved = resolvedBackend(runtime: runtime, architecture: architecture)
+        let stackSupportLevel = runtime.features?.graphicsCapabilities?[resolved.rawValue]?.fullscreenFSRSupport
+            ?? GraphicsStackCatalog.stack(for: resolved)?.fullscreenFSRSupportLevel
+            ?? .unsupported
+        let unavailable: FullscreenFSRUnavailableReason? = if !runtimeCapabilities.available {
+            .runtimeUnsupported
+        } else if runtimeCapabilities.confidence != .verified {
+            .runtimeNotVerified
+        } else if stackSupportLevel == .unsupported {
+            .graphicsStackUnsupported
+        } else if !stackSupportLevel.isUsable {
+            .graphicsStackNotVerified
+        } else if overlayCompatibleFullscreen {
+            .windowModeUnsupported
+        } else {
+            nil
+        }
+        return EffectiveFullscreenFSR(
+            requestedEnabled: fullscreenFSREnabled,
+            enabled: fullscreenFSREnabled && unavailable == nil,
+            availability: unavailable,
+            capabilities: runtimeCapabilities,
+            supportLevel: stackSupportLevel,
+            mode: fullscreenFSRMode,
+            strength: min(max(fullscreenFSRStrength, 0), 5),
+            customMode: fullscreenFSRCustomMode
+        )
+    }
+
+    /// Fullscreen FSR is a launch-time setting, not a prefix property.
+    func launchEnvironment(
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture = .win64
+    ) -> [String: String] {
+        let effective = effectiveFullscreenFSR(runtime: runtime, architecture: architecture)
+        guard effective.enabled else { return [:] }
+        var values = ["WINE_FULLSCREEN_FSR": "1"]
+        if effective.capabilities.supportsMode {
+            values["WINE_FULLSCREEN_FSR_MODE"] = effective.mode.rawValue
+        }
+        if effective.capabilities.supportsStrength {
+            values["WINE_FULLSCREEN_FSR_STRENGTH"] = String(effective.strength)
+        }
+        if effective.capabilities.supportsCustomMode, let customMode = effective.customMode, !customMode.isEmpty {
+            values["WINE_FULLSCREEN_FSR_CUSTOM_MODE"] = customMode
+        }
+        return values
     }
 }
 
@@ -109,16 +417,17 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var esync: Bool = false
     var msync: Bool = false
     var fullscreenFSR: Bool = false
+    var fullscreenFSRCapabilities: FullscreenFSRCapabilities?
     var wineBusControllerMapping: Bool = false
     var dgVoodoo2: Bool = false
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
         case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
-        case esync, msync, fullscreenFSR, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
+        case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
         self.architectureCapabilities = architectureCapabilities
         self.supportsWin32Execution = supportsWin32Execution ?? architectureCapabilities?.canRunX86
@@ -132,6 +441,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         self.esync = esync
         self.msync = msync
         self.fullscreenFSR = fullscreenFSR
+        self.fullscreenFSRCapabilities = fullscreenFSRCapabilities
         self.wineBusControllerMapping = wineBusControllerMapping
         self.dgVoodoo2 = dgVoodoo2
     }
@@ -153,6 +463,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         esync = try values.decodeIfPresent(Bool.self, forKey: .esync) ?? false
         msync = try values.decodeIfPresent(Bool.self, forKey: .msync) ?? false
         fullscreenFSR = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSR) ?? false
+        fullscreenFSRCapabilities = try values.decodeIfPresent(FullscreenFSRCapabilities.self, forKey: .fullscreenFSRCapabilities)
         wineBusControllerMapping = try values.decodeIfPresent(Bool.self, forKey: .wineBusControllerMapping) ?? false
         dgVoodoo2 = try values.decodeIfPresent(Bool.self, forKey: .dgVoodoo2) ?? false
         graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
@@ -177,6 +488,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encode(esync, forKey: .esync)
         try values.encode(msync, forKey: .msync)
         try values.encode(fullscreenFSR, forKey: .fullscreenFSR)
+        try values.encodeIfPresent(fullscreenFSRCapabilities, forKey: .fullscreenFSRCapabilities)
         try values.encode(wineBusControllerMapping, forKey: .wineBusControllerMapping)
         try values.encode(dgVoodoo2, forKey: .dgVoodoo2)
         try values.encodeIfPresent(graphicsCapabilities, forKey: .graphicsCapabilities)
