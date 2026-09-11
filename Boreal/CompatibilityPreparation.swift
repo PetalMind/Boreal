@@ -239,7 +239,7 @@ nonisolated enum CompatibilityPreparationResolver {
         let prefixMode = WinePrefixMode.resolve(
             requestedMode: userProfile.prefixMode,
             requestedArchitecture: primary.architecture == .x86 ? WinePrefixArchitecture.win32.rawValue : WinePrefixArchitecture.win64.rawValue,
-            runtimeSupportsWoW64: runtime.features?.wow64 == true
+            runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
         )
         let prefixArchitecture = prefixMode == .legacyWin32 ? WinePrefixArchitecture.win32 : .win64
         let api = directXAPI(executable: primary.url, userProfile: userProfile, gameProfile: gameProfile)
@@ -277,16 +277,22 @@ nonisolated enum CompatibilityPreparationResolver {
 
     static func runtimeSatisfies(_ runtime: InstalledRuntime, request: RuntimeSelectionRequest) -> Bool {
         let features = runtime.features
-        let supports32 = features?.supportsWin32Execution ?? (features?.wow64 == true)
-        let supports64 = features?.supportsWin64Execution ?? true
+        let capabilities = features?.resolvedArchitectureCapabilities ?? .unknown
+        let supports32 = features?.supportsWin32Execution ?? capabilities.canRunX86
+        let supports64 = features?.supportsWin64Execution ?? capabilities.canRunX86_64
         if request.architectures.contains(.x86), !supports32 { return false }
         if request.architectures.contains(.x86_64), !supports64 { return false }
         if let mode = request.prefixMode {
-            let supportsWoW64 = features?.wow64 == true
-            if mode == .wow64 && !supportsWoW64 { return false }
-            if mode != .wow64 && supportsWoW64 { return false }
-            if mode == .legacyWin32 && !supports32 { return false }
-            if mode == .legacyWin64 && !supports64 { return false }
+            switch mode {
+            case .wow64 where !capabilities.usesNewWoW64:
+                return false
+            case .legacyWin32 where !capabilities.supportsLegacyWin32Prefix:
+                return false
+            case .legacyWin64 where !supports64 || capabilities.usesNewWoW64:
+                return false
+            default:
+                break
+            }
         }
         if let requiredEngine = request.requiredEngine, runtime.resolvedEngine != requiredEngine { return false }
         if let runtimeIDOverride = request.runtimeIDOverride, runtime.id != runtimeIDOverride { return false }
@@ -298,7 +304,7 @@ nonisolated enum CompatibilityPreparationResolver {
         case .wow64, .legacyWin64:
             prefixArchitecture = .win64
         case nil:
-            prefixArchitecture = request.architectures.contains(.x86_64) || features?.wow64 == true ? .win64 : .win32
+            prefixArchitecture = request.architectures.contains(.x86_64) || capabilities.usesNewWoW64 ? .win64 : .win32
         }
         let resolution = GraphicsBackendResolver.resolve(
             api: request.directXAPI,
@@ -314,7 +320,7 @@ nonisolated enum CompatibilityPreparationResolver {
         guard runtimeSatisfies(runtime, request: request) else { return Int.min }
         var score = 0
         if runtime.id == request.runtimeIDOverride { score += 10_000 }
-        if request.prefixMode == nil, runtime.features?.wow64 == true { score += 500 }
+        if request.prefixMode == nil, runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true { score += 500 }
         if runtime.origin == .localImport { score += 50 }
         let prefixArchitecture: WinePrefixArchitecture = request.prefixMode == .legacyWin32 ? .win32 : .win64
         score += GraphicsBackendResolver.resolve(
@@ -344,7 +350,7 @@ nonisolated extension RuntimeManaging {
 
         let localCandidates = await localRuntimeCandidates()
         for candidate in localCandidates {
-            guard candidate.features.wow64 || !request.architectures.contains(.x86) else { continue }
+            guard candidate.features.resolvedArchitectureCapabilities.canRunX86 || !request.architectures.contains(.x86) else { continue }
             guard request.requiredEngine == nil || candidate.engine == request.requiredEngine else { continue }
             let imported = try await importLocalRuntime(candidate)
             if CompatibilityPreparationResolver.runtimeSatisfies(imported, request: request), try await validate(imported).isReady {
@@ -353,7 +359,7 @@ nonisolated extension RuntimeManaging {
         }
 
         for available in try await availableRuntimes() {
-            guard request.requiredEngine == nil || available.features.d3dmetal == (request.requiredEngine == .gamePortingToolkit) else { continue }
+            guard request.requiredEngine == nil || available.engine == request.requiredEngine else { continue }
             let installed = try await install(available)
             if CompatibilityPreparationResolver.runtimeSatisfies(installed, request: request), try await validate(installed).isReady {
                 return installed

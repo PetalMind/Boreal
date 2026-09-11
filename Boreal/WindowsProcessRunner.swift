@@ -119,7 +119,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
         }
-        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true)
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
             let configuration = environment.rootURL.appending(path: "Darksiders2-dxvk.conf")
@@ -144,7 +144,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // cannot redirect a launch into another prefix or runtime search path.
         processEnvironment["WINEPREFIX"] = environment.prefixURL.path
         processEnvironment["PATH"] = runtime.wineExecutable.deletingLastPathComponent().path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")
-        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
             processEnvironment["WINEARCH"] = architecture
         } else {
@@ -169,7 +169,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             if let directDrawRestoration {
                 directDrawRestorations[sessionID] = directDrawRestoration
             }
-            return WindowsProcessSession(id: sessionID, environmentID: environment.id, launcherPID: receipt.pid, startedAt: receipt.startedAt, stdoutLog: receipt.stdoutLog, stderrLog: receipt.stderrLog)
+            return WindowsProcessSession(
+                id: sessionID,
+                environmentID: environment.id,
+                launcherPID: receipt.pid,
+                startedAt: receipt.startedAt,
+                stdoutLog: receipt.stdoutLog,
+                stderrLog: receipt.stderrLog,
+                sessionScope: plan.sessionScope,
+                processExecutableName: plan.processExecutableName,
+                processExecutablePath: plan.processExecutablePath
+            )
         } catch {
             if let directDrawRestoration { try? Heroes3DirectDrawCompatibility.restore(directDrawRestoration) }
             throw error
@@ -242,6 +252,76 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         }
     }
 
+    func waitForProcessGroupEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(120)
+        var observedGameProcess = false
+        while clock.now < deadline {
+            try Task.checkCancellation()
+            if await !runningGameProcessIDs(session: session, environment: environment).isEmpty {
+                observedGameProcess = true
+            } else if observedGameProcess {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+
+        // A Steam client can be slow to spawn the game or can have already
+        // exited before monitoring starts. Do not leave playtime running
+        // forever when the process list never provided positive evidence.
+    }
+
+    func stopProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await signalProcessGroup(
+            session: session,
+            environment: environment,
+            signal: "-TERM",
+            failureMessage: "The Steam game process could not be stopped."
+        )
+    }
+
+    func forceQuitProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await signalProcessGroup(
+            session: session,
+            environment: environment,
+            signal: "-KILL",
+            failureMessage: "The Steam game process could not be force quit."
+        )
+    }
+
+    private func signalProcessGroup(
+        session: WindowsProcessSession,
+        environment: ManagedBorealEnvironment,
+        signal: String,
+        failureMessage: String
+    ) async throws {
+        let processIDs = await runningGameProcessIDs(session: session, environment: environment)
+        if processIDs.isEmpty {
+            // The Steam launch request can still be the only observable
+            // process while Steam is handing the request to an already-running
+            // client. Stop that request, but never terminate the shared Wine
+            // environment here.
+            try? await stopApplication(session)
+            return
+        }
+
+        for processID in processIDs {
+            let request = ProcessLaunchRequest(
+                executable: URL(fileURLWithPath: "/bin/kill"),
+                arguments: [signal, String(processID)],
+                environment: ProcessInfo.processInfo.environment,
+                currentDirectory: environment.rootURL,
+                stdoutLog: environment.logsURL.appending(path: "process-group-stop-\(processID).stdout.log"),
+                stderrLog: environment.logsURL.appending(path: "process-group-stop-\(processID).stderr.log")
+            )
+            guard let receipt = try? await processExecutor.launch(request),
+                  let result = try? await processExecutor.waitForExit(receipt.id),
+                  result.exitCode == 0 else {
+                throw ProcessRunnerError.launchFailed("\(failureMessage) (PID \(processID)).")
+            }
+        }
+    }
+
     func terminateEnvironmentSession(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
         let request = controlRequest(executable: runtime.wineBootExecutable, arguments: ["--end-session"], name: "stop", environment: environment, runtime: runtime)
         if let receipt = try? await processExecutor.launch(request) { _ = try? await processExecutor.waitForExit(receipt.id) }
@@ -276,6 +356,59 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         try? await processExecutor.forceTerminate(id)
     }
 
+    private func runningGameProcessIDs(session: WindowsProcessSession, environment: ManagedBorealEnvironment) async -> [Int32] {
+        let request = ProcessLaunchRequest(
+            executable: URL(fileURLWithPath: "/bin/ps"),
+            arguments: ["-axo", "pid=,command="],
+            environment: ProcessInfo.processInfo.environment,
+            currentDirectory: environment.rootURL,
+            stdoutLog: environment.logsURL.appending(path: "process-group-\(session.id.uuidString).stdout.log"),
+            stderrLog: environment.logsURL.appending(path: "process-group-\(session.id.uuidString).stderr.log")
+        )
+        guard let receipt = try? await processExecutor.launch(request),
+              let result = try? await processExecutor.waitForExit(receipt.id),
+              result.exitCode == 0,
+              let output = try? String(contentsOf: result.stdoutLog, encoding: .utf8) else {
+            return []
+        }
+
+        let executableName = session.processExecutableName?.lowercased()
+        let executablePathHints = processPathHints(session.processExecutablePath, prefixURL: environment.prefixURL)
+        return output.split(whereSeparator: \.isNewline).compactMap { line in
+            let fields = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
+            guard let pid = fields.first.flatMap({ Int32($0) }), fields.count > 1 else { return nil }
+            let command = String(fields[1]).lowercased()
+            if let executableName {
+                guard command.contains(executableName) else { return nil }
+                if !executablePathHints.isEmpty,
+                   command.contains(":\\") || command.contains(":/") {
+                    guard executablePathHints.contains(where: command.contains) else { return nil }
+                }
+                return pid
+            }
+            let excluded = ["steam.exe", "steamwebhelper.exe", "wineserver", "services.exe", "plugplay.exe", "explorer.exe"]
+            guard command.contains(".exe"), !excluded.contains(where: command.contains) else { return nil }
+            return pid
+        }
+    }
+
+    private func processPathHints(_ unixPath: String?, prefixURL: URL) -> [String] {
+        guard let unixPath else { return [] }
+        let normalizedPath = URL(fileURLWithPath: unixPath).standardizedFileURL.path
+        let driveCPath = prefixURL.appending(path: "drive_c", directoryHint: .isDirectory).standardizedFileURL.path
+        let windowsPath: String
+        if normalizedPath.hasPrefix(driveCPath + "/") {
+            let relative = String(normalizedPath.dropFirst(driveCPath.count + 1))
+            windowsPath = "c:\\" + relative.replacingOccurrences(of: "/", with: "\\")
+        } else if normalizedPath.hasPrefix(prefixURL.standardizedFileURL.path + "/") {
+            let relative = String(normalizedPath.dropFirst(prefixURL.standardizedFileURL.path.count + 1))
+            windowsPath = "z:\\" + relative.replacingOccurrences(of: "/", with: "\\")
+        } else {
+            return []
+        }
+        return [windowsPath, windowsPath.replacingOccurrences(of: "\\", with: "/")]
+    }
+
     private func controlRequest(executable: URL, arguments: [String], name: String, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> ProcessLaunchRequest {
         ProcessLaunchRequest(
             executable: executable,
@@ -290,7 +423,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
-        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
             values["WINEARCH"] = architecture
         } else {
@@ -301,11 +434,30 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values.removeValue(forKey: "WINEESYNC")
         values.removeValue(forKey: "WINEMSYNC")
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR")
+        values.removeValue(forKey: "WINEDLLPATH")
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
         values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
-        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
-        if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk {
+        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
+        let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
+            runtime: runtime,
+            architecture: prefixArchitecture
+        )
+        if resolvedGraphicsBackend == .dxmt {
+            let componentStoreRoot = runtime.rootURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Components", directoryHint: .isDirectory)
+            let componentStore = GraphicsComponentStore(rootURL: componentStoreRoot)
+            let dxmtUnixLibraries = environment.configuration.graphicsComponentReferences
+                .first(where: { $0.component == .dxmt })
+                .map { componentStore.componentURL(.dxmt, version: $0.version).appending(path: "x64-unix", directoryHint: .isDirectory) }
+                ?? runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix", directoryHint: .isDirectory)
+            if FileManager.default.fileExists(atPath: dxmtUnixLibraries.appending(path: "winemetal.so").path) {
+                values["WINEDLLPATH"] = dxmtUnixLibraries.path
+            }
+        }
+        if resolvedGraphicsBackend == .dxvk {
             // MoltenVK dynamically grows exhausted descriptor pools. Its warning
             // for every allocation can otherwise write megabytes per minute.
             values["MVK_CONFIG_LOG_LEVEL"] = "0"

@@ -71,6 +71,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
     var requiredDependencies: Set<RuntimeDependency> = []
+    /// Exact immutable component snapshots selected for this environment.
+    /// Empty is retained for environments written by older Boreal versions.
+    var graphicsComponentReferences: [GraphicsComponentReference] = []
 
     var graphicsConfiguration: GraphicsBackendConfiguration {
         GraphicsBackendConfiguration(backend: graphicsBackend, api: graphicsAPI, fullscreenFSREnabled: fullscreenFSREnabled)
@@ -101,7 +104,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput, requiredDependencies
+        case retinaModeEnabled, fullscreenFSREnabled, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
     }
 
     init(from decoder: Decoder) throws {
@@ -120,6 +123,7 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []
+        graphicsComponentReferences = try values.decodeIfPresent([GraphicsComponentReference].self, forKey: .graphicsComponentReferences) ?? []
     }
 
     func resolvedPrefixMode(runtimeSupportsWoW64: Bool) -> WinePrefixMode {
@@ -243,7 +247,7 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
 nonisolated protocol EnvironmentManaging: Sendable {
     func create(configuration: EnvironmentConfiguration, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment
     func initialize(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
-    func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment
     func validate(_ environment: ManagedBorealEnvironment) async throws -> EnvironmentValidation
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus]
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
@@ -252,7 +256,7 @@ nonisolated protocol EnvironmentManaging: Sendable {
 }
 
 extension EnvironmentManaging {
-    func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { }
+    func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment { environment }
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics? { nil }
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] { [] }
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { throw CocoaError(.featureUnsupported) }

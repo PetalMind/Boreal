@@ -27,6 +27,7 @@ actor RuntimeManager: RuntimeManaging {
         }
     }
     private let runtimesURL: URL
+    private let componentStore: GraphicsComponentStore
     private let catalog: any RuntimeCatalogLoading
     private let processExecutor: any ProcessExecuting
     private let requirementChecker: any RuntimeRequirementChecking
@@ -43,6 +44,7 @@ actor RuntimeManager: RuntimeManaging {
         localApplicationRoots: [URL]? = nil
     ) {
         self.runtimesURL = applicationSupportURL.appending(path: "Runtimes", directoryHint: .isDirectory)
+        self.componentStore = GraphicsComponentStore(applicationSupportURL: applicationSupportURL)
         self.catalog = catalog
         self.processExecutor = processExecutor
         self.requirementChecker = requirementChecker
@@ -72,7 +74,6 @@ actor RuntimeManager: RuntimeManaging {
                 let engine = detectEngine(app: app, name: name)
                 let relativeWine = firstExecutable(in: app, candidates: [
                     "Contents/Resources/wine/bin/wine",
-                    "Contents/Resources/wine/bin/wine64",
                     "Contents/MacOS/wine"
                 ])
                 guard let relativeWine else { continue }
@@ -94,7 +95,7 @@ actor RuntimeManager: RuntimeManaging {
                 #endif
                 let id = localRuntimeID(name: name, version: version, architecture: architecture)
                 guard seen.insert(id).inserted else { continue }
-                let supportsWoW64 = detectsWoW64(in: app)
+                let capabilities = detectsArchitectureCapabilities(in: app)
                 candidates.append(LocalRuntimeCandidate(
                     id: id,
                     displayName: name,
@@ -105,7 +106,16 @@ actor RuntimeManager: RuntimeManaging {
                     minimumMacOS: minimumMacOS,
                     estimatedSize: nil,
                     engine: engine,
-                    features: RuntimeFeatures(wow64: supportsWoW64, wineMono: false, wineGecko: false, d3dmetal: engine == .gamePortingToolkit, dxmt: false),
+                    features: RuntimeFeatures(
+                        wow64: capabilities.usesNewWoW64,
+                        supportsWin32Execution: capabilities.canRunX86,
+                        supportsWin64Execution: capabilities.canRunX86_64,
+                        architectureCapabilities: capabilities,
+                        wineMono: false,
+                        wineGecko: false,
+                        d3dmetal: engine == .gamePortingToolkit,
+                        dxmt: false
+                    ),
                     layout: RuntimeLayout(
                         wineExecutable: "Runtime/Wine.app/\(relativeWine)",
                         wineServerExecutable: "Runtime/Wine.app/Contents/Resources/wine/bin/wineserver",
@@ -178,39 +188,37 @@ actor RuntimeManager: RuntimeManaging {
               asset.browserDownloadURL.scheme == "https",
               asset.browserDownloadURL.host == "github.com",
               asset.size > 0,
-              asset.size <= 250 * 1_024 * 1_024 else {
+              asset.size <= 250 * 1_024 * 1_024,
+              let digest = verifiedDigest(asset.digest) else {
             throw RuntimeManagerError.downloadFailed("No compatible binary artifact was found in the official \(release.tagName) release.")
         }
 
         try prepareDirectories()
-        let transactionRoot = runtimesURL.appending(path: ".component-downloads/\(UUID().uuidString)", directoryHint: .isDirectory)
+        let transactionRoot = componentStore.rootURL.appending(path: ".downloads/\(UUID().uuidString)", directoryHint: .isDirectory)
         let archive = transactionRoot.appending(path: asset.name)
         let extracted = transactionRoot.appending(path: "package", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: extracted, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: transactionRoot) }
         let artifact = RuntimeArtifact(
             url: asset.browserDownloadURL,
-            sha256: asset.digest?.replacingOccurrences(of: "sha256:", with: "") ?? String(repeating: "0", count: 64),
+            sha256: digest,
             compressedSize: asset.size
         )
         try await download(artifact, to: archive)
-        if let digest = asset.digest?.replacingOccurrences(of: "sha256:", with: "") {
-            let actual = try RuntimeSecurity.sha256(of: archive)
-            guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
-                throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
-            }
+        let actual = try RuntimeSecurity.sha256(of: archive)
+        guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
+            throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
         }
         try await extractGraphicsArchive(archive, to: extracted)
-        let installed = try await installGraphicsComponent(backend, from: extracted, into: runtimeID)
-        let component: RuntimeComponent? = switch backend {
-        case .dxmt: .dxmt
-        case .dxvk: .dxvk
-        default: nil
-        }
-        if let component {
-            try recordComponentReceipt(component, version: release.tagName, repository: repository, in: installed)
-        }
-        return installed
+        return try await installGraphicsComponent(
+            backend,
+            from: extracted,
+            into: runtimeID,
+            version: release.tagName,
+            sha256: digest,
+            compressedSize: asset.size,
+            sourceRepository: repository
+        )
     }
 
     func componentUpdates() async throws -> [RuntimeComponentUpdate] {
@@ -256,30 +264,30 @@ actor RuntimeManager: RuntimeManaging {
             return (name.hasSuffix(".tar.zst") || name.hasSuffix(".tar.gz") || name.hasSuffix(".zip"))
                 && !name.contains("debug") && !name.contains("source")
         }), asset.browserDownloadURL.scheme == "https", asset.browserDownloadURL.host == "github.com",
-            asset.size > 0, asset.size <= 250 * 1_024 * 1_024 else {
+            asset.size > 0, asset.size <= 250 * 1_024 * 1_024,
+            let digest = verifiedDigest(asset.digest) else {
             throw RuntimeManagerError.downloadFailed("No compatible binary artifact was found in the official \(release.tagName) release.")
         }
         try prepareDirectories()
-        let transactionRoot = runtimesURL.appending(path: ".component-downloads/\(UUID().uuidString)", directoryHint: .isDirectory)
+        let transactionRoot = componentStore.rootURL.appending(path: ".downloads/\(UUID().uuidString)", directoryHint: .isDirectory)
         let archive = transactionRoot.appending(path: asset.name)
         let extracted = transactionRoot.appending(path: "package", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: extracted, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: transactionRoot) }
-        try await download(RuntimeArtifact(
-            url: asset.browserDownloadURL,
-            sha256: asset.digest?.replacingOccurrences(of: "sha256:", with: "") ?? String(repeating: "0", count: 64),
-            compressedSize: asset.size
-        ), to: archive)
-        if let digest = asset.digest?.replacingOccurrences(of: "sha256:", with: "") {
-            let actual = try RuntimeSecurity.sha256(of: archive)
-            guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
-                throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
-            }
+        try await download(RuntimeArtifact(url: asset.browserDownloadURL, sha256: digest, compressedSize: asset.size), to: archive)
+        let actual = try RuntimeSecurity.sha256(of: archive)
+        guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
+            throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
         }
         try await extractComponentArchive(archive, to: extracted)
-        let installed = try await installVKD3D(from: extracted, into: runtimeID)
-        try recordComponentReceipt(.vkd3d, version: release.tagName, repository: repository, in: installed)
-        return refreshingDetectedFeatures(of: installed)
+        return try await installVKD3D(
+            from: extracted,
+            into: runtimeID,
+            version: release.tagName,
+            sha256: digest,
+            compressedSize: asset.size,
+            sourceRepository: repository
+        )
     }
 
     func installGraphicsComponent(
@@ -294,7 +302,7 @@ actor RuntimeManager: RuntimeManaging {
         guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains("..") else {
             throw RuntimeManagerError.localRuntimeInvalid("The target runtime identifier is unsafe.")
         }
-        guard var runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }) else {
+        guard let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }) else {
             throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
         }
         guard runtime.resolvedEngine == .wine else {
@@ -322,7 +330,7 @@ actor RuntimeManager: RuntimeManaging {
             extractionRoot = nil
             packageRoot = source
         } else if source.pathExtension.lowercased() == "zip" {
-            let root = runtimesURL.appending(path: ".component-imports/\(UUID().uuidString)", directoryHint: .isDirectory)
+            let root = componentStore.rootURL.appending(path: ".downloads/import-\(UUID().uuidString)", directoryHint: .isDirectory)
             try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
             extractionRoot = root
             packageRoot = root.appending(path: "package", directoryHint: .isDirectory)
@@ -345,6 +353,33 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid("Choose an extracted package folder or a ZIP archive.")
         }
         defer { if let extractionRoot { try? fileManager.removeItem(at: extractionRoot) } }
+        let digest = try RuntimeSecurity.sha256(ofDirectory: packageRoot)
+        guard digest.count == 64 else {
+            throw RuntimeManagerError.localRuntimeInvalid("The graphics package could not be fingerprinted safely.")
+        }
+        return try await installGraphicsComponent(
+            backend,
+            from: packageRoot,
+            into: runtimeID,
+            version: "imported-\(digest.prefix(16))",
+            sha256: digest,
+            compressedSize: nil,
+            sourceRepository: "local-import"
+        )
+    }
+
+    private func installGraphicsComponent(
+        _ backend: WineGraphicsBackend,
+        from packageRoot: URL,
+        into runtimeID: String,
+        version: String,
+        sha256: String,
+        compressedSize: Int64?,
+        sourceRepository: String
+    ) async throws -> InstalledRuntime {
+        guard let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
+        }
         let discovered = try discoverGraphicsLibraries(in: packageRoot, backend: backend)
         let discoveredUnix = backend == .dxmt
             ? try discoverDXMTUnixLibraries(in: packageRoot)
@@ -370,65 +405,77 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid("The DXMT package is incomplete. Required 64-bit Unix library: winemetal.so.")
         }
 
-        let componentName = backend == .dxmt ? "DXMT" : "DXVK"
-        let destination = runtime.rootURL.appending(path: "GraphicsComponents/\(componentName)", directoryHint: .isDirectory)
-        let staging = runtime.rootURL.appending(path: ".graphics-installing-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let backup = runtime.rootURL.appending(path: ".graphics-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let previousDescriptor = try Data(contentsOf: runtime.rootURL.appending(path: "installed-runtime.json"))
+        let component = backend == .dxmt ? RuntimeComponent.dxmt : .dxvk
+        guard GraphicsComponentStore.isSafeVersion(version) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The component release version contains an unsafe path.")
+        }
+        let destination = componentStore.componentURL(component, version: version)
+        let staging = componentStore.rootURL.appending(path: ".installing/\(UUID().uuidString)", directoryHint: .isDirectory)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            if componentStore.contains(
+                GraphicsComponentReference(component: component, version: version, sha256: sha256, installedFiles: []),
+                fileManager: fileManager
+            ) {
+                return refreshingDetectedFeatures(of: runtime)
+            }
+            throw RuntimeManagerError.localRuntimeInvalid("An immutable \(backend.displayName) component with version \(version) is already installed with a different digest.")
+        }
+        var published = false
         do {
-            try makeWritable(runtime.rootURL)
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+            var installedFiles: [String] = []
             for library in discovered {
                 let architectureFolder = library.architecture == .x86 ? "x32" : "x64"
                 let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-                try fileManager.copyItem(at: library.url, to: folder.appending(path: library.url.lastPathComponent.lowercased()))
+                let relative = "\(architectureFolder)/\(library.url.lastPathComponent.lowercased())"
+                try fileManager.copyItem(at: library.url, to: staging.appending(path: relative))
+                installedFiles.append(relative)
             }
             if backend == .dxmt {
                 let unixFolder = staging.appending(path: "x64-unix", directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: unixFolder, withIntermediateDirectories: true)
                 for library in discoveredUnix {
                     try fileManager.copyItem(at: library, to: unixFolder.appending(path: "winemetal.so"))
+                    installedFiles.append("x64-unix/winemetal.so")
                 }
             }
-            if fileManager.fileExists(atPath: destination.path) { try fileManager.moveItem(at: destination, to: backup) }
+            let receipt = RuntimeComponentReceipt(
+                component: component,
+                version: version,
+                sourceRepository: sourceRepository,
+                installedAt: Date(),
+                sha256: sha256,
+                compressedSize: compressedSize,
+                installedFiles: installedFiles.sorted()
+            )
+            try makeEncoder().encode(receipt).write(to: staging.appending(path: "component.json"), options: .atomic)
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fileManager.moveItem(at: staging, to: destination)
-
-            var features = runtime.features ?? RuntimeFeatures(
-                wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false
-            )
-            if backend == .dxmt { features.dxmt = true }
-            else { features.dxvk = true }
-            runtime = InstalledRuntime(
-                id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion,
-                rootURL: runtime.rootURL, wineExecutable: runtime.wineExecutable,
-                wineServerExecutable: runtime.wineServerExecutable, wineBootExecutable: runtime.wineBootExecutable,
-                architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin,
-                engine: runtime.engine, features: features
-            )
-            try makeEncoder().encode(runtime)
-                .write(to: runtime.rootURL.appending(path: "installed-runtime.json"), options: .atomic)
-            if backend == .dxmt {
-                try recordComponentReceipt(.dxmt, version: "imported", repository: "local-import", in: runtime)
-            }
-            try? fileManager.removeItem(at: backup)
-            try makeImmutable(runtime.rootURL)
-            return runtime
+            published = true
+            try makeImmutable(destination)
+            return refreshingDetectedFeatures(of: runtime)
         } catch {
             try? fileManager.removeItem(at: staging)
-            try? fileManager.removeItem(at: destination)
-            if fileManager.fileExists(atPath: backup.path) { try? fileManager.moveItem(at: backup, to: destination) }
-            try? previousDescriptor.write(to: runtime.rootURL.appending(path: "installed-runtime.json"), options: .atomic)
-            try? makeImmutable(runtime.rootURL)
+            if published {
+                try? makeWritable(destination)
+                try? fileManager.removeItem(at: destination)
+            }
             throw error
         }
     }
 
-    private func installVKD3D(from source: URL, into runtimeID: String) async throws -> InstalledRuntime {
+    private func installVKD3D(
+        from source: URL,
+        into runtimeID: String,
+        version: String,
+        sha256: String,
+        compressedSize: Int64?,
+        sourceRepository: String
+    ) async throws -> InstalledRuntime {
         try prepareDirectories()
         guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains(".."),
-              var runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }),
+              let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }),
               runtime.resolvedEngine == .wine else {
             throw RuntimeManagerError.localRuntimeInvalid("VKD3D-Proton requires an installed Wine runtime.")
         }
@@ -440,42 +487,54 @@ actor RuntimeManager: RuntimeManaging {
         guard x64Names.contains("d3d12.dll") else {
             throw RuntimeManagerError.localRuntimeInvalid("The package does not contain a compiled 64-bit d3d12.dll.")
         }
-        let destination = runtime.rootURL.appending(path: "GraphicsComponents/VKD3D", directoryHint: .isDirectory)
-        let staging = runtime.rootURL.appending(path: ".graphics-installing-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let backup = runtime.rootURL.appending(path: ".graphics-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let descriptorURL = runtime.rootURL.appending(path: "installed-runtime.json")
-        let previousDescriptor = try Data(contentsOf: descriptorURL)
+        let component = RuntimeComponent.vkd3d
+        guard GraphicsComponentStore.isSafeVersion(version) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The component release version contains an unsafe path.")
+        }
+        let destination = componentStore.componentURL(component, version: version)
+        let staging = componentStore.rootURL.appending(path: ".installing/\(UUID().uuidString)", directoryHint: .isDirectory)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            if componentStore.contains(
+                GraphicsComponentReference(component: component, version: version, sha256: sha256, installedFiles: []),
+                fileManager: fileManager
+            ) {
+                return refreshingDetectedFeatures(of: runtime)
+            }
+            throw RuntimeManagerError.localRuntimeInvalid("An immutable VKD3D-Proton component with version \(version) is already installed with a different digest.")
+        }
+        var published = false
         do {
-            try makeWritable(runtime.rootURL)
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+            var installedFiles: [String] = []
             for library in libraries {
                 let architectureFolder = library.architecture == .x86 ? "x32" : "x64"
                 let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-                try fileManager.copyItem(at: library.url, to: folder.appending(path: library.url.lastPathComponent.lowercased()))
+                let relative = "\(architectureFolder)/\(library.url.lastPathComponent.lowercased())"
+                try fileManager.copyItem(at: library.url, to: staging.appending(path: relative))
+                installedFiles.append(relative)
             }
-            if fileManager.fileExists(atPath: destination.path) { try fileManager.moveItem(at: destination, to: backup) }
+            let receipt = RuntimeComponentReceipt(
+                component: component,
+                version: version,
+                sourceRepository: sourceRepository,
+                installedAt: Date(),
+                sha256: sha256,
+                compressedSize: compressedSize,
+                installedFiles: installedFiles.sorted()
+            )
+            try makeEncoder().encode(receipt).write(to: staging.appending(path: "component.json"), options: .atomic)
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fileManager.moveItem(at: staging, to: destination)
-            var features = runtime.features ?? RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
-            features.vkd3d = true
-            runtime = InstalledRuntime(
-                id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion,
-                rootURL: runtime.rootURL, wineExecutable: runtime.wineExecutable,
-                wineServerExecutable: runtime.wineServerExecutable, wineBootExecutable: runtime.wineBootExecutable,
-                architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin,
-                engine: runtime.engine, features: features
-            )
-            try makeEncoder().encode(runtime).write(to: descriptorURL, options: .atomic)
-            try? fileManager.removeItem(at: backup)
-            try makeImmutable(runtime.rootURL)
-            return runtime
+            published = true
+            try makeImmutable(destination)
+            return refreshingDetectedFeatures(of: runtime)
         } catch {
             try? fileManager.removeItem(at: staging)
-            try? fileManager.removeItem(at: destination)
-            if fileManager.fileExists(atPath: backup.path) { try? fileManager.moveItem(at: backup, to: destination) }
-            try? previousDescriptor.write(to: descriptorURL, options: .atomic)
-            try? makeImmutable(runtime.rootURL)
+            if published {
+                try? makeWritable(destination)
+                try? fileManager.removeItem(at: destination)
+            }
             throw error
         }
     }
@@ -500,7 +559,8 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid("The Wine executable is missing.")
         }
         var detectedFeatures = candidate.features
-        detectedFeatures.wow64 = detectsWoW64(in: source)
+        let layoutCapabilities = detectsArchitectureCapabilities(in: source)
+        detectedFeatures = applying(layoutCapabilities, to: detectedFeatures)
         for requirement in candidate.requirements where !(await requirementChecker.isSatisfied(requirement)) {
             throw RuntimeManagerError.requirementMissing(requirement)
         }
@@ -552,7 +612,7 @@ actor RuntimeManager: RuntimeManaging {
                 let wrapper = staging.appending(path: candidate.layout.wineBootExecutable)
                 let script = """
                 #!/bin/sh
-                exec "$(dirname "$0")/../Runtime/Wine.app/Contents/Resources/wine/bin/wine64" wineboot "$@"
+                exec "$(dirname "$0")/../Runtime/Wine.app/Contents/Resources/wine/bin/wine" wineboot "$@"
                 """
                 try Data(script.utf8).write(to: wrapper, options: .atomic)
                 try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
@@ -566,6 +626,7 @@ actor RuntimeManager: RuntimeManaging {
                 architecture: candidate.architecture,
                 minimumMacOS: candidate.minimumMacOS,
                 channel: .preview,
+                engine: candidate.engine,
                 requirements: candidate.requirements,
                 features: detectedFeatures,
                 layout: candidate.layout,
@@ -581,7 +642,27 @@ actor RuntimeManager: RuntimeManaging {
             // transient second failure must not invalidate a sound snapshot.
             let validation = try await validate(provisional, checkingRequirements: false)
             guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
-            try await smokeTest(provisional)
+            let probedCapabilities = try await smokeTest(provisional)
+            if let probedCapabilities {
+                detectedFeatures = applying(probedCapabilities, to: detectedFeatures)
+                let updatedManifest = BorealRuntime(
+                    schemaVersion: localManifest.schemaVersion,
+                    id: localManifest.id,
+                    displayName: localManifest.displayName,
+                    wineVersion: localManifest.wineVersion,
+                    borealRevision: localManifest.borealRevision,
+                    architecture: localManifest.architecture,
+                    minimumMacOS: localManifest.minimumMacOS,
+                    channel: localManifest.channel,
+                    engine: localManifest.engine,
+                    requirements: localManifest.requirements,
+                    features: detectedFeatures,
+                    layout: localManifest.layout,
+                    artifact: localManifest.artifact
+                )
+                try makeEncoder().encode(updatedManifest.packageManifest)
+                    .write(to: staging.appending(path: "runtime.json"), options: .atomic)
+            }
 
             let installed = InstalledRuntime(
                 id: candidate.id,
@@ -649,7 +730,10 @@ actor RuntimeManager: RuntimeManaging {
             let provisional = try resolveRuntime(manifest: runtime, root: staging)
             let validation = try await validate(provisional)
             guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
-            try await smokeTest(provisional)
+            var installedFeatures = runtime.features
+            if let probedCapabilities = try await smokeTest(provisional) {
+                installedFeatures = applying(probedCapabilities, to: installedFeatures)
+            }
 
             let relativeWine = try relativePath(of: provisional.wineExecutable, inside: staging)
             let relativeServer = try relativePath(of: provisional.wineServerExecutable, inside: staging)
@@ -664,8 +748,8 @@ actor RuntimeManager: RuntimeManaging {
                 wineBootExecutable: destination.appending(path: relativeBoot),
                 architecture: runtime.architecture,
                 requirements: runtime.requirements,
-                engine: runtime.features.d3dmetal ? .gamePortingToolkit : .wine,
-                features: runtime.features
+                engine: runtime.engine,
+                features: installedFeatures
             )
             let descriptorData = try makeEncoder().encode(installed)
             try descriptorData.write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
@@ -755,6 +839,8 @@ actor RuntimeManager: RuntimeManaging {
         try fileManager.createDirectory(at: runtimesURL.appending(path: ".downloads"), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: runtimesURL.appending(path: ".installing"), withIntermediateDirectories: true)
         try fileManager.createDirectory(at: runtimesURL.appending(path: ".validation"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: componentStore.rootURL.appending(path: ".downloads"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: componentStore.rootURL.appending(path: ".installing"), withIntermediateDirectories: true)
     }
 
     private func validateManifest(_ runtime: BorealRuntime) throws {
@@ -881,16 +967,17 @@ actor RuntimeManager: RuntimeManaging {
         }
         if manifest.features.wineMono { guard fileManager.fileExists(atPath: try containedURL(manifest.layout.supportDirectory + "/wine-mono", root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound } }
         if manifest.features.wineGecko { guard fileManager.fileExists(atPath: try containedURL(manifest.layout.supportDirectory + "/wine-gecko", root: root).path) else { throw RuntimeManagerError.runtimeLayoutNotFound } }
-        return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements, engine: manifest.features.d3dmetal ? .gamePortingToolkit : .wine, features: manifest.features)
+        return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements, engine: manifest.engine, features: manifest.features)
     }
 
-    private func smokeTest(_ runtime: InstalledRuntime) async throws {
+    private func smokeTest(_ runtime: InstalledRuntime) async throws -> RuntimeArchitectureCapabilities? {
         let prefix = runtimesURL.appending(path: ".installing/smoke-\(UUID().uuidString)", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: prefix, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: prefix) }
         var environment = runtimeEnvironment(runtime)
         environment["WINEPREFIX"] = prefix.path
         environment["WINEDEBUG"] = "-all"
+        var probedCapabilities: RuntimeArchitectureCapabilities?
         let request = ProcessLaunchRequest(
             executable: runtime.wineBootExecutable,
             arguments: ["--init"],
@@ -935,11 +1022,13 @@ actor RuntimeManager: RuntimeManaging {
                     executablePaths: [runtime.wineBootExecutable.path]
                 ))
             }
+            probedCapabilities = await probeArchitectureCapabilities(runtime, prefix: prefix)
         } catch {
             await stopWineServer(runtime, environment: environment, prefix: prefix)
             throw error
         }
         await stopWineServer(runtime, environment: environment, prefix: prefix)
+        return probedCapabilities
     }
 
     private func stopWineServer(_ runtime: InstalledRuntime, environment: [String: String], prefix: URL) async {
@@ -1066,29 +1155,22 @@ actor RuntimeManager: RuntimeManaging {
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
     }
 
-    private func componentReceipt(_ component: RuntimeComponent, in runtime: InstalledRuntime) -> RuntimeComponentReceipt? {
-        let url = runtime.rootURL
-            .appending(path: "GraphicsComponents/\(component.directoryName)/component.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(RuntimeComponentReceipt.self, from: data)
+    private func verifiedDigest(_ digest: String?) -> String? {
+        guard let digest else { return nil }
+        let normalized = digest.replacingOccurrences(of: "sha256:", with: "").lowercased()
+        guard normalized.count == 64, normalized.allSatisfy({ $0.isHexDigit }) else { return nil }
+        return normalized
     }
 
-    private func recordComponentReceipt(
-        _ component: RuntimeComponent,
-        version: String,
-        repository: String,
-        in runtime: InstalledRuntime
-    ) throws {
-        let directory = runtime.rootURL.appending(path: "GraphicsComponents/\(component.directoryName)", directoryHint: .isDirectory)
-        let receipt = RuntimeComponentReceipt(
-            component: component,
-            version: version,
-            sourceRepository: repository,
-            installedAt: Date()
-        )
-        try makeWritable(runtime.rootURL)
-        defer { try? makeImmutable(runtime.rootURL) }
-        try makeEncoder().encode(receipt).write(to: directory.appending(path: "component.json"), options: .atomic)
+    private func componentReceipt(_ component: RuntimeComponent, in runtime: InstalledRuntime) -> RuntimeComponentReceipt? {
+        if let reference = componentStore.reference(for: component),
+           let data = try? Data(contentsOf: componentStore.componentURL(component, version: reference.version).appending(path: "component.json")) {
+            return try? JSONDecoder().decode(RuntimeComponentReceipt.self, from: data)
+        }
+        // Read legacy embedded receipts without modifying the immutable runtime.
+        let legacyURL = runtime.rootURL.appending(path: "GraphicsComponents/\(component.directoryName)/component.json")
+        guard let data = try? Data(contentsOf: legacyURL) else { return nil }
+        return try? JSONDecoder().decode(RuntimeComponentReceipt.self, from: data)
     }
 
     private func discoverComponentLibraries(in root: URL, names: Set<String>) throws -> [GraphicsLibrary] {
@@ -1185,24 +1267,148 @@ actor RuntimeManager: RuntimeManaging {
         return markers.contains(where: { fileManager.fileExists(atPath: resources.appending(path: $0).path) }) ? .gamePortingToolkit : .wine
     }
 
-    /// Local Wine bundles are not backed by Boreal's signed catalog, so their
-    /// 32-bit support must come from the copied runtime itself. Current WineHQ
-    /// builds use the new WoW64 layout, while older combined builds expose a
-    /// separate wine64 launcher alongside the 32-bit Windows modules.
-    private func detectsWoW64(in app: URL) -> Bool {
+    /// Performs a cheap layout preflight used to populate the local-runtime
+    /// picker. It deliberately does not look for `bin/wine64`: current Wine
+    /// releases use one `wine` launcher. The authoritative result is refreshed
+    /// by the disposable-prefix capability probe during import/install.
+    private func detectsArchitectureCapabilities(in app: URL) -> RuntimeArchitectureCapabilities {
         let wineRoot = app.appending(path: "Contents/Resources/wine", directoryHint: .isDirectory)
         let has32BitWindowsNTDLL = fileManager.fileExists(
             atPath: wineRoot.appending(path: "lib/wine/i386-windows/ntdll.dll").path
         )
-        guard has32BitWindowsNTDLL else { return false }
-
+        let has64BitWindowsNTDLL = fileManager.fileExists(
+            atPath: wineRoot.appending(path: "lib/wine/x86_64-windows/ntdll.dll").path
+        )
         let hasNewWoW64CPU = fileManager.fileExists(
             atPath: wineRoot.appending(path: "lib/wine/x86_64-windows/wow64cpu.dll").path
         )
-        let hasLegacyWine64 = fileManager.isExecutableFile(
-            atPath: wineRoot.appending(path: "bin/wine64").path
+        // Do not require the removed `wine64` loader. `wow64cpu.dll` together
+        // with the 32-bit Windows module is the portable layout signal; the
+        // disposable-prefix probe below is the authoritative execution test.
+        let usesNewWoW64 = has32BitWindowsNTDLL && hasNewWoW64CPU
+        return RuntimeArchitectureCapabilities(
+            canRunX86: has32BitWindowsNTDLL,
+            canRunX86_64: has64BitWindowsNTDLL || usesNewWoW64,
+            usesNewWoW64: usesNewWoW64,
+            supportsLegacyWin32Prefix: has32BitWindowsNTDLL && !usesNewWoW64
         )
-        return hasNewWoW64CPU || hasLegacyWine64
+    }
+
+    private func applying(
+        _ capabilities: RuntimeArchitectureCapabilities,
+        to features: RuntimeFeatures
+    ) -> RuntimeFeatures {
+        var updated = features
+        updated.architectureCapabilities = capabilities
+        updated.wow64 = capabilities.usesNewWoW64
+        updated.supportsWin32Execution = capabilities.canRunX86
+        updated.supportsWin64Execution = capabilities.canRunX86_64
+        return updated
+    }
+
+    /// Verifies executable capability in a disposable prefix. The Windows
+    /// `cmd.exe` files are shipped by Wine itself and give us real PE32/PE32+
+    /// execution evidence without requiring a legacy `wine64` loader name.
+    private func probeArchitectureCapabilities(
+        _ runtime: InstalledRuntime,
+        prefix: URL
+    ) async -> RuntimeArchitectureCapabilities? {
+        let system32Command = prefix.appending(path: "drive_c/windows/system32/cmd.exe")
+        let syswow64Command = prefix.appending(path: "drive_c/windows/syswow64/cmd.exe")
+        let canRunX86WithNewWoW64 = await runArchitectureProbe(
+            runtime: runtime,
+            prefix: prefix,
+            executable: syswow64Command,
+            expectedArchitecture: .x86,
+            name: "architecture-x86-wow64"
+        )
+        let canRunX86_64 = await runArchitectureProbe(
+            runtime: runtime,
+            prefix: prefix,
+            executable: system32Command,
+            expectedArchitecture: .x86_64,
+            name: "architecture-x64"
+        )
+        let hasProbeFiles = fileManager.fileExists(atPath: system32Command.path)
+            || fileManager.fileExists(atPath: syswow64Command.path)
+        guard hasProbeFiles else { return nil }
+
+        var supportsLegacyWin32Prefix = false
+        if !canRunX86WithNewWoW64 {
+            let legacyPrefix = prefix.deletingLastPathComponent().appending(path: "legacy-win32-\(UUID().uuidString)", directoryHint: .isDirectory)
+            try? fileManager.createDirectory(at: legacyPrefix, withIntermediateDirectories: true)
+            var environment = runtimeEnvironment(runtime)
+            environment["WINEPREFIX"] = legacyPrefix.path
+            environment["WINEARCH"] = WinePrefixArchitecture.win32.rawValue
+            let boot = ProcessLaunchRequest(
+                executable: runtime.wineBootExecutable,
+                arguments: ["--init"],
+                environment: environment,
+                currentDirectory: legacyPrefix,
+                stdoutLog: legacyPrefix.appending(path: "wineboot.stdout.log"),
+                stderrLog: legacyPrefix.appending(path: "wineboot.stderr.log")
+            )
+            if let receipt = try? await processExecutor.launch(boot),
+               let result = try? await processExecutor.waitForExit(receipt.id),
+               result.exitCode == 0,
+               await waitForProbePrefix(legacyPrefix),
+               await runArchitectureProbe(
+                   runtime: runtime,
+                   prefix: legacyPrefix,
+                   executable: legacyPrefix.appending(path: "drive_c/windows/system32/cmd.exe"),
+                   expectedArchitecture: .x86,
+                   name: "architecture-x86-legacy"
+               ) {
+                supportsLegacyWin32Prefix = true
+            }
+            await stopWineServer(runtime, environment: environment, prefix: legacyPrefix)
+            try? fileManager.removeItem(at: legacyPrefix)
+        }
+
+        return RuntimeArchitectureCapabilities(
+            canRunX86: canRunX86WithNewWoW64 || supportsLegacyWin32Prefix,
+            canRunX86_64: canRunX86_64,
+            usesNewWoW64: canRunX86WithNewWoW64 && canRunX86_64,
+            supportsLegacyWin32Prefix: supportsLegacyWin32Prefix
+        )
+    }
+
+    private func runArchitectureProbe(
+        runtime: InstalledRuntime,
+        prefix: URL,
+        executable: URL,
+        expectedArchitecture: WindowsExecutableArchitecture,
+        name: String
+    ) async -> Bool {
+        guard (try? executable.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+              WindowsExecutableArchitecture.inspect(executable) == expectedArchitecture else { return false }
+        var environment = runtimeEnvironment(runtime)
+        environment["WINEPREFIX"] = prefix.path
+        environment.removeValue(forKey: "WINEARCH")
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineExecutable,
+            arguments: ["C:\\windows\\\(expectedArchitecture == .x86 ? "syswow64" : "system32")\\cmd.exe", "/c", "exit", "0"],
+            environment: environment,
+            currentDirectory: prefix,
+            stdoutLog: prefix.appending(path: "\(name).stdout.log"),
+            stderrLog: prefix.appending(path: "\(name).stderr.log")
+        )
+        guard let receipt = try? await processExecutor.launch(request),
+              let result = try? await processExecutor.waitForExit(receipt.id) else { return false }
+        return result.exitCode == 0
+    }
+
+    private func waitForProbePrefix(_ prefix: URL) async -> Bool {
+        let expected = [
+            prefix.appending(path: "drive_c", directoryHint: .isDirectory),
+            prefix.appending(path: "system.reg"),
+            prefix.appending(path: "user.reg")
+        ]
+        for _ in 0..<120 {
+            if expected.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) { return true }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return false
     }
 
     /// Runtime snapshots imported by older Boreal builds can contain stale
@@ -1217,13 +1423,14 @@ actor RuntimeManager: RuntimeManaging {
             d3dmetal: runtime.resolvedEngine == .gamePortingToolkit,
             dxmt: false
         )
-        if runtime.origin == .localImport {
-            features.wow64 = detectsWoW64(in: copiedApp)
-            features.supportsWin32Execution = features.wow64
-            features.supportsWin64Execution = true
+        if runtime.origin == .localImport, features.architectureCapabilities == nil {
+            let capabilities = detectsArchitectureCapabilities(in: copiedApp)
+            features.architectureCapabilities = capabilities
+            features.wow64 = capabilities.usesNewWoW64
+            features.supportsWin32Execution = capabilities.canRunX86
+            features.supportsWin64Execution = capabilities.canRunX86_64
         }
         features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
-            && fileManager.fileExists(atPath: runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix/winemetal.so").path)
         features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["d3d10core.dll", "d3d11.dll"], in: runtime)
             || hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
@@ -1258,13 +1465,25 @@ actor RuntimeManager: RuntimeManaging {
         requiredX64: Set<String>,
         in runtime: InstalledRuntime
     ) -> Bool {
-        let root = runtime.rootURL
-            .appending(path: "GraphicsComponents/\(directoryName)/x64", directoryHint: .isDirectory)
-        guard let files = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+        let component: RuntimeComponent? = switch directoryName.uppercased() {
+        case "DXMT": .dxmt
+        case "DXVK", "D9VK": .dxvk
+        case "VKD3D": .vkd3d
+        default: nil
+        }
+        let root = component.flatMap { componentStore.reference(for: $0) }
+            .map { componentStore.componentURL($0.component, version: $0.version) }
+            ?? runtime.rootURL.appending(path: "GraphicsComponents/\(directoryName)", directoryHint: .isDirectory)
+        let x64Root = root.appending(path: "x64", directoryHint: .isDirectory)
+        guard let files = try? fileManager.contentsOfDirectory(at: x64Root, includingPropertiesForKeys: nil) else {
             return false
         }
         let names = Set(files.map { $0.lastPathComponent.lowercased() })
-        return requiredX64.isSubset(of: names)
+        let hasFiles = requiredX64.isSubset(of: names)
+        if directoryName.caseInsensitiveCompare("DXMT") == .orderedSame {
+            return hasFiles && fileManager.fileExists(atPath: root.appending(path: "x64-unix/winemetal.so").path)
+        }
+        return hasFiles
     }
 
     private func runtimePayloadContains(_ marker: String, in runtime: InstalledRuntime) -> Bool {

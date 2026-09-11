@@ -6,7 +6,8 @@ actor EnvironmentManager: EnvironmentManaging {
     private let processExecutor: any ProcessExecuting
     private let session: URLSession
     private let fileManager = FileManager.default
-    private let graphicsBackendManager = GraphicsBackendManager()
+    private let componentStore: GraphicsComponentStore
+    private let graphicsBackendManager: GraphicsBackendManager
     private let prefixInitializationAttempts: Int
     private let prefixInitializationInterval: Duration
 
@@ -21,6 +22,10 @@ actor EnvironmentManager: EnvironmentManaging {
         self.dependencyToolsURL = applicationSupportURL.appending(path: "Tools/Winetricks/2026-09-04", directoryHint: .isDirectory)
         self.processExecutor = processExecutor
         self.session = session
+        self.componentStore = GraphicsComponentStore(applicationSupportURL: applicationSupportURL)
+        self.graphicsBackendManager = GraphicsBackendManager(
+            componentsURL: applicationSupportURL.appending(path: "Components", directoryHint: .isDirectory)
+        )
         self.prefixInitializationAttempts = max(prefixInitializationAttempts, 1)
         self.prefixInitializationInterval = prefixInitializationInterval
     }
@@ -89,11 +94,11 @@ actor EnvironmentManager: EnvironmentManaging {
 
             // Some Wine and GPTK builds can return a non-zero status after they
             // have committed a usable prefix. Completeness remains the truth.
-            try await applyConfiguration(stagingEnvironment, runtime: runtime)
-            for dependency in environment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
-                let current = await dependencyStatuses(stagingEnvironment, runtime: runtime)
+            let configuredEnvironment = try await applyConfiguration(stagingEnvironment, runtime: runtime)
+            for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
+                let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
                 guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
-                try await install(dependency, in: stagingEnvironment, runtime: runtime)
+                try await install(dependency, in: configuredEnvironment, runtime: runtime)
             }
             let missing = missingPrefixPaths(at: stagingPrefix)
             guard missing.isEmpty else {
@@ -107,6 +112,7 @@ actor EnvironmentManager: EnvironmentManaging {
             try fileManager.moveItem(at: stagingPrefix, to: environment.prefixURL)
             try graphicsBackendManager.prefixDidMove(in: environment, from: stagingPrefix)
             var ready = environment
+            ready.configuration = configuredEnvironment.configuration
             ready.state = .ready
             try write(ready)
         } catch {
@@ -119,14 +125,15 @@ actor EnvironmentManager: EnvironmentManaging {
         }
     }
 
-    func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+    func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
         try validatePrefixMode(environment, runtime: runtime)
-        try await applyConfiguration(environment, runtime: runtime)
-        try write(environment)
+        let configuredEnvironment = try await applyConfiguration(environment, runtime: runtime)
+        try write(configuredEnvironment)
+        return configuredEnvironment
     }
 
-    private func applyConfiguration(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+    private func applyConfiguration(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
         let winecfg = runtime.wineExecutable.deletingLastPathComponent().appending(path: "winecfg")
         let hasWinecfgLauncher = fileManager.isExecutableFile(atPath: winecfg.path)
         try await runConfigurationCommand(
@@ -175,10 +182,13 @@ actor EnvironmentManager: EnvironmentManaging {
             }
         }
 
-        try await applyGraphicsBackend(environment, runtime: runtime)
+        let activation = try await applyGraphicsBackend(environment, runtime: runtime)
+        var configured = environment
+        configured.configuration.graphicsComponentReferences = activation.componentReference.map { [$0] } ?? []
+        return configured
     }
 
-    private func applyGraphicsBackend(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+    private func applyGraphicsBackend(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> GraphicsBackendActivation {
         let overrideNames = ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi"]
         for name in overrideNames {
             // Older Wine tools wrote forced-native overrides with a leading
@@ -209,6 +219,7 @@ actor EnvironmentManager: EnvironmentManaging {
                     runtime: runtime
                 )
             }
+            return activation
         } catch {
             try? graphicsBackendManager.reset(environment)
             throw error
@@ -370,7 +381,7 @@ actor EnvironmentManager: EnvironmentManaging {
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         values["WINEPREFIX"] = environment.prefixURL.path
-        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
             values["WINEARCH"] = architecture
         } else {
@@ -385,11 +396,18 @@ actor EnvironmentManager: EnvironmentManaging {
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
         values.merge(environment.configuration.graphicsConfiguration.environment(runtime: runtime)) { _, configured in configured }
-        if environment.configuration.graphicsBackend == .dxmt {
-            let dxmtUnixLibraries = runtime.rootURL.appending(
-                path: "GraphicsComponents/DXMT/x64-unix",
-                directoryHint: .isDirectory
-            )
+        let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(
+            runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
+        )
+        let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
+            runtime: runtime,
+            architecture: prefixArchitecture
+        )
+        if resolvedGraphicsBackend == .dxmt {
+            let dxmtUnixLibraries = environment.configuration.graphicsComponentReferences
+                .first(where: { $0.component == .dxmt })
+                .map { componentStore.componentURL(.dxmt, version: $0.version).appending(path: "x64-unix", directoryHint: .isDirectory) }
+                ?? runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix", directoryHint: .isDirectory)
             if fileManager.fileExists(atPath: dxmtUnixLibraries.appending(path: "winemetal.so").path) {
                 values["WINEDLLPATH"] = dxmtUnixLibraries.path
             }
@@ -406,9 +424,16 @@ actor EnvironmentManager: EnvironmentManaging {
     }
 
     private func validatePrefixMode(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) throws {
-        let mode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
-        let supportsWoW64 = runtime.features?.wow64 == true
-        let supported = mode == .wow64 ? supportsWoW64 : !supportsWoW64
+        let mode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true)
+        let capabilities = runtime.features?.resolvedArchitectureCapabilities ?? .unknown
+        let supported: Bool = switch mode {
+        case .wow64:
+            capabilities.usesNewWoW64
+        case .legacyWin32:
+            capabilities.supportsLegacyWin32Prefix
+        case .legacyWin64:
+            capabilities.canRunX86_64 && !capabilities.usesNewWoW64
+        }
         guard supported else {
             throw EnvironmentManagerError.unsupportedPrefixMode(mode: mode, runtime: runtime.displayName)
         }

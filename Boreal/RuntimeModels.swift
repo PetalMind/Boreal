@@ -30,6 +30,24 @@ nonisolated enum RuntimeEngine: String, Codable, Sendable, Hashable, CaseIterabl
     var graphicsName: String { self == .gamePortingToolkit ? "D3DMetal" : "WineD3D" }
 }
 
+/// Runtime architecture is an executable capability, not the presence of a
+/// helper named `wine64`.  New WoW64 builds intentionally expose one `wine`
+/// launcher, so callers must use these capabilities instead of checking a
+/// legacy filename.
+nonisolated struct RuntimeArchitectureCapabilities: Codable, Sendable, Hashable {
+    var canRunX86: Bool
+    var canRunX86_64: Bool
+    var usesNewWoW64: Bool
+    var supportsLegacyWin32Prefix: Bool
+
+    static let unknown = RuntimeArchitectureCapabilities(
+        canRunX86: false,
+        canRunX86_64: false,
+        usesNewWoW64: false,
+        supportsLegacyWin32Prefix: false
+    )
+}
+
 /// Optional fields mean unverified, never inferred from the Wine/GPTK version.
 nonisolated struct GraphicsBackendCapabilities: Codable, Sendable, Hashable {
     var metal4: Bool?
@@ -81,6 +99,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     /// support from WoW64 and conservatively treat Win64 as available.
     var supportsWin32Execution: Bool?
     var supportsWin64Execution: Bool?
+    var architectureCapabilities: RuntimeArchitectureCapabilities?
     var wineMono: Bool
     var wineGecko: Bool
     var d3dmetal: Bool
@@ -95,14 +114,15 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, supportsWin32Execution, supportsWin64Execution, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
+        case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
         case esync, msync, fullscreenFSR, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
-        self.supportsWin32Execution = supportsWin32Execution
-        self.supportsWin64Execution = supportsWin64Execution
+        self.architectureCapabilities = architectureCapabilities
+        self.supportsWin32Execution = supportsWin32Execution ?? architectureCapabilities?.canRunX86
+        self.supportsWin64Execution = supportsWin64Execution ?? architectureCapabilities?.canRunX86_64
         self.wineMono = wineMono
         self.wineGecko = wineGecko
         self.d3dmetal = d3dmetal
@@ -121,6 +141,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         wow64 = try values.decodeIfPresent(Bool.self, forKey: .wow64) ?? false
         supportsWin32Execution = try values.decodeIfPresent(Bool.self, forKey: .supportsWin32Execution)
         supportsWin64Execution = try values.decodeIfPresent(Bool.self, forKey: .supportsWin64Execution)
+        architectureCapabilities = try values.decodeIfPresent(RuntimeArchitectureCapabilities.self, forKey: .architectureCapabilities)
         wineMono = try values.decodeIfPresent(Bool.self, forKey: .wineMono) ?? false
         wineGecko = try values.decodeIfPresent(Bool.self, forKey: .wineGecko) ?? false
         d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
@@ -146,6 +167,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encode(wow64, forKey: .wow64)
         try values.encodeIfPresent(supportsWin32Execution, forKey: .supportsWin32Execution)
         try values.encodeIfPresent(supportsWin64Execution, forKey: .supportsWin64Execution)
+        try values.encodeIfPresent(architectureCapabilities, forKey: .architectureCapabilities)
         try values.encode(wineMono, forKey: .wineMono)
         try values.encode(wineGecko, forKey: .wineGecko)
         try values.encode(d3dmetal, forKey: .d3dmetal)
@@ -159,6 +181,19 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encode(dgVoodoo2, forKey: .dgVoodoo2)
         try values.encodeIfPresent(graphicsCapabilities, forKey: .graphicsCapabilities)
     }
+
+    /// Backwards-compatible capability projection for manifests written
+    /// before the explicit architecture probe was introduced.
+    var resolvedArchitectureCapabilities: RuntimeArchitectureCapabilities {
+        architectureCapabilities ?? RuntimeArchitectureCapabilities(
+            canRunX86: supportsWin32Execution ?? wow64,
+            canRunX86_64: supportsWin64Execution ?? true,
+            usesNewWoW64: wow64,
+            supportsLegacyWin32Prefix: !wow64
+        )
+    }
+
+    var supportsWoW64: Bool { resolvedArchitectureCapabilities.usesNewWoW64 }
 }
 
 nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
@@ -198,6 +233,16 @@ nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hash
     }
 }
 
+/// Exact immutable component snapshot selected by an environment. The digest
+/// is mandatory for published/downloaded components and is also used for
+/// locally imported snapshots.
+nonisolated struct GraphicsComponentReference: Codable, Sendable, Hashable {
+    let component: RuntimeComponent
+    let version: String
+    let sha256: String
+    let installedFiles: [String]
+}
+
 /// Windows redistributables belong to a mutable game environment, never to
 /// the immutable runtime package or the user's global Wine prefix.
 nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
@@ -233,7 +278,7 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
         switch self {
         case .legacyDirectX: "d3dx9"
         case .vc2010: "vcrun2010"
-        case .vc2015To2022: "vcrun2019"
+        case .vc2015To2022: "vcrun2022"
         case .xact: "xact"
         case .xinput: "xinput"
         case .dotNetFramework: "dotnet48"
@@ -312,6 +357,42 @@ nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
     let version: String
     let sourceRepository: String
     let installedAt: Date
+    let sha256: String
+    let compressedSize: Int64?
+    let installedFiles: [String]
+
+    init(
+        component: RuntimeComponent,
+        version: String,
+        sourceRepository: String,
+        installedAt: Date,
+        sha256: String = "",
+        compressedSize: Int64? = nil,
+        installedFiles: [String] = []
+    ) {
+        self.component = component
+        self.version = version
+        self.sourceRepository = sourceRepository
+        self.installedAt = installedAt
+        self.sha256 = sha256
+        self.compressedSize = compressedSize
+        self.installedFiles = installedFiles
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case component, version, sourceRepository, installedAt, sha256, compressedSize, installedFiles
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        component = try values.decode(RuntimeComponent.self, forKey: .component)
+        version = try values.decode(String.self, forKey: .version)
+        sourceRepository = try values.decode(String.self, forKey: .sourceRepository)
+        installedAt = try values.decode(Date.self, forKey: .installedAt)
+        sha256 = try values.decodeIfPresent(String.self, forKey: .sha256) ?? ""
+        compressedSize = try values.decodeIfPresent(Int64.self, forKey: .compressedSize)
+        installedFiles = try values.decodeIfPresent([String].self, forKey: .installedFiles) ?? []
+    }
 }
 
 nonisolated struct RuntimeComponentUpdate: Identifiable, Sendable, Hashable {
@@ -429,9 +510,64 @@ nonisolated struct RuntimePackageManifest: Codable, Sendable, Hashable {
     let minimumMacOS: String
     let requiresRosetta: Bool
     let channel: RuntimeChannel
+    let engine: RuntimeEngine
     let features: RuntimeFeatures
     let components: RuntimeComponents
     let layout: RuntimeLayout
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, displayName, wineVersion, borealRevision, architecture, minimumMacOS, requiresRosetta, channel, engine, features, components, layout
+    }
+
+    init(
+        schemaVersion: Int,
+        id: String,
+        displayName: String,
+        wineVersion: String,
+        borealRevision: Int = 1,
+        architecture: RuntimeArchitecture,
+        minimumMacOS: String,
+        requiresRosetta: Bool,
+        channel: RuntimeChannel,
+        engine: RuntimeEngine = .wine,
+        features: RuntimeFeatures,
+        components: RuntimeComponents = RuntimeComponents(),
+        layout: RuntimeLayout = .canonical
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.displayName = displayName
+        self.wineVersion = wineVersion
+        self.borealRevision = borealRevision
+        self.architecture = architecture
+        self.minimumMacOS = minimumMacOS
+        self.requiresRosetta = requiresRosetta
+        self.channel = channel
+        self.engine = engine
+        self.features = features
+        self.components = components
+        self.layout = layout
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        id = try values.decode(String.self, forKey: .id)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        wineVersion = try values.decode(String.self, forKey: .wineVersion)
+        borealRevision = try values.decodeIfPresent(Int.self, forKey: .borealRevision) ?? 1
+        architecture = try values.decode(RuntimeArchitecture.self, forKey: .architecture)
+        minimumMacOS = try values.decode(String.self, forKey: .minimumMacOS)
+        requiresRosetta = try values.decodeIfPresent(Bool.self, forKey: .requiresRosetta) ?? false
+        channel = try values.decode(RuntimeChannel.self, forKey: .channel)
+        features = try values.decode(RuntimeFeatures.self, forKey: .features)
+        // Old package manifests encoded GPTK only through d3dmetal. Accept
+        // that format on read, while every manifest Boreal writes is explicit.
+        engine = try values.decodeIfPresent(RuntimeEngine.self, forKey: .engine)
+            ?? (features.d3dmetal ? .gamePortingToolkit : .wine)
+        components = try values.decodeIfPresent(RuntimeComponents.self, forKey: .components) ?? RuntimeComponents()
+        layout = try values.decodeIfPresent(RuntimeLayout.self, forKey: .layout) ?? .canonical
+    }
 }
 
 nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
@@ -443,6 +579,7 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
     let architecture: RuntimeArchitecture
     let minimumMacOS: String
     let channel: RuntimeChannel
+    let engine: RuntimeEngine
     let requirements: Set<RuntimeRequirement>
     let features: RuntimeFeatures
     let components: RuntimeComponents
@@ -460,6 +597,7 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
             minimumMacOS: minimumMacOS,
             requiresRosetta: requirements.contains(.rosetta2),
             channel: channel,
+            engine: engine,
             features: features,
             components: components,
             layout: layout
@@ -475,6 +613,7 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
         architecture: RuntimeArchitecture,
         minimumMacOS: String,
         channel: RuntimeChannel,
+        engine: RuntimeEngine = .wine,
         requirements: Set<RuntimeRequirement>,
         features: RuntimeFeatures,
         components: RuntimeComponents = RuntimeComponents(),
@@ -489,6 +628,7 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
         self.architecture = architecture
         self.minimumMacOS = minimumMacOS
         self.channel = channel
+        self.engine = engine
         self.requirements = requirements
         self.features = features
         self.components = components
@@ -497,7 +637,7 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, displayName, wineVersion, borealRevision, architecture, minimumMacOS, requiresRosetta, channel, requirements, features, components, layout, artifact
+        case schemaVersion, id, displayName, wineVersion, borealRevision, architecture, minimumMacOS, requiresRosetta, channel, engine, requirements, features, components, layout, artifact
     }
 
     init(from decoder: Decoder) throws {
@@ -510,10 +650,13 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
         architecture = try values.decode(RuntimeArchitecture.self, forKey: .architecture)
         minimumMacOS = try values.decode(String.self, forKey: .minimumMacOS)
         channel = try values.decode(RuntimeChannel.self, forKey: .channel)
+        let decodedFeatures = try values.decode(RuntimeFeatures.self, forKey: .features)
+        features = decodedFeatures
+        engine = try values.decodeIfPresent(RuntimeEngine.self, forKey: .engine)
+            ?? (decodedFeatures.d3dmetal ? .gamePortingToolkit : .wine)
         var decodedRequirements = try values.decodeIfPresent(Set<RuntimeRequirement>.self, forKey: .requirements) ?? []
         if try values.decodeIfPresent(Bool.self, forKey: .requiresRosetta) == true { decodedRequirements.insert(.rosetta2) }
         requirements = decodedRequirements
-        features = try values.decode(RuntimeFeatures.self, forKey: .features)
         components = try values.decodeIfPresent(RuntimeComponents.self, forKey: .components) ?? RuntimeComponents()
         layout = try values.decodeIfPresent(RuntimeLayout.self, forKey: .layout) ?? .canonical
         artifact = try values.decode(RuntimeArtifact.self, forKey: .artifact)
@@ -530,6 +673,7 @@ nonisolated struct BorealRuntime: Codable, Identifiable, Sendable, Hashable {
         try values.encode(minimumMacOS, forKey: .minimumMacOS)
         try values.encode(requirements.contains(.rosetta2), forKey: .requiresRosetta)
         try values.encode(channel, forKey: .channel)
+        try values.encode(engine, forKey: .engine)
         try values.encode(requirements, forKey: .requirements)
         try values.encode(features, forKey: .features)
         try values.encode(components, forKey: .components)

@@ -283,7 +283,7 @@ nonisolated enum GraphicsStackCatalog {
         ),
         GraphicsStack(
             backend: .dxmt,
-            supportedAPIs: [.directX11],
+            supportedAPIs: [.directX10, .directX11],
             supportedArchitectures: [.win64],
             hostAPI: .metal,
             requiredRuntimeFeatures: [.dxmt],
@@ -310,7 +310,7 @@ nonisolated enum GraphicsStackCatalog {
         ),
         GraphicsStack(
             backend: .wineD3D,
-            supportedAPIs: [.directX9, .directX10, .directX11, .directX12],
+            supportedAPIs: [.directX9, .directX10, .directX11],
             supportedArchitectures: [.win32, .win64],
             hostAPI: .openGL,
             requiredRuntimeFeatures: [],
@@ -459,12 +459,30 @@ nonisolated enum GraphicsBackendResolver {
         in runtime: InstalledRuntime
     ) -> Bool {
         let fileManager = FileManager.default
-        let roots = components.flatMap { component in
+        let legacyRoots = components.flatMap { component in
             [
                 runtime.rootURL.appending(path: "GraphicsComponents/\(component)", directoryHint: .isDirectory),
                 runtime.rootURL.appending(path: "Support/Graphics/\(component)", directoryHint: .isDirectory)
             ]
         }
+        // Installed runtimes and the immutable component store share the
+        // same Boreal support root. This keeps API-specific resolution (for
+        // example DXVK D3D9) correct after components were detached from the
+        // runtime package.
+        let componentStoreRoot = runtime.rootURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Components", directoryHint: .isDirectory)
+        let componentStore = GraphicsComponentStore(rootURL: componentStoreRoot)
+        let componentRoots = Set(components.compactMap { name -> URL? in
+            let component: RuntimeComponent? = name.uppercased() == "VKD3D"
+                ? .vkd3d
+                : (name.uppercased() == "DXMT" ? .dxmt : (name.uppercased() == "DXVK" || name.uppercased() == "D9VK" ? .dxvk : nil))
+            guard let component,
+                  let reference = componentStore.reference(for: component) else { return nil }
+            return componentStore.componentURL(component, version: reference.version)
+        })
+        let roots = legacyRoots + componentRoots
         return roots.contains { root in
             guard let enumerator = fileManager.enumerator(
                 at: root,

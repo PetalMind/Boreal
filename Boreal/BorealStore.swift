@@ -962,7 +962,7 @@ final class BorealStore {
                     environmentDependencyStatuses[environmentID]?[index].state = .failed
                     environmentDependencyStatuses[environmentID]?[index].detail = error.localizedDescription
                 }
-                present(error, title: "(dependency.displayName) couldn’t be installed", stage: "Installing the dependency into the selected Windows environment")
+                present(error, title: "\(dependency.displayName) couldn’t be installed", stage: "Installing the dependency into the selected Windows environment")
             }
         }
     }
@@ -1017,7 +1017,7 @@ final class BorealStore {
             $0.source == .installed
                 && $0.state == .installed
                 && $0.engine == engine
-                && $0.features?.wow64 == true
+                && $0.features?.supportsWoW64 == true
         }
         return supportsWoW64 ? nil : "This game is 32-bit. The installed GPTK runtime does not support WoW64, so use Wine instead."
     }
@@ -1046,7 +1046,54 @@ final class BorealStore {
            let runtime = runtimeStatuses.first(where: {
                $0.id == managed.runtimeID && $0.source == .installed && $0.state == .installed
            }) {
-            profile.prefixMode = managed.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+            profile.prefixMode = managed.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
+        }
+        return profile
+    }
+
+    func runtimeEngine(for application: WindowsApplication) -> RuntimeEngine? {
+        guard let runtimeID = environment(id: application.environmentID)?.runtimeID else { return nil }
+        return runtimeStatuses.first(where: {
+            $0.id == runtimeID && $0.source == .installed
+        })?.engine
+    }
+
+    /// Shared Windows Steam has one prefix, so prefix-level settings come from
+    /// the host environment. Per-game launch arguments, overlay preferences,
+    /// controller keyboard mapping, and process-scoped diagnostics remain on
+    /// the game profile.
+    private func sharedSteamEnvironmentProfile(
+        from gameProfile: WineCompatibilityProfile,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) -> WineCompatibilityProfile {
+        var profile = gameProfile
+        let configuration = environment.configuration
+        profile.windowsVersion = WineWindowsVersion(rawValue: configuration.windowsVersion) ?? gameProfile.windowsVersion
+        profile.architecture = WinePrefixArchitecture(rawValue: configuration.architecture) ?? .win64
+        profile.prefixMode = configuration.prefixMode
+        profile.graphicsBackend = configuration.graphicsBackend
+        profile.graphicsAPI = configuration.graphicsAPI == .automatic ? nil : configuration.graphicsAPI
+        profile.graphicsFallback = configuration.graphicsFallback
+        profile.retinaModeEnabled = configuration.retinaModeEnabled
+        profile.forceXInput = configuration.forceXInput
+        profile.requiredDependencies = configuration.requiredDependencies
+
+        // Materialize automatic host selection once. This prevents the next
+        // Steam game from changing the shared prefix's renderer because its
+        // own DirectX API differs.
+        let architecture = configuration.resolvedPrefixArchitecture(
+            runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
+        )
+        let hostResolution = GraphicsBackendResolver.resolve(
+            api: configuration.graphicsAPI,
+            requestedBackend: configuration.graphicsBackend,
+            runtime: runtime,
+            architecture: architecture,
+            fallback: configuration.graphicsFallback
+        )
+        if hostResolution.isAvailable {
+            profile.graphicsBackend = hostResolution.stack.backend
         }
         return profile
     }
@@ -1054,7 +1101,7 @@ final class BorealStore {
     func graphicsBackendIssue(_ backend: WineGraphicsBackend, for application: WindowsApplication) -> String? {
         guard backend != .automatic, backend != .wineD3D else { return nil }
         if (backend == .dxmt || backend == .d3dMetal), compatibilityProfile(for: application).architecture == .win32 {
-            return "(backend.displayName) currently supports only 64-bit Windows games. Choose Win64 or another renderer."
+            return "\(backend.displayName) currently supports only 64-bit Windows games. Choose Win64 or another renderer."
         }
         let requiredEngine = backend.requiredEngine ?? .wine
         let compatibleRuntimes = runtimeStatuses.filter {
@@ -1084,12 +1131,16 @@ final class BorealStore {
               let runtime = runtimeStatuses.first(where: {
                   $0.id == environment.runtimeID && $0.source == .installed && $0.state == .installed
               }) else { return nil }
-        let supportsWoW64 = runtime.features?.wow64 == true
-        if mode == .wow64, !supportsWoW64 {
+        let capabilities = runtime.features?.resolvedArchitectureCapabilities ?? .unknown
+        switch mode {
+        case .wow64 where !capabilities.usesNewWoW64:
             return "The selected runtime does not provide modern WoW64 prefixes."
-        }
-        if mode != .wow64, supportsWoW64 {
-            return "Legacy WINEARCH prefixes are unavailable in this modern WoW64 runtime."
+        case .legacyWin32 where !capabilities.supportsLegacyWin32Prefix:
+            return "The selected runtime does not provide a legacy Win32 prefix."
+        case .legacyWin64 where !capabilities.canRunX86_64 || capabilities.usesNewWoW64:
+            return "The selected runtime does not provide a legacy Win64 prefix."
+        default:
+            break
         }
         return nil
     }
@@ -1137,9 +1188,10 @@ final class BorealStore {
         let previousProfile = applications[index].resolvedCompatibilityProfile
         let previousWindowsVersion = applications[index].windowsVersion
         let previousGraphics = applications[index].graphics
-        let currentEngine: RuntimeEngine = environment(id: applications[index].environmentID)?.graphics == RuntimeEngine.gamePortingToolkit.graphicsName
-            ? .gamePortingToolkit : .wine
         let currentRuntimeID = environment(id: applications[index].environmentID)?.runtimeID
+        let currentEngine = runtimeStatuses.first(where: {
+            $0.id == currentRuntimeID && $0.source == .installed
+        })?.engine ?? .wine
         let currentRuntimeFeatures = runtimeStatuses.first { $0.id == currentRuntimeID }?.features
         applications[index].compatibilityProfile = profile
         applications[index].windowsVersion = profile.windowsVersion.displayName
@@ -1204,8 +1256,10 @@ final class BorealStore {
                       let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }) else {
                     throw InstallerServiceError.noRuntimeAvailable
                 }
+                let existingComponentReferences = managed.configuration.graphicsComponentReferences
                 managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: profile)
-                try await services.environmentManager.configure(managed, runtime: runtime)
+                managed.configuration.graphicsComponentReferences = existingComponentReferences
+                managed = try await services.environmentManager.configure(managed, runtime: runtime)
                 guard let updatedIndex = applications.firstIndex(where: { $0.id == applicationID }) else { return }
                 if let environmentIndex = environments.firstIndex(where: { $0.id == managed.id }) {
                     environments[environmentIndex].windowsVersion = profile.windowsVersion.displayName
@@ -2011,7 +2065,8 @@ final class BorealStore {
         externalID: String?,
         environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime,
-        profile: WineCompatibilityProfile?
+        profile: WineCompatibilityProfile?,
+        directXAPIOverride: GraphicsAPI? = nil
     ) -> LaunchPlan {
         let storeReference = provider.flatMap { provider in
             externalID.map { externalID in StoreReference(provider: provider, externalID: externalID) }
@@ -2020,7 +2075,10 @@ final class BorealStore {
             $0.gameID == applicationID || $0.storeReference == storeReference
         }?.id
         let requestedBackend = profile?.graphicsBackend ?? .automatic
-        let selectedAPI = profile?.graphicsAPI ?? environment.configuration.graphicsAPI
+        let selectedAPI = directXAPIOverride ?? profile?.graphicsAPI ?? environment.configuration.graphicsAPI
+        let resolverAPI = directXAPIOverride == nil
+            ? selectedAPI
+            : (profile?.graphicsAPI ?? environment.configuration.graphicsAPI)
         let gameProfile = provider.flatMap { provider in
             externalID.flatMap { externalID in GameGraphicsProfiles.profile(provider: provider, externalID: externalID) }
         }
@@ -2029,11 +2087,11 @@ final class BorealStore {
             if let defaultAPI = gameProfile?.defaultAPI, defaultAPI != .automatic { return defaultAPI }
             return GraphicsAPIDetector.detect(executable: windowsPlan.executable) ?? .automatic
         }()
-        let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
+        let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         let graphicsResolution = GraphicsBackendResolver.resolve(
-            api: resolvedAPI,
+            api: resolverAPI,
             requestedBackend: requestedBackend,
-            gameProfile: gameProfile,
+            gameProfile: environment.purpose == .sharedStore ? nil : gameProfile,
             runtime: runtime,
             architecture: architecture,
             fallback: profile?.graphicsFallback ?? .none
@@ -2049,7 +2107,7 @@ final class BorealStore {
             graphicsBackend: graphicsResolution.stack.backend,
             compatibilityProfile: profile,
             graphicsStack: graphicsResolution.stack,
-            prefixMode: environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true),
+            prefixMode: environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true),
             windowsVersion: WineWindowsVersion(rawValue: environment.configuration.windowsVersion) ?? .windows11,
             directXAPI: resolvedAPI,
             dependencies: environment.configuration.requiredDependencies.sorted { $0.rawValue < $1.rawValue },
@@ -3355,10 +3413,17 @@ final class BorealStore {
         let installed = try await services.runtimeManager.installedRuntimes()
         if let runtime = installed.first(where: {
             guard $0.resolvedEngine == preferredEngine else { return false }
-            if prefixMode == nil, executableArchitecture == .x86, $0.features?.wow64 != true { return false }
+            let capabilities = $0.features?.resolvedArchitectureCapabilities ?? .unknown
+            if prefixMode == nil, executableArchitecture == .x86, !capabilities.canRunX86 { return false }
             if let prefixMode {
-                let runtimeSupportsWoW64 = $0.features?.wow64 == true
-                let unsupported = prefixMode == .wow64 ? !runtimeSupportsWoW64 : runtimeSupportsWoW64
+                let unsupported: Bool = switch prefixMode {
+                case .wow64:
+                    !capabilities.usesNewWoW64
+                case .legacyWin32:
+                    !capabilities.supportsLegacyWin32Prefix
+                case .legacyWin64:
+                    !capabilities.canRunX86_64 || capabilities.usesNewWoW64
+                }
                 if unsupported { return false }
             }
             switch backend {
@@ -3391,24 +3456,29 @@ final class BorealStore {
         if executableArchitecture == .x86_64, profile.architecture == .win32 {
             throw RuntimeManagerError.incompatible64BitExecutable
         }
+        let capabilities = runtime.features?.resolvedArchitectureCapabilities ?? .unknown
         if executableArchitecture == .x86,
            profile.architecture == .win64,
-           runtime.features?.wow64 != true {
+           !capabilities.usesNewWoW64 {
             throw RuntimeManagerError.incompatible32BitExecutable(runtime: runtime.displayName)
         }
         let mode = WinePrefixMode.resolve(
             requestedMode: profile.prefixMode,
             requestedArchitecture: profile.architecture.rawValue,
-            runtimeSupportsWoW64: runtime.features?.wow64 == true
+            runtimeSupportsWoW64: capabilities.usesNewWoW64
         )
         if executableArchitecture == .x86_64, mode == .legacyWin32 {
             throw RuntimeManagerError.incompatible64BitExecutable
         }
-        let supportsWoW64 = runtime.features?.wow64 == true
-        if mode == .wow64, !supportsWoW64 {
-            throw EnvironmentManagerError.unsupportedPrefixMode(mode: mode, runtime: runtime.displayName)
+        let supportsMode: Bool = switch mode {
+        case .wow64:
+            capabilities.usesNewWoW64
+        case .legacyWin32:
+            capabilities.supportsLegacyWin32Prefix
+        case .legacyWin64:
+            capabilities.canRunX86_64 && !capabilities.usesNewWoW64
         }
-        if mode != .wow64, supportsWoW64 {
+        if !supportsMode {
             throw EnvironmentManagerError.unsupportedPrefixMode(mode: mode, runtime: runtime.displayName)
         }
     }
@@ -3724,10 +3794,22 @@ final class BorealStore {
                       let runtime = try await runtime(for: environmentRecord) else {
                     throw InstallerServiceError.noRuntimeAvailable
                 }
-                try await services.processRunner.forceQuitEnvironment(environment: managed, runtime: runtime)
+                if app.usesSharedSteamGameSession {
+                    guard let session = activeSessions[id]
+                        ?? recoveredSessionForSharedSteam(application: app, environment: managed) else {
+                        throw ProcessRunnerError.sessionNotFound(id)
+                    }
+                    try await services.processRunner.forceQuitProcessGroup(
+                        session: session,
+                        environment: managed,
+                        runtime: runtime
+                    )
+                } else {
+                    try await services.processRunner.forceQuitEnvironment(environment: managed, runtime: runtime)
+                }
                 requestedStops.remove(id)
                 unexpectedLauncherFailures.remove(id)
-                markEnvironmentEnded(appID: id)
+                markEnvironmentEnded(appID: id, environmentSessionEnded: !app.usesSharedSteamGameSession)
             }
             catch { present(error, title: "The application couldn’t be force quit", stage: "Stopping the Windows environment") }
         }
@@ -3839,16 +3921,18 @@ final class BorealStore {
                 application.resolvedCompatibilityProfile,
                 for: application
             )
+            let existingComponentReferences = managed.configuration.graphicsComponentReferences
             managed.configuration = EnvironmentConfiguration(
                 name: environmentRecord.name,
                 profile: launchProfile
             )
+            managed.configuration.graphicsComponentReferences = existingComponentReferences
             try GameLaunchCompatibility.prepare(
                 application: application,
                 environment: managed,
                 runtime: runtime
             )
-            try await services.environmentManager.configure(managed, runtime: runtime)
+            managed = try await services.environmentManager.configure(managed, runtime: runtime)
             let windowsPlan = WindowsLaunchPlan(
                 executable: executable,
                 arguments: [],
@@ -3932,11 +4016,13 @@ final class BorealStore {
                 application.resolvedCompatibilityProfile,
                 for: application
             )
+            let existingComponentReferences = managed.configuration.graphicsComponentReferences
             managed.configuration = EnvironmentConfiguration(
                 name: environmentRecord.name,
                 profile: launchProfile
             )
-            try await services.environmentManager.configure(managed, runtime: runtime)
+            managed.configuration.graphicsComponentReferences = existingComponentReferences
+            managed = try await services.environmentManager.configure(managed, runtime: runtime)
             let session = try await services.processRunner.run(
                 plan: WindowsLaunchPlan(
                     executable: installer,
@@ -3979,31 +4065,56 @@ final class BorealStore {
         if applications[index].status == .running {
             requestedStops.insert(id)
             var stopError: Error?
-            do {
-                if let session = activeSessions[id] {
-                    try await services.processRunner.stopApplication(session)
+            if applications[index].usesSharedSteamGameSession {
+                if let environment = activeEnvironments[id],
+                   let runtime = activeRuntimes[id],
+                   let session = activeSessions[id]
+                    ?? recoveredSessionForSharedSteam(application: applications[index], environment: environment) {
+                    do {
+                        try await services.processRunner.stopProcessGroup(
+                            session: session,
+                            environment: environment,
+                            runtime: runtime
+                        )
+                    } catch {
+                        stopError = error
+                    }
+                } else {
+                    stopError = ProcessRunnerError.sessionNotFound(id)
                 }
-            }
-            catch {
-                stopError = error
-            }
-            // Stopping the Wine launcher does not necessarily stop child
-            // processes or the environment's wineserver. Close both layers so
-            // the environment monitor can reach the terminal Ready state.
-            if let environment = activeEnvironments[id], let runtime = activeRuntimes[id] {
+                // Steam's client and wineserver belong to the shared host,
+                // not to this game's session.
+                if stopError == nil {
+                    markEnvironmentEnded(appID: id, environmentSessionEnded: false)
+                    return
+                }
+            } else {
                 do {
-                    try await services.processRunner.terminateEnvironmentSession(environment: environment, runtime: runtime)
-                    // The environment is the authoritative lifecycle owner;
-                    // a stale launcher session error is no longer actionable
-                    // once the Wine session was closed successfully.
-                    stopError = nil
+                    if let session = activeSessions[id] {
+                        try await services.processRunner.stopApplication(session)
+                    }
                 }
                 catch {
-                    stopError = stopError ?? error
+                    stopError = error
+                }
+                // Stopping the Wine launcher does not necessarily stop child
+                // processes or the environment's wineserver. Close both layers so
+                // the environment monitor can reach the terminal Ready state.
+                if let environment = activeEnvironments[id], let runtime = activeRuntimes[id] {
+                    do {
+                        try await services.processRunner.terminateEnvironmentSession(environment: environment, runtime: runtime)
+                        // The environment is the authoritative lifecycle owner;
+                        // a stale launcher session error is no longer actionable
+                        // once the Wine session was closed successfully.
+                        stopError = nil
+                    }
+                    catch {
+                        stopError = stopError ?? error
+                    }
                 }
             }
             if activeSessions[id] == nil && activeEnvironments[id] == nil {
-                markEnvironmentEnded(appID: id)
+                markEnvironmentEnded(appID: id, environmentSessionEnded: !applications[index].usesSharedSteamGameSession)
             } else if let stopError {
                 requestedStops.remove(id)
                 present(stopError, title: "\(applications[index].name) couldn’t stop", stage: "Requesting a normal application exit")
@@ -4137,13 +4248,18 @@ final class BorealStore {
             let graphicsProfile = GameGraphicsProfiles.profile(for: applications[index])
             let selectedGraphicsAPI = profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic
             let graphicsLaunchOption = selectedGraphicsAPI == .automatic ? nil : graphicsProfile?.launchOption(for: selectedGraphicsAPI)
-            managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: profile)
+            let environmentProfile = applications[index].usesSharedSteamGameSession
+                ? sharedSteamEnvironmentProfile(from: profile, environment: managed, runtime: runtime)
+                : profile
+            let existingComponentReferences = managed.configuration.graphicsComponentReferences
+            managed.configuration = EnvironmentConfiguration(name: environmentRecord.name, profile: environmentProfile)
+            managed.configuration.graphicsComponentReferences = existingComponentReferences
             try GameLaunchCompatibility.prepare(
                 application: applications[index],
                 environment: managed,
                 runtime: runtime
             )
-            try await services.environmentManager.configure(managed, runtime: runtime)
+            managed = try await services.environmentManager.configure(managed, runtime: runtime)
             applications[index].status = .starting
             let session: WindowsProcessSession
             if !usesExistingExecutable,
@@ -4177,7 +4293,16 @@ final class BorealStore {
                     ).processSession
                     Task { _ = try? await services.processRunner.waitForExit(bootstrap) }
                     try await Task.sleep(for: .milliseconds(400))
-                    plan = SteamWindowsService.playPlan(appID: appID, steamExecutable: executable)
+                    let gameExecutable = SteamWindowsService.primaryExecutable(
+                        in: installedDirectory,
+                        applicationName: applications[index].name
+                    )
+                    plan = SteamWindowsService.playPlan(
+                        appID: appID,
+                        steamExecutable: executable,
+                        gameExecutableName: gameExecutable?.lastPathComponent,
+                        gameExecutablePath: gameExecutable?.path
+                    )
                 case .epic, .gog:
                     guard let game = storeGames.first(where: { $0.provider == provider && $0.externalID == appID }) else {
                         throw GameStoreProviderError.installationMissing(provider)
@@ -4200,7 +4325,7 @@ final class BorealStore {
                 configuredPlan.overlayDisplayID = profile.overlayDisplayID
                 configuredPlan = GameGraphicsProfiles.applying(
                     graphicsProfile,
-                    backend: profile.graphicsBackend,
+                    backend: environmentProfile.graphicsBackend,
                     to: configuredPlan
                 )
                 if provider != .steam {
@@ -4220,7 +4345,8 @@ final class BorealStore {
                     externalID: appID,
                     environment: managed,
                     runtime: runtime,
-                    profile: profile
+                    profile: environmentProfile,
+                    directXAPIOverride: applications[index].usesSharedSteamGameSession ? selectedGraphicsAPI : nil
                 )
                 lastLaunchPlans[applications[index].id] = launchPlan
                 applications[index].graphics = launchPlan.graphicsStack?.backend.displayName ?? launchPlan.graphicsBackend.displayName
@@ -4307,7 +4433,19 @@ final class BorealStore {
         guard let app = application(id: id) else { return }
         do {
             if let environment = activeEnvironments[id], let runtime = activeRuntimes[id] {
-                try? await services.processRunner.forceQuitEnvironment(environment: environment, runtime: runtime)
+                if app.usesSharedSteamGameSession {
+                    guard let session = activeSessions[id]
+                        ?? recoveredSessionForSharedSteam(application: app, environment: environment) else {
+                        throw ProcessRunnerError.sessionNotFound(id)
+                    }
+                    try await services.processRunner.forceQuitProcessGroup(
+                        session: session,
+                        environment: environment,
+                        runtime: runtime
+                    )
+                } else {
+                    try? await services.processRunner.forceQuitEnvironment(environment: environment, runtime: runtime)
+                }
             }
             let hasOtherApps = applications.contains { $0.id != id && $0.environmentID == app.environmentID }
             if !hasOtherApps, let record = environment(id: app.environmentID), let managed = managedEnvironment(from: record) {
@@ -4329,7 +4467,35 @@ final class BorealStore {
 
     private func managedEnvironment(from record: WindowsEnvironment) -> ManagedBorealEnvironment? {
         guard let runtimeID = record.runtimeID, let root = record.rootPath, let prefix = record.prefixPath, let logs = record.logsPath else { return nil }
-        return ManagedBorealEnvironment(id: record.id, configuration: EnvironmentConfiguration(name: record.name, windowsVersion: "win11", architecture: record.architecture == "64-bit" ? "win64" : "win32"), runtimeID: runtimeID, rootURL: URL(fileURLWithPath: root), prefixURL: URL(fileURLWithPath: prefix), logsURL: URL(fileURLWithPath: logs), state: .ready)
+        let rootURL = URL(fileURLWithPath: root).standardizedFileURL
+        let prefixURL = URL(fileURLWithPath: prefix).standardizedFileURL
+        let logsURL = URL(fileURLWithPath: logs).standardizedFileURL
+        let descriptor = rootURL.appending(path: "environment.json")
+        if let data = try? Data(contentsOf: descriptor),
+           let stored = try? JSONDecoder().decode(ManagedBorealEnvironment.self, from: data),
+           stored.id == record.id,
+           stored.runtimeID == runtimeID,
+           stored.rootURL.standardizedFileURL == rootURL,
+           stored.prefixURL.standardizedFileURL == prefixURL,
+           stored.logsURL.standardizedFileURL == logsURL {
+            return stored
+        }
+
+        // Legacy records did not persist the managed descriptor separately.
+        // Reconstruct only the fields that the old UI record could represent.
+        return ManagedBorealEnvironment(
+            id: record.id,
+            configuration: EnvironmentConfiguration(
+                name: record.name,
+                windowsVersion: "win11",
+                architecture: record.architecture == "64-bit" ? "win64" : "win32"
+            ),
+            runtimeID: runtimeID,
+            rootURL: rootURL,
+            prefixURL: prefixURL,
+            logsURL: logsURL,
+            state: .ready
+        )
     }
 
     private func monitorLauncher(session: WindowsProcessSession, appID: UUID) {
@@ -4363,7 +4529,7 @@ final class BorealStore {
             save()
             if !wasRequested,
                let application = application(id: appID),
-               !application.usesSharedSteamEnvironment,
+               !application.usesSharedSteamGameSession,
                !application.isInstallerOnly {
                 schedulePrimaryProcessExit(appID: appID)
             }
@@ -4382,15 +4548,50 @@ final class BorealStore {
     private func monitorEnvironmentSession(environment: ManagedBorealEnvironment, runtime: InstalledRuntime, appID: UUID) {
         let monitorID = UUID()
         environmentMonitorIDs[appID] = monitorID
+        let application = application(id: appID)
+        let session = activeSessions[appID] ?? recoveredSessionForSharedSteam(
+            application: application,
+            environment: environment
+        )
         Task { [weak self] in
             guard let self else { return }
+            if let session, session.sessionScope == .processGroup {
+                do {
+                    try await services.gameSessionCoordinator.waitForEnd(
+                        session: session,
+                        environment: environment,
+                        runtime: runtime
+                    )
+                    guard environmentMonitorIDs[appID] == monitorID else { return }
+                    // Steam's client and wineserver intentionally survive the
+                    // game. Only the process-group session has ended here.
+                    markEnvironmentEnded(appID: appID, environmentSessionEnded: false)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard environmentMonitorIDs[appID] == monitorID else { return }
+                    markEnvironmentUnknown(appID: appID, detail: error.localizedDescription)
+                }
+                return
+            }
             for _ in 0..<40 {
                 guard environmentMonitorIDs[appID] == monitorID else { return }
                 switch await services.processRunner.environmentSessionState(environment: environment, runtime: runtime) {
                 case .active:
                     environmentSessionStates[environment.id] = .active
                     do {
-                        try await services.processRunner.waitForEnvironmentSessionEnd(environment: environment, runtime: runtime)
+                        try await services.gameSessionCoordinator.waitForEnd(
+                            session: session ?? WindowsProcessSession(
+                                id: UUID(),
+                                environmentID: environment.id,
+                                launcherPID: 0,
+                                startedAt: .now,
+                                stdoutLog: environment.logsURL.appending(path: "session-monitor.stdout.log"),
+                                stderrLog: environment.logsURL.appending(path: "session-monitor.stderr.log")
+                            ),
+                            environment: environment,
+                            runtime: runtime
+                        )
                         guard environmentMonitorIDs[appID] == monitorID else { return }
                         markEnvironmentEnded(appID: appID)
                     } catch {
@@ -4421,6 +4622,30 @@ final class BorealStore {
         return false
     }
 
+    private func recoveredSessionForSharedSteam(
+        application: WindowsApplication?,
+        environment: ManagedBorealEnvironment
+    ) -> WindowsProcessSession? {
+        guard let application, application.usesSharedSteamGameSession else { return nil }
+        let gameExecutable = SteamWindowsService.installedGameDirectory(
+            appID: application.storeExternalID ?? "",
+            in: environment
+        ).flatMap {
+            SteamWindowsService.primaryExecutable(in: $0, applicationName: application.name)
+        }
+        return WindowsProcessSession(
+            id: UUID(),
+            environmentID: environment.id,
+            launcherPID: 0,
+            startedAt: .now,
+            stdoutLog: environment.logsURL.appending(path: "recovered-steam.stdout.log"),
+            stderrLog: environment.logsURL.appending(path: "recovered-steam.stderr.log"),
+            sessionScope: .processGroup,
+            processExecutableName: gameExecutable?.lastPathComponent,
+            processExecutablePath: gameExecutable?.path
+        )
+    }
+
     private func recoverPersistedSessions(appIDs: [UUID]) async {
         for appID in appIDs {
             guard let app = application(id: appID),
@@ -4432,6 +4657,29 @@ final class BorealStore {
             }
             activeEnvironments[appID] = managed
             activeRuntimes[appID] = installedRuntime
+            if app.usesSharedSteamGameSession {
+                let recoveredSession = recoveredSessionForSharedSteam(
+                    application: app,
+                    environment: managed
+                )
+                if let recoveredSession {
+                    activeSessions[appID] = recoveredSession
+                    performanceLogURLs[appID] = recoveredSession.stderrLog
+                }
+                if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
+                executionStates[appID] = .running
+                beginPlaySession(appID: appID)
+                if !app.isInstallerOnly {
+                    ControllerManager.shared.activate(
+                        for: appID,
+                        profileName: app.name,
+                        keyboardMappingEnabled: !compatibilityProfile(for: app).disableSteamInputEquivalent
+                    )
+                }
+                save()
+                monitorEnvironmentSession(environment: managed, runtime: installedRuntime, appID: appID)
+                continue
+            }
             switch await services.processRunner.environmentSessionState(environment: managed, runtime: installedRuntime) {
             case .active:
                 environmentSessionStates[managed.id] = .active
@@ -4460,7 +4708,7 @@ final class BorealStore {
         return try await services.runtimeManager.installedRuntimes().first { $0.id == runtimeID }
     }
 
-    private func markEnvironmentEnded(appID: UUID) {
+    private func markEnvironmentEnded(appID: UUID, environmentSessionEnded: Bool = true) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
         endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
@@ -4482,7 +4730,9 @@ final class BorealStore {
             if wasRequested { applications[index].lastResult = "Stopped" }
         }
         executionStates[appID] = .terminated(exitCode: applications[index].lastExitCode)
-        environmentSessionStates[environmentID] = .inactive
+        if environmentSessionEnded {
+            environmentSessionStates[environmentID] = .inactive
+        }
         activeSessions[appID] = nil
         performanceLogURLs[appID] = nil
         activeEnvironments[appID] = nil
@@ -4695,7 +4945,7 @@ final class BorealStore {
                     state: .available,
                     isVerified: false,
                     source: .catalog,
-                    engine: runtime.features.d3dmetal ? .gamePortingToolkit : .wine,
+                    engine: runtime.engine,
                     features: runtime.features
                 ))
             }

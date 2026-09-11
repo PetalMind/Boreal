@@ -3,15 +3,29 @@ import Foundation
 nonisolated struct GraphicsBackendActivation: Sendable, Equatable {
     let backend: WineGraphicsBackend
     let dllOverrides: [String]
+    let componentReference: GraphicsComponentReference?
+
+    init(
+        backend: WineGraphicsBackend,
+        dllOverrides: [String],
+        componentReference: GraphicsComponentReference? = nil
+    ) {
+        self.backend = backend
+        self.dllOverrides = dllOverrides
+        self.componentReference = componentReference
+    }
 }
 
 nonisolated enum GraphicsBackendManagerError: LocalizedError, Sendable {
+    case backendUnavailable(WineGraphicsBackend, GraphicsAPI)
     case componentPackageMissing(WineGraphicsBackend)
     case componentPackageEmpty(WineGraphicsBackend)
     case builtinDXVKPackage
 
     var errorDescription: String? {
         switch self {
+        case .backendUnavailable(let backend, let api):
+            "The \(backend.displayName) renderer does not support \(api.displayName) in the selected graphics stack."
         case .componentPackageMissing(let backend):
             "The selected runtime advertises \(backend.displayName), but its graphics component package is missing."
         case .componentPackageEmpty(let backend):
@@ -34,10 +48,26 @@ nonisolated struct GraphicsBackendManager: Sendable {
     private struct InstallationManifest: Codable {
         let backend: WineGraphicsBackend
         let files: [InstalledFile]
+        let componentReference: GraphicsComponentReference?
+
+        init(
+            backend: WineGraphicsBackend,
+            files: [InstalledFile],
+            componentReference: GraphicsComponentReference? = nil
+        ) {
+            self.backend = backend
+            self.files = files
+            self.componentReference = componentReference
+        }
     }
 
     private var fileManager: FileManager { .default }
     private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "winemetal.dll"])
+    private let componentStore: GraphicsComponentStore?
+
+    init(componentsURL: URL? = nil) {
+        componentStore = componentsURL.map { GraphicsComponentStore(rootURL: $0) }
+    }
 
     func resolve(
         _ requested: WineGraphicsBackend,
@@ -61,22 +91,37 @@ nonisolated struct GraphicsBackendManager: Sendable {
         try reset(environment)
         var configuration = environment.configuration.graphicsConfiguration
         configuration.backend = requested
-        let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.wow64 == true)
-        let backend = resolve(
-            requested,
-            graphicsAPI: configuration.api,
+        let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
+        let resolution = GraphicsBackendResolver.resolve(
+            api: configuration.api,
+            requestedBackend: requested,
             runtime: runtime,
             architecture: architecture
         )
+        guard resolution.isAvailable else {
+            throw GraphicsBackendManagerError.backendUnavailable(requested, configuration.api)
+        }
+        let backend = resolution.stack.backend
         guard backend == .dxmt || backend == .dxvk || backend == .vkd3d else {
             return GraphicsBackendActivation(backend: backend, dllOverrides: [])
         }
 
-        guard supports(backend, runtime: runtime),
+        let componentReference = componentReference(
+            for: backend,
+            environment: environment
+        )
+        if let configuredReference = environment.configuration.graphicsComponentReferences.first(where: {
+            $0.component == component(for: backend)
+        }),
+           componentStore?.contains(configuredReference, fileManager: fileManager) != true {
+            throw GraphicsBackendManagerError.componentPackageMissing(backend)
+        }
+        guard supports(backend, runtime: runtime, componentReference: componentReference),
               let componentRoot = componentRoot(
                   for: backend,
                   api: configuration.api,
-                  runtime: runtime
+                  runtime: runtime,
+                  reference: componentReference
               ) else {
             throw GraphicsBackendManagerError.componentPackageMissing(backend)
         }
@@ -109,7 +154,11 @@ nonisolated struct GraphicsBackendManager: Sendable {
                 try fileManager.copyItem(at: source, to: destination)
                 installed.append(InstalledFile(destination: destination, backup: backup))
             }
-            let manifest = InstallationManifest(backend: backend, files: installed)
+            let manifest = InstallationManifest(
+                backend: backend,
+                files: installed,
+                componentReference: componentReference
+            )
             try JSONEncoder().encode(manifest).write(to: manifestURL(environment), options: .atomic)
         } catch {
             try? restore(installed.reversed())
@@ -120,7 +169,11 @@ nonisolated struct GraphicsBackendManager: Sendable {
         let overrides = Array(Set(installed.map { $0.destination.deletingPathExtension().lastPathComponent }))
             .filter { $0.caseInsensitiveCompare("winemetal") != .orderedSame }
             .sorted()
-        return GraphicsBackendActivation(backend: backend, dllOverrides: overrides)
+        return GraphicsBackendActivation(
+            backend: backend,
+            dllOverrides: overrides,
+            componentReference: componentReference
+        )
     }
 
     func reset(_ environment: ManagedBorealEnvironment) throws {
@@ -149,7 +202,11 @@ nonisolated struct GraphicsBackendManager: Sendable {
                 backup: file.backup
             )
         }
-        try JSONEncoder().encode(InstallationManifest(backend: manifest.backend, files: files))
+        try JSONEncoder().encode(InstallationManifest(
+            backend: manifest.backend,
+            files: files,
+            componentReference: manifest.componentReference
+        ))
             .write(to: url, options: .atomic)
     }
 
@@ -164,8 +221,17 @@ nonisolated struct GraphicsBackendManager: Sendable {
         }
     }
 
-    private func supports(_ backend: WineGraphicsBackend, runtime: InstalledRuntime) -> Bool {
-        switch backend {
+    private func supports(
+        _ backend: WineGraphicsBackend,
+        runtime: InstalledRuntime,
+        componentReference: GraphicsComponentReference?
+    ) -> Bool {
+        if let componentReference,
+           let componentStore,
+           componentStore.contains(componentReference, fileManager: fileManager) {
+            return true
+        }
+        return switch backend {
         case .dxmt: runtime.features?.dxmt == true
         case .dxvk: runtime.features?.dxvk == true
         case .vkd3d: runtime.features?.vkd3d == true
@@ -176,8 +242,14 @@ nonisolated struct GraphicsBackendManager: Sendable {
     private func componentRoot(
         for backend: WineGraphicsBackend,
         api: GraphicsAPI,
-        runtime: InstalledRuntime
+        runtime: InstalledRuntime,
+        reference: GraphicsComponentReference?
     ) -> URL? {
+        if let reference,
+           let componentStore,
+           componentStore.contains(reference, fileManager: fileManager) {
+            return componentStore.componentURL(reference.component, version: reference.version)
+        }
         let folders: [String]
         switch backend {
         case .dxmt: folders = ["DXMT"]
@@ -198,13 +270,39 @@ nonisolated struct GraphicsBackendManager: Sendable {
         }.first { fileManager.fileExists(atPath: $0.path) }
     }
 
+    private func componentReference(
+        for backend: WineGraphicsBackend,
+        environment: ManagedBorealEnvironment
+    ) -> GraphicsComponentReference? {
+        let component: RuntimeComponent? = switch backend {
+        case .dxmt: .dxmt
+        case .dxvk: .dxvk
+        case .vkd3d: .vkd3d
+        default: nil
+        }
+        guard let component else { return nil }
+        if let configured = environment.configuration.graphicsComponentReferences.first(where: { $0.component == component }) {
+            return componentStore?.contains(configured, fileManager: fileManager) == true ? configured : nil
+        }
+        return componentStore?.reference(for: component, fileManager: fileManager)
+    }
+
+    private func component(for backend: WineGraphicsBackend) -> RuntimeComponent? {
+        switch backend {
+        case .dxmt: .dxmt
+        case .dxvk: .dxvk
+        case .vkd3d: .vkd3d
+        default: nil
+        }
+    }
+
     private func componentFiles(
         in root: URL,
         environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime
     ) throws -> [(URL, URL)] {
         let layouts: [(String, String)]
-        switch environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.wow64 == true) {
+        switch environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true) {
         case .wow64:
             // A modern WoW64 prefix keeps 64-bit DLLs in system32 and
             // 32-bit DLLs in syswow64. A requested 32-bit application still

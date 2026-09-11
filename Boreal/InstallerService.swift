@@ -123,7 +123,7 @@ actor InstallerService: Installing {
             requiredArchitectures: name == "Steam for Windows" ? [.x86, .x86_64] : nil
         )
         let environmentArchitecture = installerArchitecture == .x86 ? "win32" : "win64"
-        let prefixMode: WinePrefixMode? = runtime.features?.wow64 == true
+        let prefixMode: WinePrefixMode? = runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
             ? .wow64
             : (installerArchitecture == .x86 ? .legacyWin32 : .legacyWin64)
         await progress(.creatingEnvironment)
@@ -170,7 +170,7 @@ actor InstallerService: Installing {
                 runtime: runtime
             )
             guard resolved.prefixMode == preparedEnvironment.configuration.resolvedPrefixMode(
-                runtimeSupportsWoW64: runtime.features?.wow64 == true
+                runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
             ) else {
                 throw CompatibilityPreparationError.noCompatibleRuntime(
                     "The installed game requires a different prefix architecture than the installer environment."
@@ -184,7 +184,7 @@ actor InstallerService: Installing {
             preparedEnvironment.configuration.requiredDependencies = Set(resolved.dependencies)
             // Persist the resolved plan before installing components so a retry
             // or later launch observes the same compatibility decision.
-            try await environmentManager.configure(preparedEnvironment, runtime: runtime)
+            preparedEnvironment = try await environmentManager.configure(preparedEnvironment, runtime: runtime)
             for dependency in resolved.dependencies {
                 try await environmentManager.install(dependency, in: preparedEnvironment, runtime: runtime)
             }
@@ -224,7 +224,7 @@ actor InstallerService: Installing {
             preferredEngine: preferredEngine,
             executableArchitecture: installerArchitecture
         )
-        let prefixMode: WinePrefixMode? = runtime.features?.wow64 == true
+        let prefixMode: WinePrefixMode? = runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
             ? .wow64
             : (installerArchitecture == .x86 ? .legacyWin32 : .legacyWin64)
         await progress(.creatingEnvironment)

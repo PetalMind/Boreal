@@ -249,6 +249,9 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
     let executableArchitecture: WindowsExecutableArchitecture
     let overlayCompatibleFullscreen: Bool
     let overlayDisplayID: UInt32?
+    let sessionScope: SessionScope
+    let processExecutableName: String?
+    let processExecutablePath: String?
 
     init(
         applicationID: UUID,
@@ -266,7 +269,10 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         directXAPI: GraphicsAPI = .automatic,
         dependencies: [RuntimeDependency] = [],
         environmentPurpose: EnvironmentPurpose = .game,
-        executableArchitecture: WindowsExecutableArchitecture = .unknown
+        executableArchitecture: WindowsExecutableArchitecture = .unknown,
+        sessionScope: SessionScope? = nil,
+        processExecutableName: String? = nil,
+        processExecutablePath: String? = nil
     ) {
         self.applicationID = applicationID
         self.installationID = installationID
@@ -289,6 +295,9 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
         self.executableArchitecture = executableArchitecture
         overlayCompatibleFullscreen = windowsPlan.overlayCompatibleFullscreen
         overlayDisplayID = windowsPlan.overlayDisplayID
+        self.sessionScope = sessionScope ?? windowsPlan.sessionScope
+        self.processExecutableName = processExecutableName ?? windowsPlan.processExecutableName
+        self.processExecutablePath = processExecutablePath ?? windowsPlan.processExecutablePath
     }
 
     var windowsPlan: WindowsLaunchPlan {
@@ -298,8 +307,32 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
             environment: environmentVariables,
             workingDirectory: workingDirectory,
             overlayCompatibleFullscreen: overlayCompatibleFullscreen,
-            overlayDisplayID: overlayDisplayID
+            overlayDisplayID: overlayDisplayID,
+            sessionScope: sessionScope,
+            processExecutableName: processExecutableName,
+            processExecutablePath: processExecutablePath
         )
+    }
+}
+
+nonisolated protocol GameSessionCoordinating: Sendable {
+    func waitForEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+}
+
+actor GameSessionCoordinator: GameSessionCoordinating {
+    private let processRunner: any WindowsProcessRunning
+
+    init(processRunner: any WindowsProcessRunning) {
+        self.processRunner = processRunner
+    }
+
+    func waitForEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        switch session.sessionScope {
+        case .exclusiveEnvironment:
+            try await processRunner.waitForEnvironmentSessionEnd(environment: environment, runtime: runtime)
+        case .processGroup:
+            try await processRunner.waitForProcessGroupEnd(session: session, environment: environment, runtime: runtime)
+        }
     }
 }
 

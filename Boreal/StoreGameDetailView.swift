@@ -1107,8 +1107,7 @@ struct StoreGameDetailView: View {
     }
 
     private func currentRuntimeEngine(for app: WindowsApplication) -> RuntimeEngine? {
-        guard let graphics = store.environment(id: app.environmentID)?.graphics else { return nil }
-        return graphics == RuntimeEngine.gamePortingToolkit.graphicsName ? .gamePortingToolkit : .wine
+        store.runtimeEngine(for: app)
     }
 
     private var runtimePreparationMenu: some View {

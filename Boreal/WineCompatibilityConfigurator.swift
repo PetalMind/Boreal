@@ -121,7 +121,7 @@ struct WineCompatibilityConfigurator: View {
 
     private var displaySection: some View {
         CompatibilitySettingsSection(title: "Display", subtitle: "Configure display resolution, scaling, and window behavior.", symbol: "display", tint: .blue) {
-            CompatibilityToggleRow(title: "High-resolution rendering (Retina)", detail: "Render the game at higher resolution for a sharper image.", isOn: $profile.retinaModeEnabled)
+            CompatibilityToggleRow(title: "High-resolution rendering (Retina)", detail: "Render the game at higher resolution for a sharper image.", isOn: $profile.retinaModeEnabled, disabled: usesSharedSteamEnvironment)
             CompatibilityToggleRow(title: "Fullscreen upscaling (FSR)", detail: "Improve performance when playing fullscreen at a lower resolution.", isOn: $profile.fullscreenFSREnabled, disabled: runtimeFeatures?.fullscreenFSR != true)
             if runtimeFeatures?.fullscreenFSR != true {
                 CompatibilityCallout(text: String(localized: "The selected runtime does not implement WINE_FULLSCREEN_FSR."), symbol: "exclamationmark.triangle.fill", tint: .orange)
@@ -158,7 +158,7 @@ struct WineCompatibilityConfigurator: View {
                 Label("No controller detected", systemImage: "gamecontroller").foregroundStyle(.secondary)
             }
             CompatibilityToggleRow(title: "Disable keyboard mapping", detail: "Stops Boreal from turning controller buttons into keyboard presses. Steam Input is unchanged.", isOn: $profile.disableSteamInputEquivalent)
-            CompatibilityToggleRow(title: "Xbox controller compatibility", detail: "Presents the controller as an Xbox 360 controller. Restart the entire Wine session after changing this.", isOn: $profile.forceXInput, disabled: runtimeFeatures?.wineBusControllerMapping != true)
+            CompatibilityToggleRow(title: "Xbox controller compatibility", detail: "Presents the controller as an Xbox 360 controller. Restart the entire Wine session after changing this.", isOn: $profile.forceXInput, disabled: usesSharedSteamEnvironment || runtimeFeatures?.wineBusControllerMapping != true)
             Button("Controller mapping", systemImage: "gamecontroller") { showsControllerMapping = true }
         }
     }
@@ -168,7 +168,7 @@ struct WineCompatibilityConfigurator: View {
             DisclosureGroup("Windows environment") {
                 VStack(spacing: 10) {
                     CompatibilityPickerRow(title: "Windows version", detail: nil) {
-                        Picker("Windows version", selection: $profile.windowsVersion) { ForEach(WineWindowsVersion.allCases) { Text($0.displayName).tag($0) } }.labelsHidden()
+                        Picker("Windows version", selection: $profile.windowsVersion) { ForEach(WineWindowsVersion.allCases) { Text($0.displayName).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment)
                     }
                     CompatibilityPickerRow(title: "Windows executable architecture", detail: String(localized: "This describes the selected Windows executable. It is separate from the Wine prefix mode.")) {
                         Picker("Windows executable architecture", selection: $profile.architecture) { ForEach(WinePrefixArchitecture.allCases) { Text(executableArchitectureLabel($0)).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment)

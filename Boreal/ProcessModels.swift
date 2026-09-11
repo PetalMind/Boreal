@@ -17,6 +17,33 @@ nonisolated struct WindowsProcessSession: Identifiable, Sendable, Hashable {
     let startedAt: Date
     let stdoutLog: URL
     let stderrLog: URL
+    /// Steam keeps its client and wineserver alive after a game exits, so its
+    /// user-visible session must be tracked by the game process group.
+    let sessionScope: SessionScope
+    let processExecutableName: String?
+    let processExecutablePath: String?
+
+    init(
+        id: UUID,
+        environmentID: UUID,
+        launcherPID: Int32,
+        startedAt: Date,
+        stdoutLog: URL,
+        stderrLog: URL,
+        sessionScope: SessionScope = .exclusiveEnvironment,
+        processExecutableName: String? = nil,
+        processExecutablePath: String? = nil
+    ) {
+        self.id = id
+        self.environmentID = environmentID
+        self.launcherPID = launcherPID
+        self.startedAt = startedAt
+        self.stdoutLog = stdoutLog
+        self.stderrLog = stderrLog
+        self.sessionScope = sessionScope
+        self.processExecutableName = processExecutableName
+        self.processExecutablePath = processExecutablePath
+    }
 }
 
 nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
@@ -26,6 +53,9 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
     var workingDirectory: URL
     var overlayCompatibleFullscreen = false
     var overlayDisplayID: UInt32? = nil
+    var sessionScope: SessionScope = .exclusiveEnvironment
+    var processExecutableName: String? = nil
+    var processExecutablePath: String? = nil
 }
 
 nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
@@ -129,6 +159,11 @@ nonisolated enum EnvironmentSessionState: Sendable, Equatable {
     case active
 }
 
+nonisolated enum SessionScope: String, Codable, Sendable, Hashable {
+    case exclusiveEnvironment
+    case processGroup
+}
+
 nonisolated enum ProcessRunnerError: LocalizedError, Sendable {
     case executableMissing(URL)
     case launchFailed(String)
@@ -157,9 +192,30 @@ nonisolated protocol WindowsProcessRunning: Sendable {
     func waitForExit(_ session: WindowsProcessSession) async throws -> ProcessExecutionResult
     func state(of session: WindowsProcessSession) async throws -> ProcessExecutionState
     func stopApplication(_ session: WindowsProcessSession) async throws
+    func stopProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func forceQuitProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func environmentSessionState(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> EnvironmentSessionState
     func waitForEnvironmentSessionEnd(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func waitForProcessGroupEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func terminateEnvironmentSession(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func forceQuitEnvironment(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func forceQuit(_ session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+}
+
+nonisolated extension WindowsProcessRunning {
+    /// Runners that do not have a native process-group implementation retain
+    /// the old launcher-stop behavior until they can provide one.
+    func stopProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await stopApplication(session)
+    }
+
+    func forceQuitProcessGroup(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await forceQuit(session, environment: environment, runtime: runtime)
+    }
+
+    /// Preserve the old behavior for runners that do not provide a process
+    /// group implementation yet.
+    func waitForProcessGroupEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await waitForEnvironmentSessionEnd(environment: environment, runtime: runtime)
+    }
 }

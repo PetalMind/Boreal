@@ -105,13 +105,41 @@ actor SteamWindowsService: SteamWindowsProviding {
         }
     }
 
-    static func playPlan(appID: String, steamExecutable: URL) -> WindowsLaunchPlan {
+    static func playPlan(
+        appID: String,
+        steamExecutable: URL,
+        gameExecutableName: String? = nil,
+        gameExecutablePath: String? = nil
+    ) -> WindowsLaunchPlan {
         WindowsLaunchPlan(
             executable: steamExecutable,
             arguments: ["-applaunch", appID],
             environment: [:],
-            workingDirectory: steamExecutable.deletingLastPathComponent()
+            workingDirectory: steamExecutable.deletingLastPathComponent(),
+            sessionScope: .processGroup,
+            processExecutableName: gameExecutableName,
+            processExecutablePath: gameExecutablePath
         )
+    }
+
+    /// Finds the executable that should define a Steam game's user-visible
+    /// session. Steam itself is deliberately excluded from this decision.
+    static func primaryExecutable(
+        in directory: URL,
+        applicationName: String? = nil,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let root = directory.standardizedFileURL
+        let snapshot = ExecutableDiscovery.snapshot(at: root, fileManager: fileManager)
+        let candidates = ExecutableDiscovery.rankedCandidates(
+            before: ExecutableFilesystemSnapshot(rootURL: root, entries: []),
+            after: snapshot,
+            applicationName: applicationName ?? root.lastPathComponent
+        )
+        return candidates.first(where: {
+            $0.score >= ExecutableDiscovery.minimumLaunchCandidateScore
+                && fileManager.fileExists(atPath: $0.url.path)
+        })?.url.standardizedFileURL
     }
 
     static func bootstrapPlan(steamExecutable: URL) -> WindowsLaunchPlan {

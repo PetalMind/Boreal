@@ -108,7 +108,7 @@ nonisolated enum GraphicsBackend: String, Codable, CaseIterable, Sendable, Hasha
         switch self {
         case .automatic: "Chooses the best renderer actually supplied by the selected runtime."
         case .d3dMetal: "Apple Game Porting Toolkit renderer, optimized for DirectX 11 and 12."
-        case .dxmt: "Metal-based Direct3D 11 translation. Requires a runtime package containing DXMT."
+        case .dxmt: "Metal-based Direct3D 10 and 11 translation. Requires a runtime package containing DXMT."
         case .dxvk: "Vulkan-based Direct3D 9–11 translation when the managed component supplies the required DLLs."
         case .vkd3d: "Vulkan-based Direct3D 12 translation using VKD3D-Proton."
         case .wineD3D: "Wine's built-in OpenGL renderer and the safest fallback."
@@ -504,6 +504,12 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var usesStoreMetadataOnly: Bool { storeMetadataOnly == true }
     var usesSharedSteamEnvironment: Bool {
         (storeProvider == .steam && !usesStoreMetadataOnly) || isSteamRuntimeHost
+    }
+    /// A Steam game shares the host environment, but its visible lifecycle is
+    /// a process-group lifecycle. The Steam host itself remains an exclusive
+    /// environment session so recovery can still use wineserver as truth.
+    var usesSharedSteamGameSession: Bool {
+        usesSharedSteamEnvironment && !isSteamRuntimeHost
     }
     var resolvedAuxiliaryExecutables: [AuxiliaryExecutable] { auxiliaryExecutables ?? [] }
     var storeReference: StoreReference? {

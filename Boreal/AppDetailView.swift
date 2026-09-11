@@ -279,7 +279,7 @@ struct AppDetailView: View {
     private var canRecreateWithGPTK: Bool {
         app.storeProvider == .gog
             && app.storeExternalID == "2022341186"
-            && store.environment(id: app.environmentID)?.graphics != RuntimeEngine.gamePortingToolkit.graphicsName
+            && store.runtimeEngine(for: app) != .gamePortingToolkit
             && app.status != .running
             && !app.status.isBusy
     }
