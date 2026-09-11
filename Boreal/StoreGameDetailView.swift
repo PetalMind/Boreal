@@ -77,6 +77,12 @@ struct StoreGameDetailView: View {
                         hero(width: contentWidth)
                         detailTabBar
                         VStack(alignment: .leading, spacing: 12) {
+                            if currentGame.resolvedEntitlementState == .accountDisconnected {
+                                entitlementDisconnectedNotice
+                            }
+                            if store.installation(for: currentGame)?.state == .volumeUnavailable {
+                                volumeUnavailableNotice
+                            }
                             if storeOperation != nil { operationStatus }
                             tabContent(width: contentWidth)
                             if !hasRail { detailsSidebar }
@@ -135,6 +141,7 @@ struct StoreGameDetailView: View {
         }
         .task(id: "compatibility-preparation-\(game.id.uuidString)-\(store.isInstalled(currentGame))-\(linkedApplication?.id.uuidString ?? "none")") {
             guard [.epic, .gog].contains(game.provider),
+                  currentGame.resolvedEntitlementState.isUsable,
                   store.usesManagedRuntime(for: currentGame),
                   store.isInstalled(currentGame),
                   linkedApplication == nil,
@@ -217,6 +224,46 @@ struct StoreGameDetailView: View {
         } message: {
             Text("Boreal will search Steam, Epic Games and GOG for artwork, description and other game details.")
         }
+    }
+
+    private var entitlementDisconnectedNotice: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Store account disconnected")
+                    .font(.callout.weight(.semibold))
+                Text(store.installation(for: currentGame)?.state.representsAnInstallation == true
+                    ? "The local installation and its play history were kept. Reconnect the account to install, update, or verify this game."
+                    : "The entitlement is unavailable until this store account is connected again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .foregroundStyle(.orange)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.orange.opacity(0.25)) }
+    }
+
+    private var volumeUnavailableNotice: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Installation volume unavailable")
+                    .font(.callout.weight(.semibold))
+                Text("Boreal found the saved installation identity, but the volume is not mounted. Connect the disk before launching or managing this installation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: "externaldrive.badge.xmark")
+                .foregroundStyle(.orange)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.orange.opacity(0.25)) }
     }
 
     private func hero(width: CGFloat) -> some View {
@@ -870,6 +917,8 @@ struct StoreGameDetailView: View {
                 .buttonStyle(BorealPrimaryActionButtonStyle())
             } else if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
+            } else if store.installation(for: currentGame)?.state == .volumeUnavailable {
+                primaryStatusButton("Volume unavailable", symbol: "externaldrive.badge.xmark")
             } else if game.provider == .steam {
                 if store.isInstalled(currentGame), store.installedPlatform(for: currentGame) == .nativeMacOS, store.installedLocation(for: currentGame) != nil {
                     Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
@@ -886,6 +935,8 @@ struct StoreGameDetailView: View {
                     Button(.Library.openInSteam, systemImage: "arrow.up.right.square") { openSteam() }
                         .buttonStyle(BorealPrimaryActionButtonStyle())
                 }
+            } else if currentGame.resolvedEntitlementState == .accountDisconnected, linkedApplication == nil {
+                primaryStatusButton("Reconnect account…", symbol: "person.crop.circle.badge.exclamationmark")
             } else if store.isInstalled(currentGame) {
                 if let app = linkedApplication {
                     runtimeLaunchControl(for: app, playTitle: .Library.play)
@@ -993,13 +1044,13 @@ struct StoreGameDetailView: View {
                 Button(.Library.checkForUpdates, systemImage: "arrow.triangle.2.circlepath") {
                     store.updateStoreGame(currentGame)
                 }
-                .disabled(storeOperation != nil)
+                .disabled(storeOperation != nil || !currentGame.resolvedEntitlementState.isUsable)
             }
             if store.isInstalled(currentGame), store.supportsStoreGameVerification(currentGame) {
                 Button(.Library.verifyGameFiles, systemImage: "checkmark.shield") {
                     store.verifyStoreGame(currentGame)
                 }
-                .disabled(storeOperation != nil)
+                .disabled(storeOperation != nil || !currentGame.resolvedEntitlementState.isUsable)
             }
             if store.isInstalled(currentGame) || linkedApplication != nil {
                 Divider()
@@ -1610,11 +1661,11 @@ struct StoreGameDetailView: View {
     }
 
     private var requiredStorageTitle: LocalizedStringResource {
-        currentGame.storageBytes.map { $0 > 0 } == true ? .Library.onDisk : .Library.requiredSpace
+        store.installedSize(for: currentGame).map { $0 > 0 } == true ? .Library.onDisk : .Library.requiredSpace
     }
 
     private var formattedRequiredStorage: String {
-        if let bytes = currentGame.storageBytes, bytes > 0 {
+        if let bytes = store.installedSize(for: currentGame), bytes > 0 {
             return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         }
         guard let estimate = currentGame.sizeEstimate,
@@ -1624,7 +1675,7 @@ struct StoreGameDetailView: View {
     }
 
     private var sizeSource: String {
-        if currentGame.storageBytes.map({ $0 > 0 }) == true { return "Installed files" }
+        if store.installedSize(for: currentGame).map({ $0 > 0 }) == true { return "Installed files" }
         switch currentGame.sizeEstimate?.source {
         case .gogManifest: return "GOG manifest"
         case .epicManifest: return "Epic manifest"
@@ -1791,11 +1842,21 @@ struct StoreGameDetailView: View {
 
     private var detailsSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if store.installedLocation(for: currentGame) != nil || currentGame.storageBytes != nil || currentGame.sizeEstimate != nil {
+            let installationState = store.installation(for: currentGame)?.state
+            let installationIsReady = installationState == .installed
+            if store.installedLocation(for: currentGame) != nil || store.installedSize(for: currentGame) != nil || currentGame.sizeEstimate != nil {
                 detailCard(.Library.installationTitle, symbol: "internaldrive.fill") {
-                    Label(store.isInstalled(currentGame) || linkedApplication != nil ? .Library.installed : .Library.notInstalled, systemImage: store.isInstalled(currentGame) || linkedApplication != nil ? "checkmark.circle.fill" : "arrow.down.circle")
+                    Label {
+                        Text(installationState == .volumeUnavailable
+                            ? "Volume unavailable"
+                            : (installationIsReady ? String(localized: .Library.installed) : String(localized: .Library.notInstalled)))
+                    } icon: {
+                        Image(systemName: installationState == .volumeUnavailable
+                            ? "externaldrive.badge.xmark"
+                            : (installationIsReady ? "checkmark.circle.fill" : "arrow.down.circle"))
+                    }
                         .font(.callout.weight(.semibold))
-                        .foregroundStyle(store.isInstalled(currentGame) || linkedApplication != nil ? Color.mint : Color.secondary)
+                        .foregroundStyle(installationState == .volumeUnavailable ? Color.orange : (installationIsReady ? Color.mint : Color.secondary))
                     Divider()
                     metric(requiredStorageTitle, value: formattedRequiredStorage, symbol: "internaldrive")
                     if let environment = linkedEnvironment {
@@ -1849,14 +1910,14 @@ struct StoreGameDetailView: View {
                         store.updateStoreGame(currentGame)
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
-                    .disabled(storeOperation != nil)
+                    .disabled(storeOperation != nil || !currentGame.resolvedEntitlementState.isUsable)
                 }
                 if store.isInstalled(currentGame), store.supportsStoreGameVerification(currentGame) {
                     Button(.Library.verifyGameFiles, systemImage: "checkmark.shield") {
                         store.verifyStoreGame(currentGame)
                     }
                     .buttonStyle(BorealRailActionButtonStyle())
-                    .disabled(storeOperation != nil)
+                    .disabled(storeOperation != nil || !currentGame.resolvedEntitlementState.isUsable)
                 }
                 if store.isInstalled(currentGame) || linkedApplication != nil {
                     Divider()

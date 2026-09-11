@@ -68,7 +68,7 @@ struct AccountsView: View {
             Button("Disconnect", role: .destructive) { store.disconnectEpic() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Boreal will delete Legendary’s local Epic credentials and remove Epic titles from this Library. Downloaded game files are kept.")
+            Text("Boreal will delete Legendary’s local Epic credentials. Installed games, files and play history stay in your Library; disconnected entitlements will be marked unavailable until you reconnect.")
         }
         .sheet(isPresented: $showsGOGAuthorizationCode) {
             VStack(alignment: .leading, spacing: 18) {
@@ -100,7 +100,7 @@ struct AccountsView: View {
             Button("Disconnect", role: .destructive) { store.disconnectGOG() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Boreal will delete heroic-gogdl’s local GOG tokens and remove GOG titles from this Library. Downloaded game files are kept.")
+            Text("Boreal will delete heroic-gogdl’s local GOG tokens. Installed games, files and play history stay in your Library; disconnected entitlements will be marked unavailable until you reconnect.")
         }
     }
 
@@ -165,7 +165,7 @@ struct AccountsView: View {
             Menu("Manage") {
                 Button("Open Steam to sign in") { openSteamSignIn() }
                 Button("Refresh Library") { store.syncSteamLibrary() }
-                    .disabled(isSyncing)
+                    .disabled(store.isLibrarySyncing(.steam))
             }
         }
     }
@@ -185,7 +185,7 @@ struct AccountsView: View {
             switch store.epicConnectionState {
             case .connected:
                 Menu("Manage") {
-                    Button("Refresh Library") { store.syncEpicLibrary() }.disabled(isSyncing)
+                    Button("Refresh Library") { store.syncEpicLibrary() }.disabled(store.isLibrarySyncing(.epic))
                     Button("Disconnect…", role: .destructive) { confirmsDisconnect = true }
                 }
             case .failed:
@@ -218,7 +218,7 @@ struct AccountsView: View {
             switch store.gogConnectionState {
             case .connected:
                 Menu("Manage") {
-                    Button("Refresh Library") { store.syncGOGLibrary() }.disabled(isSyncing)
+                    Button("Refresh Library") { store.syncGOGLibrary() }.disabled(store.isLibrarySyncing(.gog))
                     Button("Disconnect…", role: .destructive) { confirmsGOGDisconnect = true }
                 }
             case .failed:
@@ -234,11 +234,6 @@ struct AccountsView: View {
                 .buttonStyle(.borderedProminent).disabled(store.gogConnectionState.isBusy)
             }
         }
-    }
-
-    private var isSyncing: Bool {
-        if case .syncing = store.librarySyncState { return true }
-        return false
     }
 
     private var disconnectedStatus: some View {
@@ -273,10 +268,12 @@ struct AccountsView: View {
                 actions().controlSize(.large).fixedSize()
             }
             HStack {
-                if store.librarySyncState == .syncing(provider) {
+                if store.isLibrarySyncing(provider) {
                     statusRow("Syncing library…")
-                } else if case .failed(let source, let message) = store.librarySyncState, source == provider {
-                    Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                } else if let syncState = store.librarySyncStates[provider],
+                          case .failed(_, let message) = syncState {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 } else {
                     Label("\(store.storeGames.filter { $0.provider == provider }.count.formatted()) games imported", systemImage: "gamecontroller")
                         .foregroundStyle(.secondary)

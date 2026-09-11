@@ -35,7 +35,8 @@ nonisolated enum LibraryGrouping: String, CaseIterable, Sendable {
         case .source: .Library.source
         case .availability: .Library.availability
         case .compatibility: .Library.compatibilityTitle
-        case .none: .Library.none
+        case .none:
+            LocalizedStringResource("none", defaultValue: "None", table: "Library")
         }
     }
 }
@@ -243,7 +244,7 @@ nonisolated enum LibraryProjector {
                 installed: isPresent,
                 readyToPlay: !app.isInstallerOnly && !blocksExecution && (app.status == .ready || app.status == .running),
                 running: !blocksExecution && app.status == .running,
-                needsAttention: app.status == .needsAttention || app.status == .unavailable || installationState == .missing || installationState == .broken,
+                needsAttention: app.status == .needsAttention || app.status == .unavailable || installationState == .missing || installationState == .volumeUnavailable || installationState == .broken,
                 lastUsed: app.lastOpened, playtimeMinutes: nil, storageBytes: app.storageBytes > 0 ? app.storageBytes : nil,
                 storageIsEstimate: false,
                 supportsNativeMacOS: false,
@@ -265,26 +266,33 @@ nonisolated enum LibraryProjector {
                     || installation.storeReference == game.storeReference
             }
             let installationState = installation?.state
+            let preparationNeedsRepair = installation?.preparationState == .needsRepair || installation?.preparationState == .incompatible
+            let preparationInProgress = installation?.preparationState == .preparing
+            let preparationIsReady = installation?.preparationState == .ready
             // A stale application record must not make an uninstalled store game
             // look playable. Unavailable records remain visible through the store
             // game, but no longer contribute runtime state or installation truth.
             let usableLinkedApp = linkedApp.flatMap { $0.status == .unavailable ? nil : $0 }
-            let installationIsPresent = installationState?.representsAnInstallation
-                ?? game.isInstalled // Compatibility fallback for pre-migration callers.
+            let installationIsPresent = installationState?.representsAnInstallation ?? false
             let installationIsMissing = installationState == .missing
+            let installationIsUnavailable = installationState == .volumeUnavailable
             let installationBlocksExecution = installationState.map { $0 != .installed } ?? false
             // A canonical missing installation outranks stale application
             // status. The old linked app record can remain for diagnostics,
             // but it must not make the game appear runnable.
             let liveLinkedApp = installationBlocksExecution ? nil : usableLinkedApp
-            let ready = liveLinkedApp.map { $0.status == .ready || $0.status == .running }
-                ?? (game.provider == .steam && installationIsPresent && !installationIsMissing)
+            let ready = liveLinkedApp.map {
+                ($0.status == .ready || $0.status == .running)
+                    && preparationIsReady
+                    && !preparationNeedsRepair
+            }
+                ?? (game.provider == .steam && installationIsPresent && !installationIsMissing && !installationIsUnavailable && preparationIsReady)
             let running = liveLinkedApp?.status == .running
-            let attention = liveLinkedApp?.status == .needsAttention
+            let attention = liveLinkedApp?.status == .needsAttention || installationIsUnavailable || preparationNeedsRepair
             let installed = liveLinkedApp != nil || installationIsPresent
             let storageBytes = liveLinkedApp.flatMap { $0.storageBytes > 0 ? $0.storageBytes : nil }
                 ?? installation?.installedSize
-                ?? game.displayedStorageBytes
+                ?? game.sizeEstimate?.installedBytes
             let compatibility = usableLinkedApp.flatMap { $0.compatibility == .unknown ? nil : $0.compatibility }
                 ?? game.compatibility?.tier.rating
                 ?? .unknown
@@ -296,7 +304,11 @@ nonisolated enum LibraryProjector {
                 status = .application(liveLinkedApp.status, installerOnly: false)
             } else if installationIsMissing {
                 status = .missingFiles
+            } else if installationIsUnavailable {
+                status = .needsAttention
             } else if installationState == .installing {
+                status = .installing
+            } else if preparationInProgress {
                 status = .installing
             } else if installationState == .broken || attention {
                 status = .needsAttention
@@ -311,7 +323,10 @@ nonisolated enum LibraryProjector {
             }
             return LibraryItem(
                 id: .storeGame(game.id), kind: .storeGame(game), name: displayName,
-                subtitle: game.developer ?? game.provider.rawValue,
+                subtitle: [
+                    game.developer ?? game.provider.rawValue,
+                    game.resolvedEntitlementState == .accountDisconnected ? "Account disconnected · local files kept" : nil
+                ].compactMap { $0 }.joined(separator: " · "),
                 producer: game.developer,
                 source: linkedApp?.usesStoreMetadataOnly == true ? .boreal : source(game.provider),
                 isInstallerOnly: false,
@@ -753,7 +768,9 @@ struct LibraryView: View {
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let countAccessibilityLabel: LocalizedStringResource = .Library.sourceItemCount(count)
+
+        return Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
                 Text(title)
@@ -771,7 +788,7 @@ struct LibraryView: View {
         }
         .buttonStyle(.plain)
         .help(Text(count == 0 ? .Library.noItemsFromSource : .Library.showSourceItems))
-        .accessibilityLabel(Text(.Library.sourceItemCount(count)))
+        .accessibilityLabel(Text(countAccessibilityLabel))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -786,7 +803,9 @@ struct LibraryView: View {
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let countAccessibilityLabel: LocalizedStringResource = .Library.compatibilityItemCount(count)
+
+        return Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: symbol)
                 Text(title)
@@ -804,7 +823,7 @@ struct LibraryView: View {
         }
         .buttonStyle(.plain)
         .help(Text(count == 0 ? .Library.noGamesWithCompatibility : .Library.showCompatibilityGames))
-        .accessibilityLabel(Text(.Library.compatibilityItemCount(count)))
+        .accessibilityLabel(Text(countAccessibilityLabel))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -888,8 +907,8 @@ struct LibraryView: View {
     }
 
     private var table: some View {
-        Table(items) {
-            TableColumn(.Library.name) { (item: LibraryItem) in
+        Table(of: LibraryItem.self) {
+            TableColumn(.Library.name, content: { (item: LibraryItem) in
                 Button { select(item) } label: {
                     HStack(spacing: 9) {
                         itemIcon(item, compact: true)
@@ -901,37 +920,41 @@ struct LibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu { itemContextMenu(item) }
-            }
+            })
             .width(min: 220, ideal: 300)
-            TableColumn(.Library.source) { (item: LibraryItem) in
+            TableColumn(.Library.source, content: { (item: LibraryItem) in
                 Label(item.source.title, systemImage: item.source.symbol).foregroundStyle(.secondary)
-            }
+            })
             .width(min: 90, ideal: 120)
-            TableColumn(.Library.status) { (item: LibraryItem) in
+            TableColumn(.Library.status, content: { (item: LibraryItem) in
                 Label(item.localizedStatusText, systemImage: statusSymbol(item)).foregroundStyle(statusColor(item))
-            }
+            })
             .width(min: 105, ideal: 135)
-            TableColumn(.Library.compatibilityTitle) { (item: LibraryItem) in
+            TableColumn(.Library.compatibilityTitle, content: { (item: LibraryItem) in
                 if item.supportsNativeMacOS {
                     NativeMacOSBadge(compact: true)
                 } else {
                     CompatibilityLabel(rating: item.compatibility)
                 }
-            }
+            })
                 .width(min: 115, ideal: 145)
-            TableColumn(.Library.lastUsed) { (item: LibraryItem) in
+            TableColumn(.Library.lastUsed, content: { (item: LibraryItem) in
                 if let lastUsed = item.lastUsed {
-                    Text(lastUsed, format: .dateTime.date(.abbreviated))
+                    Text(lastUsed, format: Date.FormatStyle(date: .abbreviated))
                         .foregroundStyle(.primary)
                 } else {
                     Text(.Library.never).foregroundStyle(.secondary)
                 }
-            }
+            })
             .width(min: 90, ideal: 110)
-            TableColumn(.Library.playtime) { (item: LibraryItem) in
+            TableColumn(.Library.playtime, content: { (item: LibraryItem) in
                 Text(playtime(item.playtimeMinutes)).foregroundStyle(item.playtimeMinutes == nil ? .tertiary : .secondary)
-            }
+            })
             .width(min: 70, ideal: 85)
+        } rows: {
+            ForEach(items) { item in
+                TableRow(item)
+            }
         }
     }
 
@@ -1281,8 +1304,7 @@ struct LibraryView: View {
     }
 
     private func libraryIsSyncing(_ provider: GameLibraryProvider) -> Bool {
-        if case .syncing(let active) = store.librarySyncState { return active == provider }
-        return false
+        store.isLibrarySyncing(provider)
     }
 
     private func select(_ item: LibraryItem) {

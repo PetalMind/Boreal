@@ -1,12 +1,22 @@
 import Foundation
+import CryptoKit
 
 nonisolated struct SteamWindowsClientCommit: Sendable {
     let installation: InstallationCommit
     let steamExecutable: URL
+    let poolKey: String
 }
 
 nonisolated protocol SteamWindowsProviding: Sendable {
     func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit
+    func prepareClient(poolKey: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit
+}
+
+extension SteamWindowsProviding {
+    func prepareClient(poolKey: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
+        var result = try await prepareClient(progress: progress)
+        return SteamWindowsClientCommit(installation: result.installation, steamExecutable: result.steamExecutable, poolKey: poolKey)
+    }
 }
 
 enum SteamWindowsError: LocalizedError, Sendable {
@@ -26,25 +36,33 @@ enum SteamWindowsError: LocalizedError, Sendable {
 }
 
 actor SteamWindowsService: SteamWindowsProviding {
+    nonisolated static let expectedInstallerSHA256DefaultsKey = "steamSetup.expectedSHA256"
     private let fileManager: FileManager
     private let session: URLSession
     private let installer: any Installing
     private let installerURL: URL
+    private let expectedInstallerSHA256: String?
     private static let setupURL = URL(string: "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe")!
 
     init(
         applicationSupportURL: URL,
         installer: any Installing,
         fileManager: FileManager = .default,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        expectedInstallerSHA256: String? = UserDefaults.standard.string(forKey: expectedInstallerSHA256DefaultsKey)
     ) {
         self.installer = installer
         self.fileManager = fileManager
         self.session = session
         self.installerURL = applicationSupportURL.appending(path: "Installers/Steam/SteamSetup.exe")
+        self.expectedInstallerSHA256 = expectedInstallerSHA256
     }
 
     func prepareClient(progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
+        try await prepareClient(poolKey: "shared", progress: progress)
+    }
+
+    func prepareClient(poolKey: String, progress: @escaping @Sendable (InstallationStage) async -> Void) async throws -> SteamWindowsClientCommit {
         try await downloadCurrentInstaller()
         let installation = try await installer.install(installerURL, name: "Steam for Windows", progress: progress)
         guard installation.firstLaunch != nil else { throw SteamWindowsError.clientExecutableMissing }
@@ -55,7 +73,7 @@ actor SteamWindowsService: SteamWindowsProviding {
         ) else {
             throw SteamWindowsError.clientExecutableMissing
         }
-        return SteamWindowsClientCommit(installation: installation, steamExecutable: steamExecutable)
+        return SteamWindowsClientCommit(installation: installation, steamExecutable: steamExecutable, poolKey: poolKey)
     }
 
     private func downloadCurrentInstaller() async throws {
@@ -73,6 +91,16 @@ actor SteamWindowsService: SteamWindowsProviding {
               data.count > 1_000_000,
               data.prefix(2) == Data([0x4D, 0x5A]) else {
             throw SteamWindowsError.invalidInstaller
+        }
+        // SteamSetup.exe is a PE file, so Apple's code-signing APIs cannot
+        // validate its Authenticode chain. A deployment can provide the
+        // expected publisher-supplied digest; without it we still enforce
+        // HTTPS, Valve's download host, a successful response and PE format.
+        if let expectedInstallerSHA256 {
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard digest.caseInsensitiveCompare(expectedInstallerSHA256) == .orderedSame else {
+                throw SteamWindowsError.invalidInstaller
+            }
         }
         try fileManager.createDirectory(at: installerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: installerURL, options: .atomic)
@@ -109,14 +137,15 @@ actor SteamWindowsService: SteamWindowsProviding {
         appID: String,
         steamExecutable: URL,
         gameExecutableName: String? = nil,
-        gameExecutablePath: String? = nil
+        gameExecutablePath: String? = nil,
+        sessionScope: SessionScope = .processGroup
     ) -> WindowsLaunchPlan {
         WindowsLaunchPlan(
             executable: steamExecutable,
             arguments: ["-applaunch", appID],
             environment: [:],
             workingDirectory: steamExecutable.deletingLastPathComponent(),
-            sessionScope: .processGroup,
+            sessionScope: sessionScope,
             processExecutableName: gameExecutableName,
             processExecutablePath: gameExecutablePath
         )

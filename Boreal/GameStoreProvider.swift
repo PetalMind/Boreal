@@ -66,6 +66,12 @@ nonisolated protocol GameStoreProvider: Sendable {
         runtime: InstalledRuntime,
         environment: ManagedBorealEnvironment
     ) async throws -> WindowsLaunchPlan
+
+    func launchRecipe(
+        for game: StoreLibraryGame,
+        runtime: InstalledRuntime,
+        environment: ManagedBorealEnvironment
+    ) async throws -> LaunchRecipe
 }
 
 extension GameStoreProvider {
@@ -133,6 +139,25 @@ extension GameStoreProvider {
         _ = environment
         throw GameStoreProviderError.unsupported(provider, "direct launch plans")
     }
+
+    func launchRecipe(
+        for game: StoreLibraryGame,
+        runtime: InstalledRuntime,
+        environment: ManagedBorealEnvironment
+    ) async throws -> LaunchRecipe {
+        let plan = try await launchPlan(for: game, runtime: runtime, environment: environment)
+        return LaunchRecipe(
+            provider: game.provider,
+            externalID: game.externalID,
+            main: plan,
+            processExpectation: LaunchProcessExpectation(
+                executableName: plan.processExecutableName,
+                executablePath: plan.processExecutablePath,
+                requiresParentProcess: plan.sessionScope == .processGroup
+            ),
+            sessionPolicy: plan.sessionScope
+        )
+    }
 }
 
 nonisolated struct GameStoreProviderRegistry: Sendable {
@@ -199,6 +224,16 @@ nonisolated struct EpicGameStoreProvider: GameStoreProvider {
         progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void
     ) async throws {
         try await service.install(appID: game.externalID, destinationRoot: destinationRoot, platform: platform, progress: progress)
+    }
+
+    func installationURL(
+        for game: StoreLibraryGame,
+        destinationRoot: URL,
+        platform: StoreGameInstallationPlatform
+    ) async -> URL? {
+        _ = destinationRoot
+        _ = platform
+        return await service.installationURL(appID: game.externalID)
     }
 
     func update(_ game: StoreLibraryGame, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {

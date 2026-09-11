@@ -471,7 +471,7 @@ struct ContentView: View {
             Menu {
                 Button("Install Windows App…", systemImage: "shippingbox") { showsImporter = true }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Import Steam Library", systemImage: "arrow.triangle.2.circlepath") { store.syncSteamLibrary() }
-                    .disabled({ if case .syncing = store.librarySyncState { true } else { false } }())
+                    .disabled(store.isLibrarySyncing(.steam))
                 if developerMode {
                     Divider()
                     Button("Create Empty Environment…", systemImage: "externaldrive.badge.plus") { showsNewEnvironment = true }

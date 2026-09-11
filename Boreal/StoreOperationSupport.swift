@@ -1,6 +1,32 @@
 import Darwin
 import Foundation
 
+/// Redacts credentials at the shared helper-output boundary. Provider
+/// services can keep their diagnostics useful without allowing an auth code,
+/// bearer token, or secret to reach progress state or persisted download logs.
+nonisolated enum SecretRedactor {
+    private static let keyValuePattern = #"(?i)(authorization|authorization_code|auth_code|access_token|refresh_token|client_secret|exchange_token|sid|code)(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;}]+)"#
+    private static let bearerPattern = #"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"#
+    private static let queryPattern = #"(?i)([?&](?:code|access_token|refresh_token|client_secret)=)[^&#\s]+"#
+
+    static func redact(_ value: String) -> String {
+        var result = value
+        result = replacing(result, pattern: keyValuePattern, template: "$1$2<redacted>")
+        result = replacing(result, pattern: bearerPattern, template: "$1<redacted>")
+        result = replacing(result, pattern: queryPattern, template: "$1<redacted>")
+        return result
+    }
+
+    private static func replacing(_ value: String, pattern: String, template: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
+        return regex.stringByReplacingMatches(
+            in: value,
+            range: NSRange(value.startIndex..., in: value),
+            withTemplate: template
+        )
+    }
+}
+
 nonisolated final class CancellableStoreProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
@@ -46,7 +72,7 @@ nonisolated enum StoreProgressParser {
             .map(String.init)
         let updates = lines.compactMap { parse(line: $0, provider: provider) }
         guard var result = updates.reduce(nil, { merging($0, $1, provider: provider) }) else { return nil }
-        result.rawDetail = concise(lines.joined(separator: "\n"))
+        result.rawDetail = concise(lines.joined(separator: "\n")).map { SecretRedactor.redact($0) }
         return result
     }
 
@@ -104,7 +130,7 @@ nonisolated enum StoreProgressParser {
             transferredBytes: amount?.completedBytes,
             totalBytes: amount?.totalBytes,
             estimatedTimeRemaining: estimatedTime(in: line),
-            rawDetail: concise(line),
+            rawDetail: concise(line).map { SecretRedactor.redact($0) },
             networkBytesPerSecond: rates.network,
             diskBytesPerSecond: rates.disk
         )

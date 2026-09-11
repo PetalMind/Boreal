@@ -12,6 +12,12 @@ nonisolated enum InstallationStateResolver {
         fileManager: FileManager = .default
     ) -> GameInstallation {
         var resolved = installation
+        let location = resolvedLocation(for: installation, layout: layout, fileManager: fileManager)
+        let persistedLocation = StoragePathResolver.resolve(installation.location, layout: layout)
+        if location.standardizedFileURL.path != persistedLocation.standardizedFileURL.path {
+            resolved.location = StoragePathResolver.location(for: location, layout: layout)
+            resolved.updatedAt = .now
+        }
         let nextState = resolveState(installation, layout: layout, fileManager: fileManager)
         if resolved.state != nextState {
             resolved.state = nextState
@@ -26,8 +32,14 @@ nonisolated enum InstallationStateResolver {
         fileManager: FileManager = .default
     ) -> InstallationState {
         guard installation.state != .uninstalled else { return .uninstalled }
-        let location = StoragePathResolver.resolve(installation.location, layout: layout)
-        guard fileManager.fileExists(atPath: location.path) else { return .missing }
+        if let volumeUUID = installation.volumeIdentity?.volumeUUID,
+           !mountedVolumeUUIDs(fileManager: fileManager).contains(volumeUUID) {
+            return .volumeUnavailable
+        }
+        let location = resolvedLocation(for: installation, layout: layout, fileManager: fileManager)
+        guard fileManager.fileExists(atPath: location.path) else {
+            return .missing
+        }
         if let executable = installation.selectedExecutableID.flatMap({ id in
             installation.executables.first(where: { $0.id == id })
         }) ?? installation.executables.first(where: { $0.role == .game }) {
@@ -36,8 +48,59 @@ nonisolated enum InstallationStateResolver {
         }
         switch installation.state {
         case .broken, .uninstalled: return installation.state
-        case .unknown, .installing, .installed, .missing: return .installed
+        case .unknown, .installing, .installed, .missing, .volumeUnavailable: return .installed
         }
+    }
+
+    static func resolvedLocation(
+        for installation: GameInstallation,
+        layout: BorealStorageLayout,
+        fileManager: FileManager = .default
+    ) -> URL {
+        let persisted = StoragePathResolver.resolve(installation.location, layout: layout)
+        guard case .external = installation.location,
+              let identity = installation.volumeIdentity else { return persisted }
+
+        if let volumeUUID = identity.volumeUUID,
+           let volumeURL = mountedVolumeURL(withUUID: volumeUUID, fileManager: fileManager),
+           let relativePath = identity.relativePath {
+            let relative = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return relative.isEmpty
+                ? volumeURL.standardizedFileURL
+                : volumeURL.appendingPathComponent(relative, isDirectory: true).standardizedFileURL
+        }
+
+        if let bookmark = identity.securityScopedBookmark {
+            var isStale = false
+            if let bookmarked = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withoutUI, .withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ), !isStale {
+                return bookmarked.standardizedFileURL
+            }
+        }
+        return persisted
+    }
+
+    private static func mountedVolumeUUIDs(fileManager: FileManager) -> Set<String> {
+        Set(mountedVolumes(fileManager: fileManager).compactMap { url in
+            (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? nil
+        })
+    }
+
+    private static func mountedVolumeURL(withUUID uuid: String, fileManager: FileManager) -> URL? {
+        mountedVolumes(fileManager: fileManager).first { url in
+            (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) == uuid
+        }
+    }
+
+    private static func mountedVolumes(fileManager: FileManager) -> [URL] {
+        fileManager.mountedVolumeURLs(
+            includingResourceValuesForKeys: [.volumeUUIDStringKey],
+            options: []
+        ) ?? []
     }
 }
 
@@ -69,7 +132,17 @@ nonisolated enum InstallationMigration {
                 ),
                 platform: game.installedPlatform ?? .windows,
                 installedSize: game.displayedStorageBytes,
-                state: .installed
+                state: .installed,
+                volumeIdentity: InstallationVolumeIdentity.capture(
+                    at: URL(fileURLWithPath: path, isDirectory: true),
+                    location: StoragePathResolver.location(
+                        for: URL(fileURLWithPath: path, isDirectory: true),
+                        layout: layout
+                    )
+                ),
+                preparationState: game.installedPlatform == .nativeMacOS || game.provider == .steam ? .ready : .notPrepared,
+                installedAt: .now,
+                lastSeenAt: .now
             )
             result[game.id] = installation
         }
@@ -108,6 +181,7 @@ nonisolated enum InstallationMigration {
                     installation.executables.append(executable)
                 }
                 installation.environmentID = installation.environmentID ?? application.environmentID
+                installation.preparationState = .ready
                 installation.updatedAt = .now
                 result[gameID] = installation
             } else {
@@ -121,7 +195,11 @@ nonisolated enum InstallationMigration {
                     environmentID: application.environmentID,
                     executables: [executable],
                     installedSize: application.storageBytes > 0 ? application.storageBytes : nil,
-                    state: .installed
+                    state: .installed,
+                    volumeIdentity: InstallationVolumeIdentity.capture(at: rootURL, location: StoragePathResolver.location(for: rootURL, layout: layout)),
+                    preparationState: .ready,
+                    installedAt: .now,
+                    lastSeenAt: .now
                 )
             }
         }
@@ -461,7 +539,10 @@ actor LaunchCoordinator: LaunchCoordinating {
         providerRegistry: GameStoreProviderRegistry
     ) async throws -> WindowsLaunchPlan {
         let provider = try providerRegistry.provider(for: game.provider)
-        return try await provider.launchPlan(for: game, runtime: runtime, environment: environment)
+        let recipe = try await provider.launchRecipe(for: game, runtime: runtime, environment: environment)
+        var plan = recipe.windowsPlan
+        plan.sessionScope = recipe.sessionPolicy
+        return plan
     }
 
     func start(

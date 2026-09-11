@@ -39,14 +39,60 @@ nonisolated enum InstallationState: String, Codable, Hashable, Sendable {
     case installing
     case installed
     case missing
+    case volumeUnavailable
     case broken
     case uninstalled
 
     var representsAnInstallation: Bool {
         switch self {
         case .unknown, .uninstalled: false
-        case .installing, .installed, .missing, .broken: true
+        case .installing, .installed, .missing, .volumeUnavailable, .broken: true
         }
+    }
+
+    var isLaunchable: Bool { self == .installed }
+}
+
+/// Identity of the volume on which an installation was recorded. Absolute
+/// paths alone are not sufficient for removable disks because another volume
+/// can later appear at the same mount point.
+nonisolated struct InstallationVolumeIdentity: Codable, Hashable, Sendable {
+    var volumeUUID: String?
+    var relativePath: String?
+    var securityScopedBookmark: Data?
+
+    static func capture(
+        at url: URL,
+        location: InstallationLocation
+    ) -> InstallationVolumeIdentity {
+        let volumeUUID: String? = try? url.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+        let relativePath: String?
+        switch location {
+        case .managed(let path):
+            relativePath = path
+        case .external:
+            let components = url.standardizedFileURL.pathComponents
+            if components.count > 3, components[1] == "Volumes" {
+                relativePath = "/" + components.dropFirst(3).joined(separator: "/")
+            } else {
+                relativePath = url.standardizedFileURL.path
+            }
+        }
+        let bookmark: Data?
+        if case .external = location {
+            bookmark = try? url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        } else {
+            bookmark = nil
+        }
+        return InstallationVolumeIdentity(
+            volumeUUID: volumeUUID,
+            relativePath: relativePath,
+            securityScopedBookmark: bookmark
+        )
     }
 }
 
@@ -125,6 +171,18 @@ nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
     var installedSize: Int64?
     var state: InstallationState
     var selectedExecutableID: UUID?
+    var volumeIdentity: InstallationVolumeIdentity?
+    var preparationState: GamePreparationState
+    var providerBuildID: String?
+    var installedVersion: String?
+    var language: String?
+    var selectedDLCs: [String]?
+    var lastVerifiedAt: Date?
+    var installedAt: Date?
+    var lastSeenAt: Date?
+    var runtimeUsed: String?
+    var helperVersionUsed: String?
+    var contentFingerprint: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -140,6 +198,18 @@ nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
         installedSize: Int64? = nil,
         state: InstallationState = .installed,
         selectedExecutableID: UUID? = nil,
+        volumeIdentity: InstallationVolumeIdentity? = nil,
+        preparationState: GamePreparationState = .notPrepared,
+        providerBuildID: String? = nil,
+        installedVersion: String? = nil,
+        language: String? = nil,
+        selectedDLCs: [String]? = nil,
+        lastVerifiedAt: Date? = nil,
+        installedAt: Date? = nil,
+        lastSeenAt: Date? = nil,
+        runtimeUsed: String? = nil,
+        helperVersionUsed: String? = nil,
+        contentFingerprint: String? = nil,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -154,6 +224,18 @@ nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
         self.installedSize = installedSize
         self.state = state
         self.selectedExecutableID = selectedExecutableID
+        self.volumeIdentity = volumeIdentity
+        self.preparationState = preparationState
+        self.providerBuildID = providerBuildID
+        self.installedVersion = installedVersion
+        self.language = language
+        self.selectedDLCs = selectedDLCs
+        self.lastVerifiedAt = lastVerifiedAt
+        self.installedAt = installedAt
+        self.lastSeenAt = lastSeenAt
+        self.runtimeUsed = runtimeUsed
+        self.helperVersionUsed = helperVersionUsed
+        self.contentFingerprint = contentFingerprint
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -161,7 +243,10 @@ nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, gameID, storeReference, displayName, location, platform
         case environmentID, executables, installedSize, state
-        case selectedExecutableID, createdAt, updatedAt
+        case selectedExecutableID, volumeIdentity, preparationState
+        case providerBuildID, installedVersion, language, selectedDLCs
+        case lastVerifiedAt, installedAt, lastSeenAt, runtimeUsed
+        case helperVersionUsed, contentFingerprint, createdAt, updatedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -177,6 +262,18 @@ nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
         installedSize = try container.decodeIfPresent(Int64.self, forKey: .installedSize)
         state = try container.decodeIfPresent(InstallationState.self, forKey: .state) ?? .installed
         selectedExecutableID = try container.decodeIfPresent(UUID.self, forKey: .selectedExecutableID)
+        volumeIdentity = try container.decodeIfPresent(InstallationVolumeIdentity.self, forKey: .volumeIdentity)
+        preparationState = try container.decodeIfPresent(GamePreparationState.self, forKey: .preparationState) ?? .notPrepared
+        providerBuildID = try container.decodeIfPresent(String.self, forKey: .providerBuildID)
+        installedVersion = try container.decodeIfPresent(String.self, forKey: .installedVersion)
+        language = try container.decodeIfPresent(String.self, forKey: .language)
+        selectedDLCs = try container.decodeIfPresent([String].self, forKey: .selectedDLCs)
+        lastVerifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastVerifiedAt)
+        installedAt = try container.decodeIfPresent(Date.self, forKey: .installedAt)
+        lastSeenAt = try container.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+        runtimeUsed = try container.decodeIfPresent(String.self, forKey: .runtimeUsed)
+        helperVersionUsed = try container.decodeIfPresent(String.self, forKey: .helperVersionUsed)
+        contentFingerprint = try container.decodeIfPresent(String.self, forKey: .contentFingerprint)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
     }
@@ -194,6 +291,18 @@ nonisolated struct GameInstallation: Codable, Hashable, Identifiable, Sendable {
         try container.encodeIfPresent(installedSize, forKey: .installedSize)
         try container.encode(state, forKey: .state)
         try container.encodeIfPresent(selectedExecutableID, forKey: .selectedExecutableID)
+        try container.encodeIfPresent(volumeIdentity, forKey: .volumeIdentity)
+        try container.encode(preparationState, forKey: .preparationState)
+        try container.encodeIfPresent(providerBuildID, forKey: .providerBuildID)
+        try container.encodeIfPresent(installedVersion, forKey: .installedVersion)
+        try container.encodeIfPresent(language, forKey: .language)
+        try container.encodeIfPresent(selectedDLCs, forKey: .selectedDLCs)
+        try container.encodeIfPresent(lastVerifiedAt, forKey: .lastVerifiedAt)
+        try container.encodeIfPresent(installedAt, forKey: .installedAt)
+        try container.encodeIfPresent(lastSeenAt, forKey: .lastSeenAt)
+        try container.encodeIfPresent(runtimeUsed, forKey: .runtimeUsed)
+        try container.encodeIfPresent(helperVersionUsed, forKey: .helperVersionUsed)
+        try container.encodeIfPresent(contentFingerprint, forKey: .contentFingerprint)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
@@ -343,12 +452,12 @@ nonisolated enum BorealStorageScanner {
             guard let game = storeGames.first(where: {
                 $0.id == installation.gameID || $0.storeReference == installation.storeReference
             }) else { continue }
-            let root = StoragePathResolver.resolve(installation.location, layout: layout).standardizedFileURL
+            let root = InstallationStateResolver.resolvedLocation(for: installation, layout: layout).standardizedFileURL
             guard appendIfNew(root, to: &gameRoots) else { continue }
             let shaderRoots = shaderPaths(gameURL: root, prefixURL: nil, applicationSupportURL: layout.rootURL)
             let downloadRoots = downloadPaths(in: [root])
             let measuredBytes = size(of: root, excluding: shaderRoots + downloadRoots, fileManager: fileManager)
-            let bytes = measuredBytes ?? installation.installedSize ?? game.storageBytes ?? 0
+            let bytes = measuredBytes ?? installation.installedSize ?? 0
             guard bytes > 0 else { continue }
             measurements.append(BorealStorageItem(
                 category: .games,
@@ -609,7 +718,7 @@ nonisolated enum BorealStorageScanner {
 }
 
 nonisolated enum BorealStorageSchema {
-    static let current = 2
+    static let current = 3
 }
 
 // The catalog intentionally contains no downloads, favorites, sessions, or
@@ -632,6 +741,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
     var communityCompatibility: CommunityCompatibility?
     var compatibilityProfile: WineCompatibilityProfile?
     var auxiliaryExecutables: [LibraryExecutableRecord]?
+    var steamPoolKey: String?
 
     init(_ application: WindowsApplication, layout: BorealStorageLayout) {
         id = application.id
@@ -663,6 +773,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
         auxiliaryExecutables = application.auxiliaryExecutables?.map {
             LibraryExecutableRecord($0, layout: layout)
         }
+        steamPoolKey = application.steamPoolKey
     }
 
     func resolve(layout: BorealStorageLayout) -> WindowsApplication {
@@ -686,7 +797,8 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
             communityCompatibility: communityCompatibility,
             compatibilityProfile: compatibilityProfile,
             auxiliaryExecutables: auxiliaryExecutables?.map { $0.resolve(layout: layout) },
-            applicationRole: applicationRole
+            applicationRole: applicationRole,
+            steamPoolKey: steamPoolKey
         )
     }
 }
@@ -722,6 +834,8 @@ nonisolated struct LibraryGameRecord: Codable, Hashable, Sendable {
     var metadata: GameMetadata
     var sizeEstimate: StoreGameSizeEstimate?
     var currentPlayerCount: Int?
+    var entitlementState: StoreEntitlementState?
+    var entitlementGroupID: String?
 
     init(_ game: StoreLibraryGame) {
         id = game.id
@@ -731,6 +845,8 @@ nonisolated struct LibraryGameRecord: Codable, Hashable, Sendable {
         metadata = GameMetadata(from: game)
         sizeEstimate = game.sizeEstimate
         currentPlayerCount = game.currentPlayerCount
+        entitlementState = game.entitlementState
+        entitlementGroupID = game.entitlementGroupID
     }
 
     func resolve() -> StoreLibraryGame {
@@ -752,7 +868,9 @@ nonisolated struct LibraryGameRecord: Codable, Hashable, Sendable {
             supportsNativeMacOS: metadata.supportsNativeMacOS,
             sizeEstimate: sizeEstimate,
             compatibility: metadata.compatibility,
-            currentPlayerCount: currentPlayerCount
+            currentPlayerCount: currentPlayerCount,
+            entitlementState: entitlementState,
+            entitlementGroupID: entitlementGroupID
         )
     }
 }

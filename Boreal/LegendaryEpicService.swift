@@ -25,6 +25,7 @@ nonisolated protocol EpicLibraryProviding: Sendable {
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
     func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate?
+    func installationURL(appID: String) async -> URL?
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
@@ -65,6 +66,8 @@ extension EpicLibraryProviding {
         _ = platform
         return nil
     }
+
+    func installationURL(appID: String) async -> URL? { nil }
 
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         _ = platform
@@ -154,7 +157,7 @@ actor LegendaryEpicService: EpicLibraryProviding {
     init(applicationSupportURL: URL, fileManager: FileManager = .default, session: URLSession = .shared) {
         self.fileManager = fileManager
         self.session = session
-        self.rootURL = applicationSupportURL.appending(path: "Tools/Legendary/0.21.0", directoryHint: .isDirectory)
+        self.rootURL = applicationSupportURL.appending(path: "Tools/Legendary/0.21.1", directoryHint: .isDirectory)
         self.helperURL = rootURL.appending(path: "legendary")
         self.configURL = applicationSupportURL.appending(path: "Accounts/Epic", directoryHint: .isDirectory)
     }
@@ -281,6 +284,15 @@ actor LegendaryEpicService: EpicLibraryProviding {
             buildID: manifest["build_id"].map(String.init(describing:)),
             executableArchitecture: StoreArchitectureInference.fromManifest(root)
         )
+    }
+
+    func installationURL(appID: String) async -> URL? {
+        guard Self.isSafeAppID(appID), readUserData() != nil,
+              let data = try? await run(["list-installed", "--json", "--show-dirs"]),
+              let installed = try? JSONDecoder().decode([InstalledGame].self, from: data),
+              let path = installed.first(where: { $0.appName == appID })?.installPath else { return nil }
+        let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
     func disconnect() async throws {
@@ -435,13 +447,13 @@ actor LegendaryEpicService: EpicLibraryProviding {
     private static var artifact: ReleaseArtifact? {
         #if arch(arm64)
         ReleaseArtifact(
-            url: URL(string: "https://github.com/legendary-gl/legendary/releases/download/0.21.0/legendary_macOS_arm64")!,
-            sha256: "28f5f7d0eb8c029679d4faaa483ec85888af17a9a75977ae9170c21d8ce3428b"
+            url: URL(string: "https://github.com/legendary-gl/legendary/releases/download/0.21.1/legendary_macOS_arm64")!,
+            sha256: "d87978321dba9cb731fab40c72f0a30bed55baca8b5341ab21024c5733cd837e"
         )
         #elseif arch(x86_64)
         ReleaseArtifact(
-            url: URL(string: "https://github.com/legendary-gl/legendary/releases/download/0.21.0/legendary_macOS_x64")!,
-            sha256: "1352dac6940cdfd4b28ce46dc7ac1f496cd9d49417b5d9d69ce462db27399665"
+            url: URL(string: "https://github.com/legendary-gl/legendary/releases/download/0.21.1/legendary_macOS_x64")!,
+            sha256: "3dfab50277284b5bb0104f8710e4ff1d9ff00c992e44f5843fd0c977c5cc99c4"
         )
         #else
         nil
@@ -549,7 +561,8 @@ actor LegendaryEpicService: EpicLibraryProviding {
                 } else {
                     let detail = String(data: error.isEmpty ? output : error, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(throwing: LegendaryEpicError.commandFailed(detail?.isEmpty == false ? detail! : "exit code \(process.terminationStatus)"))
+                    let redactedDetail = detail.map(SecretRedactor.redact)
+                    continuation.resume(throwing: LegendaryEpicError.commandFailed(redactedDetail?.isEmpty == false ? redactedDetail! : "exit code \(process.terminationStatus)"))
                 }
             }
             do { try process.run(); processBox.attach(process) }

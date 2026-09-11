@@ -532,13 +532,19 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var auxiliaryExecutables: [AuxiliaryExecutable]?
     /// Optional keeps older persisted applications as normal game entries.
     var applicationRole: WindowsApplicationRole? = nil
+    /// Steam uses a pool of isolated Windows clients. `shared` is the legacy
+    /// default; a game-specific key identifies a dedicated compatibility
+    /// environment without changing the store identity of the game.
+    var steamPoolKey: String? = nil
 
     var isSteamRuntimeHost: Bool { installerPath == "steam-windows-client" }
     var resolvedApplicationRole: WindowsApplicationRole { applicationRole ?? .game }
     var isInstallerOnly: Bool { resolvedApplicationRole == .installer }
     var usesStoreMetadataOnly: Bool { storeMetadataOnly == true }
     var usesSharedSteamEnvironment: Bool {
-        (storeProvider == .steam && !usesStoreMetadataOnly) || isSteamRuntimeHost
+        if isSteamRuntimeHost { return true }
+        guard storeProvider == .steam, !usesStoreMetadataOnly else { return false }
+        return steamPoolKey == nil || steamPoolKey == "shared"
     }
     /// A Steam game shares the host environment, but its visible lifecycle is
     /// a process-group lifecycle. The Steam host itself remains an exclusive
@@ -572,6 +578,58 @@ nonisolated enum GameLibraryProvider: String, Codable, Hashable, CaseIterable, S
         case .gog: "g.square.fill"
         }
     }
+}
+
+nonisolated enum StoreEntitlementState: String, Codable, Hashable, Sendable {
+    case available
+    case accountDisconnected
+
+    var isUsable: Bool { self == .available }
+}
+
+nonisolated enum GamePreparationState: String, Codable, Hashable, Sendable {
+    case notPrepared
+    case preparing
+    case ready
+    case needsRepair
+    case incompatible
+
+    var blocksLaunch: Bool { self != .ready }
+}
+
+nonisolated enum StoreOperationKind: String, Codable, Hashable, Sendable {
+    case install
+    case update
+    case verify
+    case uninstall
+    case prepareEnvironment
+    case steamClient
+}
+
+nonisolated enum StoreOperationLifecycle: String, Codable, Hashable, Sendable {
+    case queued
+    case running
+    case paused
+    case failed
+    case completed
+}
+
+/// Provider-neutral operation identity. The older download dictionary still
+/// provides a resource lock, while this value carries the durable operation
+/// metadata needed for recovery and diagnostics.
+nonisolated struct StoreOperation: Codable, Hashable, Identifiable, Sendable {
+    var id: UUID
+    var game: StoreReference
+    var kind: StoreOperationKind
+    var platform: StoreGameInstallationPlatform
+    var state: StoreOperationLifecycle
+    var progress: StoreGameOperationProgress?
+    var destinationRootPath: String?
+    var providerBuildID: String?
+    var helperVersionUsed: String?
+    var createdAt: Date
+    var updatedAt: Date
+    var finishedAt: Date?
 }
 
 nonisolated enum StoreGameInstallationPlatform: String, Codable, Hashable, Sendable {
@@ -773,6 +831,15 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var sizeEstimate: StoreGameSizeEstimate?
     var compatibility: CommunityCompatibility?
     var currentPlayerCount: Int?
+    /// Provider entitlement is intentionally independent from local files.
+    /// Optional keeps catalogs written before account-disconnect persistence
+    /// decodable; nil resolves to `.available`.
+    var entitlementState: StoreEntitlementState? = nil
+    /// Optional cross-store family key. Entitlements remain separate rows and
+    /// can be grouped later without collapsing promotional or platform SKUs.
+    var entitlementGroupID: String? = nil
+
+    var resolvedEntitlementState: StoreEntitlementState { entitlementState ?? .available }
 
     var storeReference: StoreReference {
         StoreReference(provider: provider, externalID: externalID)
@@ -966,7 +1033,7 @@ nonisolated enum StoreGameOperationPhase: String, Codable, Hashable, Sendable {
     }
 }
 
-nonisolated struct StoreGameOperationProgress: Codable, Equatable, Sendable {
+nonisolated struct StoreGameOperationProgress: Codable, Equatable, Hashable, Sendable {
     var message: String
     var fractionCompleted: Double?
     var startedAt: Date = .now
@@ -1025,6 +1092,44 @@ nonisolated struct StoreDownloadRecord: Codable, Equatable, Sendable {
     var lastError: String?
     var samples: [StoreDownloadSample]? = nil
     var updatedAt: Date = .now
+    /// Stable operation identity. The dictionary key remains a resource lock
+    /// for backward compatibility, while the operation itself no longer
+    /// depends on `provider::externalID` for identity.
+    var operationID: UUID? = nil
+    var kind: StoreOperationKind? = nil
+    var providerBuildID: String? = nil
+    var helperVersionUsed: String? = nil
+    var startedAt: Date? = nil
+    var finishedAt: Date? = nil
+
+    var resolvedOperationID: UUID { operationID ?? UUID(uuidString: "00000000-0000-0000-0000-000000000000")! }
+
+    var operation: StoreOperation {
+        let lifecycle: StoreOperationLifecycle
+        switch status {
+        case .downloading:
+            lifecycle = .running
+        case .paused:
+            lifecycle = .paused
+        case .failed:
+            lifecycle = .failed
+        }
+
+        return StoreOperation(
+            id: resolvedOperationID,
+            game: StoreReference(provider: provider, externalID: externalID),
+            kind: kind ?? .install,
+            platform: platform,
+            state: lifecycle,
+            progress: lastProgress,
+            destinationRootPath: destinationRootPath,
+            providerBuildID: providerBuildID,
+            helperVersionUsed: helperVersionUsed,
+            createdAt: startedAt ?? updatedAt,
+            updatedAt: updatedAt,
+            finishedAt: finishedAt
+        )
+    }
 }
 
 nonisolated enum StoreGameOperationState: Equatable, Sendable {

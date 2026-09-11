@@ -826,62 +826,24 @@ actor GOGService: GOGLibraryProviding {
 }
 
 nonisolated enum GOGReleaseNormalizer {
-    private static let promotionalSuffixes = [
-        " - Amazon Prime",
-        " - Amazon Luna",
-        " - Prime Giveaway"
-    ]
-
     static func deduplicate(_ games: [StoreLibraryGame]) -> [StoreLibraryGame] {
-        let baseNames = Set(games.compactMap { game -> String? in
-            guard promotionalBaseName(game.name) == nil else { return nil }
-            return comparisonKey(game.name)
-        })
-        let grouped = Dictionary(grouping: games) { game -> String in
-            if let base = promotionalBaseName(game.name), baseNames.contains(comparisonKey(base)) {
-                return "title:\(comparisonKey(base))"
+        // Only identical GOG product IDs are duplicates. Promotional releases
+        // (Prime, Luna, giveaways) are separate entitlements and must remain
+        // visible even when their titles look similar. Cross-store grouping is
+        // represented separately by `entitlementGroupID` and never inferred by
+        // this normalizer.
+        let grouped = Dictionary(grouping: games, by: \.externalID)
+        return grouped.values.compactMap { candidates in
+            let identity = candidates.first(where: { $0.isInstalled })
+                ?? candidates.max { metadataScore($0) < metadataScore($1) }
+                ?? candidates.first
+            guard var result = identity else { return nil }
+            for candidate in candidates where metadataScore(candidate) > metadataScore(result) {
+                result.preservePresentationMetadata(from: candidate)
             }
-            let key = comparisonKey(game.name)
-            return baseNames.contains(key) ? "title:\(key)" : "id:\(game.externalID)"
-        }
-
-        return grouped.values.map { candidates in
-            guard candidates.count > 1,
-                  let canonical = candidates.first(where: { promotionalBaseName($0.name) == nil }) else {
-                return candidates[0]
-            }
-            let identity = candidates.first(where: { $0.isInstalled }) ?? canonical
-            let metadata = candidates.max { metadataScore($0) < metadataScore($1) } ?? canonical
-            var result = identity
-            result.name = canonical.name
-            result.developer = metadata.developer ?? result.developer
-            result.summary = metadata.summary ?? result.summary
-            result.artworkPath = metadata.artworkPath ?? result.artworkPath
-            result.portraitImageURL = metadata.portraitImageURL ?? result.portraitImageURL
-            result.headerImageURL = metadata.headerImageURL ?? result.headerImageURL
-            result.backgroundImageURL = metadata.backgroundImageURL ?? result.backgroundImageURL
-            result.screenshotURLs = metadata.screenshotURLs?.isEmpty == false ? metadata.screenshotURLs : result.screenshotURLs
-            result.videos = metadata.videos?.isEmpty == false ? metadata.videos : result.videos
-            result.storeRating = metadata.storeRating ?? result.storeRating
-            result.supportsWindows = metadata.supportsWindows ?? result.supportsWindows
-            result.supportsNativeMacOS = metadata.supportsNativeMacOS ?? result.supportsNativeMacOS
             return result
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    private static func promotionalBaseName(_ name: String) -> String? {
-        let lowercased = name.lowercased()
-        for suffix in promotionalSuffixes where lowercased.hasSuffix(suffix.lowercased()) {
-            return String(name.dropLast(suffix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return nil
-    }
-
-    private static func comparisonKey(_ name: String) -> String {
-        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            .split(whereSeparator: \Character.isWhitespace)
-            .joined(separator: " ")
     }
 
     private static func metadataScore(_ game: StoreLibraryGame) -> Int {

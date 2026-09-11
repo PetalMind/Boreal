@@ -61,6 +61,63 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
     var configurationFingerprint: String? = nil
 }
 
+/// A provider launch is a recipe, not a shell command. The optional wrapper
+/// describes a typed parent process (for example a third-party launcher) and
+/// is intentionally represented as an executable plus argv/environment only.
+/// No arbitrary shell or pre-launch script can enter this model.
+nonisolated struct LaunchWrapper: Sendable, Hashable {
+    var executable: URL
+    var arguments: [String]
+    var environment: [String: String]
+    var workingDirectory: URL
+}
+
+nonisolated struct LaunchProcessExpectation: Sendable, Hashable {
+    var executableName: String?
+    var executablePath: String?
+    var requiresParentProcess: Bool
+
+    init(
+        executableName: String? = nil,
+        executablePath: String? = nil,
+        requiresParentProcess: Bool = false
+    ) {
+        self.executableName = executableName
+        self.executablePath = executablePath
+        self.requiresParentProcess = requiresParentProcess
+    }
+}
+
+nonisolated struct LaunchRecipe: Sendable, Hashable {
+    var provider: GameLibraryProvider
+    var externalID: String
+    var main: WindowsLaunchPlan
+    var wrapper: LaunchWrapper?
+    var processExpectation: LaunchProcessExpectation
+    var sessionPolicy: SessionScope
+
+    init(
+        provider: GameLibraryProvider,
+        externalID: String,
+        main: WindowsLaunchPlan,
+        wrapper: LaunchWrapper? = nil,
+        processExpectation: LaunchProcessExpectation = LaunchProcessExpectation(),
+        sessionPolicy: SessionScope? = nil
+    ) {
+        self.provider = provider
+        self.externalID = externalID
+        self.main = main
+        self.wrapper = wrapper
+        self.processExpectation = processExpectation
+        self.sessionPolicy = sessionPolicy ?? main.sessionScope
+    }
+
+    /// Current process execution is still normalized to a WindowsLaunchPlan.
+    /// A future wrapper-aware runner can consume `wrapper` without weakening
+    /// the provider contract or reintroducing shell execution.
+    var windowsPlan: WindowsLaunchPlan { main }
+}
+
 nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
     case steamAppIDFileUnavailable(URL, underlying: String)
     case unityWinRTShimUnavailable(URL, underlying: String)

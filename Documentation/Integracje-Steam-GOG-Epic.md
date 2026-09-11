@@ -1,6 +1,6 @@
 # Dokumentacja integracji Boreal z Steam, GOG.com i Epic Games Store
 
-**Stan dokumentu:** 2026-09-11
+**Stan dokumentu:** 2026-09-12
 **Zakres:** aktualny kod aplikacji macOS Boreal, lokalne helpery CLI, lokalne dane użytkownika, synchronizacja bibliotek, instalacja, utrzymanie plików i uruchamianie gier.
 **Źródło prawdy:** implementacja w katalogu `Boreal/`; istniejące dokumenty etapowe są materiałem uzupełniającym.
 
@@ -8,14 +8,14 @@ Ten dokument opisuje rzeczywisty kontrakt integracji. Nie zakłada funkcji, któ
 
 ## 1. Streszczenie architektury
 
-Boreal jest aplikacją lokalną. Nie ma osobnego serwera Boreal, który przechowywałby konta lub wykonywał instalacje zdalnie. Orkiestracja znajduje się w `BorealStore`, a operacje providerowe są przekazywane do usług i adapterów złożonych w `BorealServices`.
+Boreal jest aplikacją lokalną. Nie ma osobnego serwera Boreal, który przechowywałby konta lub wykonywał instalacje zdalnie. `BorealStore` pozostaje punktem wejścia UI, ale cykl synchronizacji jest śledzony niezależnie dla każdego providera, a operacje providerowe są przekazywane do usług i adapterów złożonych w `BorealServices`.
 
 ```text
 SwiftUI / AppKit
         │
         ▼
 BorealStore (@MainActor)
-        │  stan UI, synchronizacja, lifecycle instalacji i launchu
+        │  stan UI i intencje użytkownika
         ▼
 BorealServices
         │
@@ -87,13 +87,14 @@ Przykłady:
 
 ### 2.2. Rozdzielenie rekordów
 
-`StoreLibraryGame` jest rekordem biblioteki sklepowej. Zawiera ownership/metadata oraz most do lokalnej instalacji:
+`StoreLibraryGame` jest rekordem uprawnienia i prezentacji sklepowej. Pola instalacyjne pozostają wyłącznie mostem migracyjnym dla starszych plików; nowy kod odczytuje stan z `GameInstallation`:
 
 - `provider`, `externalID`, `name`;
 - opis, twórcę i media;
 - ocenę sklepową, jeśli provider ją zwróci;
 - deklarowane platformy (`supportsWindows`, `supportsNativeMacOS`);
-- `isInstalled`, `installPath`, `installedPlatform`, `storageBytes`;
+- `entitlementState` (`available` albo `accountDisconnected`);
+- opcjonalny `entitlementGroupID`, który pozwala grupować entitlements bez ich scalania;
 - szacunek rozmiaru i zgodność ProtonDB, jeśli są dostępne;
 - lokalnie zmierzony czas i sesje Boreal.
 
@@ -104,7 +105,10 @@ Przykłady:
 - platformę instalacji (`windows` albo `nativeMacOS`);
 - powiązane `environmentID`;
 - wykryte pliki wykonywalne i wybrany plik główny;
-- rozmiar i `InstallationState`.
+- rozmiar i `InstallationState`;
+- `volumeIdentity` z UUID woluminu i opcjonalnym security-scoped bookmarkiem;
+- `preparationState` (`notPrepared`, `preparing`, `ready`, `needsRepair`, `incompatible`);
+- build/version, język, DLC, czasy instalacji/weryfikacji, użyty runtime/helper i fingerprint treści.
 
 `WindowsApplication` opisuje uruchamialny element w Boreal, czyli konkretny executable, środowisko i stan procesu. Dla Epic/GOG jest to zwykle gra powiązana z własnym prefixem. Dla Windows Steam osobny rekord hosta opisuje klienta Steam, a rekord gry wskazuje na ten sam klient i AppID.
 
@@ -116,6 +120,7 @@ Stan plików i stan procesu są niezależne:
 InstallationState:
 unknown → installing → installed
                     ├→ missing
+                    ├→ volumeUnavailable
                     └→ broken
 uninstalled
 
@@ -126,6 +131,8 @@ unavailable
 ```
 
 Usunięcie konta sklepowego nie oznacza odinstalowania plików. Odinstalowanie gry nie oznacza odebrania jej z konta sklepowego.
+
+`volumeUnavailable` oznacza, że znany UUID woluminu nie jest obecnie zamontowany. Wpis gry i `GameInstallation` pozostają w bibliotece, ale gra nie jest oznaczana jako gotowa do uruchomienia.
 
 ## 3. Macierz obsługiwanych możliwości
 
@@ -192,7 +199,7 @@ Boreal/
 │   ├── Epic/
 │   └── GOG/
 ├── Tools/
-│   ├── Legendary/0.21.0/
+│   ├── Legendary/0.21.1/
 │   └── GOGDL/1.3.0/
 └── Installers/Steam/
     └── SteamSetup.exe
@@ -213,7 +220,7 @@ Steam dla Windows faktycznie przechowuje pliki tam, gdzie użytkownik wybierze b
 Epic:
 
 ```text
-Tools/Legendary/0.21.0/legendary
+Tools/Legendary/0.21.1/legendary
 Accounts/Epic/
 └── user.json
 ```
@@ -254,13 +261,13 @@ Epic i GOG nie są wbudowane jako kod źródłowy w target aplikacji. Boreal pob
 ### 5.1. Legendary
 
 **Projekt:** [legendary-gl/legendary](https://github.com/legendary-gl/legendary)
-**Wersja używana przez kod:** `0.21.0`
+**Wersja używana przez kod:** `0.21.1` (przypięta; bez automatycznego przechodzenia na latest)
 **Licencja deklarowana w UI/dokumentacji:** GPL-3.0
 
 | Architektura macOS | Artefakt | SHA-256 |
 | --- | --- | --- |
-| arm64 | `legendary_macOS_arm64` | `28f5f7d0eb8c029679d4faaa483ec85888af17a9a75977ae9170c21d8ce3428b` |
-| x86_64 | `legendary_macOS_x64` | `1352dac6940cdfd4b28ce46dc7ac1f496cd9d49417b5d9d69ce462db27399665` |
+| arm64 | `legendary_macOS_arm64` | `d87978321dba9cb731fab40c72f0a30bed55baca8b5341ab21024c5733cd837e` |
+| x86_64 | `legendary_macOS_x64` | `3dfab50277284b5bb0104f8710e4ff1d9ff00c992e44f5843fd0c977c5cc99c4` |
 
 Źródła download są zakodowane w [`LegendaryEpicService.swift`](../Boreal/LegendaryEpicService.swift). Jeżeli architektura nie jest `arm64` ani `x86_64`, `prepareSupport()` kończy się `unsupportedArchitecture`.
 
@@ -291,13 +298,20 @@ Plik jest zapisany jako:
 <Application Support>/Boreal/Installers/Steam/SteamSetup.exe
 ```
 
-Aktualny kontrakt walidacji SteamSetup nie zawiera przypiętego SHA-256. Kod sprawdza:
+Kod zawsze sprawdza:
 
 - status HTTP `200`;
 - końcowy URL nadal ma schemat `https`;
 - host końcowego URL jest taki sam jak host URL źródłowego;
 - rozmiar jest większy niż 1 MB;
 - pierwsze dwa bajty to sygnatura PE `MZ`.
+
+`SteamWindowsService` przyjmuje również opcjonalny oczekiwany SHA-256 z
+konfiguracji wdrożenia. Gdy digest jest dostarczony, niezgodny plik jest
+odrzucany. Jest to świadome zabezpieczenie przed fałszywym poczuciem
+bezpieczeństwa: `SteamSetup.exe` jest PE z Authenticode, którego nie można
+zweryfikować Apple `SecStaticCode`; produkcyjna dystrybucja powinna przekazać
+digest opublikowany przez zaufany kanał Valve albo własny podpisany manifest.
 
 Jeżeli warunek nie przejdzie, instalator nie jest uruchamiany.
 
@@ -395,7 +409,8 @@ failed(message)
 **GOG:**
 
 - Boreal usuwa lokalny `Accounts/GOG/auth.json`.
-- Wiersze GOG są usuwane z biblioteki Boreal, z zachowaniem rekordów ręcznie dodanych jako metadata-only, jeśli takie istnieją.
+- Wpisy GOG pozostają w bibliotece ze stanem entitlementu `accountDisconnected`.
+- `GameInstallation`, lokalna ścieżka, historia i pliki pozostają zachowane; ponowne połączenie może przywrócić stan `available` dla zwróconych entitlementów.
 - Pobrane pliki gier pozostają na dysku.
 - Ownership w GOG nie jest zmieniany.
 
@@ -403,14 +418,15 @@ failed(message)
 
 ## 7. Import i synchronizacja bibliotek
 
-Wszystkie synchronizacje są uruchamiane przez `BorealStore.syncLibrary(_:)` i są blokowane, gdy dla innego providerowego importu trwa już synchronizacja. Po udanym imporcie:
+Wszystkie synchronizacje są uruchamiane przez `BorealStore.syncLibrary(_:)`. Każdy provider ma własny `LibrarySyncState`; synchronizacja Epic nie blokuje równoległej synchronizacji Steam albo GOG. Po udanym imporcie:
 
 1. rekordy są normalizowane;
 2. istniejące identyfikatory Boreal są zachowywane po `externalID`;
-3. zachowywane są lokalne sesje, czas i dodatkowo zapisane metadata;
-4. lista jest sortowana po nazwie;
-5. `library.json` jest zapisywany;
-6. opcjonalnie ładowana jest kompatybilność ProtonDB dla gier bez natywnego macOS.
+3. providerowe odkrycie lokalnych plików jest adoptowane do `GameInstallation`;
+4. zachowywane są lokalne sesje, czas i dodatkowo zapisane metadata;
+5. lista jest sortowana po nazwie;
+6. `library.json` jest zapisywany;
+7. opcjonalnie ładowana jest kompatybilność ProtonDB dla gier bez natywnego macOS.
 
 Błąd importu ustawia `LibrarySyncState.failed` i prezentuje problem. Kod nie zastępuje wcześniej zapisanej listy pustym wynikiem tylko dlatego, że chwilowo nie działa sieć, token albo helper.
 
@@ -551,7 +567,7 @@ Importer obsługuje również zagnieżdżony układ, w którym helper umieścił
 <root>/<externalID>/<tytuł gry>/
 ```
 
-Wynik jest deduplikowany także dla wariantów promocyjnych z sufiksami `Amazon Prime`, `Amazon Luna` i `Prime Giveaway`, gdy istnieje odpowiadający im tytuł bazowy.
+Warianty promocyjne z sufiksami `Amazon Prime`, `Amazon Luna` i `Prime Giveaway` nie są scalane po nazwie. Deduplikacja dotyczy wyłącznie identycznego `externalID`; opcjonalne `entitlementGroupID` pozwala w przyszłości pokazać rodzinę produktów bez utraty osobnych entitlementów.
 
 ## 8. Instalacja gier
 
@@ -704,9 +720,22 @@ Windows Steam jest osobnym, zarządzanym przypadkiem.
 
 Boreal wyświetla wtedy komunikat: użytkownik ma zalogować się w Windows Steam, dokończyć instalację i odświeżyć status.
 
-#### Współdzielenie prefixu
+#### Pula środowisk Steam
 
-Jeden host **Steam for Windows** i jego prefix może obsługiwać wiele gier Steam. Kolejna gra nie instaluje drugiej kopii klienta Steam. Konfiguracje na poziomie prefixu, takie jak architektura i główny renderer, pochodzą z hosta.
+Boreal utrzymuje pulę izolowanych klientów Steam dla Windows:
+
+```text
+shared                    domyślny host dla zwykłych gier
+dedicated:<AppID>         osobny prefix, gdy profil gry wymaga wymuszonego
+                          backendu grafiki albo konkretnego silnika runtime
+```
+
+W puli nadal preferowany jest jeden współdzielony host `shared`, więc zwykłe
+gry nie tworzą drugiej kopii Steam. Gra z wymaganiem kompatybilności otrzymuje
+dedykowany host i nie może zmienić architektury, renderera ani zależności
+prefixu używanego przez inne gry. Klucz puli jest zapisywany w rekordzie hosta
+`WindowsApplication.steamPoolKey`, a instalacja gry wiąże się z konkretnym
+`environmentID`.
 
 Argumenty launchu, ustawienia overlay, mapowanie kontrolera i diagnostyka procesu pozostają właściwościami profilu gry.
 
@@ -720,7 +749,7 @@ appmanifest_<AppID>.acf
 
 w bibliotekach Steam wewnątrz prefixu. Dopiero wtedy czyta `AppState.installdir`, sprawdza katalog `steamapps/common/<installdir>` i aktualizuje rekord gry jako zainstalowany.
 
-Otwarcie klienta Steam albo samo uruchomienie instalatora nie jest dowodem, że gra została pobrana.
+Otwarcie klienta Steam albo samo uruchomienie instalatora nie jest dowodem, że gra została pobrana. Dowodem jest dopiero kanoniczny `GameInstallation`, utworzony po potwierdzeniu manifestu.
 
 ## 9. Postęp pobierania, anulowanie i wznowienie
 
@@ -732,6 +761,16 @@ Otwarcie klienta Steam albo samo uruchomienie instalatora nie jest dowodem, że 
 - prędkość sieciową i dyskową;
 - ETA;
 - skrócony surowy fragment wyjścia helpera.
+
+Trwałe `StoreDownloadRecord` ma również `operationID` typu UUID, rodzaj
+operacji, `providerBuildID`, wersję helpera i znaczniki czasu. Klucz mapy
+`provider::externalID` służy wyłącznie jako blokada zasobu i identyfikator
+kompatybilności starszych danych; nie jest to już tożsamość operacji.
+
+Wyjście helperów przechodzi przez `SecretRedactor`. Wartości `Authorization`,
+`authorization_code`, `access_token`, `refresh_token`, `client_secret`,
+`sid`, `code`, bearer tokens i ich odpowiedniki w query stringu są usuwane
+z `rawDetail` oraz szczegółów błędu.
 
 Parser obsługuje m.in.:
 
@@ -764,7 +803,7 @@ Steam Windows nie jest objęty tym samym bezpośrednim parserem pobierania. Bore
 
 ## 10. Przygotowanie środowiska i uruchamianie
 
-### 10.1. Epic: plan zwracany przez Legendary
+### 10.1. Epic: `LaunchRecipe` zwracany na podstawie Legendary
 
 Po zakończeniu instalacji przycisk **Prepare to Play** wykonuje w uproszczeniu:
 
@@ -810,6 +849,8 @@ Walidacja odrzuca plan, gdy:
 
 Przed przekazaniem planu do Wine Boreal usuwa z environment helpera `WINEPREFIX` i `PATH`, a następnie wstrzykuje własne zarządzane wartości. Provider nie może przejąć kontroli nad prefixem ani runtime’em Boreal.
 
+Adapter buduje z tego typowany `LaunchRecipe`: główny executable i argv, opcjonalny wrapper, oczekiwania procesu, tożsamość providera/AppID i politykę sesji. Obecny runner wykonuje bezpieczną projekcję głównej części receptury do `WindowsLaunchPlan`; pole `wrapper` nie uruchamia shellowego polecenia i nie jest jeszcze samodzielnym etapem wykonawczym.
+
 Plan jest odświeżany przy launchu. Parametry Epic mogą się zmieniać lub wygasać, więc nie są traktowane jako wieczna, ręcznie zapisana komenda.
 
 ### 10.2. GOG: `goggame-<id>.info` jako źródło play task
@@ -833,7 +874,7 @@ Z taska pobierane są:
 
 Ścieżki są normalizowane z separatorów Windows i muszą pozostać dziećmi katalogu instalacji. Odrzucane są ścieżki absolutne, ścieżki z drive letter, traversal i working directory poza instalacją.
 
-Następnie `GOGService` tworzy `WindowsLaunchPlan`, a Boreal przekazuje executable do wybranego runtime’u Wine/GPTK i prefixu.
+Następnie `GOGService` dostarcza tę samą typowaną granicę `LaunchRecipe` (z głównym `WindowsLaunchPlan`), a Boreal przekazuje executable do wybranego runtime’u Wine/GPTK i prefixu. Nie ma ścieżki wykonywania arbitralnego shell command.
 
 ### 10.3. Steam Windows: klient i AppID jako tożsamość launchu
 
@@ -843,7 +884,8 @@ Gra Steam Windows nie jest uruchamiana przez wykryty bezpośrednio `.exe` gry. P
 executable: <prefix>/drive_c/Program Files (x86)/Steam/steam.exe
 arguments:  -applaunch <AppID>
 workingDirectory: katalog steam.exe
-sessionScope: processGroup
+sessionScope: processGroup dla hosta shared,
+              exclusiveEnvironment dla hosta dedicated
 ```
 
 Steam wybiera właściwy executable gry, parametry, DLC, Steamworks i DRM. Boreal może przechowywać wykryty executable jako wskazówkę do identyfikacji procesu, ale nie zastępuje nim `steam.exe` w komendzie uruchomienia.
@@ -870,7 +912,7 @@ W UI dla Epic/GOG użytkownik może wybrać rekomendowany runtime, Game Porting 
 
 ### 11.2. Windows Steam
 
-Steam Windows używa wspólnego środowiska hosta. Dlatego ustawienia prefix-level nie mogą być dowolnie zmieniane przez każdą grę z osobna. Wspólne są między innymi:
+Steam Windows używa puli środowisk. Zwykłe gry korzystają z hosta `shared`, a gra z wymuszonym backendem grafiki albo konkretnym silnikiem dostaje host `dedicated:<AppID>`. Dlatego ustawienia prefix-level nie mogą być dowolnie zmieniane przez każdą grę z osobna. Wspólne w obrębie jednego hosta są między innymi:
 
 - architektura i tryb prefixu;
 - wersja Windows;
@@ -956,8 +998,8 @@ Odinstalowanie GOG jest operacją systemową Boreal:
 1. jeśli istnieje środowisko, Boreal usuwa powiązaną aplikację i environment;
 2. sprawdza, że rekord aplikacji zniknął;
 3. przenosi katalog instalacji do macOS Trash przez `FileManager.trashItem`;
-4. czyści `isInstalled`, `installPath`, platformę i rozmiar;
-5. oznacza `GameInstallation` jako `uninstalled`;
+4. oznacza `GameInstallation` jako `uninstalled`;
+5. czyści pola instalacyjne `StoreLibraryGame` tylko jako projekcję zgodności wstecznej;
 6. odświeża bibliotekę GOG.
 
 Pliki są przenoszone do Trash, a nie bezwarunkowo usuwane rekurencyjnie.
@@ -1013,7 +1055,7 @@ Jeśli w katalogu istnieje `goggame-<id>.info`, instalacja może zostać rozpozn
 
 - Legendary i `gogdl` mają przypięte wersje oraz SHA-256 per architektura.
 - Plik z niezgodnym digestem nie zastępuje istniejącego helpera.
-- SteamSetup ma walidację połączenia, hosta, rozmiaru i sygnatury `MZ`, ale nie ma obecnie przypiętego digestu.
+- SteamSetup ma walidację HTTPS/hosta, statusu, rozmiaru i nagłówka PE `MZ`. Opcjonalny digest SHA-256 można wstrzyknąć przez `steamSetup.expectedSHA256`; pełna walidacja łańcucha Authenticode wymaga osobnego mechanizmu dla PE i nie jest udawana przez macOS `SecStaticCode`.
 
 ### 14.3. Walidacja identyfikatorów i ścieżek
 
@@ -1058,7 +1100,7 @@ Operacje:         ~/Library/Application Support/Boreal/Library/downloads.json
 Logi środowiska:  ~/Library/Application Support/Boreal/Environments/<uuid>/Logs/
 Epic config:      ~/Library/Application Support/Boreal/Accounts/Epic/
 GOG config:       ~/Library/Application Support/Boreal/Accounts/GOG/
-Legendary:        ~/Library/Application Support/Boreal/Tools/Legendary/0.21.0/
+Legendary:        ~/Library/Application Support/Boreal/Tools/Legendary/0.21.1/
 gogdl:            ~/Library/Application Support/Boreal/Tools/GOGDL/1.3.0/
 Steam bootstrap:  ~/Library/Application Support/Boreal/Installers/Steam/SteamSetup.exe
 ```
@@ -1080,7 +1122,7 @@ legendary list-installed --json --show-dirs
 
 **GOG:** Boreal odszukuje kontener `<externalID>`, przenosi strukturę do nowego katalogu i aktualizuje rekord ścieżki. Dla GOG zachowywany jest zagnieżdżony katalog gry, jeśli helper tak go utworzył.
 
-Relokacja jest blokowana, gdy gra działa, environment jest zajęty albo trwa operacja providerowa. Po zmianie aktualizowane są `GameInstallation`, `StoreLibraryGame.installPath`, rozmiar i powiązane `WindowsApplication`.
+Relokacja jest blokowana, gdy gra działa, environment jest zajęty albo trwa operacja providerowa. Po zmianie aktualizowane są `GameInstallation`, jego `volumeIdentity`, rozmiar i powiązane `WindowsApplication`. Pola `StoreLibraryGame.installPath` pozostają tylko mostem wstecznej zgodności.
 
 ## 17. Kontrakt rozszerzania integracji
 
@@ -1123,7 +1165,7 @@ Najważniejsza granica funkcjonalna jest następująca:
 
 ```text
 Steam macOS       → import lokalnych danych + steam://
-Steam Windows     → wspólny Windows Steam client w jednym prefixie
+Steam Windows     → host `shared` albo dedykowany Windows Steam client w osobnym prefixie
 Epic Windows      → Legendary download + osobny environment + launch plan
 GOG Windows       → gogdl download + osobny environment + manifest playTask
 GOG native macOS  → gogdl build/.app, jeśli release jest rzeczywiście dostępny
