@@ -119,6 +119,7 @@ nonisolated struct GameMetadata: Codable, Hashable, Sendable {
     var developer: String?
     var summary: String?
     var artworkPath: String?
+    var customArtworkPath: String? = nil
     var portraitImageURL: String?
     var headerImageURL: String?
     var backgroundImageURL: String?
@@ -133,6 +134,7 @@ nonisolated struct GameMetadata: Codable, Hashable, Sendable {
         developer = game.developer
         summary = game.summary
         artworkPath = game.artworkPath
+        customArtworkPath = game.customArtworkPath
         portraitImageURL = game.portraitImageURL
         headerImageURL = game.headerImageURL
         backgroundImageURL = game.backgroundImageURL
@@ -735,6 +737,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
     var windowsVersion: String
     var graphics: String
     var iconSymbol: String
+    var customArtworkPath: String?
     var storeReference: StoreReference?
     var storeMetadataOnly: Bool?
     var applicationRole: WindowsApplicationRole?
@@ -765,6 +768,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
         windowsVersion = application.windowsVersion
         graphics = application.graphics
         iconSymbol = application.iconSymbol
+        customArtworkPath = application.customArtworkPath
         storeReference = application.storeReference
         storeMetadataOnly = application.storeMetadataOnly
         applicationRole = application.applicationRole
@@ -791,6 +795,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
             windowsVersion: windowsVersion,
             graphics: graphics,
             iconSymbol: iconSymbol,
+            customArtworkPath: customArtworkPath,
             storeProvider: storeReference?.provider,
             storeExternalID: storeReference?.externalID,
             storeMetadataOnly: storeMetadataOnly,
@@ -858,6 +863,7 @@ nonisolated struct LibraryGameRecord: Codable, Hashable, Sendable {
             developer: metadata.developer,
             summary: metadata.summary,
             artworkPath: metadata.artworkPath,
+            customArtworkPath: metadata.customArtworkPath,
             portraitImageURL: metadata.portraitImageURL,
             headerImageURL: metadata.headerImageURL,
             backgroundImageURL: metadata.backgroundImageURL,

@@ -1179,7 +1179,13 @@ nonisolated protocol RuntimeManaging: Sendable {
     func availableRuntimes() async throws -> [BorealRuntime]
     func installedRuntimes() async throws -> [InstalledRuntime]
     func localRuntimeCandidates() async -> [LocalRuntimeCandidate]
+    func localRuntimeCandidate(at appURL: URL) async throws -> LocalRuntimeCandidate
     func importLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
+    func importSelectedLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
+    /// Imports either a GPTK `.app` bundle or Apple's mounted evaluation
+    /// environment directory. The latter is a graphics-layer distribution
+    /// and is merged into a local GPTK app before the snapshot is published.
+    func importSelectedGPTKRuntime(from source: URL) async throws -> InstalledRuntime
     func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation
     func remove(_ runtime: InstalledRuntime) async throws
@@ -1199,6 +1205,18 @@ nonisolated protocol RuntimeManaging: Sendable {
 }
 
 nonisolated extension RuntimeManaging {
+    func localRuntimeCandidate(at appURL: URL) async throws -> LocalRuntimeCandidate {
+        throw RuntimeManagerError.localRuntimeInvalid("The selected runtime import is unavailable.")
+    }
+
+    func importSelectedLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime {
+        throw RuntimeManagerError.localRuntimeInvalid("The selected runtime import is unavailable.")
+    }
+
+    func importSelectedGPTKRuntime(from source: URL) async throws -> InstalledRuntime {
+        throw RuntimeManagerError.localRuntimeInvalid("The selected Game Porting Toolkit import is unavailable.")
+    }
+
     func componentUpdates() async throws -> [RuntimeComponentUpdate] { [] }
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime {
         if component == .dxmt { return try await downloadAndInstallGraphicsComponent(.dxmt, into: runtimeID) }

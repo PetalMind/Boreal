@@ -122,7 +122,7 @@ struct GameArtworkView: View {
     }
 
     @ViewBuilder private var artwork: some View {
-        if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
+        if let path = game.customArtworkPath ?? game.artworkPath, let image = ArtworkImageCache.image(at: path) {
             Image(nsImage: image).resizable().scaledToFill()
         } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in

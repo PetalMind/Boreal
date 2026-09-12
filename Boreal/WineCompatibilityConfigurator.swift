@@ -91,6 +91,18 @@ private enum CompatibilityPreset: CaseIterable, Identifiable {
 
 struct WineCompatibilityConfigurator: View {
     private struct DisplayChoice: Identifiable { let id: UInt32; let label: String }
+    private enum GameLaunchMode: String, CaseIterable, Identifiable {
+        case virtualDesktop
+        case direct
+
+        var id: Self { self }
+        var title: LocalizedStringKey {
+            switch self {
+            case .virtualDesktop: "Virtual desktop"
+            case .direct: "Directly"
+            }
+        }
+    }
 
     @Environment(BorealStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -356,9 +368,44 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var overlaySection: some View {
-        CompatibilitySettingsSection(title: "Overlay", subtitle: "Control Boreal's in-game overlay behavior.", symbol: "rectangle.on.rectangle", tint: .cyan) {
-            CompatibilityToggleRow(title: "Keep Boreal overlay visible", detail: "Uses a borderless fullscreen window so the game does not cover the overlay.", isOn: $profile.overlayCompatibleFullscreen)
+        CompatibilitySettingsSection(title: "Launch mode", subtitle: "Choose how Wine creates the game window.", symbol: "rectangle.on.rectangle", tint: .cyan) {
+            CompatibilityPickerRow(title: "Start game", detail: launchModeExplanation) {
+                Picker("Start game", selection: gameLaunchModeBinding) {
+                    ForEach(GameLaunchMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+            if profile.overlayCompatibleFullscreen {
+                CompatibilityCallout(
+                    text: String(localized: "The virtual desktop keeps Boreal's overlay above the game, but some games may require direct launch to locate their files correctly."),
+                    symbol: "rectangle.on.rectangle",
+                    tint: .blue
+                )
+            }
+            if profile.graphicsBackend == .d3dMetal && !usesSharedSteamEnvironment {
+                Button("Import Game Porting Toolkit 4…", systemImage: "square.and.arrow.down") {
+                    selectGamePortingToolkit()
+                }
+                .disabled(application.status == .running || application.status.isBusy || store.runtimeOperationDetail != nil)
+            }
         }
+    }
+
+    private func selectGamePortingToolkit() {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Choose Game Porting Toolkit 4")
+        panel.message = String(localized: "Select Game Porting Toolkit.app or the mounted Apple evaluation environment folder. Boreal will merge and validate D3DMetal 4, import an isolated snapshot, rebuild this game's environment, and launch it.")
+        panel.prompt = String(localized: "Import and Launch")
+        panel.allowedContentTypes = [.applicationBundle, .folder]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        store.importGPTKRuntime(from: source, for: application.id)
+        dismiss()
     }
 
     private var controllerSection: some View {
@@ -723,6 +770,17 @@ struct WineCompatibilityConfigurator: View {
             set: { profile.fullscreenFSRStrength = 5 - Int($0.rounded()) }
         )
     }
+    private var gameLaunchModeBinding: Binding<GameLaunchMode> {
+        Binding(
+            get: { profile.overlayCompatibleFullscreen ? .virtualDesktop : .direct },
+            set: { profile.overlayCompatibleFullscreen = $0 == .virtualDesktop }
+        )
+    }
+    private var launchModeExplanation: String {
+        profile.overlayCompatibleFullscreen
+            ? String(localized: "Runs the game inside Boreal's virtual desktop and keeps the overlay available.")
+            : String(localized: "Runs the executable directly in its game directory without a virtual desktop.")
+    }
     private var fullscreenFSRUnavailableReason: String? {
         guard profile.fullscreenFSREnabled else { return nil }
         if !fullscreenFSRCapabilities.available {
@@ -751,7 +809,9 @@ struct WineCompatibilityConfigurator: View {
         return compatibilityLocalizedGraphicsAPIName(api)
     }
     private var graphicsBackendExplanation: String {
-        if graphicsProfile?.enforcedBackend != nil { return String(localized: "WineD3D is enforced for this game because the Vulkan renderer cannot initialize its Direct3D device on this runtime.") }
+        if let enforcedBackend = graphicsProfile?.enforcedBackend {
+            return enforcedBackendExplanation(for: enforcedBackend)
+        }
         return switch profile.graphicsBackend {
         case .automatic: String(localized: "Chooses an available renderer for this game.")
         case .d3dMetal: String(localized: "For DirectX 11 and 12. Requires Game Porting Toolkit.")
@@ -759,6 +819,22 @@ struct WineCompatibilityConfigurator: View {
         case .dxvk: String(localized: "Runs DirectX 9, 10, and 11 when the managed Vulkan component supplies the required DLLs.")
         case .vkd3d: String(localized: "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton.")
         case .wineD3D: String(localized: "A fallback to try if other renderers cause graphics problems.")
+        }
+    }
+    private func enforcedBackendExplanation(for backend: WineGraphicsBackend) -> String {
+        switch backend {
+        case .automatic:
+            return String(localized: "Automatic renderer selection is enforced for this game by its compatibility profile.")
+        case .d3dMetal:
+            return String(localized: "D3DMetal is enforced for this game by its compatibility profile.")
+        case .dxmt:
+            return String(localized: "DXMT is enforced for this game by its compatibility profile.")
+        case .dxvk:
+            return String(localized: "DXVK is enforced for this game by its compatibility profile.")
+        case .vkd3d:
+            return String(localized: "VKD3D-Proton is enforced for this game by its compatibility profile.")
+        case .wineD3D:
+            return String(localized: "WineD3D is enforced for this game by its compatibility profile.")
         }
     }
     private var graphicsAPIExplanation: String {

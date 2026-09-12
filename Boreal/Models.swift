@@ -514,6 +514,8 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var storageBytes: Int64 = 0
     var lastOpened: Date?
     var iconSymbol = "app.dashed"
+    /// A user-selected cover copied into Boreal's managed storage.
+    var customArtworkPath: String? = nil
     var lastResult: String?
     var lastExitCode: Int32?
     var lastFailureStage: String?
@@ -808,6 +810,8 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var developer: String?
     var summary: String?
     var artworkPath: String?
+    /// Kept separate from provider artwork so library refreshes cannot replace it.
+    var customArtworkPath: String? = nil
     var portraitImageURL: String?
     var headerImageURL: String?
     var backgroundImageURL: String?
@@ -897,6 +901,7 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
         developer = developer ?? existing.developer
         summary = summary ?? existing.summary
         artworkPath = artworkPath ?? existing.artworkPath
+        customArtworkPath = customArtworkPath ?? existing.customArtworkPath
         portraitImageURL = portraitImageURL ?? existing.portraitImageURL
         headerImageURL = headerImageURL ?? existing.headerImageURL
         backgroundImageURL = backgroundImageURL ?? existing.backgroundImageURL

@@ -116,12 +116,6 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             return CGDisplayIsOnline(candidate) != 0 && !bounds.isEmpty ? candidate : nil
         } ?? CGMainDisplayID()
         var launchPlan = plan
-        if plan.executable.lastPathComponent.caseInsensitiveCompare("Grim Dawn.exe") == .orderedSame {
-            // Grim Dawn's D3D9 fullscreen swap chain is not compatible with
-            // the virtual explorer desktop used to keep Boreal's overlay
-            // visible. Native Wine fullscreen presents correctly with DXVK.
-            launchPlan.overlayCompatibleFullscreen = false
-        }
         if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: plan.executable) {
             // The virtual explorer desktop keeps the legacy DirectDraw
             // frontbuffer alive but does not expose the resulting window on

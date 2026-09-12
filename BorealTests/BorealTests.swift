@@ -681,6 +681,18 @@ struct BorealTests {
         #expect(!candidate.features.wow64)
         #expect(candidate.layout.wineExecutable.hasSuffix("/wine64"))
         #expect(candidate.layout.wineBootExecutable == "Support/wineboot")
+
+        let selectedManager = RuntimeManager(
+            applicationSupportURL: root.appending(path: "selected-support"),
+            catalog: StaticCatalog(runtimes: []),
+            processExecutor: SystemProcessExecutor(),
+            requirementChecker: SatisfiedRequirements(),
+            localApplicationRoots: []
+        )
+        let manuallySelected = try await selectedManager.localRuntimeCandidate(at: app)
+        #expect(manuallySelected.id == candidate.id)
+        #expect(manuallySelected.engine == .gamePortingToolkit)
+        #expect(manuallySelected.features.d3dmetal)
     }
 
     @Test func installedLocalRuntimeRefreshesStaleWoW64MetadataFromSnapshot() async throws {

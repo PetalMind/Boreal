@@ -935,6 +935,12 @@ Ustawienia per gra, które mogą pozostać lokalne dla launchu, obejmują argume
 | Steam `200710` | wymuszony WineD3D dla DirectX 9 |
 | GOG `1446463013` | DX11 wymaga `Darksiders2.wsl`; dostępny także DX9 |
 | GOG `1787707874` | wymuszony WineD3D z `WINED3D_RENDERER=gl` |
+| GOG `1449651388` | Grim Dawn x64: wymuszony DX11 przez DXVK w wirtualnym pulpicie Boreal |
+
+Dla Grim Dawn Boreal przed każdym uruchomieniem ustawia w pliku użytkownika
+`Documents/My Games/Grim Dawn/Settings/options.txt` wartość `screenMode = 1`
+(borderless). Oryginalny plik jest zachowywany jako
+`options.txt.boreal-backup`, a pozostałe ustawienia nie są zmieniane.
 
 `GOGService` ma także providerowy fallback dla znanych z kodu identyfikatorów:
 

@@ -121,6 +121,7 @@ nonisolated struct LaunchRecipe: Sendable, Hashable {
 nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
     case steamAppIDFileUnavailable(URL, underlying: String)
     case unityWinRTShimUnavailable(URL, underlying: String)
+    case grimDawnSettingsUnavailable(URL, underlying: String)
     case dlssUnlockerArchiveUnsupported(URL)
     case dlssUnlockerArchiveUnsafe(String)
     case dlssUnlockerMissingFiles([String])
@@ -135,6 +136,8 @@ nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
             "Boreal couldn’t prepare Torchlight II for direct launch. The file \(url.path) could not be written: \(underlying)"
         case .unityWinRTShimUnavailable(let url, let underlying):
             "Boreal couldn’t prepare Tainted Grail’s Unity runtime compatibility file at \(url.path): \(underlying)"
+        case .grimDawnSettingsUnavailable(let url, let underlying):
+            "Boreal couldn’t prepare Grim Dawn’s display settings at \(url.path): \(underlying)"
         case .dlssUnlockerArchiveUnsupported(let url):
             "The GTA San Andreas DLSS Unlocker must be supplied as a ZIP archive: \(url.lastPathComponent)."
         case .dlssUnlockerArchiveUnsafe(let path):
@@ -469,6 +472,12 @@ nonisolated enum GameLaunchCompatibility {
         environment: ManagedBorealEnvironment? = nil,
         runtime: InstalledRuntime? = nil
     ) throws {
+        if application.storeProvider == .gog,
+           application.storeExternalID == "1449651388",
+           let environment {
+            try prepareGrimDawnDisplaySettings(in: environment)
+        }
+
         if let externalID = application.storeExternalID,
            taintedGrailIDs.contains(externalID),
            runtime?.resolvedEngine == .gamePortingToolkit,
@@ -494,6 +503,77 @@ nonisolated enum GameLaunchCompatibility {
         } catch {
             throw GameLaunchCompatibilityError.steamAppIDFileUnavailable(
                 appIDFile,
+                underlying: error.localizedDescription
+            )
+        }
+    }
+
+    /// Grim Dawn persists its display mode outside the installation directory.
+    /// Its exclusive fullscreen path can leave DXVK with a black, non-presenting
+    /// surface on macOS. Keep the user's settings intact, but force the game's
+    /// supported borderless mode before every launch. The original file is
+    /// retained once so this compatibility change is reversible.
+    private static func prepareGrimDawnDisplaySettings(
+        in environment: ManagedBorealEnvironment,
+        fileManager: FileManager = .default
+    ) throws {
+        let usersRoot = environment.prefixURL
+            .appending(path: "drive_c/users", directoryHint: .isDirectory)
+        let userDirectories = (try? fileManager.contentsOfDirectory(
+            at: usersRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        guard let userDirectory = userDirectories.first(where: { url in
+            url.lastPathComponent.caseInsensitiveCompare("Public") != .orderedSame
+                && (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }) else {
+            throw GameLaunchCompatibilityError.grimDawnSettingsUnavailable(
+                usersRoot,
+                underlying: "the Wine user directory could not be found"
+            )
+        }
+
+        let documentsCandidates = ["Documents", "My Documents"].map {
+            userDirectory.appending(path: $0, directoryHint: .isDirectory)
+        }
+        guard let documents = documentsCandidates.first(where: {
+            fileManager.fileExists(atPath: $0.path)
+        }) else {
+            throw GameLaunchCompatibilityError.grimDawnSettingsUnavailable(
+                userDirectory,
+                underlying: "the Wine Documents directory could not be found"
+            )
+        }
+        let settingsDirectory = documents
+            .appending(path: "My Games/Grim Dawn/Settings", directoryHint: .isDirectory)
+            .resolvingSymlinksInPath()
+        let optionsURL = settingsDirectory.appending(path: "options.txt")
+        let backupURL = settingsDirectory.appending(path: "options.txt.boreal-backup")
+
+        do {
+            try fileManager.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+            let existing = try? String(contentsOf: optionsURL, encoding: .utf8)
+            if existing != nil, !fileManager.fileExists(atPath: backupURL.path) {
+                try existing!.write(to: backupURL, atomically: true, encoding: .utf8)
+            }
+
+            var lines = (existing ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let replacement = "screenMode                = 1"
+            if let index = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .hasPrefix("screenmode")
+            }) {
+                lines[index] = replacement
+            } else {
+                lines.append(replacement)
+            }
+            let output = lines.joined(separator: "\n").trimmingCharacters(in: .newlines) + "\n"
+            try output.write(to: optionsURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw GameLaunchCompatibilityError.grimDawnSettingsUnavailable(
+                optionsURL,
                 underlying: error.localizedDescription
             )
         }

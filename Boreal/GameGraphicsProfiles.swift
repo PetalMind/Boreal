@@ -83,6 +83,34 @@ nonisolated enum GameGraphicsProfiles {
             overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1889754300",
+            availableAPIs: [.directX12],
+            defaultAPI: .directX12,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX12, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            enforcedAPI: .directX12,
+            // Dawnwalker's UE build resolves its IoStore Global shader library
+            // relative to the game process. Launching it through explorer's
+            // virtual desktop leaves the executable alive, but initialization
+            // reports the existing Content/Paks shader containers as missing.
+            overlayCompatibleFullscreen: false
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
+            externalID: "3751260",
+            availableAPIs: [.directX12],
+            defaultAPI: .directX12,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX12, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            enforcedAPI: .directX12,
+            // Keep compatibility with the currently persisted Steam metadata
+            // record for this installation; the GOG build uses the profile above.
+            overlayCompatibleFullscreen: false
+        ),
+        GameGraphicsProfile(
             provider: .steam,
             externalID: "475150",
             availableAPIs: [.directX11, .directX9],
@@ -105,6 +133,24 @@ nonisolated enum GameGraphicsProfiles {
             // that transition, while WineD3D is the compatible fallback.
             preferredBackend: .wineD3D,
             enforcedBackend: .wineD3D,
+            overlayCompatibleFullscreen: true
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1449651388",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX11, arguments: [])
+            ],
+            // Grim Dawn's 64-bit renderer uses D3D11. WineD3D's Vulkan path
+            // reaches MoltenVK but crashes before presenting the first frame
+            // on the current Apple Silicon runtime. DXVK is the compatible
+            // translation path. Keep the game inside Boreal's virtual desktop:
+            // its startup switches a 1024x720 swap chain to an exclusive
+            // 1024x768 display mode, which crashes the macOS Wine window path.
+            preferredBackend: .dxvk,
+            enforcedBackend: .dxvk,
             overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(

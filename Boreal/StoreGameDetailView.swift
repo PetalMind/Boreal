@@ -3059,7 +3059,7 @@ private struct StoreMediaViewer: View {
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(LinearGradient(colors: [.indigo, .cyan.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            if let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
+            if let path = game.customArtworkPath ?? game.artworkPath, let image = NSImage(contentsOfFile: path) {
                 Image(nsImage: image).resizable().scaledToFill()
             } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
                 AsyncImage(url: url) { phase in

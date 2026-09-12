@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 nonisolated enum LibrarySort: String, CaseIterable, Sendable {
     case nameAscending, nameDescending, lastUsed, playtime, compatibility, installedFirst
@@ -895,7 +896,7 @@ struct LibraryView: View {
                                 if grouping == .source, let source = group.source { syncButton(for: source) }
                             }
                         }
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 145, maximum: 170), spacing: 24)], spacing: 26) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210, maximum: 250), spacing: 28)], spacing: 28) {
                             ForEach(group.items) { item in gridItem(item) }
                         }
                     }
@@ -1109,10 +1110,14 @@ struct LibraryView: View {
     @ViewBuilder private func featuredArtwork(_ item: LibraryItem) -> some View {
         switch item.kind {
         case .application(let app):
-            LinearGradient(colors: [.indigo.opacity(0.9), .cyan.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                .overlay { Image(systemName: app.iconSymbol).font(.system(size: 92)).foregroundStyle(.white.opacity(0.22)) }
+            if let path = app.customArtworkPath, let image = ArtworkImageCache.image(at: path) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                LinearGradient(colors: [.indigo.opacity(0.9), .cyan.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .overlay { Image(systemName: app.iconSymbol).font(.system(size: 92)).foregroundStyle(.white.opacity(0.22)) }
+            }
         case .storeGame(let game):
-            if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
+            if let path = game.customArtworkPath ?? game.artworkPath, let image = ArtworkImageCache.image(at: path) {
                 Image(nsImage: image).resizable().scaledToFill()
             } else if let value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL,
                       let url = URL(string: value) {
@@ -1152,74 +1157,138 @@ struct LibraryView: View {
 
     private func gridItem(_ item: LibraryItem) -> some View {
         LibraryGridHoverContainer { hovering in
-            VStack(alignment: .leading, spacing: 9) {
-                ZStack(alignment: .bottom) {
-                    Button { select(item) } label: { itemIcon(item, compact: false) }
-                        .buttonStyle(.plain)
-                        .overlay(alignment: .topLeading) {
-                            if case .storeGame(let game) = item.kind, game.supportsNativeMacOS == true {
-                                NativeMacOSBadge(compact: true)
-                                    .padding(8)
-                            } else if item.compatibility != .unknown {
-                                MacCompatibilityBadge(rating: item.compatibility, compact: true)
-                                    .padding(8)
+            ZStack {
+                libraryCardArtwork(item)
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.28),
+                        .init(color: .black.opacity(0.32), location: 0.52),
+                        .init(color: .black.opacity(0.94), location: 0.76)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .top) {
+                        Label(item.localizedStatusText, systemImage: statusSymbol(item))
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(statusColor(item))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.58), in: Capsule())
+                        Spacer(minLength: 8)
+                        favoriteButton(for: item)
+                    }
+
+                    Spacer(minLength: 40)
+
+                    Button { select(item) } label: {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(item.name)
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+
+                            Label(item.source.title, systemImage: item.source.symbol)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.82))
+
+                            HStack(spacing: 8) {
+                                Label(
+                                    item.readyToPlay ? .Library.installed : item.localizedStatusText,
+                                    systemImage: item.readyToPlay ? "checkmark.circle.fill" : statusSymbol(item)
+                                )
+                                    .foregroundStyle(item.readyToPlay ? .green : statusColor(item))
+                                Spacer(minLength: 4)
+                                if let storageBytes = item.storageBytes, storageBytes > 0 {
+                                    Label(
+                                        "\(item.storageIsEstimate ? "≈ " : "")\(ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file))",
+                                        systemImage: "internaldrive.fill"
+                                    )
+                                    .monospacedDigit()
+                                    .foregroundStyle(.white.opacity(0.72))
+                                }
                             }
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
                         }
-                        .overlay(alignment: .topTrailing) { favoriteButton(for: item) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
                     if hovering {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 14) {
                             Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
+                                .font(.callout.weight(.bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, minHeight: 36)
+                                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                .buttonStyle(.plain)
+
                             Menu {
                                 itemContextMenu(item)
                             } label: {
                                 Image(systemName: "ellipsis")
+                                    .font(.callout.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 36, height: 36)
+                                    .background(.white.opacity(0.12), in: Circle())
+                                    .overlay { Circle().stroke(.white.opacity(0.12), lineWidth: 1) }
                             }
                             .menuStyle(.borderlessButton)
-                            .fixedSize()
-                            .padding(5)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .frame(width: 36, height: 36)
                         }
-                        .padding(10)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        .padding(.top, 11)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
-                Button { select(item) } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.name).font(.headline).lineLimit(1)
-                        Label(item.localizedStatusText, systemImage: statusSymbol(item))
-                            .font(.caption).foregroundStyle(statusColor(item)).lineLimit(1)
-                        if let storageBytes = item.storageBytes, storageBytes > 0 {
-                            Label(
-                                "\(item.storageIsEstimate ? "≈ " : "")\(ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file))",
-                                systemImage: "internaldrive"
-                            )
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
+                .padding(12)
             }
-            .padding(7)
-            .background {
-                if hovering {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(.thinMaterial)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                .stroke(.white.opacity(0.12), lineWidth: 1)
-                        }
-                }
+            .aspectRatio(0.82, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(hovering ? Color.accentColor : .white.opacity(0.15), lineWidth: hovering ? 3 : 1)
             }
+            .shadow(color: hovering ? Color.accentColor.opacity(0.24) : .black.opacity(0.24), radius: hovering ? 14 : 9, y: 5)
+            .scaleEffect(hovering ? 1.012 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .contextMenu { itemContextMenu(item) }
             .accessibilityLabel(
                 Text(item.name) + Text(", ") + Text(item.source.title) + Text(", ") + Text(item.localizedStatusText)
             )
+        }
+    }
+
+    @ViewBuilder private func libraryCardArtwork(_ item: LibraryItem) -> some View {
+        switch item.kind {
+        case .application(let app):
+            if let path = app.customArtworkPath, let image = ArtworkImageCache.image(at: path) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                LinearGradient(
+                    colors: [.indigo.opacity(0.95), .cyan.opacity(0.58)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .overlay {
+                    Image(systemName: app.iconSymbol)
+                        .font(.system(size: 86, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.32))
+                }
+            }
+        case .storeGame(let game):
+            GeometryReader { geometry in
+                GameArtworkView(
+                    game: game,
+                    width: geometry.size.width,
+                    height: geometry.size.height
+                )
+            }
         }
     }
 
@@ -1246,7 +1315,7 @@ struct LibraryView: View {
                 .background(.black.opacity(0.34), in: Circle())
         }
         .buttonStyle(.plain)
-        .padding(10)
+        .padding(0)
         .contentShape(Circle())
         .help(Text(favorite ? .Library.removeFromFavorites : .Library.addToFavorites))
         .accessibilityLabel(Text(favorite ? .Library.removeItemFromFavorites(item.name) : .Library.addItemToFavorites(item.name)))
@@ -1256,20 +1325,34 @@ struct LibraryView: View {
 
     @ViewBuilder private func itemIcon(_ item: LibraryItem, compact: Bool) -> some View {
         switch item.kind {
-        case .application(let app): AppIconView(symbol: app.iconSymbol, size: compact ? 32 : 92)
+        case .application(let app):
+            if let path = app.customArtworkPath, let image = ArtworkImageCache.image(at: path) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: compact ? 32 : 92, height: compact ? 42 : 92)
+                    .clipShape(RoundedRectangle(cornerRadius: compact ? 6 : 14, style: .continuous))
+            } else {
+                AppIconView(symbol: app.iconSymbol, size: compact ? 32 : 92)
+            }
         case .storeGame(let game): GameArtworkView(game: game, width: compact ? 32 : 148, height: compact ? 42 : 207)
         }
     }
 
     @ViewBuilder private func itemContextMenu(_ item: LibraryItem) -> some View {
         switch item.kind {
-        case .application(let app): appContextMenu(app)
+        case .application(let app):
+            appContextMenu(app)
+            Divider()
+            customArtworkMenu(for: item)
         case .storeGame:
             if item.readyToPlay || item.running {
                 Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
                 Divider()
             }
             Button(.Library.showDetails, systemImage: "info.circle") { select(item) }
+            Divider()
+            customArtworkMenu(for: item)
             if case .storeGame(let game) = item.kind,
                store.isInstalled(game),
                [.epic, .gog].contains(game.provider) {
@@ -1278,6 +1361,51 @@ struct LibraryView: View {
                     uninstallCandidate = game
                 }
             }
+        }
+    }
+
+    @ViewBuilder private func customArtworkMenu(for item: LibraryItem) -> some View {
+        Button("Choose Custom Cover…", systemImage: "photo.on.rectangle") {
+            chooseCustomArtwork(for: item)
+        }
+        if itemHasCustomArtwork(item) {
+            Button("Restore Default Cover", systemImage: "arrow.uturn.backward") {
+                resetCustomArtwork(for: item)
+            }
+        }
+    }
+
+    private func itemHasCustomArtwork(_ item: LibraryItem) -> Bool {
+        switch item.kind {
+        case .application(let application): application.customArtworkPath != nil
+        case .storeGame(let game): game.customArtworkPath != nil
+        }
+    }
+
+    private func chooseCustomArtwork(for item: LibraryItem) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Custom Cover"
+        panel.message = "Select an image to use as this game's cover."
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { sourceURL.stopAccessingSecurityScopedResource() } }
+        switch item.kind {
+        case .application(let application):
+            store.setCustomArtwork(from: sourceURL, for: application.id)
+        case .storeGame(let game):
+            store.setCustomArtwork(from: sourceURL, forStoreGameID: game.id)
+        }
+    }
+
+    private func resetCustomArtwork(for item: LibraryItem) {
+        switch item.kind {
+        case .application(let application):
+            store.resetCustomArtwork(for: application.id)
+        case .storeGame(let game):
+            store.resetCustomArtwork(forStoreGameID: game.id)
         }
     }
 

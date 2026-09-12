@@ -116,6 +116,45 @@ struct WineCompatibilityProfileTests {
         #expect(d3dMetalPlan.environment["DXMT_CONFIG"] == nil)
     }
 
+    @Test func dawnwalkerUsesDirectDX12D3DMetalLaunchForGOGAndPersistedSteamMetadata() throws {
+        for (provider, externalID) in [
+            (GameLibraryProvider.gog, "1889754300"),
+            (GameLibraryProvider.steam, "3751260")
+        ] {
+            let profile = try #require(GameGraphicsProfiles.profile(provider: provider, externalID: externalID))
+            #expect(profile.defaultAPI == .directX12)
+            #expect(profile.enforcedAPI == .directX12)
+            #expect(profile.enforcedBackend == .d3dMetal)
+            #expect(profile.overlayCompatibleFullscreen == false)
+        }
+    }
+
+    @Test func dawnwalkerDirectLaunchRecommendationDoesNotOverrideSavedUserChoice() {
+        let application = WindowsApplication(
+            name: "The Blood of Dawnwalker",
+            publisher: "Rebel Wolves",
+            executablePath: "/tmp/Dawnwalker.exe",
+            installerPath: "existing-installation",
+            environmentID: UUID(),
+            storeProvider: .gog,
+            storeExternalID: "1889754300",
+            compatibilityProfile: WineCompatibilityProfile(
+                graphicsBackend: .d3dMetal,
+                graphicsAPI: .directX12,
+                overlayCompatibleFullscreen: true
+            )
+        )
+
+        let effective = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            application.resolvedCompatibilityProfile,
+            for: application
+        )
+
+        #expect(effective.overlayCompatibleFullscreen)
+        #expect(effective.graphicsBackend == .d3dMetal)
+        #expect(effective.graphicsAPI == .directX12)
+    }
+
     @Test func graphicsBackendChoicesIncludeEverySupportedRenderer() {
         #expect(WineGraphicsBackend.allCases == [
             .automatic,

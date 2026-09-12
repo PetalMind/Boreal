@@ -1301,6 +1301,57 @@ final class BorealStore {
         else { favoriteKeys.insert(key) }
         save()
     }
+
+    func setCustomArtwork(from sourceURL: URL, for applicationID: UUID) {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        do {
+            let path = try importCustomArtwork(from: sourceURL)
+            applications[index].customArtworkPath = path
+            if let reference = applications[index].storeReference,
+               let gameIndex = storeGames.firstIndex(where: { $0.storeReference == reference }) {
+                storeGames[gameIndex].customArtworkPath = path
+            }
+            save()
+        } catch {
+            present(error, title: "Boreal couldn’t set the custom cover", stage: "Importing custom artwork")
+        }
+    }
+
+    func setCustomArtwork(from sourceURL: URL, forStoreGameID gameID: UUID) {
+        guard let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
+        do {
+            storeGames[index].customArtworkPath = try importCustomArtwork(from: sourceURL)
+            save()
+        } catch {
+            present(error, title: "Boreal couldn’t set the custom cover", stage: "Importing custom artwork")
+        }
+    }
+
+    func resetCustomArtwork(for applicationID: UUID) {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        applications[index].customArtworkPath = nil
+        if let reference = applications[index].storeReference,
+           let gameIndex = storeGames.firstIndex(where: { $0.storeReference == reference }) {
+            storeGames[gameIndex].customArtworkPath = nil
+        }
+        save()
+    }
+
+    func resetCustomArtwork(forStoreGameID gameID: UUID) {
+        guard let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
+        storeGames[index].customArtworkPath = nil
+        save()
+    }
+
+    private func importCustomArtwork(from sourceURL: URL) throws -> String {
+        let directory = storageLayout.rootURL.appending(path: "Artwork/Custom", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileExtension = sourceURL.pathExtension.isEmpty ? "image" : sourceURL.pathExtension.lowercased()
+        let destination = directory.appending(path: "\(UUID().uuidString).\(fileExtension)", directoryHint: .notDirectory)
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        return destination.path
+    }
+
     func performanceLogURL(for applicationID: UUID) -> URL? {
         if let url = performanceLogURLs[applicationID] ?? activeSessions[applicationID]?.stderrLog { return url }
         guard let app = application(id: applicationID),
@@ -1378,6 +1429,7 @@ final class BorealStore {
             var value = refreshed
             value.id = storeGames[index].id
             value.preserveMeasuredActivity(from: storeGames[index])
+            value.customArtworkPath = storeGames[index].customArtworkPath
             storeGames[index] = value
             save()
         }
@@ -1735,9 +1787,9 @@ final class BorealStore {
             for: application
         )
         if let builtIn = GameGraphicsProfiles.profile(for: application) {
-            if builtIn.enforcedBackend == nil, application.compatibilityProfile == nil {
+            if application.compatibilityProfile == nil {
                 profile.graphicsAPI = builtIn.defaultAPI
-                if let preferredBackend = builtIn.preferredBackend {
+                if builtIn.enforcedBackend == nil, let preferredBackend = builtIn.preferredBackend {
                     profile.graphicsBackend = preferredBackend
                 }
                 if let overlayCompatibleFullscreen = builtIn.overlayCompatibleFullscreen {
@@ -2027,7 +2079,8 @@ final class BorealStore {
                     supporting: profile.graphicsBackend,
                     preferredEngine: engine,
                     executableArchitecture: executableArchitecture,
-                    prefixMode: profile.prefixMode
+                    prefixMode: profile.prefixMode,
+                    runtimeIDOverride: profile.runtimeIDOverride
                 )
                 try validatePrefixSelection(profile, executableArchitecture: executableArchitecture, runtime: runtime)
                 var managed = try await services.environmentManager.create(
@@ -2322,6 +2375,7 @@ final class BorealStore {
             var value = metadata
             value.id = storeGames[index].id
             value.preserveMeasuredActivity(from: storeGames[index])
+            value.customArtworkPath = storeGames[index].customArtworkPath
             if let installation = installation(for: storeGames[index]) {
                 value.isInstalled = installation.state.representsAnInstallation
                 value.installPath = StoragePathResolver.resolve(installation.location, layout: storageLayout).path
@@ -2366,10 +2420,12 @@ final class BorealStore {
             var value = metadata
             value.id = storeGames[existingIndex].id
             value.preserveMeasuredActivity(from: storeGames[existingIndex])
+            value.customArtworkPath = storeGames[existingIndex].customArtworkPath
             // The rename resolved a new presentation identity. Do not merge
             // the old artwork back into the fresh metadata: artworkPath is
             // preferred by GameArtworkView and could otherwise keep showing
-            // the cover belonging to the previous title.
+            // the provider cover belonging to the previous title. The user's
+            // explicitly selected custom cover is independent and preserved.
             if let installation = installation(for: storeGames[existingIndex]) {
                 value.isInstalled = installation.state.representsAnInstallation
                 value.installPath = StoragePathResolver.resolve(installation.location, layout: storageLayout).path
@@ -2489,6 +2545,7 @@ final class BorealStore {
             developer: presentation?.developer ?? applications[applicationIndex].publisher,
             summary: presentation?.summary,
             artworkPath: presentation?.artworkPath,
+            customArtworkPath: applications[applicationIndex].customArtworkPath,
             portraitImageURL: presentation?.portraitImageURL,
             headerImageURL: presentation?.headerImageURL,
             backgroundImageURL: presentation?.backgroundImageURL,
@@ -4367,10 +4424,12 @@ final class BorealStore {
         supporting backend: WineGraphicsBackend,
         preferredEngine: RuntimeEngine,
         executableArchitecture: WindowsExecutableArchitecture? = nil,
-        prefixMode: WinePrefixMode? = nil
+        prefixMode: WinePrefixMode? = nil,
+        runtimeIDOverride: String? = nil
     ) async throws -> InstalledRuntime {
         let installed = try await services.runtimeManager.installedRuntimes()
         if let runtime = installed.first(where: {
+            if let runtimeIDOverride, $0.id != runtimeIDOverride { return false }
             guard $0.resolvedEngine == preferredEngine else { return false }
             let capabilities = $0.features?.resolvedArchitectureCapabilities ?? .unknown
             if prefixMode == nil, executableArchitecture == .x86, !capabilities.canRunX86 { return false }
@@ -4400,6 +4459,9 @@ final class BorealStore {
         }
         if prefixMode != nil, prefixMode != .wow64 {
             throw InstallerServiceError.noRuntimeAvailable
+        }
+        if runtimeIDOverride != nil {
+            throw RuntimeManagerError.noCompatibleRuntime("The selected runtime is not installed or does not satisfy this game's architecture and graphics requirements.")
         }
         return try await services.runtimeManager.prepareReadyRuntime(
             preferredEngine: preferredEngine,
@@ -6148,6 +6210,12 @@ final class BorealStore {
         runtimeDiscoveryState = .loading
         do {
             let installed = try await services.runtimeManager.installedRuntimes()
+            let installedByID = Dictionary(uniqueKeysWithValues: installed.map { ($0.id, $0) })
+            for index in environments.indices {
+                guard let runtimeID = environments[index].runtimeID,
+                      let runtime = installedByID[runtimeID] else { continue }
+                environments[index].runtime = runtime.runtimeDescription
+            }
             var values: [RuntimeStatus] = []
             for runtime in installed {
                 let validation = try await services.runtimeManager.validate(runtime)
@@ -6349,6 +6417,49 @@ final class BorealStore {
                 runtimeOperationDetail = nil
                 runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
                 present(error, title: "Installed Wine couldn’t be imported", stage: "Copying, validating, and smoke-testing the local runtime")
+            }
+        }
+    }
+
+    func importGPTKRuntime(from source: URL, for applicationID: UUID) {
+        guard runtimeOperationDetail == nil,
+              let index = applications.firstIndex(where: { $0.id == applicationID }),
+              !applications[index].usesSharedSteamEnvironment,
+              applications[index].status != .running,
+              !applications[index].status.isBusy else { return }
+        runtimeOperationDetail = String(localized: "Validating and importing the selected Game Porting Toolkit runtime…")
+        Task {
+            let hasSecurityScope = source.startAccessingSecurityScopedResource()
+            defer { if hasSecurityScope { source.stopAccessingSecurityScopedResource() } }
+            do {
+                let runtime = try await services.runtimeManager.importSelectedGPTKRuntime(from: source)
+                await refreshRuntimeStatuses()
+                guard let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) else {
+                    throw CancellationError()
+                }
+                let previousProfile = applications[currentIndex].resolvedCompatibilityProfile
+                var profile = GameGraphicsProfiles.effectiveCompatibilityProfile(previousProfile, for: applications[currentIndex])
+                profile.graphicsBackend = .d3dMetal
+                profile.graphicsAPI = .directX12
+                profile.runtimeIDOverride = runtime.id
+                applications[currentIndex].compatibilityProfile = profile
+                applications[currentIndex].lastResult = String(localized: "Imported GPTK runtime; rebuilding the game environment")
+                runtimeOperationDetail = nil
+                save()
+                recreateStandaloneEnvironment(
+                    applicationID,
+                    profile: profile,
+                    previousProfile: previousProfile,
+                    engine: .gamePortingToolkit,
+                    launchWhenReady: true
+                )
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: String(localized: "Game Porting Toolkit couldn’t be imported"),
+                    stage: String(localized: "Validating D3DMetal and preparing Dawnwalker's runtime")
+                )
             }
         }
     }
