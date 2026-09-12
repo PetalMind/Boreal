@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct BorealSettingsView: View {
     @State private var selection = SettingsCategory.general
@@ -87,6 +89,9 @@ struct BorealSettingsView: View {
             .background(BorealGlassBackdrop())
         }
         .frame(minWidth: 980, idealWidth: 1220, minHeight: 680, idealHeight: 780)
+        .onReceive(NotificationCenter.default.publisher(for: .borealOpenRuntimeSettings)) { _ in
+            selection = .runtime
+        }
     }
 
     @ViewBuilder private var settingsContent: some View {
@@ -300,6 +305,7 @@ struct RuntimeSettingsView: View {
                     Divider()
                     SettingsRow(.Settings.automaticVKD3DupdatesLabel) { Toggle("", isOn: $automaticVKD3DUpdates).labelsHidden() }
                 }
+                runtimeImportCard
                 installedRuntimesCard
             }
             .padding(.horizontal, 32).padding(.bottom, 28)
@@ -365,6 +371,59 @@ struct RuntimeSettingsView: View {
         }
     }
 
+    private var runtimeImportCard: some View {
+        SettingsCard(
+            "Import runtimes",
+            subtitle: "Add an isolated Wine or Game Porting Toolkit runtime. Original app bundles are never modified.",
+            symbol: "square.and.arrow.down"
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "cpu.fill")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Game Porting Toolkit")
+                            .font(.headline)
+                        Text("Choose a GPTK app or an extracted Apple evaluation environment with D3DMetal.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    Button("Import…", systemImage: "square.and.arrow.down") { selectGPTKRuntime() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.runtimeOperationDetail != nil)
+                }
+
+                let candidates = store.localRuntimeCandidates
+                if candidates.isEmpty {
+                    Text("No local runtime bundle was detected in Applications. You can select one manually above.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Divider()
+                    Text("Detected local bundles")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(candidates) { candidate in
+                        HStack(spacing: 10) {
+                            Image(systemName: candidate.engine == .gamePortingToolkit ? "cpu" : "shippingbox")
+                                .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(candidate.displayName)
+                                Text("\(candidate.engine.displayName) · \(candidate.wineVersion) · \(candidate.architecture.rawValue)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            Button("Import") { store.importLocalRuntime(id: candidate.id) }
+                                .buttonStyle(.bordered)
+                                .disabled(store.runtimeOperationDetail != nil)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func runtimeRow(_ runtime: RuntimeStatus) -> some View {
         let environmentCount = store.environments.filter { $0.runtimeID == runtime.id }.count
         return HStack(alignment: .top, spacing: 12) {
@@ -397,6 +456,19 @@ struct RuntimeSettingsView: View {
             }
         }
         .padding(.vertical, 10)
+    }
+
+    private func selectGPTKRuntime() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Game Porting Toolkit"
+        panel.message = "Choose a GPTK app bundle or an extracted Apple evaluation environment folder containing D3DMetal."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle, .folder]
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        store.importGPTKRuntime(from: source)
     }
 }
 

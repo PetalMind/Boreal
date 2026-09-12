@@ -50,6 +50,7 @@ struct StoreGameDetailView: View {
     @State private var priceHistoryRange: DiscoveryPriceHistoryRange = .threeMonths
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
+    @State private var showsAllDependencies = false
 
     private var currentGame: StoreLibraryGame {
         let linkedGame: StoreLibraryGame? = linkedApplication.flatMap { application in
@@ -138,6 +139,11 @@ struct StoreGameDetailView: View {
         .task(id: linkedEnvironment?.id) {
             if let environmentID = linkedEnvironment?.id {
                 store.refreshDependencies(for: environmentID, application: linkedApplication)
+            }
+        }
+        .task(id: linkedApplication?.id) {
+            if let applicationID = linkedApplication?.id {
+                _ = await store.resolveCompatibility(for: applicationID)
             }
         }
         .task(id: "compatibility-preparation-\(game.id.uuidString)-\(store.isInstalled(currentGame))-\(linkedApplication?.id.uuidString ?? "none")") {
@@ -428,7 +434,13 @@ struct StoreGameDetailView: View {
         case .compatibility:
             VStack(alignment: .leading, spacing: 12) {
                 compatibilitySection
-                if linkedEnvironment != nil { dependenciesSection }
+                if linkedApplication != nil { launchPlanSection }
+                if linkedEnvironment != nil {
+                    requiredActionsSection
+                    knownIssuesSection
+                    configurationReasonsSection
+                    dependenciesSection
+                }
             }
         case .offers:
             discoveryOffersSection
@@ -640,28 +652,27 @@ struct StoreGameDetailView: View {
     private var dependenciesSection: some View {
         let environmentID = linkedEnvironment!.id
         let statuses = store.dependencyStatuses(for: environmentID, application: linkedApplication)
-        let required = statuses.filter { $0.recommendation == .required }
-        let recommended = statuses.filter { $0.recommendation == .recommended }
-        let optional = statuses.filter { $0.recommendation == .optional }
-        let canInstallRequired = required.contains { $0.state == .missing || $0.state == .failed }
+        let readyCount = statuses.filter { $0.state == .installed }.count
         return detailCard(.Library.dependenciesTitle, symbol: "shippingbox.fill") {
             VStack(alignment: .leading, spacing: 10) {
-                Text(.Library.dependenciesDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if !required.isEmpty {
-                    dependencyGroup(.Library.required, statuses: required, environmentID: environmentID)
+                Label {
+                    Text("\(readyCount)/\(statuses.count) components ready")
+                } icon: {
+                    Image(systemName: readyCount == statuses.count ? "checkmark.circle.fill" : "circle.dashed")
+                        .foregroundStyle(readyCount == statuses.count ? .green : .secondary)
                 }
-                if !recommended.isEmpty {
-                    dependencyGroup(.Library.recommendedForGame, statuses: recommended, environmentID: environmentID)
-                }
-                dependencyGroup(.Library.optional, statuses: optional, environmentID: environmentID)
-                if canInstallRequired {
-                    Button(.Library.installRequiredDependencies, systemImage: "arrow.down.circle.fill") {
-                        store.installRequiredDependencies(for: environmentID)
+                .font(.callout.weight(.medium))
+
+                DisclosureGroup(isExpanded: $showsAllDependencies) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        dependencyGroup(.Library.required, statuses: statuses.filter { $0.recommendation == .required }, environmentID: environmentID)
+                        dependencyGroup(.Library.recommendedForGame, statuses: statuses.filter { $0.recommendation == .recommended }, environmentID: environmentID)
+                        dependencyGroup(.Library.optional, statuses: statuses.filter { $0.recommendation == .optional }, environmentID: environmentID)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(statuses.contains { $0.state == .installing })
+                    .padding(.top, 8)
+                } label: {
+                    Text(showsAllDependencies ? "Hide all dependencies" : "Show all dependencies")
+                        .font(.caption.weight(.semibold))
                 }
             }
         }
@@ -669,28 +680,30 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder
     private func dependencyGroup(_ title: LocalizedStringResource, statuses: [RuntimeDependencyStatus], environmentID: UUID) -> some View {
-        Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-        ForEach(statuses) { status in
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: dependencySymbol(status.state))
-                    .foregroundStyle(dependencyColor(status.state))
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(status.dependency.displayName)
-                    if let detail = status.detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
+        if !statuses.isEmpty {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(statuses) { status in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: dependencySymbol(status.state))
+                        .foregroundStyle(dependencyColor(status.state))
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(status.dependency.displayName)
+                        if let detail = status.detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                }
-                Spacer()
-                if status.state == .installing {
-                    ProgressView().controlSize(.small)
-                } else if status.state == .installed {
-                    Text(.Library.installed).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                } else {
-                    Button(status.state == .failed ? .Library.retry : .Library.install) {
-                        store.installDependency(status.dependency, for: environmentID)
+                    Spacer()
+                    if status.state == .installing {
+                        ProgressView().controlSize(.small)
+                    } else if status.state == .installed {
+                        Text(.Library.installed).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    } else {
+                        Button(status.state == .failed ? .Library.retry : .Library.install) {
+                            store.installDependency(status.dependency, for: environmentID)
+                        }
+                        .controlSize(.small)
                     }
-                    .controlSize(.small)
                 }
             }
         }
@@ -2088,44 +2101,229 @@ struct StoreGameDetailView: View {
         VStack(alignment: .leading, spacing: 13) {
             Label(.Library.macCompatibility, systemImage: "checkmark.shield.fill")
                 .font(.headline)
-            if let discoveryGame, !discoveryGame.availableRatings.isEmpty {
-                ForEach(discoveryGame.availableRatings, id: \.title) { entry in
-                    HStack {
-                        Text(entry.localizedTitle)
-                        Spacer()
-                        Label { Text(entry.rating.localizedDisplayName) } icon: { Image(systemName: entry.rating.symbol) }
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(entry.rating.color)
-                    }
-                    Divider().opacity(0.45)
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: compatibilityRating.symbol)
+                    .font(.system(size: 25, weight: .bold))
+                    .foregroundStyle(compatibilityTint)
+                    .frame(width: 48, height: 48)
+                    .background(compatibilityTint.opacity(0.14), in: Circle())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(compatibilityRating.localizedTitle)
+                        .font(.title3.weight(.semibold))
+                    Text("Game compatibility")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Text(.Library.appleGamingWikiDisclaimer)
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if let profile = currentGame.compatibility {
-                HStack(alignment: .top, spacing: 18) {
-                    MacCompatibilityBadge(rating: profile.tier.rating)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(.Library.wineCompatibility)
-                            .fontWeight(.medium)
-                        Text(compatibilitySummary(profile))
-                            .font(.callout).foregroundStyle(.secondary)
-                        Text(.Library.wineCompatibilityDisclaimer)
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Label(localReadinessTitle, systemImage: localReadinessSymbol)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(localReadinessTint)
+                    Text("Local configuration")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            }
+            Divider().opacity(0.45)
+            HStack(spacing: 18) {
+                Label(communityReportSummary, systemImage: "person.2.fill")
+                if let profile = currentGame.compatibility, let score = profile.score {
+                    Label("\(Int(score))/5", systemImage: "star.fill")
+                }
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            if let profile = currentGame.compatibility {
+                Text(compatibilitySummary(profile))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let discoveryGame, !discoveryGame.availableRatings.isEmpty {
+                Text("Assessment based on available AppleGamingWiki community methods.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                ContentUnavailableView(
-                    .Library.noCompatibilityReports,
-                    systemImage: "questionmark.circle",
-                    description: Text(.Library.noCompatibilityResult)
-                )
-                .frame(maxWidth: .infinity, minHeight: 120)
+                Text(.Library.noCompatibilityResult)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.14)) }
+    }
+
+    private var launchPlanSection: some View {
+        let application = linkedApplication!
+        let profile = application.resolvedCompatibilityProfile
+        let resolution = store.lastCompatibilityResolutions[application.id]
+        let api = resolution?.detectedDirectX.api ?? profile.graphicsAPI
+        let backend = resolution?.recommendedGraphicsStack.backend ?? profile.graphicsBackend
+        let prefix = resolution?.recommendedPrefixMode ?? profile.prefixMode ?? .wow64
+        return detailCard("Launch plan", symbol: "point.3.connected.trianglepath.dotted", actionTitle: "Configure", action: { compatibilityApplication = application }) {
+            HStack {
+                Text("The configuration Boreal will use when starting this game.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Label(localReadinessTitle, systemImage: localReadinessSymbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(localReadinessTint)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), alignment: .leading)], alignment: .leading, spacing: 14) {
+                launchPlanItem("Graphics", value: backend.displayName, source: recommendationSourceLabel(resolution?.recommendedGraphicsStack.source ?? (profile.graphicsBackend == .automatic ? .runtimeCapabilities : .userProfile)), symbol: "display")
+                launchPlanItem("Game API", value: api?.displayName ?? String(localized: "Not detected"), source: resolution?.detectedDirectX.api == nil ? String(localized: "Automatic") : String(localized: "Detected in game"), symbol: "square.3.layers.3d")
+                launchPlanItem("Runtime", value: linkedEnvironment?.runtime ?? String(localized: "Not configured"), source: resolution?.runtimeRecommendation.runtimeID == nil ? String(localized: "Current environment") : String(localized: "Selected automatically"), symbol: "shippingbox")
+                launchPlanItem("Windows", value: (resolution?.recommendedWindowsVersion ?? profile.windowsVersion).displayName, source: String(localized: "Current profile"), symbol: "window.ceiling")
+                launchPlanItem("Prefix", value: prefix.displayName, source: profile.prefixMode == nil ? String(localized: "Automatic") : String(localized: "Manual override"), symbol: "externaldrive")
+                launchPlanItem("Mode", value: profile.overlayCompatibleFullscreen ? String(localized: "Virtual desktop") : String(localized: "Direct launch"), source: profile.overlayCompatibleFullscreen ? String(localized: "Overlay compatible") : String(localized: "Manual override"), symbol: "rectangle.on.rectangle")
+                launchPlanItem("Boreal overlay", value: profile.overlayCompatibleFullscreen ? String(localized: "Enabled") : String(localized: "Unavailable in direct mode"), source: profile.overlayCompatibleFullscreen ? String(localized: "Active") : String(localized: "Disabled"), symbol: "rectangle.inset.filled")
+                launchPlanItem("Upscaling", value: profile.temporalUpscaling.mode == .disabled ? String(localized: "Disabled") : profile.temporalUpscaling.mode.displayName, source: profile.temporalUpscaling.mode == .disabled ? String(localized: "No active path") : String(localized: "Configured"), symbol: "arrow.up.left.and.arrow.down.right")
+            }
+        }
+    }
+
+    private var requiredActionsSection: some View {
+        let environmentID = linkedEnvironment!.id
+        let statuses = store.dependencyStatuses(for: environmentID, application: linkedApplication)
+        let actions = statuses.filter { $0.recommendation == .required && $0.state != .installed }
+        return detailCard("Required actions", symbol: "exclamationmark.circle.fill") {
+            if actions.isEmpty {
+                Label("No action is required before launch.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                ForEach(actions) { status in
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: dependencySymbol(status.state)).foregroundStyle(dependencyColor(status.state))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(status.dependency.displayName).font(.callout.weight(.semibold))
+                            Text(status.detail ?? String(localized: "Required by this game"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if status.state == .installing { ProgressView().controlSize(.small) }
+                        else {
+                            Button(status.state == .failed ? .Library.retry : .Library.install) {
+                                store.installDependency(status.dependency, for: environmentID)
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var knownIssuesSection: some View {
+        if let application = linkedApplication {
+            let resolution = store.lastCompatibilityResolutions[application.id]
+            let warnings = resolution?.warnings ?? []
+            detailCard("Known issues", symbol: "exclamationmark.triangle.fill") {
+                if resolution == nil {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Analyzing local compatibility…").foregroundStyle(.secondary)
+                    }
+                } else if warnings.isEmpty {
+                    Label("No significant local compatibility issues detected.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    ForEach(warnings) { warning in
+                        compatibilityExplanation(warning.title, detail: warning.detail, symbol: "exclamationmark.triangle.fill", tint: .orange)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var configurationReasonsSection: some View {
+        if let application = linkedApplication, let resolution = store.lastCompatibilityResolutions[application.id] {
+            detailCard("Why this configuration?", symbol: "lightbulb.fill") {
+                if let api = resolution.detectedDirectX.api {
+                    compatibilityExplanation("The game uses \(api.displayName).", detail: resolution.detectedDirectX.evidence.first?.detail, symbol: "checkmark.circle.fill", tint: .green)
+                }
+                compatibilityExplanation("Boreal selected \(resolution.recommendedGraphicsStack.backend.displayName).", detail: resolution.recommendedGraphicsStack.reason, symbol: "checkmark.circle.fill", tint: .green)
+                compatibilityExplanation("Prefix: \(resolution.recommendedPrefixMode.displayName).", detail: "Matched to the executable architecture and installed runtime capabilities.", symbol: "checkmark.circle.fill", tint: .green)
+                compatibilityExplanation("Runtime selected for this launch plan.", detail: resolution.runtimeRecommendation.reason, symbol: "checkmark.circle.fill", tint: .green)
+            }
+        }
+    }
+
+    private func launchPlanItem(_ title: LocalizedStringResource, value: String, source: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol).foregroundStyle(.cyan).frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.callout.weight(.semibold)).lineLimit(2)
+                Text(source).font(.caption2.weight(.medium)).foregroundStyle(.cyan.opacity(0.85))
+            }
+        }
+    }
+
+    private func compatibilityExplanation(_ title: String, detail: String?, symbol: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol).foregroundStyle(tint).frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.callout.weight(.medium))
+                if let detail, !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+    }
+
+    private var localReadinessTitle: String {
+        guard linkedEnvironment != nil, let application = linkedApplication else { return String(localized: "Not configured") }
+        if hasMissingRequiredDependencies { return String(localized: "Needs attention") }
+        switch application.status {
+        case .ready, .running: return String(localized: "Ready to launch")
+        case .preparing, .starting, .installing: return String(localized: "Preparing")
+        case .needsAttention: return String(localized: "Needs attention")
+        case .unavailable: return String(localized: "Unavailable")
+        }
+    }
+
+    private var localReadinessSymbol: String {
+        guard let application = linkedApplication else { return "circle.dashed" }
+        if hasMissingRequiredDependencies { return "exclamationmark.triangle.fill" }
+        switch application.status {
+        case .ready, .running: return "checkmark.circle.fill"
+        case .preparing, .starting, .installing: return "arrow.triangle.2.circlepath"
+        case .needsAttention: return "exclamationmark.triangle.fill"
+        case .unavailable: return "xmark.octagon.fill"
+        }
+    }
+
+    private var localReadinessTint: Color {
+        guard let application = linkedApplication else { return .secondary }
+        if hasMissingRequiredDependencies { return .orange }
+        switch application.status {
+        case .ready, .running: return .green
+        case .preparing, .starting, .installing: return .blue
+        case .needsAttention: return .orange
+        case .unavailable: return .red
+        }
+    }
+
+    private var hasMissingRequiredDependencies: Bool {
+        guard let environment = linkedEnvironment else { return false }
+        return store.dependencyStatuses(for: environment.id, application: linkedApplication)
+            .contains { $0.recommendation == .required && $0.state != .installed }
+    }
+
+    private var communityReportSummary: String {
+        if let profile = currentGame.compatibility { return "\(profile.reportCount.formatted()) \(String(localized: .Compatibility.reports))" }
+        if let discoveryGame { return "\(discoveryGame.availableRatings.count) \(String(localized: .Compatibility.methods))" }
+        return String(localized: "No community reports")
+    }
+
+    private func recommendationSourceLabel(_ source: CompatibilityRecommendationSource) -> String {
+        switch source {
+        case .executableImports, .relatedGameFiles: String(localized: "Detected in game")
+        case .gameProfile: String(localized: "Recommended by Boreal")
+        case .storeMetadata: String(localized: "Store metadata")
+        case .userProfile: String(localized: "Manual override")
+        case .runtimeCapabilities: String(localized: "Selected automatically")
+        case .fallback: String(localized: "Fallback")
+        }
     }
 
     private func compatibilitySummary(_ profile: CommunityCompatibility) -> String {

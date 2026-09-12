@@ -6558,10 +6558,38 @@ final class BorealStore {
                 _ = try await services.runtimeManager.importLocalRuntime(candidate)
                 runtimeOperationDetail = nil
                 await refreshRuntimeStatuses()
+                NotificationCenter.default.post(name: .borealRuntimeImportCompleted, object: nil)
             } catch {
                 runtimeOperationDetail = nil
                 runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
                 present(error, title: "Installed Wine couldn’t be imported", stage: "Copying, validating, and smoke-testing the local runtime")
+            }
+        }
+    }
+
+    /// Imports a user-selected Game Porting Toolkit app or Apple evaluation
+    /// environment without coupling the runtime to a particular game. The
+    /// compatibility modal only configures a game; runtime lifecycle belongs
+    /// in Settings → Runtime.
+    func importGPTKRuntime(from source: URL) {
+        guard runtimeOperationDetail == nil else { return }
+        runtimeOperationDetail = String(localized: "Validating and importing the selected Game Porting Toolkit runtime…")
+        Task {
+            let hasSecurityScope = source.startAccessingSecurityScopedResource()
+            defer { if hasSecurityScope { source.stopAccessingSecurityScopedResource() } }
+            do {
+                _ = try await services.runtimeManager.importSelectedGPTKRuntime(from: source)
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+                NotificationCenter.default.post(name: .borealRuntimeImportCompleted, object: nil)
+            } catch {
+                runtimeOperationDetail = nil
+                runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
+                present(
+                    error,
+                    title: String(localized: "Game Porting Toolkit couldn’t be imported"),
+                    stage: String(localized: "Validating D3DMetal and preparing the isolated runtime")
+                )
             }
         }
     }

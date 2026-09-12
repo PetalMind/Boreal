@@ -1081,11 +1081,14 @@ struct LibraryView: View {
     private func featuredCard(_ item: LibraryItem) -> some View {
         ZStack(alignment: .bottomLeading) {
             featuredArtwork(item)
+                .contentShape(Rectangle())
+                .onTapGesture { select(item) }
             LinearGradient(
                 colors: [.clear, .black.opacity(0.32), .black.opacity(0.88)],
                 startPoint: .top,
                 endPoint: .bottom
             )
+            .allowsHitTesting(false)
             HStack(alignment: .bottom, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
                     Label(.Library.continuePlaying, systemImage: "clock.arrow.circlepath")
@@ -1110,7 +1113,6 @@ struct LibraryView: View {
         }
         .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onTapGesture { select(item) }
         .accessibilityLabel(Text(.Library.continueGame(item.name)))
     }
 
@@ -1202,8 +1204,15 @@ struct LibraryView: View {
     private func gridItemCard(_ item: LibraryItem, hovering: Bool) -> some View {
         let contextMenu = erasedItemContextMenu(item)
         return AnyView(
-                ZStack {
+            ZStack {
                 libraryCardArtwork(item)
+                    .onDrop(
+                        of: [UTType.image.identifier, UTType.fileURL.identifier],
+                        isTargeted: nil,
+                        perform: { providers in
+                            handleArtworkDrop(providers, for: item)
+                        }
+                    )
 
                 LinearGradient(
                     stops: [
@@ -1214,6 +1223,7 @@ struct LibraryView: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
+                .allowsHitTesting(false)
 
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top) {
@@ -1291,19 +1301,16 @@ struct LibraryView: View {
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
-                    .padding(12)
-                }
+                .padding(12)
+            }
+        )
+        .modifier(
+            LibraryCardPresentationModifier(
+                hovering: hovering,
+                contextMenu: contextMenu,
+                accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)"
             )
-            .modifier(
-                LibraryCardPresentationModifier(
-                    hovering: hovering,
-                    contextMenu: contextMenu,
-                    accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)",
-                    onDrop: { providers in
-                        handleArtworkDrop(providers, for: item)
-                    }
-                )
-            )
+        )
     }
 
     @ViewBuilder private func libraryCardArtwork(_ item: LibraryItem) -> some View {
@@ -1425,7 +1432,6 @@ struct LibraryView: View {
         let hovering: Bool
         let contextMenu: AnyView
         let accessibilityText: String
-        let onDrop: ([NSItemProvider]) -> Bool
 
         func body(content: Content) -> some View {
             let shaped = content
@@ -1441,11 +1447,6 @@ struct LibraryView: View {
                 )
                 .scaleEffect(hovering ? 1.012 : 1)
                 .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .onDrop(
-                    of: [UTType.image.identifier, UTType.fileURL.identifier],
-                    isTargeted: nil,
-                    perform: onDrop
-                )
                 .modifier(LibraryCardContextMenuModifier(menu: contextMenu))
                 .accessibilityLabel(Text(accessibilityText))
         }
@@ -1611,7 +1612,12 @@ struct LibraryView: View {
                 }
             } else if game.provider == .steam, store.isInstalled(game),
                       let url = URL(string: "steam://rungameid/\(game.externalID)") {
-                NSWorkspace.shared.open(url)
+                if !NSWorkspace.shared.open(url) {
+                    // A Steam catalog entry can exist without a registered
+                    // Steam URL handler. Keep the action useful by opening the
+                    // game details instead of silently doing nothing.
+                    selectStoreGameAction(game.id)
+                }
             } else {
                 selectStoreGameAction(game.id)
             }

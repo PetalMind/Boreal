@@ -96,6 +96,11 @@ actor RuntimeManager: RuntimeManaging {
         let engine = detectEngine(app: app, name: name)
         guard let relativeWine = firstExecutable(in: app, candidates: [
             "Contents/Resources/wine/bin/wine",
+            // GPTK 1.x/3.x bundles expose the launcher as wine64 only.
+            // Prefer the canonical `wine` launcher when a newer bundle has
+            // both, but retain the real GPTK executable instead of falling
+            // back to Contents/MacOS/wine (the app launcher, not Wine).
+            "Contents/Resources/wine/bin/wine64",
             "Contents/MacOS/wine"
         ]) else { return nil }
         let wine = app.appending(path: relativeWine)
@@ -921,9 +926,10 @@ actor RuntimeManager: RuntimeManaging {
             if candidate.engine == .gamePortingToolkit,
                candidate.layout.wineBootExecutable == "Support/wineboot" {
                 let wrapper = staging.appending(path: candidate.layout.wineBootExecutable)
+                let winePathFromSupport = "../\(candidate.layout.wineExecutable)"
                 let script = """
                 #!/bin/sh
-                exec "$(dirname "$0")/../Runtime/Wine.app/Contents/Resources/wine/bin/wine" wineboot "$@"
+                exec "$(dirname "$0")/\(winePathFromSupport)" wineboot "$@"
                 """
                 try Data(script.utf8).write(to: wrapper, options: .atomic)
                 try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)

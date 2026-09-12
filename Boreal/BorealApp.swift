@@ -77,4 +77,6 @@ extension Notification.Name {
     static let borealControllerConnected = Notification.Name("Boreal.controllerConnected")
     static let borealControllerInputPressed = Notification.Name("Boreal.controllerInputPressed")
     static let borealControllerQuickMenu = Notification.Name("Boreal.controllerQuickMenu")
+    static let borealOpenRuntimeSettings = Notification.Name("Boreal.openRuntimeSettings")
+    static let borealRuntimeImportCompleted = Notification.Name("Boreal.runtimeImportCompleted")
 }
