@@ -46,6 +46,7 @@ struct StoreGameDetailView: View {
     @State private var showsRenameDialog = false
     @State private var renameValue = ""
     @State private var customApplicationID: UUID?
+    @State private var coverEditorState: StoreGameCoverEditorState?
     @State private var priceHistoryRange: DiscoveryPriceHistoryRange = .threeMonths
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
@@ -160,6 +161,25 @@ struct StoreGameDetailView: View {
             }
             .frame(minWidth: 960, minHeight: 800)
             .presentationBackground(.clear)
+        }
+        .sheet(item: $coverEditorState) { state in
+            CustomCoverEditorView(
+                title: currentGame.name,
+                sourceLabel: currentGame.provider.rawValue,
+                statusLabel: currentGame.isInstalled ? String(localized: .Library.installed) : String(localized: .Library.notInstalled),
+                sourceData: state.sourceData,
+                initialCrop: state.crop,
+                onCancel: { coverEditorState = nil },
+                onSave: { originalData, renderedData, crop in
+                    store.saveCustomArtwork(
+                        originalData: originalData,
+                        renderedData: renderedData,
+                        crop: crop,
+                        forStoreGameID: state.gameID
+                    )
+                    coverEditorState = nil
+                }
+            )
         }
         .task(id: game.id) {
             store.refreshSteamMetadataIfNeeded(for: game)
@@ -1032,6 +1052,16 @@ struct StoreGameDetailView: View {
             }
             if store.installedLocation(for: currentGame) != nil {
                 Button(.Library.showGameFiles, systemImage: "folder") { showGameFiles() }
+            }
+            Divider()
+            let hasCustomArtwork = currentGame.customArtworkPath != nil || currentGame.customArtworkOriginalPath != nil
+            Button(hasCustomArtwork ? "Edit Cover…" : "Change Cover…", systemImage: "photo.on.rectangle") {
+                chooseCustomCover()
+            }
+            if hasCustomArtwork {
+                Button("Reset to Default", systemImage: "arrow.uturn.backward") {
+                    store.resetCustomArtwork(forStoreGameID: currentGame.id)
+                }
             }
             if !store.isInstalled(currentGame) && linkedApplication == nil {
                 Button(.Library.locateInstalledGame, systemImage: "folder.badge.plus") { locateInstalledGame() }
@@ -2161,6 +2191,42 @@ struct StoreGameDetailView: View {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: installPath)])
     }
 
+    private func chooseCustomCover() {
+        let source: (data: Data, crop: ArtworkCrop)? = {
+            if let originalPath = currentGame.customArtworkOriginalPath,
+               let data = try? Data(contentsOf: URL(fileURLWithPath: originalPath)),
+               NSImage(data: data) != nil {
+                return (data, currentGame.customArtworkCrop ?? .centered)
+            }
+            if let processedPath = currentGame.customArtworkPath,
+               let data = try? Data(contentsOf: URL(fileURLWithPath: processedPath)),
+               NSImage(data: data) != nil {
+                return (data, .centered)
+            }
+            return nil
+        }()
+        if let source {
+            coverEditorState = StoreGameCoverEditorState(
+                gameID: currentGame.id,
+                sourceData: source.data,
+                crop: source.crop
+            )
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.title = "Change Cover"
+        panel.message = "Select an image to crop for this game's cover."
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url), NSImage(data: data) != nil else { return }
+        coverEditorState = StoreGameCoverEditorState(gameID: currentGame.id, sourceData: data, crop: .centered)
+    }
+
     private func openSteam() {
         let action = store.isInstalled(currentGame) ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
         if action == "rungameid", store.installedPlatform(for: currentGame) == .nativeMacOS, let path = store.installedLocation(for: currentGame)?.path {
@@ -2265,6 +2331,14 @@ struct StoreGameDetailView: View {
         }
     }
 
+}
+
+private struct StoreGameCoverEditorState: Identifiable {
+    let gameID: UUID
+    let sourceData: Data
+    let crop: ArtworkCrop
+
+    var id: UUID { gameID }
 }
 
 private struct BorealSecondaryActionButtonStyle: ButtonStyle {
@@ -3059,7 +3133,12 @@ private struct StoreMediaViewer: View {
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(LinearGradient(colors: [.indigo, .cyan.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            if let path = game.customArtworkPath ?? game.artworkPath, let image = NSImage(contentsOfFile: path) {
+            if let image = ArtworkImageCache.customImage(
+                processedPath: game.customArtworkPath,
+                originalPath: game.customArtworkOriginalPath
+            ) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else if let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
                 Image(nsImage: image).resizable().scaledToFill()
             } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
                 AsyncImage(url: url) { phase in

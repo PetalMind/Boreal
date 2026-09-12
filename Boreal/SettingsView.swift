@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct BorealSettingsView: View {
@@ -281,9 +282,13 @@ struct GeneralSettingsView: View {
 }
 
 struct RuntimeSettingsView: View {
+    @Environment(BorealStore.self) private var store
     @AppStorage("automaticRuntimeUpdates") private var automaticRuntimeUpdates = true
     @AppStorage("automaticDXVKUpdates") private var automaticDXVKUpdates = true
     @AppStorage("automaticVKD3DUpdates") private var automaticVKD3DUpdates = true
+    @State private var runtimeToEdit: RuntimeStatus?
+    @State private var runtimeToRemove: RuntimeStatus?
+
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -295,9 +300,155 @@ struct RuntimeSettingsView: View {
                     Divider()
                     SettingsRow(.Settings.automaticVKD3DupdatesLabel) { Toggle("", isOn: $automaticVKD3DUpdates).labelsHidden() }
                 }
+                installedRuntimesCard
             }
             .padding(.horizontal, 32).padding(.bottom, 28)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await store.refreshRuntimeStatuses() }
+        .sheet(item: $runtimeToEdit) { runtime in
+            RuntimeEditorSheet(runtime: runtime) { name in
+                store.renameRuntime(id: runtime.id, to: name)
+                runtimeToEdit = nil
+            }
+        }
+        .alert(
+            "Remove Runtime?",
+            isPresented: Binding(
+                get: { runtimeToRemove != nil },
+                set: { if !$0 { runtimeToRemove = nil } }
+            )
+        ) {
+            Button("Remove", role: .destructive) {
+                guard let runtime = runtimeToRemove else { return }
+                runtimeToRemove = nil
+                store.removeRuntime(id: runtime.id)
+            }
+            Button("Cancel", role: .cancel) { runtimeToRemove = nil }
+        } message: {
+            Text(runtimeToRemove.map {
+                "This removes the immutable \($0.name) snapshot from Boreal. Environments using it must be removed first."
+            } ?? "")
+        }
+    }
+
+    private var installedRuntimesCard: some View {
+        SettingsCard(
+            "Installed runtimes",
+            subtitle: "Rename a runtime or remove an unused snapshot. Runtime files stay immutable.",
+            symbol: "shippingbox.fill"
+        ) {
+            let runtimes = store.runtimeStatuses.filter { $0.source == .installed }
+            if let operation = store.runtimeOperationDetail {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(operation)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 8)
+            }
+            if runtimes.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "shippingbox")
+                        .foregroundStyle(.secondary)
+                    Text("No runtime is installed yet. Import or install one from Downloads.")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 8)
+            } else {
+                ForEach(runtimes) { runtime in
+                    runtimeRow(runtime)
+                    if runtime.id != runtimes.last?.id { Divider() }
+                }
+            }
+        }
+    }
+
+    private func runtimeRow(_ runtime: RuntimeStatus) -> some View {
+        let environmentCount = store.environments.filter { $0.runtimeID == runtime.id }.count
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: runtime.isVerified ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(runtime.isVerified ? Color.green : Color.orange)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(runtime.name)
+                    .font(.headline)
+                Text("\(runtime.engine.displayName) · \(runtime.wineVersion) · \(runtime.architecture.rawValue)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if environmentCount > 0 {
+                    Text("Used by \(environmentCount) \(environmentCount == 1 ? "environment" : "environments")")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(runtime.isVerified ? "Verified and available" : "Needs attention")
+                        .font(.caption)
+                        .foregroundStyle(runtime.isVerified ? Color.secondary : Color.orange)
+                }
+            }
+            Spacer(minLength: 12)
+            HStack(spacing: 8) {
+                Button("Edit") { runtimeToEdit = runtime }
+                    .buttonStyle(.bordered)
+                Button("Remove", role: .destructive) { runtimeToRemove = runtime }
+                    .buttonStyle(.bordered)
+                    .disabled(environmentCount > 0 || store.runtimeOperationDetail != nil)
+            }
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+private struct RuntimeEditorSheet: View {
+    let runtime: RuntimeStatus
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+
+    init(runtime: RuntimeStatus, onSave: @escaping (String) -> Void) {
+        self.runtime = runtime
+        self.onSave = onSave
+        _name = State(initialValue: runtime.name)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Edit runtime")
+                    .font(.title2.bold())
+                Text("Only the display label changes. The validated Wine/GPTK payload remains read-only.")
+                    .foregroundStyle(.secondary)
+            }
+            TextField("Runtime name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(save)
+            HStack {
+                Text("\(name.trimmingCharacters(in: .whitespacesAndNewlines).count)/80")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isValidName)
+            }
+        }
+        .padding(24)
+        .frame(width: 500)
+    }
+
+    private var isValidName: Bool {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty
+            && value.count <= 80
+            && !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+    }
+
+    private func save() {
+        guard isValidName else { return }
+        onSave(name.trimmingCharacters(in: .whitespacesAndNewlines))
+        dismiss()
     }
 }
 

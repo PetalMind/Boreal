@@ -543,6 +543,7 @@ struct LibraryView: View {
     @AppStorage("developerMode") private var developerMode = false
     @State private var removeCandidate: WindowsApplication?
     @State private var uninstallCandidate: StoreLibraryGame?
+    @State private var coverEditorState: LibraryCoverEditorState?
     @State private var projectedLibrary = LibraryProjectionCache()
 
     private var allItems: [LibraryItem] {
@@ -657,6 +658,35 @@ struct LibraryView: View {
             Button(.Library.cancel, role: .cancel) { uninstallCandidate = nil }
         } message: {
             Text(.Library.uninstallGameMessage)
+        }
+        .sheet(item: $coverEditorState) { state in
+            CustomCoverEditorView(
+                title: state.item.name,
+                sourceLabel: String(localized: state.item.source.title),
+                statusLabel: String(localized: state.item.localizedStatusText),
+                sourceData: state.sourceData,
+                initialCrop: state.crop,
+                onCancel: { coverEditorState = nil },
+                onSave: { originalData, renderedData, crop in
+                    switch state.item.kind {
+                    case .application(let application):
+                        store.saveCustomArtwork(
+                            originalData: originalData,
+                            renderedData: renderedData,
+                            crop: crop,
+                            for: application.id
+                        )
+                    case .storeGame(let game):
+                        store.saveCustomArtwork(
+                            originalData: originalData,
+                            renderedData: renderedData,
+                            crop: crop,
+                            forStoreGameID: game.id
+                        )
+                    }
+                    coverEditorState = nil
+                }
+            )
         }
     }
 
@@ -1110,14 +1140,22 @@ struct LibraryView: View {
     @ViewBuilder private func featuredArtwork(_ item: LibraryItem) -> some View {
         switch item.kind {
         case .application(let app):
-            if let path = app.customArtworkPath, let image = ArtworkImageCache.image(at: path) {
+            if let image = ArtworkImageCache.customImage(
+                processedPath: app.customArtworkPath,
+                originalPath: app.customArtworkOriginalPath
+            ) {
                 Image(nsImage: image).resizable().scaledToFill()
             } else {
                 LinearGradient(colors: [.indigo.opacity(0.9), .cyan.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
                     .overlay { Image(systemName: app.iconSymbol).font(.system(size: 92)).foregroundStyle(.white.opacity(0.22)) }
             }
         case .storeGame(let game):
-            if let path = game.customArtworkPath ?? game.artworkPath, let image = ArtworkImageCache.image(at: path) {
+            if let image = ArtworkImageCache.customImage(
+                processedPath: game.customArtworkPath,
+                originalPath: game.customArtworkOriginalPath
+            ) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
                 Image(nsImage: image).resizable().scaledToFill()
             } else if let value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL,
                       let url = URL(string: value) {
@@ -1157,7 +1195,14 @@ struct LibraryView: View {
 
     private func gridItem(_ item: LibraryItem) -> some View {
         LibraryGridHoverContainer { hovering in
-            ZStack {
+            gridItemCard(item, hovering: hovering)
+        }
+    }
+
+    private func gridItemCard(_ item: LibraryItem, hovering: Bool) -> some View {
+        let contextMenu = erasedItemContextMenu(item)
+        return AnyView(
+                ZStack {
                 libraryCardArtwork(item)
 
                 LinearGradient(
@@ -1230,7 +1275,7 @@ struct LibraryView: View {
                                 .buttonStyle(.plain)
 
                             Menu {
-                                itemContextMenu(item)
+                                erasedItemContextMenu(item)
                             } label: {
                                 Image(systemName: "ellipsis")
                                     .font(.callout.weight(.bold))
@@ -1246,28 +1291,28 @@ struct LibraryView: View {
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
-                .padding(12)
-            }
-            .aspectRatio(0.82, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .stroke(hovering ? Color.accentColor : .white.opacity(0.15), lineWidth: hovering ? 3 : 1)
-            }
-            .shadow(color: hovering ? Color.accentColor.opacity(0.24) : .black.opacity(0.24), radius: hovering ? 14 : 9, y: 5)
-            .scaleEffect(hovering ? 1.012 : 1)
-            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-            .contextMenu { itemContextMenu(item) }
-            .accessibilityLabel(
-                Text(item.name) + Text(", ") + Text(item.source.title) + Text(", ") + Text(item.localizedStatusText)
+                    .padding(12)
+                }
             )
-        }
+            .modifier(
+                LibraryCardPresentationModifier(
+                    hovering: hovering,
+                    contextMenu: contextMenu,
+                    accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)",
+                    onDrop: { providers in
+                        handleArtworkDrop(providers, for: item)
+                    }
+                )
+            )
     }
 
     @ViewBuilder private func libraryCardArtwork(_ item: LibraryItem) -> some View {
         switch item.kind {
         case .application(let app):
-            if let path = app.customArtworkPath, let image = ArtworkImageCache.image(at: path) {
+            if let image = ArtworkImageCache.customImage(
+                processedPath: app.customArtworkPath,
+                originalPath: app.customArtworkOriginalPath
+            ) {
                 Image(nsImage: image).resizable().scaledToFill()
             } else {
                 LinearGradient(
@@ -1326,16 +1371,14 @@ struct LibraryView: View {
     @ViewBuilder private func itemIcon(_ item: LibraryItem, compact: Bool) -> some View {
         switch item.kind {
         case .application(let app):
-            if let path = app.customArtworkPath, let image = ArtworkImageCache.image(at: path) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: compact ? 32 : 92, height: compact ? 42 : 92)
-                    .clipShape(RoundedRectangle(cornerRadius: compact ? 6 : 14, style: .continuous))
-            } else {
-                AppIconView(symbol: app.iconSymbol, size: compact ? 32 : 92)
-            }
-        case .storeGame(let game): GameArtworkView(game: game, width: compact ? 32 : 148, height: compact ? 42 : 207)
+            AppIconView(symbol: app.iconSymbol, size: compact ? 32 : 92)
+        case .storeGame(let game):
+            GameArtworkView(
+                game: game,
+                width: compact ? 32 : 148,
+                height: compact ? 42 : 207,
+                usesCustomArtwork: false
+            )
         }
     }
 
@@ -1364,12 +1407,68 @@ struct LibraryView: View {
         }
     }
 
+    private func erasedItemContextMenu(_ item: LibraryItem) -> AnyView {
+        AnyView(itemContextMenu(item))
+    }
+
+    private struct LibraryCardContextMenuModifier: ViewModifier {
+        let menu: AnyView
+
+        func body(content: Content) -> some View {
+            content.contextMenu {
+                menu
+            }
+        }
+    }
+
+    private struct LibraryCardPresentationModifier: ViewModifier {
+        let hovering: Bool
+        let contextMenu: AnyView
+        let accessibilityText: String
+        let onDrop: ([NSItemProvider]) -> Bool
+
+        func body(content: Content) -> some View {
+            let shaped = content
+                .aspectRatio(0.82, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            let outlined = shaped.overlay(LibraryCardOutline(hovering: hovering))
+
+            return outlined
+                .shadow(
+                    color: hovering ? Color.accentColor.opacity(0.24) : .black.opacity(0.24),
+                    radius: hovering ? 14 : 9,
+                    y: 5
+                )
+                .scaleEffect(hovering ? 1.012 : 1)
+                .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .onDrop(
+                    of: [UTType.image.identifier, UTType.fileURL.identifier],
+                    isTargeted: nil,
+                    perform: onDrop
+                )
+                .modifier(LibraryCardContextMenuModifier(menu: contextMenu))
+                .accessibilityLabel(Text(accessibilityText))
+        }
+    }
+
+    private struct LibraryCardOutline: View {
+        let hovering: Bool
+
+        var body: some View {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(
+                    hovering ? Color.accentColor : Color.white.opacity(0.15),
+                    lineWidth: hovering ? 3 : 1
+                )
+        }
+    }
+
     @ViewBuilder private func customArtworkMenu(for item: LibraryItem) -> some View {
-        Button("Choose Custom Cover…", systemImage: "photo.on.rectangle") {
+        Button(itemHasCustomArtwork(item) ? "Edit Cover…" : "Change Cover…", systemImage: "photo.on.rectangle") {
             chooseCustomArtwork(for: item)
         }
         if itemHasCustomArtwork(item) {
-            Button("Restore Default Cover", systemImage: "arrow.uturn.backward") {
+            Button("Reset to Default", systemImage: "arrow.uturn.backward") {
                 resetCustomArtwork(for: item)
             }
         }
@@ -1377,27 +1476,80 @@ struct LibraryView: View {
 
     private func itemHasCustomArtwork(_ item: LibraryItem) -> Bool {
         switch item.kind {
-        case .application(let application): application.customArtworkPath != nil
-        case .storeGame(let game): game.customArtworkPath != nil
+        case .application(let application):
+            application.customArtworkPath != nil || application.customArtworkOriginalPath != nil
+        case .storeGame(let game):
+            game.customArtworkPath != nil || game.customArtworkOriginalPath != nil
         }
     }
 
     private func chooseCustomArtwork(for item: LibraryItem) {
+        if let existing = customArtworkSource(for: item) {
+            presentCoverEditor(for: item, sourceData: existing.data, crop: existing.crop)
+            return
+        }
         let panel = NSOpenPanel()
-        panel.title = "Choose Custom Cover"
-        panel.message = "Select an image to use as this game's cover."
+        panel.title = "Change Cover"
+        panel.message = "Select an image to crop for this game's cover."
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
         let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
         defer { if hasSecurityScope { sourceURL.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: sourceURL), NSImage(data: data) != nil else { return }
+        presentCoverEditor(for: item, sourceData: data, crop: .centered)
+    }
+
+    private func customArtworkSource(for item: LibraryItem) -> (data: Data, crop: ArtworkCrop)? {
+        let originalPath: String?
+        let processedPath: String?
+        let crop: ArtworkCrop?
         switch item.kind {
         case .application(let application):
-            store.setCustomArtwork(from: sourceURL, for: application.id)
+            originalPath = application.customArtworkOriginalPath
+            processedPath = application.customArtworkPath
+            crop = application.customArtworkCrop
         case .storeGame(let game):
-            store.setCustomArtwork(from: sourceURL, forStoreGameID: game.id)
+            originalPath = game.customArtworkOriginalPath
+            processedPath = game.customArtworkPath
+            crop = game.customArtworkCrop
         }
+        if let originalPath, let data = try? Data(contentsOf: URL(fileURLWithPath: originalPath)), NSImage(data: data) != nil {
+            return (data, crop ?? .centered)
+        }
+        if let processedPath, let data = try? Data(contentsOf: URL(fileURLWithPath: processedPath)), NSImage(data: data) != nil {
+            return (data, .centered)
+        }
+        return nil
+    }
+
+    private func presentCoverEditor(for item: LibraryItem, sourceData: Data, crop: ArtworkCrop) {
+        guard NSImage(data: sourceData) != nil else { return }
+        coverEditorState = LibraryCoverEditorState(item: item, sourceData: sourceData, crop: crop)
+    }
+
+    private func handleArtworkDrop(_ providers: [NSItemProvider], for item: LibraryItem) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+            if let data, NSImage(data: data) != nil {
+                DispatchQueue.main.async {
+                    presentCoverEditor(for: item, sourceData: data, crop: .centered)
+                }
+                return
+            }
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { fileData, _ in
+                guard let fileData,
+                      let url = URL(dataRepresentation: fileData, relativeTo: nil)
+                        ?? String(data: fileData, encoding: .utf8).flatMap(URL.init(string:)),
+                      let imageData = try? Data(contentsOf: url),
+                      NSImage(data: imageData) != nil else { return }
+                DispatchQueue.main.async {
+                    presentCoverEditor(for: item, sourceData: imageData, crop: .centered)
+                }
+            }
+        }
+        return true
     }
 
     private func resetCustomArtwork(for item: LibraryItem) {
@@ -1548,6 +1700,278 @@ struct LibraryView: View {
         }
         Divider()
         Button(.Library.remove, systemImage: "trash", role: .destructive) { removeCandidate = app }
+    }
+}
+
+private struct LibraryCoverEditorState: Identifiable {
+    let item: LibraryItem
+    let sourceData: Data
+    let crop: ArtworkCrop
+
+    var id: String {
+        switch item.id {
+        case .application(let id): "application-cover-\(id.uuidString)"
+        case .storeGame(let id): "store-game-cover-\(id.uuidString)"
+        }
+    }
+}
+
+struct CustomCoverEditorView: View {
+    let title: String
+    let sourceLabel: String
+    let statusLabel: String
+    let onCancel: () -> Void
+    let onSave: (Data, Data, ArtworkCrop) -> Void
+
+    @State private var sourceData: Data
+    @State private var sourceImage: NSImage?
+    @State private var crop: ArtworkCrop
+    @State private var dragStartCrop: ArtworkCrop?
+    @State private var zoomStart: Double?
+
+    init(
+        title: String,
+        sourceLabel: String,
+        statusLabel: String,
+        sourceData: Data,
+        initialCrop: ArtworkCrop,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (Data, Data, ArtworkCrop) -> Void
+    ) {
+        self.title = title
+        self.sourceLabel = sourceLabel
+        self.statusLabel = statusLabel
+        self.onCancel = onCancel
+        self.onSave = onSave
+        _sourceData = State(initialValue: sourceData)
+        _sourceImage = State(initialValue: NSImage(data: sourceData))
+        _crop = State(initialValue: initialCrop)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Change Cover").font(.title2.weight(.semibold))
+                    Text(title).font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+            }
+
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Crop preview").font(.headline)
+                    cropCanvas
+                    HStack {
+                        Text("Zoom").font(.caption.weight(.semibold))
+                        Slider(value: $crop.scale, in: 1...3)
+                            .frame(width: 180)
+                        Text("\(crop.scale, format: .number.precision(.fractionLength(1)))×")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Reset Crop", systemImage: "arrow.counterclockwise") {
+                        crop = .centered
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Library preview").font(.headline)
+                    cardPreview
+                    Text("The preview uses the same 2:3 cover ratio as the library card.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Button("Choose Image…", systemImage: "photo.on.rectangle") {
+                    chooseReplacementImage()
+                }
+                Button("Paste Image", systemImage: "clipboard") {
+                    pasteImage()
+                }
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: save)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(sourceImage == nil)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 700, minHeight: 560)
+        .onPasteCommand(of: [UTType.image]) { _ in
+            pasteImage()
+        }
+    }
+
+    private var cropCanvas: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
+                if let sourceImage {
+                    Image(nsImage: sourceImage)
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(crop.scale)
+                        .offset(
+                            x: crop.offsetX * geometry.size.width * 0.5,
+                            y: crop.offsetY * geometry.size.height * 0.5
+                        )
+                } else {
+                    ContentUnavailableView("Image unavailable", systemImage: "photo")
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.8), lineWidth: 2)
+            }
+            .contentShape(Rectangle())
+            .gesture(dragGesture)
+            .simultaneousGesture(zoomGesture)
+        }
+        .frame(width: 280, height: 420)
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if dragStartCrop == nil { dragStartCrop = crop }
+                guard let start = dragStartCrop else { return }
+                let nextX = start.offsetX + value.translation.width / 140
+                let nextY = start.offsetY + value.translation.height / 210
+                crop.offsetX = min(1, max(-1, nextX))
+                crop.offsetY = min(1, max(-1, nextY))
+            }
+            .onEnded { _ in
+                dragStartCrop = nil
+            }
+    }
+
+    private var zoomGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                if zoomStart == nil { zoomStart = crop.scale }
+                crop.scale = min(3, max(1, (zoomStart ?? 1) * value))
+            }
+            .onEnded { _ in
+                zoomStart = nil
+            }
+    }
+
+    private var cardPreview: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let image = croppedImage() {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                LinearGradient(colors: [.indigo, .cyan.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline.weight(.bold)).lineLimit(1)
+                Text(sourceLabel).font(.caption).foregroundStyle(.white.opacity(0.8))
+                Text(statusLabel).font(.caption2).foregroundStyle(.white.opacity(0.75))
+            }
+            .foregroundStyle(.white)
+            .padding(14)
+        }
+        .frame(width: 220, height: 330)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.2)) }
+    }
+
+    private func chooseReplacementImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Image"
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url), let image = NSImage(data: data) else { return }
+        sourceData = data
+        sourceImage = image
+        crop = .centered
+    }
+
+    private func pasteImage() {
+        guard let image = NSImage(pasteboard: NSPasteboard.general), let data = image.tiffRepresentation else { return }
+        sourceData = data
+        sourceImage = image
+        crop = .centered
+    }
+
+    private func save() {
+        guard let renderedData = renderedImageData() else { return }
+        onSave(sourceData, renderedData, crop)
+    }
+
+    private func croppedImage() -> NSImage? {
+        guard let sourceImage,
+              let sourceCGImage = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let sourceWidth = CGFloat(sourceCGImage.width)
+        let sourceHeight = CGFloat(sourceCGImage.height)
+        let targetAspect: CGFloat = 2 / 3
+        let baseWidth = min(sourceWidth, sourceHeight * targetAspect)
+        let baseHeight = baseWidth / targetAspect
+        let cropWidth = baseWidth / min(3, max(1, crop.scale))
+        let cropHeight = baseHeight / min(3, max(1, crop.scale))
+        let availableX = max(0, sourceWidth - cropWidth)
+        let availableY = max(0, sourceHeight - cropHeight)
+        let originX = (availableX / 2) - crop.offsetX * (availableX / 2)
+        let originY = (availableY / 2) - crop.offsetY * (availableY / 2)
+        let imageBounds = CGRect(x: 0, y: 0, width: sourceWidth, height: sourceHeight)
+        let rect = CGRect(x: originX, y: originY, width: cropWidth, height: cropHeight)
+            .integral
+            .intersection(imageBounds)
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        guard let cropped = sourceCGImage.cropping(to: rect) else { return nil }
+        return NSImage(cgImage: cropped, size: NSSize(width: 600, height: 900))
+    }
+
+    private func renderedImageData() -> Data? {
+        guard let image = croppedImage(),
+              let bitmap = NSBitmapImageRep(
+                  bitmapDataPlanes: nil,
+                  pixelsWide: 600,
+                  pixelsHigh: 900,
+                  bitsPerSample: 8,
+                  samplesPerPixel: 4,
+                  hasAlpha: true,
+                  isPlanar: false,
+                  colorSpaceName: .deviceRGB,
+                  bitmapFormat: [],
+                  bytesPerRow: 0,
+                  bitsPerPixel: 0
+              ),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        image.draw(
+            in: NSRect(x: 0, y: 0, width: 600, height: 900),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+        return bitmap.representation(using: .png, properties: [:])
     }
 }
 

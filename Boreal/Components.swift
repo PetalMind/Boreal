@@ -104,6 +104,7 @@ struct GameArtworkView: View {
     let game: StoreLibraryGame
     var width: CGFloat = 156
     var height: CGFloat = 218
+    var usesCustomArtwork = true
 
     var body: some View {
         ZStack {
@@ -122,7 +123,13 @@ struct GameArtworkView: View {
     }
 
     @ViewBuilder private var artwork: some View {
-        if let path = game.customArtworkPath ?? game.artworkPath, let image = ArtworkImageCache.image(at: path) {
+        if usesCustomArtwork,
+           let image = ArtworkImageCache.customImage(
+               processedPath: game.customArtworkPath,
+               originalPath: game.customArtworkOriginalPath
+           ) {
+            Image(nsImage: image).resizable().scaledToFill()
+        } else if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
             Image(nsImage: image).resizable().scaledToFill()
         } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
             AsyncImage(url: url) { phase in
@@ -162,6 +169,12 @@ enum ArtworkImageCache {
         images.setObject(image, forKey: key, cost: imageCost(image))
         images.totalCostLimit = 192 * 1_024 * 1_024
         return image
+    }
+
+    static func customImage(processedPath: String?, originalPath: String?) -> NSImage? {
+        if let processedPath, let image = image(at: processedPath) { return image }
+        if let originalPath, let image = image(at: originalPath) { return image }
+        return nil
     }
 
     private static func imageCost(_ image: NSImage) -> Int {

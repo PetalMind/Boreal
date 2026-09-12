@@ -1129,6 +1129,8 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case incompatible32BitExecutable(runtime: String)
     case incompatible64BitExecutable
     case noCompatibleRuntime(String)
+    case runtimeInUse(String)
+    case invalidRuntimeDisplayName
 
     var errorDescription: String? {
         switch self {
@@ -1171,6 +1173,8 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .incompatible32BitExecutable(let runtime): return "This game is 32-bit, but \(runtime) does not provide WoW64 support. Use a Wine runtime that supports 32-bit Windows applications."
         case .incompatible64BitExecutable: return "This application is 64-bit and cannot run in a 32-bit Wine prefix. Choose the Win64 architecture."
         case .noCompatibleRuntime(let detail): return "No compatible runtime is available. \(detail)"
+        case .runtimeInUse(let detail): return "This runtime is still in use. \(detail)"
+        case .invalidRuntimeDisplayName: return "The runtime name must contain 1–80 visible characters."
         }
     }
 }

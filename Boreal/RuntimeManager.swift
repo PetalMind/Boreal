@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 actor RuntimeManager: RuntimeManaging {
     private struct GraphicsLibrary {
@@ -744,6 +745,30 @@ actor RuntimeManager: RuntimeManaging {
         }
     }
 
+    private func validateD3DMetalCodeSignature(in app: URL) throws {
+        let framework = app.appending(
+            path: "Contents/Resources/wine/lib/external/D3DMetal.framework",
+            directoryHint: .isDirectory
+        )
+        var staticCode: SecStaticCode?
+        let createStatus = SecStaticCodeCreateWithPath(framework as CFURL, [], &staticCode)
+        guard createStatus == errSecSuccess, let staticCode else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "D3DMetal could not be inspected (code-signing status \(createStatus)). Download a fresh Game Porting Toolkit evaluation environment from Apple."
+            )
+        }
+        let validationStatus = SecStaticCodeCheckValidity(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures),
+            nil
+        )
+        guard validationStatus == errSecSuccess else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "D3DMetal failed Apple code-signing validation (status \(validationStatus)). Download and extract a fresh Game Porting Toolkit evaluation environment, then import that folder again."
+            )
+        }
+    }
+
     private func validateGPTK4Candidate(_ candidate: LocalRuntimeCandidate) throws {
         guard candidate.engine == .gamePortingToolkit, candidate.features.d3dmetal else {
             throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is not a Game Porting Toolkit D3DMetal environment.")
@@ -849,6 +874,9 @@ actor RuntimeManager: RuntimeManaging {
         do {
             try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
             try fileManager.copyItem(at: source, to: copiedApp)
+            if candidate.engine == .gamePortingToolkit {
+                try validateD3DMetalCodeSignature(in: copiedApp)
+            }
             // Some GPTK app bundles ship a second MoltenVK image inside
             // GStreamer's private library directory. Keeping both copies in
             // one Wine process makes Objective-C class resolution ambiguous
@@ -1122,6 +1150,11 @@ actor RuntimeManager: RuntimeManaging {
         guard standardizedRoot.deletingLastPathComponent() == runtimesURL.standardizedFileURL else { throw RuntimeManagerError.runtimeLayoutNotFound }
         try makeWritable(standardizedRoot)
         try fileManager.removeItem(at: standardizedRoot)
+        let validationRoot = runtimesURL.appending(path: ".validation/\(runtime.id)", directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: validationRoot.path) {
+            try? makeWritable(validationRoot)
+            try? fileManager.removeItem(at: validationRoot)
+        }
     }
 
     private func prepareDirectories() throws {

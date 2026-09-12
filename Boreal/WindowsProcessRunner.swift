@@ -579,7 +579,13 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // FPS telemetry is high-frequency. Keeping Wine's broad warning channels
         // enabled can produce hundreds of megabytes per session and push the most
         // recent FPS record out of the sampler's bounded read window.
-        let debugChannels = environment.configuration.debugLoggingEnabled ? "+all" : (values["WINEDEBUG"] ?? "-all")
+        // Keep Wine's error class even when verbose diagnostics are disabled.
+        // Otherwise an early loader failure such as D3DMetal/dxgi status
+        // c0000142 produces empty launch logs and Boreal reports a normal exit.
+        var debugChannels = environment.configuration.debugLoggingEnabled ? "+all" : (values["WINEDEBUG"] ?? "-all")
+        if !environment.configuration.debugLoggingEnabled && !debugChannels.contains("err+all") {
+            debugChannels += ",err+all"
+        }
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
         // Never inherit Metal HUD settings from Boreal's parent process. HUD
         // creates MTLTools resources and is unsafe when the selected runtime

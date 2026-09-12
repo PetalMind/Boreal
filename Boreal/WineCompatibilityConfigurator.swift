@@ -146,7 +146,7 @@ struct WineCompatibilityConfigurator: View {
             Divider()
             CompatibilitySettingsFooter(
                 restore: { profile = .default }, cancel: { dismiss() }, save: save,
-                saveDisabled: application.status == .running || application.status.isBusy || graphicsBackendIssue != nil || prefixModeIssue != nil
+                saveDisabled: application.status == .running || application.status.isBusy || graphicsBackendIssue != nil || prefixModeIssue != nil || selectedRuntimeIssue != nil
             )
         }
         .frame(minWidth: 680, idealWidth: 840, maxWidth: 900, minHeight: 620, idealHeight: 760, maxHeight: 860)
@@ -195,6 +195,21 @@ struct WineCompatibilityConfigurator: View {
 
     private var graphicsSection: some View {
         CompatibilitySettingsSection(title: "Graphics", subtitle: "Configure how the game runs using Wine and graphics settings.", symbol: "gearshape.2", tint: .blue) {
+            CompatibilityPickerRow(title: "Runtime", detail: String(localized: "Choose the installed runtime Boreal will use to start this game. Changing it rebuilds only the isolated Windows environment; game files are preserved.")) {
+                Picker("Runtime", selection: $profile.runtimeIDOverride) {
+                    Text("Automatic").tag(Optional<String>.none)
+                    ForEach(availableRuntimes) { runtime in
+                        Text(runtimeLabel(runtime))
+                            .tag(Optional(runtime.id))
+                            .disabled(store.runtimeSelectionIssue(runtime.id, profile: profile) != nil)
+                    }
+                }
+                .labelsHidden()
+                .disabled(usesSharedSteamEnvironment)
+            }
+            if let selectedRuntimeIssue {
+                CompatibilityCallout(text: selectedRuntimeIssue, symbol: "exclamationmark.triangle.fill", tint: .orange)
+            }
             CompatibilityPickerRow(title: "DirectX version", detail: graphicsAPIExplanation) {
                 Picker("DirectX version", selection: graphicsAPIBinding) {
                     ForEach(GraphicsAPI.allCases) { api in Text(graphicsAPILabel(for: api)).tag(api) }
@@ -507,12 +522,14 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private func applyPreset(_ preset: CompatibilityPreset) {
+        let selectedRuntimeID = profile.runtimeIDOverride
         switch preset {
         case .recommended: profile = recommendedProfile
         case .olderGames: profile = olderGameProfile
         case .performance: profile = performanceProfile
         case .custom: break
         }
+        if preset != .custom { profile.runtimeIDOverride = selectedRuntimeID }
     }
 
     private func save() { store.updateCompatibilityProfile(for: application.id, profile: profile); dismiss() }
@@ -582,9 +599,27 @@ struct WineCompatibilityConfigurator: View {
         return Int(exactly: Double(value.rounded()))
     }
     private var graphicsProfile: GameGraphicsProfile? { GameGraphicsProfiles.profile(for: application) }
+    private var availableRuntimes: [RuntimeStatus] { store.installedRuntimeStatusesForGameConfiguration() }
+    private var selectedRuntimeIssue: String? {
+        guard let runtimeID = profile.runtimeIDOverride else { return nil }
+        return store.runtimeSelectionIssue(runtimeID, profile: profile)
+    }
+    private func runtimeLabel(_ runtime: RuntimeStatus) -> String {
+        "\(runtime.name) · \(runtime.engine.displayName) \(runtime.wineVersion)"
+    }
     private var graphicsBackendIssue: String? { store.graphicsBackendIssue(profile.graphicsBackend, for: application) }
-    private var prefixModeIssue: String? { store.prefixModeIssue(profile.prefixMode ?? .wow64, for: application) }
-    private var runtimeFeatures: RuntimeFeatures? { store.compatibilityRuntimeFeatures(for: application, backend: profile.graphicsBackend) }
+    private var prefixModeIssue: String? {
+        profile.runtimeIDOverride == nil
+            ? store.prefixModeIssue(profile.prefixMode ?? .wow64, for: application)
+            : nil
+    }
+    private var runtimeFeatures: RuntimeFeatures? {
+        if let runtimeID = profile.runtimeIDOverride,
+           let selected = availableRuntimes.first(where: { $0.id == runtimeID }) {
+            return selected.features
+        }
+        return store.compatibilityRuntimeFeatures(for: application, backend: profile.graphicsBackend)
+    }
     private var fullscreenFSRCapabilities: FullscreenFSRCapabilities {
         runtimeFeatures?.fullscreenFSRCapabilities
             ?? FullscreenFSRCapabilities(available: runtimeFeatures?.fullscreenFSR == true, source: .payloadInspection)

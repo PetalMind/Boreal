@@ -500,6 +500,20 @@ extension WineCompatibilityProfile {
     }
 }
 
+nonisolated struct ArtworkCrop: Codable, Hashable, Sendable {
+    var offsetX: Double
+    var offsetY: Double
+    var scale: Double
+
+    static let centered = ArtworkCrop(offsetX: 0, offsetY: 0, scale: 1)
+
+    init(offsetX: Double = 0, offsetY: Double = 0, scale: Double = 1) {
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+        self.scale = scale
+    }
+}
+
 nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var name: String
@@ -516,6 +530,8 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     var iconSymbol = "app.dashed"
     /// A user-selected cover copied into Boreal's managed storage.
     var customArtworkPath: String? = nil
+    var customArtworkOriginalPath: String? = nil
+    var customArtworkCrop: ArtworkCrop? = nil
     var lastResult: String?
     var lastExitCode: Int32?
     var lastFailureStage: String?
@@ -812,6 +828,8 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var artworkPath: String?
     /// Kept separate from provider artwork so library refreshes cannot replace it.
     var customArtworkPath: String? = nil
+    var customArtworkOriginalPath: String? = nil
+    var customArtworkCrop: ArtworkCrop? = nil
     var portraitImageURL: String?
     var headerImageURL: String?
     var backgroundImageURL: String?
@@ -902,6 +920,8 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
         summary = summary ?? existing.summary
         artworkPath = artworkPath ?? existing.artworkPath
         customArtworkPath = customArtworkPath ?? existing.customArtworkPath
+        customArtworkOriginalPath = customArtworkOriginalPath ?? existing.customArtworkOriginalPath
+        customArtworkCrop = customArtworkCrop ?? existing.customArtworkCrop
         portraitImageURL = portraitImageURL ?? existing.portraitImageURL
         headerImageURL = headerImageURL ?? existing.headerImageURL
         backgroundImageURL = backgroundImageURL ?? existing.backgroundImageURL

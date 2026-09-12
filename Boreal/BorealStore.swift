@@ -39,6 +39,7 @@ final class BorealStore {
         var storeDownloads: [String: StoreDownloadRecord]?
         var favoriteKeys: [String]?
         var lastAutomaticLibraryRefreshAt: Date?
+        var runtimeDisplayNameOverrides: [String: String]?
     }
 
     var applications: [WindowsApplication] = []
@@ -63,6 +64,8 @@ final class BorealStore {
     var installation = InstallationProgress()
     var presentedIssue: BorealIssue?
     var runtimeStatuses: [RuntimeStatus] = []
+    /// User-facing labels are kept outside immutable runtime snapshots.
+    var runtimeDisplayNameOverrides: [String: String] = [:]
     var localRuntimeCandidates: [LocalRuntimeCandidate] = []
     var runtimeDiscoveryState: RuntimeDiscoveryState = .loading
     var runtimeOperationDetail: String?
@@ -1303,53 +1306,115 @@ final class BorealStore {
     }
 
     func setCustomArtwork(from sourceURL: URL, for applicationID: UUID) {
-        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
         do {
-            let path = try importCustomArtwork(from: sourceURL)
-            applications[index].customArtworkPath = path
-            if let reference = applications[index].storeReference,
-               let gameIndex = storeGames.firstIndex(where: { $0.storeReference == reference }) {
-                storeGames[gameIndex].customArtworkPath = path
-            }
-            save()
+            let data = try Data(contentsOf: sourceURL)
+            saveCustomArtwork(originalData: data, renderedData: data, crop: .centered, for: applicationID)
         } catch {
-            present(error, title: "Boreal couldn’t set the custom cover", stage: "Importing custom artwork")
+            present(error, title: "Boreal couldn’t set the custom cover", stage: "Reading custom artwork")
         }
     }
 
     func setCustomArtwork(from sourceURL: URL, forStoreGameID gameID: UUID) {
-        guard let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
         do {
-            storeGames[index].customArtworkPath = try importCustomArtwork(from: sourceURL)
+            let data = try Data(contentsOf: sourceURL)
+            saveCustomArtwork(originalData: data, renderedData: data, crop: .centered, forStoreGameID: gameID)
+        } catch {
+            present(error, title: "Boreal couldn’t set the custom cover", stage: "Reading custom artwork")
+        }
+    }
+
+    func saveCustomArtwork(
+        originalData: Data,
+        renderedData: Data,
+        crop: ArtworkCrop,
+        for applicationID: UUID
+    ) {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        do {
+            let paths = try persistCustomArtwork(originalData: originalData, renderedData: renderedData, for: applicationID)
+            applications[index].customArtworkPath = paths.processed
+            applications[index].customArtworkOriginalPath = paths.original
+            applications[index].customArtworkCrop = crop
+            if let reference = applications[index].storeReference,
+               let gameIndex = storeGames.firstIndex(where: { $0.storeReference == reference }) {
+                storeGames[gameIndex].customArtworkPath = paths.processed
+                storeGames[gameIndex].customArtworkOriginalPath = paths.original
+                storeGames[gameIndex].customArtworkCrop = crop
+            }
             save()
         } catch {
-            present(error, title: "Boreal couldn’t set the custom cover", stage: "Importing custom artwork")
+            present(error, title: "Boreal couldn’t save the custom cover", stage: "Writing custom artwork")
+        }
+    }
+
+    func saveCustomArtwork(
+        originalData: Data,
+        renderedData: Data,
+        crop: ArtworkCrop,
+        forStoreGameID gameID: UUID
+    ) {
+        guard let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
+        do {
+            let paths = try persistCustomArtwork(originalData: originalData, renderedData: renderedData, for: gameID)
+            storeGames[index].customArtworkPath = paths.processed
+            storeGames[index].customArtworkOriginalPath = paths.original
+            storeGames[index].customArtworkCrop = crop
+            if let applicationIndex = applications.firstIndex(where: { $0.storeReference == storeGames[index].storeReference }) {
+                applications[applicationIndex].customArtworkPath = paths.processed
+                applications[applicationIndex].customArtworkOriginalPath = paths.original
+                applications[applicationIndex].customArtworkCrop = crop
+            }
+            save()
+        } catch {
+            present(error, title: "Boreal couldn’t save the custom cover", stage: "Writing custom artwork")
         }
     }
 
     func resetCustomArtwork(for applicationID: UUID) {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        let oldPaths = [applications[index].customArtworkPath, applications[index].customArtworkOriginalPath].compactMap { $0 }
         applications[index].customArtworkPath = nil
+        applications[index].customArtworkOriginalPath = nil
+        applications[index].customArtworkCrop = nil
         if let reference = applications[index].storeReference,
            let gameIndex = storeGames.firstIndex(where: { $0.storeReference == reference }) {
             storeGames[gameIndex].customArtworkPath = nil
+            storeGames[gameIndex].customArtworkOriginalPath = nil
+            storeGames[gameIndex].customArtworkCrop = nil
         }
+        removeCustomArtworkFiles(oldPaths, for: applicationID)
         save()
     }
 
     func resetCustomArtwork(forStoreGameID gameID: UUID) {
         guard let index = storeGames.firstIndex(where: { $0.id == gameID }) else { return }
+        let oldPaths = [storeGames[index].customArtworkPath, storeGames[index].customArtworkOriginalPath].compactMap { $0 }
         storeGames[index].customArtworkPath = nil
+        storeGames[index].customArtworkOriginalPath = nil
+        storeGames[index].customArtworkCrop = nil
+        if let applicationIndex = applications.firstIndex(where: { $0.storeReference == storeGames[index].storeReference }) {
+            applications[applicationIndex].customArtworkPath = nil
+            applications[applicationIndex].customArtworkOriginalPath = nil
+            applications[applicationIndex].customArtworkCrop = nil
+        }
+        removeCustomArtworkFiles(oldPaths, for: gameID)
         save()
     }
 
-    private func importCustomArtwork(from sourceURL: URL) throws -> String {
-        let directory = storageLayout.rootURL.appending(path: "Artwork/Custom", directoryHint: .isDirectory)
+    private func persistCustomArtwork(originalData: Data, renderedData: Data, for targetID: UUID) throws -> (original: String, processed: String) {
+        let directory = storageLayout.rootURL.appending(path: "Artwork/Custom/\(targetID.uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let fileExtension = sourceURL.pathExtension.isEmpty ? "image" : sourceURL.pathExtension.lowercased()
-        let destination = directory.appending(path: "\(UUID().uuidString).\(fileExtension)", directoryHint: .notDirectory)
-        try FileManager.default.copyItem(at: sourceURL, to: destination)
-        return destination.path
+        let originalURL = directory.appending(path: "cover-original", directoryHint: .notDirectory)
+        let processedURL = directory.appending(path: "cover.png", directoryHint: .notDirectory)
+        try originalData.write(to: originalURL, options: .atomic)
+        try renderedData.write(to: processedURL, options: .atomic)
+        return (originalURL.path, processedURL.path)
+    }
+
+    private func removeCustomArtworkFiles(_ paths: [String], for targetID: UUID) {
+        for path in paths { try? FileManager.default.removeItem(at: URL(fileURLWithPath: path)) }
+        let directory = storageLayout.rootURL.appending(path: "Artwork/Custom/\(targetID.uuidString)", directoryHint: .isDirectory)
+        try? FileManager.default.removeItem(at: directory)
     }
 
     func performanceLogURL(for applicationID: UUID) -> URL? {
@@ -1430,6 +1495,8 @@ final class BorealStore {
             value.id = storeGames[index].id
             value.preserveMeasuredActivity(from: storeGames[index])
             value.customArtworkPath = storeGames[index].customArtworkPath
+            value.customArtworkOriginalPath = storeGames[index].customArtworkOriginalPath
+            value.customArtworkCrop = storeGames[index].customArtworkCrop
             storeGames[index] = value
             save()
         }
@@ -1817,6 +1884,52 @@ final class BorealStore {
         })?.engine
     }
 
+    func installedRuntimeStatusesForGameConfiguration() -> [RuntimeStatus] {
+        runtimeStatuses
+            .filter { $0.source == .installed && $0.state == .installed && $0.isVerified }
+            .sorted {
+                if $0.engine != $1.engine { return $0.engine.displayName < $1.engine.displayName }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+    }
+
+    func runtimeSelectionIssue(_ runtimeID: String, profile: WineCompatibilityProfile) -> String? {
+        guard let runtime = runtimeStatuses.first(where: {
+            $0.id == runtimeID && $0.source == .installed && $0.state == .installed && $0.isVerified
+        }) else {
+            return "This runtime is not installed and ready."
+        }
+        if let requiredEngine = profile.graphicsBackend.requiredEngine, runtime.engine != requiredEngine {
+            return "The selected graphics renderer requires \(requiredEngine.displayName)."
+        }
+        let capabilities = runtime.features?.resolvedArchitectureCapabilities ?? .unknown
+        if profile.architecture == .win32, !capabilities.canRunX86 {
+            return "This runtime cannot run 32-bit Windows executables."
+        }
+        switch profile.prefixMode ?? .wow64 {
+        case .wow64 where !capabilities.usesNewWoW64:
+            return "This runtime does not provide modern WoW64 prefixes."
+        case .legacyWin32 where !capabilities.supportsLegacyWin32Prefix:
+            return "This runtime does not provide legacy Win32 prefixes."
+        case .legacyWin64 where !capabilities.canRunX86_64 || capabilities.usesNewWoW64:
+            return "This runtime does not provide legacy Win64 prefixes."
+        default:
+            break
+        }
+        switch profile.graphicsBackend {
+        case .d3dMetal where runtime.features?.d3dmetal != true:
+            return "This runtime does not contain D3DMetal."
+        case .dxmt where runtime.features?.dxmt != true:
+            return "This runtime does not contain the DXMT component package."
+        case .dxvk where runtime.features?.dxvk != true:
+            return "This runtime does not contain the DXVK component package."
+        case .vkd3d where runtime.features?.vkd3d != true:
+            return "This runtime does not contain the VKD3D-Proton component package."
+        default:
+            return nil
+        }
+    }
+
     /// Shared Windows Steam has one prefix, so prefix-level settings come from
     /// the host environment. Per-game launch arguments, overlay preferences,
     /// controller keyboard mapping, and process-scoped diagnostics remain on
@@ -1958,7 +2071,10 @@ final class BorealStore {
         let currentRuntimeFeatures = runtimeStatuses.first { $0.id == currentRuntimeID }?.features
         applications[index].compatibilityProfile = profile
         applications[index].windowsVersion = profile.windowsVersion.displayName
-        let requestedEngine = profile.graphicsBackend.requiredEngine ?? currentEngine
+        let selectedRuntime = profile.runtimeIDOverride.flatMap { selectedID in
+            runtimeStatuses.first { $0.id == selectedID && $0.source == .installed && $0.state == .installed }
+        }
+        let requestedEngine = selectedRuntime?.engine ?? profile.graphicsBackend.requiredEngine ?? currentEngine
         let currentRuntimeSupportsBackend: Bool
         switch profile.graphicsBackend {
         case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.d3dmetal == true
@@ -1969,6 +2085,8 @@ final class BorealStore {
         }
         let requiresRecreation = previousProfile.architecture != profile.architecture
             || previousProfile.prefixMode != profile.prefixMode
+            || previousProfile.runtimeIDOverride != profile.runtimeIDOverride
+            || (profile.runtimeIDOverride != nil && profile.runtimeIDOverride != currentRuntimeID)
             || requestedEngine != currentEngine
             || !currentRuntimeSupportsBackend
         let usesSharedSteamEnvironment = applications[index].usesSharedSteamEnvironment
@@ -2096,7 +2214,7 @@ final class BorealStore {
                     name: applications[currentIndex].name,
                     windowsVersion: profile.windowsVersion.displayName,
                     architecture: managed.configuration.architecture == WinePrefixArchitecture.win64.rawValue ? "64-bit" : "32-bit",
-                    runtime: runtime.runtimeDescription,
+                    runtime: runtimeDescription(for: runtime),
                     graphics: profile.graphicsBackend == .automatic ? runtime.graphicsName : profile.graphicsBackend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
@@ -2155,7 +2273,7 @@ final class BorealStore {
                 name: managed.configuration.name,
                 windowsVersion: (WineWindowsVersion(rawValue: managed.configuration.windowsVersion) ?? .windows11).displayName,
                 architecture: managed.configuration.architecture == "win64" ? "64-bit" : "32-bit",
-                runtime: commit.runtime.runtimeDescription,
+                runtime: runtimeDescription(for: commit.runtime),
                 graphics: managed.configuration.graphicsBackend.displayName,
                 runtimeID: commit.runtime.id,
                 rootPath: managed.rootURL.path,
@@ -2249,7 +2367,7 @@ final class BorealStore {
                 name: managed.configuration.name,
                 windowsVersion: WineWindowsVersion(rawValue: managed.configuration.windowsVersion)?.displayName ?? "Windows 11",
                 architecture: managed.configuration.architecture == "win64" ? "64-bit" : "32-bit",
-                runtime: commit.runtime.runtimeDescription,
+                runtime: runtimeDescription(for: commit.runtime),
                 graphics: commit.runtime.graphicsName,
                 runtimeID: commit.runtime.id,
                 rootPath: managed.rootURL.path,
@@ -2376,6 +2494,8 @@ final class BorealStore {
             value.id = storeGames[index].id
             value.preserveMeasuredActivity(from: storeGames[index])
             value.customArtworkPath = storeGames[index].customArtworkPath
+            value.customArtworkOriginalPath = storeGames[index].customArtworkOriginalPath
+            value.customArtworkCrop = storeGames[index].customArtworkCrop
             if let installation = installation(for: storeGames[index]) {
                 value.isInstalled = installation.state.representsAnInstallation
                 value.installPath = StoragePathResolver.resolve(installation.location, layout: storageLayout).path
@@ -2421,6 +2541,8 @@ final class BorealStore {
             value.id = storeGames[existingIndex].id
             value.preserveMeasuredActivity(from: storeGames[existingIndex])
             value.customArtworkPath = storeGames[existingIndex].customArtworkPath
+            value.customArtworkOriginalPath = storeGames[existingIndex].customArtworkOriginalPath
+            value.customArtworkCrop = storeGames[existingIndex].customArtworkCrop
             // The rename resolved a new presentation identity. Do not merge
             // the old artwork back into the fresh metadata: artworkPath is
             // preferred by GameArtworkView and could otherwise keep showing
@@ -2546,6 +2668,8 @@ final class BorealStore {
             summary: presentation?.summary,
             artworkPath: presentation?.artworkPath,
             customArtworkPath: applications[applicationIndex].customArtworkPath,
+            customArtworkOriginalPath: applications[applicationIndex].customArtworkOriginalPath,
+            customArtworkCrop: applications[applicationIndex].customArtworkCrop,
             portraitImageURL: presentation?.portraitImageURL,
             headerImageURL: presentation?.headerImageURL,
             backgroundImageURL: presentation?.backgroundImageURL,
@@ -2829,7 +2953,7 @@ final class BorealStore {
         let environment = WindowsEnvironment(
             id: managed.id,
             name: prepared.poolKey == "shared" ? "Steam for Windows" : "Steam for Windows · \(prepared.poolKey)",
-            runtime: prepared.installation.runtime.runtimeDescription,
+            runtime: runtimeDescription(for: prepared.installation.runtime),
             graphics: prepared.installation.runtime.graphicsName,
             runtimeID: prepared.installation.runtime.id,
             rootPath: managed.rootURL.path,
@@ -3500,7 +3624,7 @@ final class BorealStore {
                     id: managed.id,
                     name: name,
                     architecture: environmentArchitecture == "win64" ? "64-bit" : "32-bit",
-                    runtime: runtime.runtimeDescription,
+                    runtime: runtimeDescription(for: runtime),
                     graphics: resolved.graphicsStack.backend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
@@ -3670,7 +3794,7 @@ final class BorealStore {
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
-                    runtime: runtime.runtimeDescription,
+                    runtime: runtimeDescription(for: runtime),
                     graphics: resolved.graphicsStack.backend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
@@ -4197,7 +4321,7 @@ final class BorealStore {
                 let environment = WindowsEnvironment(
                     id: managed.id,
                     name: game.name,
-                    runtime: runtime.runtimeDescription,
+                    runtime: runtimeDescription(for: runtime),
                     graphics: resolved.graphicsStack.backend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
@@ -4303,7 +4427,8 @@ final class BorealStore {
                     supporting: compatibilityProfile.graphicsBackend,
                     preferredEngine: engine,
                     executableArchitecture: currentArchitecture,
-                    prefixMode: compatibilityProfile.prefixMode
+                    prefixMode: compatibilityProfile.prefixMode,
+                    runtimeIDOverride: compatibilityProfile.runtimeIDOverride
                 )
                 try validatePrefixSelection(compatibilityProfile, executableArchitecture: currentArchitecture, runtime: runtime)
                 try Task.checkCancellation()
@@ -4341,7 +4466,7 @@ final class BorealStore {
                     name: game.name,
                     windowsVersion: applications[currentIndex].resolvedCompatibilityProfile.windowsVersion.displayName,
                     architecture: managed.configuration.architecture == WinePrefixArchitecture.win64.rawValue ? "64-bit" : "32-bit",
-                    runtime: runtime.runtimeDescription,
+                    runtime: runtimeDescription(for: runtime),
                     graphics: applications[currentIndex].resolvedCompatibilityProfile.graphicsBackend == .automatic ? runtime.graphicsName : applications[currentIndex].resolvedCompatibilityProfile.graphicsBackend.displayName,
                     runtimeID: runtime.id,
                     rootPath: managed.rootURL.path,
@@ -4546,7 +4671,7 @@ final class BorealStore {
                       try await services.runtimeManager.validate(runtime).isReady else { throw InstallerServiceError.noRuntimeAvailable }
                 let managed = try await services.environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
                 try await services.environmentManager.initialize(managed, runtime: runtime)
-                environments.append(WindowsEnvironment(id: managed.id, name: name, runtime: runtime.runtimeDescription, graphics: runtime.graphicsName, runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path))
+                environments.append(WindowsEnvironment(id: managed.id, name: name, runtime: runtimeDescription(for: runtime), graphics: runtime.graphicsName, runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path))
                 save()
             } catch { present(error, title: "Environment couldn’t be created", stage: "Preparing the Windows environment") }
         }
@@ -4587,6 +4712,7 @@ final class BorealStore {
             storeDownloadRecords = layered.storeDownloads
             favoriteKeys = layered.favoriteKeys
             lastAutomaticLibraryRefreshAt = layered.lastAutomaticLibraryRefreshAt
+            runtimeDisplayNameOverrides = layered.runtimeDisplayNameOverrides
             recoverInterruptedDownloads()
             storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             migrateStoreOperationMetadata()
@@ -4616,6 +4742,7 @@ final class BorealStore {
         storeDownloadRecords = state.storeDownloads ?? [:]
         favoriteKeys = Set(state.favoriteKeys ?? [])
         lastAutomaticLibraryRefreshAt = state.lastAutomaticLibraryRefreshAt
+        runtimeDisplayNameOverrides = state.runtimeDisplayNameOverrides ?? [:]
         migrateStoreOperationMetadata()
         recoverInterruptedDownloads()
         storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -6177,6 +6304,7 @@ final class BorealStore {
                 storeDownloads: storeDownloadRecords,
                 lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
                 layout: storageLayout,
+                runtimeDisplayNameOverrides: runtimeDisplayNameOverrides,
                 installations: installations
             )
             Task { [weak self, libraryRepository] in
@@ -6198,7 +6326,8 @@ final class BorealStore {
                 storeGames: storeGames,
                 storeDownloads: storeDownloadRecords,
                 favoriteKeys: Array(favoriteKeys).sorted(),
-                lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt
+                lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
+                runtimeDisplayNameOverrides: runtimeDisplayNameOverrides.isEmpty ? nil : runtimeDisplayNameOverrides
             ))
             try data.write(to: storageURL, options: .atomic)
         } catch {
@@ -6214,14 +6343,14 @@ final class BorealStore {
             for index in environments.indices {
                 guard let runtimeID = environments[index].runtimeID,
                       let runtime = installedByID[runtimeID] else { continue }
-                environments[index].runtime = runtime.runtimeDescription
+                environments[index].runtime = runtimeDescription(for: runtime)
             }
             var values: [RuntimeStatus] = []
             for runtime in installed {
                 let validation = try await services.runtimeManager.validate(runtime)
                 values.append(RuntimeStatus(
                     id: runtime.id,
-                    name: runtime.displayName,
+                    name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.displayName,
                     wineVersion: runtime.wineVersion,
                     architecture: runtime.architecture,
                     state: validation.isReady ? .installed : .needsAttention,
@@ -6252,7 +6381,7 @@ final class BorealStore {
             for runtime in available where !installedIDs.contains(runtime.id) {
                 values.append(RuntimeStatus(
                     id: runtime.id,
-                    name: runtime.displayName,
+                    name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.displayName,
                     wineVersion: runtime.wineVersion,
                     architecture: runtime.architecture,
                     compressedSize: runtime.artifact.compressedSize,
@@ -6271,6 +6400,22 @@ final class BorealStore {
             localRuntimeCandidates = await services.runtimeManager.localRuntimeCandidates()
             runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
         }
+    }
+
+    private func runtimeDescription(for runtime: InstalledRuntime) -> String {
+        runtimeDescription(
+            name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.displayName,
+            engine: runtime.resolvedEngine,
+            wineVersion: runtime.wineVersion
+        )
+    }
+
+    private func runtimeDescription(
+        name: String,
+        engine: RuntimeEngine,
+        wineVersion: String
+    ) -> String {
+        "\(name) · \(engine.displayName) \(wineVersion)"
     }
 
     func refreshRuntimeComponentUpdates() async {
@@ -6353,7 +6498,7 @@ final class BorealStore {
                 }.map(\.id))
                 for index in environments.indices where environments[index].runtimeID.map(replacedIDs.contains) == true {
                     environments[index].runtimeID = replacement.id
-                    environments[index].runtime = replacement.runtimeDescription
+                    environments[index].runtime = runtimeDescription(for: replacement)
                 }
                 save()
             } catch {
@@ -6459,6 +6604,100 @@ final class BorealStore {
                     error,
                     title: String(localized: "Game Porting Toolkit couldn’t be imported"),
                     stage: String(localized: "Validating D3DMetal and preparing Dawnwalker's runtime")
+                )
+            }
+        }
+    }
+
+    func renameRuntime(id: String, to requestedName: String) {
+        guard let statusIndex = runtimeStatuses.firstIndex(where: {
+            $0.id == id && $0.source == .installed
+        }) else { return }
+        let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              name.count <= 80,
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            present(
+                RuntimeManagerError.invalidRuntimeDisplayName,
+                title: "Runtime couldn’t be renamed",
+                stage: "Validating the custom runtime name"
+            )
+            return
+        }
+
+        runtimeDisplayNameOverrides[id] = name
+        runtimeStatuses[statusIndex].name = name
+        let status = runtimeStatuses[statusIndex]
+        for index in environments.indices where environments[index].runtimeID == id {
+            environments[index].runtime = runtimeDescription(
+                name: name,
+                engine: status.engine,
+                wineVersion: status.wineVersion
+            )
+        }
+        save()
+    }
+
+    func removeRuntime(id: String) {
+        guard runtimeOperationDetail == nil else { return }
+        guard let status = runtimeStatuses.first(where: {
+            $0.id == id && $0.source == .installed
+        }) else { return }
+
+        let referencingEnvironments = environments.filter { $0.runtimeID == id }
+        if !referencingEnvironments.isEmpty {
+            present(
+                RuntimeManagerError.runtimeInUse(
+                    "Remove \(referencingEnvironments.count == 1 ? "the environment" : "the environments") using it first."
+                ),
+                title: "Runtime couldn’t be removed",
+                stage: "Checking runtime dependencies"
+            )
+            return
+        }
+        let hasActiveSession = activeRuntimes.values.contains { $0.id == id }
+            || applications.contains { application in
+                activeSessions[application.id] != nil
+                    && environments.first(where: { $0.id == application.environmentID })?.runtimeID == id
+            }
+        guard !hasActiveSession else {
+            present(
+                RuntimeManagerError.runtimeInUse("Stop the running game before removing it."),
+                title: "Runtime couldn’t be removed",
+                stage: "Checking active game sessions"
+            )
+            return
+        }
+
+        runtimeOperationDetail = "Removing \(status.name)…"
+        Task {
+            do {
+                let installed = try await services.runtimeManager.installedRuntimes()
+                guard let runtime = installed.first(where: { $0.id == id }) else {
+                    throw RuntimeManagerError.runtimeLayoutNotFound
+                }
+                guard !environments.contains(where: { $0.runtimeID == id }) else {
+                    throw RuntimeManagerError.runtimeInUse("Remove the environments using it first.")
+                }
+                guard !activeRuntimes.values.contains(where: { $0.id == id }) else {
+                    throw RuntimeManagerError.runtimeInUse("Stop the running game before removing it.")
+                }
+                try await services.runtimeManager.remove(runtime)
+                runtimeDisplayNameOverrides.removeValue(forKey: id)
+                for index in applications.indices {
+                    guard applications[index].compatibilityProfile?.runtimeIDOverride == id else { continue }
+                    applications[index].compatibilityProfile?.runtimeIDOverride = nil
+                    applications[index].lastResult = "Selected runtime removed; Boreal will choose a compatible runtime automatically"
+                }
+                runtimeOperationDetail = nil
+                save()
+                await refreshRuntimeStatuses()
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: "Runtime couldn’t be removed",
+                    stage: "Removing the immutable runtime snapshot"
                 )
             }
         }
@@ -6594,7 +6833,7 @@ final class BorealStore {
             metalFX: metalFX,
             temporalPlan: plan,
             graphicsStack: graphics,
-            runtimeDescription: runtime.runtimeDescription,
+            runtimeDescription: runtimeDescription(for: runtime),
             ngxDebugIndicator: ngxIndicator
         )
     }

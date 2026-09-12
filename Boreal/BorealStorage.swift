@@ -120,6 +120,8 @@ nonisolated struct GameMetadata: Codable, Hashable, Sendable {
     var summary: String?
     var artworkPath: String?
     var customArtworkPath: String? = nil
+    var customArtworkOriginalPath: String?
+    var customArtworkCrop: ArtworkCrop?
     var portraitImageURL: String?
     var headerImageURL: String?
     var backgroundImageURL: String?
@@ -135,6 +137,8 @@ nonisolated struct GameMetadata: Codable, Hashable, Sendable {
         summary = game.summary
         artworkPath = game.artworkPath
         customArtworkPath = game.customArtworkPath
+        customArtworkOriginalPath = game.customArtworkOriginalPath
+        customArtworkCrop = game.customArtworkCrop
         portraitImageURL = game.portraitImageURL
         headerImageURL = game.headerImageURL
         backgroundImageURL = game.backgroundImageURL
@@ -738,6 +742,8 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
     var graphics: String
     var iconSymbol: String
     var customArtworkPath: String?
+    var customArtworkOriginalPath: String?
+    var customArtworkCrop: ArtworkCrop?
     var storeReference: StoreReference?
     var storeMetadataOnly: Bool?
     var applicationRole: WindowsApplicationRole?
@@ -769,6 +775,8 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
         graphics = application.graphics
         iconSymbol = application.iconSymbol
         customArtworkPath = application.customArtworkPath
+        customArtworkOriginalPath = application.customArtworkOriginalPath
+        customArtworkCrop = application.customArtworkCrop
         storeReference = application.storeReference
         storeMetadataOnly = application.storeMetadataOnly
         applicationRole = application.applicationRole
@@ -796,6 +804,8 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
             graphics: graphics,
             iconSymbol: iconSymbol,
             customArtworkPath: customArtworkPath,
+            customArtworkOriginalPath: customArtworkOriginalPath,
+            customArtworkCrop: customArtworkCrop,
             storeProvider: storeReference?.provider,
             storeExternalID: storeReference?.externalID,
             storeMetadataOnly: storeMetadataOnly,
@@ -864,6 +874,8 @@ nonisolated struct LibraryGameRecord: Codable, Hashable, Sendable {
             summary: metadata.summary,
             artworkPath: metadata.artworkPath,
             customArtworkPath: metadata.customArtworkPath,
+            customArtworkOriginalPath: metadata.customArtworkOriginalPath,
+            customArtworkCrop: metadata.customArtworkCrop,
             portraitImageURL: metadata.portraitImageURL,
             headerImageURL: metadata.headerImageURL,
             backgroundImageURL: metadata.backgroundImageURL,
@@ -940,6 +952,7 @@ nonisolated struct DownloadsDatabase: Codable, Sendable {
 nonisolated struct AppStateDatabase: Codable, Sendable {
     var schemaVersion: Int
     var lastAutomaticLibraryRefreshAt: Date?
+    var runtimeDisplayNameOverrides: [String: String]?
 }
 
 /// The old one-file envelope is kept solely as a migration reader and for
@@ -952,6 +965,7 @@ nonisolated struct LegacyBorealState: Codable, Sendable {
     var storeDownloads: [String: StoreDownloadRecord]?
     var favoriteKeys: [String]?
     var lastAutomaticLibraryRefreshAt: Date?
+    var runtimeDisplayNameOverrides: [String: String]?
 }
 
 nonisolated enum StoragePathResolver {
@@ -1082,6 +1096,7 @@ nonisolated struct BorealStorageSnapshot: Sendable {
         storeDownloads: [String: StoreDownloadRecord],
         lastAutomaticLibraryRefreshAt: Date?,
         layout: BorealStorageLayout,
+        runtimeDisplayNameOverrides: [String: String] = [:],
         installations canonicalInstallations: [GameInstallation] = []
     ) {
         let installations = canonicalInstallations.isEmpty
@@ -1108,7 +1123,11 @@ nonisolated struct BorealStorageSnapshot: Sendable {
             }
         )
         downloads = DownloadsDatabase(schemaVersion: BorealStorageSchema.current, records: storeDownloads)
-        appState = AppStateDatabase(schemaVersion: BorealStorageSchema.current, lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt)
+        appState = AppStateDatabase(
+            schemaVersion: BorealStorageSchema.current,
+            lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
+            runtimeDisplayNameOverrides: runtimeDisplayNameOverrides.isEmpty ? nil : runtimeDisplayNameOverrides
+        )
     }
 }
 
@@ -1120,6 +1139,7 @@ nonisolated struct BorealStorageLoadedState: Sendable {
     var storeDownloads: [String: StoreDownloadRecord]
     var favoriteKeys: Set<String>
     var lastAutomaticLibraryRefreshAt: Date?
+    var runtimeDisplayNameOverrides: [String: String]
 }
 
 nonisolated enum BorealStorageLoader {
@@ -1166,7 +1186,10 @@ nonisolated enum BorealStorageLoader {
             installations: installations,
             storeDownloads: (downloads?.schemaVersion ?? 0) <= BorealStorageSchema.current ? (downloads?.records ?? [:]) : [:],
             favoriteKeys: Set((favorites?.schemaVersion ?? 0) <= BorealStorageSchema.current ? (favorites?.keys ?? []) : []),
-            lastAutomaticLibraryRefreshAt: (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current ? appState?.lastAutomaticLibraryRefreshAt : nil
+            lastAutomaticLibraryRefreshAt: (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current ? appState?.lastAutomaticLibraryRefreshAt : nil,
+            runtimeDisplayNameOverrides: (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current
+                ? (appState?.runtimeDisplayNameOverrides ?? [:])
+                : [:]
         )
     }
 
