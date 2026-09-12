@@ -540,6 +540,36 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR_CUSTOM_MODE")
         values.removeValue(forKey: "D3DM_ENABLE_METALFX")
         values.removeValue(forKey: "WINEDLLPATH")
+        values.removeValue(forKey: "D3DMETAL_FRAMEWORK_PATH")
+        values.removeValue(forKey: "DYLD_FALLBACK_LIBRARY_PATH")
+        // GPTK 4 chooses its Metal generation automatically. Do not inherit
+        // D3DM_MTL4 from Boreal's parent process, since it is not a GreedFall
+        // setting and primarily controls the D3D12 path.
+        values.removeValue(forKey: "D3DM_MTL4")
+        if runtime.resolvedEngine == .gamePortingToolkit {
+            // GPTK loads D3DMetal from the runtime selected for this game. Do
+            // not inherit a host-wide path: it can point at another GPTK
+            // generation and make dxgi fail during device initialization.
+            let d3dMetalBinary = runtime.rootURL.appending(
+                path: "Runtime/Wine.app/Contents/Resources/wine/lib/external/D3DMetal.framework/D3DMetal"
+            )
+            if FileManager.default.isReadableFile(atPath: d3dMetalBinary.path) {
+                values["D3DMETAL_FRAMEWORK_PATH"] = d3dMetalBinary.path
+                let wineLibraries = runtime.rootURL.appending(
+                    path: "Runtime/Wine.app/Contents/Resources/wine/lib",
+                    directoryHint: .isDirectory
+                )
+                let fallbackLibraries = [
+                    wineLibraries.appending(path: "external", directoryHint: .isDirectory),
+                    wineLibraries
+                ].filter { FileManager.default.fileExists(atPath: $0.path) }
+                if !fallbackLibraries.isEmpty {
+                    // Keep @rpath resolution inside the selected GPTK
+                    // snapshot when Wine loads the Unix-side D3D modules.
+                    values["DYLD_FALLBACK_LIBRARY_PATH"] = fallbackLibraries.map(\.path).joined(separator: ":")
+                }
+            }
+        }
         if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
         if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)

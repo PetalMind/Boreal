@@ -682,6 +682,9 @@ actor RuntimeManager: RuntimeManaging {
         if source.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
             let candidate = try await localRuntimeCandidate(at: source)
             try validateGPTK4Candidate(candidate)
+            try validateGPTK4Payload(
+                in: source.appending(path: "Contents/Resources/wine/lib", directoryHint: .isDirectory)
+            )
             if let existing = try await installedRuntimes().first(where: { $0.id == candidate.id }) {
                 return existing
             }
@@ -689,13 +692,12 @@ actor RuntimeManager: RuntimeManaging {
         }
 
         let redist = source.appending(path: "redist/lib", directoryHint: .isDirectory)
+        try validateGPTK4Payload(in: redist)
         let d3dMetalInfo = redist.appending(
             path: "external/D3DMetal.framework/Versions/A/Resources/Info.plist"
         )
         guard fileManager.fileExists(atPath: d3dMetalInfo.path),
-              fileManager.fileExists(atPath: redist.appending(path: "external/D3DMetal.framework/Versions/A/D3DMetal").path),
-              fileManager.fileExists(atPath: redist.appending(path: "wine/x86_64-unix/d3d12.so").path),
-              fileManager.fileExists(atPath: redist.appending(path: "wine/x86_64-windows/d3d12.dll").path) else {
+              fileManager.fileExists(atPath: redist.appending(path: "external/D3DMetal.framework/Versions/A/D3DMetal").path) else {
             throw RuntimeManagerError.localRuntimeInvalid(
                 "The selected folder is not an Apple evaluation environment with a complete D3DMetal redist/lib payload."
             )
@@ -732,6 +734,7 @@ actor RuntimeManager: RuntimeManaging {
                 from: redist.appending(path: "wine", directoryHint: .isDirectory),
                 into: wineLibraries.appending(path: "wine", directoryHint: .isDirectory)
             )
+            try validateGPTK4Payload(in: wineLibraries)
             try updateGPTKBundleVersion(
                 at: stagingApp,
                 version: d3dMetalVersion,
@@ -782,6 +785,55 @@ actor RuntimeManager: RuntimeManaging {
             throw RuntimeManagerError.localRuntimeInvalid(
                 "Select Game Porting Toolkit 4 or newer. The selected runtime reports version (candidate.wineVersion)."
             )
+        }
+    }
+
+    private func validateGPTK4Payload(in libraryRoot: URL) throws {
+        let requiredPaths = [
+            "external/libd3dshared.dylib",
+            "external/D3DMetal.framework/D3DMetal",
+            "external/D3DMetal.framework/Resources/Info.plist",
+            "wine/x86_64-unix/dxgi.so",
+            "wine/x86_64-unix/d3d11.so",
+            "wine/x86_64-unix/d3d12.so",
+            "wine/x86_64-windows/dxgi.dll",
+            "wine/x86_64-windows/d3d11.dll",
+            "wine/x86_64-windows/d3d12.dll"
+        ]
+        let missing = requiredPaths.filter {
+            !fileManager.isReadableFile(atPath: libraryRoot.appending(path: $0).path)
+        }
+        guard missing.isEmpty else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The GPTK 4 payload is incomplete. Missing: \(missing.joined(separator: ", "))."
+            )
+        }
+        let d3dMetalInfo = libraryRoot.appending(path: "external/D3DMetal.framework/Resources/Info.plist")
+        guard let infoData = try? Data(contentsOf: d3dMetalInfo),
+              let info = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any],
+              let version = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let majorVersion = runtimeMajorVersion(version), majorVersion >= 4 else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The GPTK 4 D3DMetal framework does not report version 4 or newer."
+            )
+        }
+
+        // GPTK exposes the D3D10/D3D11/D3D12/DXGI Unix side through the one
+        // libd3dshared image. A symlink that resolves elsewhere indicates
+        // that the redist was mixed with another Wine/GPTK generation.
+        let shared = libraryRoot.appending(path: "external/libd3dshared.dylib").resolvingSymlinksInPath()
+            .standardizedFileURL
+        for module in ["dxgi", "d3d11", "d3d12"] {
+            let unixModule = libraryRoot.appending(path: "wine/x86_64-unix/\(module).so")
+            let values = try? unixModule.resourceValues(forKeys: [.isSymbolicLinkKey])
+            if values?.isSymbolicLink == true {
+                let resolved = unixModule.resolvingSymlinksInPath().standardizedFileURL
+                guard resolved == shared else {
+                    throw RuntimeManagerError.localRuntimeInvalid(
+                        "The GPTK 4 Unix-side \(module) module does not resolve to libd3dshared.dylib."
+                    )
+                }
+            }
         }
     }
 

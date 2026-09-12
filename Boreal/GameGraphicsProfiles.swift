@@ -8,6 +8,11 @@ nonisolated enum GameRuntimeProfiles {
             // expose on Apple Silicon. Boreal supplies the missing WinRT API
             // alias in the prefix so GPTK can load IL2CPP and use D3DMetal.
             return .gamePortingToolkit
+        case (.gog, "1635210189"):
+            // GreedFall is a 64-bit DirectX 11 title. Use the current GPTK
+            // WoW64 runtime so its D3DMetal path is selected instead of the
+            // legacy GPTK build that cannot create a modern WoW64 prefix.
+            return .gamePortingToolkit
         default:
             return nil
         }
@@ -154,6 +159,22 @@ nonisolated enum GameGraphicsProfiles {
             overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1635210189",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX11, arguments: [])
+            ],
+            // GreedFall's SilkEngine is a DirectX 11 title and should use
+            // Apple's D3DMetal path in a current GPTK WoW64 prefix. Keep the
+            // game out of the virtual desktop while it creates its device.
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            enforcedAPI: .directX11,
+            overlayCompatibleFullscreen: false
+        ),
+        GameGraphicsProfile(
             provider: .steam,
             externalID: "388410",
             availableAPIs: [.directX11, .directX9],
@@ -214,15 +235,28 @@ nonisolated enum GameGraphicsProfiles {
         _ currentProfile: WineCompatibilityProfile,
         for application: WindowsApplication
     ) -> WineCompatibilityProfile {
-        guard let builtIn = profile(for: application),
-              builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil else { return currentProfile }
         var effective = currentProfile
-        effective.graphicsAPI = builtIn.defaultAPI
-        if let enforcedAPI = builtIn.enforcedAPI {
-            effective.graphicsAPI = enforcedAPI
+        if let builtIn = profile(for: application),
+           builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil {
+            effective.graphicsAPI = builtIn.defaultAPI
+            if let enforcedAPI = builtIn.enforcedAPI {
+                effective.graphicsAPI = enforcedAPI
+            }
+            if let enforcedBackend = builtIn.enforcedBackend {
+                effective.graphicsBackend = enforcedBackend
+            }
         }
-        if let enforcedBackend = builtIn.enforcedBackend {
-            effective.graphicsBackend = enforcedBackend
+        if GameRuntimeProfiles.requiredEngine(for: application) == .gamePortingToolkit,
+           application.storeProvider == .gog,
+           application.storeExternalID == "1635210189" {
+            // The old persisted profile may point at GPTK 3, which advertises
+            // D3DMetal but cannot create the WoW64 prefix GreedFall should
+            // use. Let runtime selection choose the installed GPTK WoW64
+            // build instead of preserving that stale pin.
+            effective.prefixMode = .wow64
+            effective.windowsVersion = .windows10
+            effective.overlayCompatibleFullscreen = false
+            effective.runtimeIDOverride = nil
         }
         return effective
     }

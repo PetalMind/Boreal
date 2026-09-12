@@ -953,6 +953,7 @@ nonisolated struct AppStateDatabase: Codable, Sendable {
     var schemaVersion: Int
     var lastAutomaticLibraryRefreshAt: Date?
     var runtimeDisplayNameOverrides: [String: String]?
+    var hiddenLibraryKeys: [String]?
 }
 
 /// The old one-file envelope is kept solely as a migration reader and for
@@ -1097,6 +1098,7 @@ nonisolated struct BorealStorageSnapshot: Sendable {
         lastAutomaticLibraryRefreshAt: Date?,
         layout: BorealStorageLayout,
         runtimeDisplayNameOverrides: [String: String] = [:],
+        hiddenLibraryKeys: Set<String> = [],
         installations canonicalInstallations: [GameInstallation] = []
     ) {
         let installations = canonicalInstallations.isEmpty
@@ -1126,7 +1128,8 @@ nonisolated struct BorealStorageSnapshot: Sendable {
         appState = AppStateDatabase(
             schemaVersion: BorealStorageSchema.current,
             lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
-            runtimeDisplayNameOverrides: runtimeDisplayNameOverrides.isEmpty ? nil : runtimeDisplayNameOverrides
+            runtimeDisplayNameOverrides: runtimeDisplayNameOverrides.isEmpty ? nil : runtimeDisplayNameOverrides,
+            hiddenLibraryKeys: hiddenLibraryKeys.isEmpty ? nil : hiddenLibraryKeys.sorted()
         )
     }
 }
@@ -1140,6 +1143,7 @@ nonisolated struct BorealStorageLoadedState: Sendable {
     var favoriteKeys: Set<String>
     var lastAutomaticLibraryRefreshAt: Date?
     var runtimeDisplayNameOverrides: [String: String]
+    var hiddenLibraryKeys: Set<String>
 }
 
 nonisolated enum BorealStorageLoader {
@@ -1189,7 +1193,12 @@ nonisolated enum BorealStorageLoader {
             lastAutomaticLibraryRefreshAt: (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current ? appState?.lastAutomaticLibraryRefreshAt : nil,
             runtimeDisplayNameOverrides: (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current
                 ? (appState?.runtimeDisplayNameOverrides ?? [:])
-                : [:]
+                : [:],
+            hiddenLibraryKeys: Set(
+                (appState?.schemaVersion ?? 0) <= BorealStorageSchema.current
+                    ? (appState?.hiddenLibraryKeys ?? [])
+                    : []
+            )
         )
     }
 

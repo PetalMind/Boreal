@@ -113,7 +113,6 @@ struct WineCompatibilityConfigurator: View {
     @State private var controllerManager = ControllerManager.shared
     @State private var showsComponentsPatches = false
     @State private var showsControllerSettings = false
-    @State private var showsRuntimeOverride = false
     @State private var temporalInspector: TemporalUpscalingInspectorSnapshot?
 
     init(application: WindowsApplication) {
@@ -144,7 +143,7 @@ struct WineCompatibilityConfigurator: View {
             }
             Divider()
             CompatibilitySettingsFooter(
-                restore: { profile = .default; showsRuntimeOverride = false }, cancel: { dismiss() }, save: save,
+                restore: { profile = .default }, cancel: { dismiss() }, save: save,
                 saveDisabled: application.status == .running || application.status.isBusy || graphicsBackendIssue != nil || prefixModeIssue != nil || selectedRuntimeIssue != nil,
                 saveTitle: requiresEnvironmentRebuild ? "Apply & Rebuild" : "Save changes",
                 showsRebuildNotice: requiresEnvironmentRebuild
@@ -153,7 +152,6 @@ struct WineCompatibilityConfigurator: View {
         .frame(minWidth: 680, idealWidth: 840, maxWidth: 900, minHeight: 620, idealHeight: 760, maxHeight: 860)
         .onAppear {
             profile = store.compatibilityProfile(for: application)
-            showsRuntimeOverride = profile.runtimeIDOverride != nil
             controllerManager.start()
         }
         .sheet(isPresented: $showsControllerSettings) { NavigationStack { ControllerSettingsView() } }
@@ -191,30 +189,19 @@ struct WineCompatibilityConfigurator: View {
 
     private var graphicsSection: some View {
         CompatibilitySettingsSection(title: "Graphics", subtitle: "Configure how the game runs using Wine and graphics settings.", symbol: "gearshape.2", tint: .blue) {
-            CompatibilityPickerRow(title: "Runtime", detail: String(localized: "Boreal selects a compatible runtime automatically. Override it only when you need a specific runtime.")) {
-                HStack(spacing: 8) {
-                    if showsRuntimeOverride {
-                        Picker("Runtime", selection: $profile.runtimeIDOverride) {
-                            Text("Automatic").tag(Optional<String>.none)
-                            ForEach(availableRuntimes) { runtime in
-                                Text(runtimeLabel(runtime))
-                                    .tag(Optional(runtime.id))
-                                    .disabled(store.runtimeSelectionIssue(runtime.id, profile: profile) != nil)
-                            }
-                        }
-                        .labelsHidden()
-                    } else {
-                        Text("Automatic").foregroundStyle(.secondary)
+            CompatibilityPickerRow(title: "Runtime / environment", detail: String(localized: "Automatic lets Boreal choose a compatible runtime. Select a specific installed environment here to pin it for this game.")) {
+                Picker("Runtime / environment", selection: $profile.runtimeIDOverride) {
+                    Text("Automatic").tag(Optional<String>.none)
+                    ForEach(availableRuntimes) { runtime in
+                        Text(runtimeLabel(runtime))
+                            .tag(Optional(runtime.id))
+                            .disabled(store.runtimeSelectionIssue(runtime.id, profile: profile) != nil)
                     }
-                    Button(showsRuntimeOverride ? "Automatic" : "Override") {
-                        showsRuntimeOverride.toggle()
-                        if !showsRuntimeOverride { profile.runtimeIDOverride = nil }
-                    }
-                    .buttonStyle(.bordered)
                 }
+                .labelsHidden()
                 .disabled(usesSharedSteamEnvironment)
             }
-            if showsRuntimeOverride, profile.runtimeIDOverride != nil {
+            if profile.runtimeIDOverride != nil {
                 Label("Pinned by user", systemImage: "lock.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -228,7 +215,6 @@ struct WineCompatibilityConfigurator: View {
             if let selectedRuntimeIssue {
                 CompatibilityCallout(text: selectedRuntimeIssue, symbol: "exclamationmark.triangle.fill", tint: .orange)
                 Button("Use automatic runtime", systemImage: "wand.and.stars") {
-                    showsRuntimeOverride = false
                     profile.runtimeIDOverride = nil
                 }
                 .buttonStyle(.bordered)
@@ -471,14 +457,14 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private func applyPreset(_ preset: CompatibilityPreset) {
-        let pinnedRuntimeID = showsRuntimeOverride ? profile.runtimeIDOverride : nil
+        let pinnedRuntimeID = profile.runtimeIDOverride
         switch preset {
         case .recommended: profile = recommendedProfile
         case .legacy: profile = legacyProfile
         case .performance: profile = performanceProfile
         case .custom: break
         }
-        if preset != .custom, showsRuntimeOverride { profile.runtimeIDOverride = pinnedRuntimeID }
+        if preset != .custom { profile.runtimeIDOverride = pinnedRuntimeID }
     }
 
     private func save() { store.updateCompatibilityProfile(for: application.id, profile: profile); dismiss() }

@@ -581,7 +581,7 @@ struct ContentView: View {
     }
 
     private func sourceCount(_ source: LibrarySourceFilter) -> Int {
-        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations)
+        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations).filter { !store.hiddenLibraryKeys.contains($0.favoriteKey) }
             .lazy.filter { $0.source == source }.count
     }
 
@@ -593,7 +593,7 @@ struct ContentView: View {
     }
 
     private var installedCount: Int {
-        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations)
+        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations).filter { !store.hiddenLibraryKeys.contains($0.favoriteKey) }
             .lazy.filter(\.installed).count
     }
 
@@ -615,7 +615,7 @@ struct ContentView: View {
     private var isFavoritesSelected: Bool { selection == .favorites }
 
     private var favoriteCount: Int {
-        let items = LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations)
+        let items = LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations).filter { !store.hiddenLibraryKeys.contains($0.favoriteKey) }
         return items.lazy.filter { store.favoriteKeys.contains($0.favoriteKey) }.count
     }
 }

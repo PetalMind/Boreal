@@ -543,6 +543,7 @@ struct LibraryView: View {
     @AppStorage("developerMode") private var developerMode = false
     @State private var removeCandidate: WindowsApplication?
     @State private var uninstallCandidate: StoreLibraryGame?
+    @State private var libraryRemovalCandidate: LibraryItem?
     @State private var coverEditorState: LibraryCoverEditorState?
     @State private var projectedLibrary = LibraryProjectionCache()
 
@@ -550,7 +551,8 @@ struct LibraryView: View {
         projectedLibrary.items(
             applications: store.applications,
             storeGames: store.storeGames,
-            installations: store.installations
+            installations: store.installations,
+            hiddenKeys: store.hiddenLibraryKeys
         )
     }
 
@@ -647,6 +649,18 @@ struct LibraryView: View {
             }
             Button(.Library.cancel, role: .cancel) { removeCandidate = nil }
         } message: { Text(.Library.removeApplicationMessage) }
+        .confirmationDialog(
+            Text(.Library.removeFromLibraryTitle(libraryRemovalCandidate?.name ?? "game")),
+            isPresented: Binding(get: { libraryRemovalCandidate != nil }, set: { if !$0 { libraryRemovalCandidate = nil } })
+        ) {
+            Button(.Library.removeFromLibrary, role: .destructive) {
+                if let item = libraryRemovalCandidate { store.removeFromLibrary(key: item.favoriteKey) }
+                libraryRemovalCandidate = nil
+            }
+            Button(.Library.cancel, role: .cancel) { libraryRemovalCandidate = nil }
+        } message: {
+            Text(.Library.removeFromLibraryMessage)
+        }
         .confirmationDialog(
             Text(.Library.uninstallGame(uninstallCandidate?.name ?? "game")),
             isPresented: Binding(get: { uninstallCandidate != nil }, set: { if !$0 { uninstallCandidate = nil } })
@@ -1395,6 +1409,10 @@ struct LibraryView: View {
             appContextMenu(app)
             Divider()
             customArtworkMenu(for: item)
+            Divider()
+            Button(.Library.removeFromLibrary, systemImage: "rectangle.badge.minus", role: .destructive) {
+                libraryRemovalCandidate = item
+            }
         case .storeGame:
             if item.readyToPlay || item.running {
                 Button(quickActionTitle(item), systemImage: quickActionSymbol(item)) { quickAction(item) }
@@ -1403,6 +1421,10 @@ struct LibraryView: View {
             Button(.Library.showDetails, systemImage: "info.circle") { select(item) }
             Divider()
             customArtworkMenu(for: item)
+            Divider()
+            Button(.Library.removeFromLibrary, systemImage: "rectangle.badge.minus", role: .destructive) {
+                libraryRemovalCandidate = item
+            }
             if case .storeGame(let game) = item.kind,
                store.isInstalled(game),
                [.epic, .gog].contains(game.provider) {
@@ -1999,18 +2021,22 @@ private final class LibraryProjectionCache {
     private var applications: [WindowsApplication] = []
     private var storeGames: [StoreLibraryGame] = []
     private var installations: [GameInstallation] = []
+    private var hiddenKeys: Set<String> = []
     private var cachedItems: [LibraryItem] = []
 
     func items(
         applications: [WindowsApplication],
         storeGames: [StoreLibraryGame],
-        installations: [GameInstallation]
+        installations: [GameInstallation],
+        hiddenKeys: Set<String>
     ) -> [LibraryItem] {
-        guard applications != self.applications || storeGames != self.storeGames || installations != self.installations else { return cachedItems }
+        guard applications != self.applications || storeGames != self.storeGames || installations != self.installations || hiddenKeys != self.hiddenKeys else { return cachedItems }
         self.applications = applications
         self.storeGames = storeGames
         self.installations = installations
+        self.hiddenKeys = hiddenKeys
         cachedItems = LibraryProjector.makeItems(applications: applications, storeGames: storeGames, installations: installations)
+            .filter { !hiddenKeys.contains($0.favoriteKey) }
         return cachedItems
     }
 }

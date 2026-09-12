@@ -40,6 +40,7 @@ final class BorealStore {
         var favoriteKeys: [String]?
         var lastAutomaticLibraryRefreshAt: Date?
         var runtimeDisplayNameOverrides: [String: String]?
+        var hiddenLibraryKeys: [String]?
     }
 
     var applications: [WindowsApplication] = []
@@ -54,6 +55,7 @@ final class BorealStore {
     /// than persisted as part of catalog metadata.
     private(set) var executionStates: [UUID: ExecutionState] = [:]
     private(set) var favoriteKeys: Set<String> = []
+    private(set) var hiddenLibraryKeys: Set<String> = []
     var librarySyncState: LibrarySyncState = .idle
     /// Each provider owns its own synchronization lifecycle. The legacy
     /// `librarySyncState` remains as an aggregate for existing UI callers.
@@ -1305,6 +1307,12 @@ final class BorealStore {
         save()
     }
 
+    func removeFromLibrary(key: String) {
+        hiddenLibraryKeys.insert(key)
+        favoriteKeys.remove(key)
+        save()
+    }
+
     func setCustomArtwork(from sourceURL: URL, for applicationID: UUID) {
         do {
             let data = try Data(contentsOf: sourceURL)
@@ -1835,7 +1843,12 @@ final class BorealStore {
 
     func runtimeCompatibilityIssue(for application: WindowsApplication, engine: RuntimeEngine) -> String? {
         if let required = GameRuntimeProfiles.requiredEngine(for: application), engine != required {
-            return "This game requires GPTK with D3DMetal for Direct3D 11. Boreal prepares its Unity IL2CPP compatibility files automatically."
+            switch required {
+            case .gamePortingToolkit:
+                return "This game requires GPTK with D3DMetal for Direct3D 11. Boreal prepares its Unity IL2CPP compatibility files automatically."
+            case .wine:
+                return "This game requires the Wine runtime with the WineD3D/OpenGL compatibility path."
+            }
         }
         guard engine == .gamePortingToolkit,
               WindowsExecutableArchitecture.inspect(URL(fileURLWithPath: application.executablePath)) == .x86 else { return nil }
@@ -1874,7 +1887,7 @@ final class BorealStore {
            }) {
             profile.prefixMode = managed.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         }
-        return profile
+        return GameGraphicsProfiles.effectiveCompatibilityProfile(profile, for: application)
     }
 
     func runtimeEngine(for application: WindowsApplication) -> RuntimeEngine? {
@@ -4421,7 +4434,10 @@ final class BorealStore {
             var replacement: ManagedBorealEnvironment?
             do {
                 updateEnvironmentPreparation("Validating \(engine.displayName)…", fraction: 0.1, key: key, token: token)
-                let compatibilityProfile = applications[appIndex].resolvedCompatibilityProfile
+                let compatibilityProfile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+                    applications[appIndex].resolvedCompatibilityProfile,
+                    for: applications[appIndex]
+                )
                 let currentArchitecture = WindowsExecutableArchitecture.inspect(currentExecutable)
                 let runtime = try await prepareRuntime(
                     supporting: compatibilityProfile.graphicsBackend,
@@ -4434,7 +4450,7 @@ final class BorealStore {
                 try Task.checkCancellation()
                 updateEnvironmentPreparation("Creating a new isolated prefix…", fraction: 0.3, key: key, token: token)
                 var managed = try await services.environmentManager.create(
-                    configuration: EnvironmentConfiguration(name: game.name, profile: applications[appIndex].resolvedCompatibilityProfile),
+                    configuration: EnvironmentConfiguration(name: game.name, profile: compatibilityProfile),
                     runtime: runtime
                 )
                 replacement = managed
@@ -4711,6 +4727,7 @@ final class BorealStore {
                 + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
             storeDownloadRecords = layered.storeDownloads
             favoriteKeys = layered.favoriteKeys
+            hiddenLibraryKeys = layered.hiddenLibraryKeys
             lastAutomaticLibraryRefreshAt = layered.lastAutomaticLibraryRefreshAt
             runtimeDisplayNameOverrides = layered.runtimeDisplayNameOverrides
             recoverInterruptedDownloads()
@@ -4741,6 +4758,7 @@ final class BorealStore {
             + GOGReleaseNormalizer.deduplicate(persistedGames.filter { $0.provider == .gog })
         storeDownloadRecords = state.storeDownloads ?? [:]
         favoriteKeys = Set(state.favoriteKeys ?? [])
+        hiddenLibraryKeys = Set(state.hiddenLibraryKeys ?? [])
         lastAutomaticLibraryRefreshAt = state.lastAutomaticLibraryRefreshAt
         runtimeDisplayNameOverrides = state.runtimeDisplayNameOverrides ?? [:]
         migrateStoreOperationMetadata()
@@ -5495,11 +5513,16 @@ final class BorealStore {
             }
         }
         advancedConfigurations[id] = await services.advancedConfigurationStore.configuration(for: id)
+        let effectiveApplicationProfile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            applications[index].resolvedCompatibilityProfile,
+            for: applications[index]
+        )
         if let requiredEngine = GameRuntimeProfiles.requiredEngine(for: applications[index]),
            let environmentRecord = environment(id: applications[index].environmentID),
            let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }),
-           runtime.resolvedEngine != requiredEngine {
-            let previousProfile = applications[index].resolvedCompatibilityProfile
+           runtime.resolvedEngine != requiredEngine
+                || (effectiveApplicationProfile.prefixMode == .wow64 && runtime.features?.supportsWoW64 != true) {
+            let previousProfile = effectiveApplicationProfile
             var compatibleProfile = previousProfile
             compatibleProfile.graphicsBackend = requiredEngine == .gamePortingToolkit ? .d3dMetal : .automatic
             applications[index].compatibilityProfile = compatibleProfile
@@ -6305,6 +6328,7 @@ final class BorealStore {
                 lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
                 layout: storageLayout,
                 runtimeDisplayNameOverrides: runtimeDisplayNameOverrides,
+                hiddenLibraryKeys: hiddenLibraryKeys,
                 installations: installations
             )
             Task { [weak self, libraryRepository] in
@@ -6327,7 +6351,8 @@ final class BorealStore {
                 storeDownloads: storeDownloadRecords,
                 favoriteKeys: Array(favoriteKeys).sorted(),
                 lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,
-                runtimeDisplayNameOverrides: runtimeDisplayNameOverrides.isEmpty ? nil : runtimeDisplayNameOverrides
+                runtimeDisplayNameOverrides: runtimeDisplayNameOverrides.isEmpty ? nil : runtimeDisplayNameOverrides,
+                hiddenLibraryKeys: hiddenLibraryKeys.isEmpty ? nil : Array(hiddenLibraryKeys).sorted()
             ))
             try data.write(to: storageURL, options: .atomic)
         } catch {
