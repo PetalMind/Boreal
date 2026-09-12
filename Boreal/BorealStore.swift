@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -115,6 +116,8 @@ final class BorealStore {
     private var environmentMonitorIDs: [UUID: UUID] = [:]
     private var activePlaySessions: [UUID: ActivePlaySession] = [:]
     private var advancedConfigurations: [UUID: GameAdvancedConfiguration] = [:]
+    private(set) var cloudSaveStatuses: [StoreReference: CloudSaveStatus] = [:]
+    private var cloudSaveTasks: [StoreReference: Task<Void, Never>] = [:]
     /// Long-running reliability operations are keyed by their trace instead
     /// of sharing the older global loading flags used by store downloads.
     private(set) var operationStates: [OperationTraceID: BorealOperationState] = [:]
@@ -516,6 +519,208 @@ final class BorealStore {
         advancedConfigurations[configuration.applicationID] = configuration
     }
 
+    func cloudSaveStatus(for game: StoreLibraryGame) -> CloudSaveStatus {
+        cloudSaveStatuses[game.storeReference] ?? .unknown
+    }
+
+    func cloudSaveStatus(for application: WindowsApplication) -> CloudSaveStatus {
+        guard let provider = application.storeProvider,
+              let externalID = application.storeExternalID,
+              let game = storeGames.first(where: { $0.provider == provider && $0.externalID == externalID }) else {
+            return .unknown
+        }
+        return cloudSaveStatus(for: game)
+    }
+
+    func refreshCloudSaveStatus(for game: StoreLibraryGame) {
+        guard game.provider == .gog else { return }
+        let key = game.storeReference
+        guard cloudSaveTasks[key] == nil else { return }
+        var status = cloudSaveStatuses[key] ?? .unknown
+        status.state = .checking
+        cloudSaveStatuses[key] = status
+        cloudSaveTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            defer { cloudSaveTasks[key] = nil }
+            do {
+                guard let request = await makeCloudSaveRequest(for: game, requireLocalDirectory: false) else {
+                    var value = CloudSaveStatus.unknown
+                    value.state = .needsConfiguration
+                    cloudSaveStatuses[key] = value
+                    return
+                }
+                let value = try await services.cloudSaveCoordinator.inspect(request)
+                cloudSaveStatuses[key] = value
+            } catch {
+                var value = cloudSaveStatuses[key] ?? .unknown
+                value.state = .failed(SecretRedactor.redact(error.localizedDescription))
+                cloudSaveStatuses[key] = value
+            }
+        }
+    }
+
+    func updateCloudSavePath(for applicationID: UUID, windowsPath: String?) async throws {
+        guard let application = application(id: applicationID),
+              let environmentRecord = environment(id: application.environmentID),
+              let prefixPath = environmentRecord.prefixPath else {
+            throw CloudSaveError.invalidConfiguration
+        }
+        let value = windowsPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value, !value.isEmpty {
+            guard CloudSavePathResolver.resolveWindowsPath(
+                value,
+                prefixURL: URL(fileURLWithPath: prefixPath, isDirectory: true)
+            ) != nil else {
+                throw CloudSaveError.invalidConfiguration
+            }
+        }
+        var configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
+        configuration.cloudSaveWindowsPath = value?.isEmpty == false ? CloudSavePathResolver.normalizedWindowsPath(value!) : nil
+        configuration.updatedAt = .now
+        try await updateAdvancedConfiguration(configuration)
+        if let game = application.storeReference.flatMap({ reference in
+            storeGames.first { $0.storeReference == reference }
+        }) {
+            cloudSaveStatuses[game.storeReference] = .unknown
+            refreshCloudSaveStatus(for: game)
+        }
+    }
+
+    func setAutomaticCloudSaveSync(_ enabled: Bool, for applicationID: UUID) async throws {
+        var configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
+        configuration.automaticCloudSaveSync = enabled
+        configuration.updatedAt = .now
+        try await updateAdvancedConfiguration(configuration)
+    }
+
+    func syncCloudSaves(for game: StoreLibraryGame, direction: CloudSaveSyncDirection = .automatic) {
+        guard game.provider == .gog else { return }
+        let key = game.storeReference
+        guard cloudSaveTasks[key] == nil else { return }
+        var status = cloudSaveStatuses[key] ?? .unknown
+        status.state = .syncing
+        cloudSaveStatuses[key] = status
+        cloudSaveTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            defer { cloudSaveTasks[key] = nil }
+            do {
+                guard let request = await makeCloudSaveRequest(for: game, requireLocalDirectory: true),
+                      let localDirectory = request.localDirectory else {
+                    var value = cloudSaveStatuses[key] ?? .unknown
+                    value.state = .needsConfiguration
+                    cloudSaveStatuses[key] = value
+                    return
+                }
+                try await backupBeforeCloudSaveSync(applicationID: request.applicationID, localDirectory: localDirectory)
+                let result = try await services.cloudSaveCoordinator.sync(request, direction: direction)
+                cloudSaveStatuses[key] = result.status
+            } catch {
+                cloudSaveStatuses[key] = cloudSaveFailureStatus(
+                    error: error,
+                    existing: cloudSaveStatuses[key]
+                )
+            }
+        }
+    }
+
+    func openCloudSaveFolder(for game: StoreLibraryGame) {
+        guard let url = cloudSaveStatuses[game.storeReference]?.resolvedURL else { return }
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+
+    private func makeCloudSaveRequest(
+        for game: StoreLibraryGame,
+        requireLocalDirectory: Bool
+    ) async -> CloudSaveRequest? {
+        guard game.provider == .gog,
+              let application = linkedApplication(for: game),
+              let environmentRecord = environment(id: application.environmentID),
+              let prefixPath = environmentRecord.prefixPath,
+              let installation = installation(for: game),
+              installation.platform == .windows else { return nil }
+        let configuration = await services.advancedConfigurationStore.configuration(for: application.id)
+        let prefixURL = URL(fileURLWithPath: prefixPath, isDirectory: true)
+        let resolution = await Task.detached(priority: .utility) {
+            CloudSavePathResolver.resolve(
+                configuredWindowsPath: configuration.cloudSaveWindowsPath,
+                previouslyDetectedWindowsPath: configuration.detectedCloudSaveWindowsPath,
+                gameName: game.name,
+                prefixURL: prefixURL
+            )
+        }.value
+        guard !requireLocalDirectory || resolution != nil else { return nil }
+        if let resolution,
+           resolution.source == .detected,
+           configuration.detectedCloudSaveWindowsPath != resolution.windowsPath {
+            var updatedConfiguration = configuration
+            updatedConfiguration.detectedCloudSaveWindowsPath = resolution.windowsPath
+            updatedConfiguration.updatedAt = .now
+            try? await updateAdvancedConfiguration(updatedConfiguration)
+        }
+        return CloudSaveRequest(
+            applicationID: application.id,
+            game: game,
+            localDirectory: resolution?.resolvedURL,
+            path: resolution,
+            namespace: CloudSaveDefaults.namespace
+        )
+    }
+
+    private func backupBeforeCloudSaveSync(applicationID: UUID, localDirectory: URL) async throws {
+        do {
+            _ = try await createSaveBackup(
+                for: applicationID,
+                trigger: .beforeCloudSaveSync,
+                additionalLocations: [localDirectory]
+            )
+        } catch let error as SaveManagerError {
+            if case .noSaveData = error { return }
+            throw error
+        }
+    }
+
+    private func syncCloudSavesBeforeLaunch(for game: StoreLibraryGame) async throws {
+        let application = linkedApplication(for: game)
+        guard let application else { return }
+        let configuration = await services.advancedConfigurationStore.configuration(for: application.id)
+        guard configuration.automaticCloudSaveSync else { return }
+        guard let request = await makeCloudSaveRequest(for: game, requireLocalDirectory: false),
+              let localDirectory = request.localDirectory else { return }
+        let key = game.storeReference
+        var status = cloudSaveStatuses[key] ?? .unknown
+        status.state = .syncing
+        cloudSaveStatuses[key] = status
+        do {
+            try await backupBeforeCloudSaveSync(applicationID: application.id, localDirectory: localDirectory)
+            let result = try await services.cloudSaveCoordinator.sync(request, direction: .automatic)
+            cloudSaveStatuses[key] = result.status
+        } catch {
+            cloudSaveStatuses[key] = cloudSaveFailureStatus(error: error, existing: cloudSaveStatuses[key])
+            throw error
+        }
+    }
+
+    private func cloudSaveFailureStatus(
+        error: Error,
+        existing: CloudSaveStatus?
+    ) -> CloudSaveStatus {
+        var value = existing ?? .unknown
+        if case let CloudSaveError.conflict(local, cloud) = error {
+            value.state = .conflict
+            value.local = local
+            value.cloud = cloud
+        } else if case CloudSaveError.invalidConfiguration = error {
+            value.state = .needsConfiguration
+        } else {
+            value.state = .failed(SecretRedactor.redact(error.localizedDescription))
+        }
+        if value.windowsPath == nil {
+            value.windowsPath = existing?.windowsPath
+        }
+        return value
+    }
+
     func detectedSaveLocations(for applicationID: UUID) async -> [GameSaveLocation] {
         guard let application = application(id: applicationID) else { return [] }
         let executableURL = URL(fileURLWithPath: application.executablePath).standardizedFileURL
@@ -544,7 +749,11 @@ final class BorealStore {
         _ = try await services.gameSaveManager.prune(applicationID: applicationID, policy: policy)
     }
 
-    func createSaveBackup(for applicationID: UUID, trigger: SaveBackupTrigger = .manual) async throws -> GameSaveBackup {
+    func createSaveBackup(
+        for applicationID: UUID,
+        trigger: SaveBackupTrigger = .manual,
+        additionalLocations: [URL] = []
+    ) async throws -> GameSaveBackup {
         guard let application = application(id: applicationID) else { throw SaveManagerError.noSaveData }
         let executableURL = URL(fileURLWithPath: application.executablePath).standardizedFileURL
         let installationURL = storeGames.first(where: { $0.storeReference == application.storeReference })
@@ -552,11 +761,15 @@ final class BorealStore {
             ?? executableURL.deletingLastPathComponent()
         let environmentURL = environment(id: application.environmentID)?.prefixPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let locations = await detectedSaveLocations(for: applicationID)
-        let absoluteLocations = locations.compactMap { location -> URL? in
+        let detectedAbsoluteLocations = locations.compactMap { location -> URL? in
             if let environmentURL, location.relativePath.lowercased().hasPrefix("drive_c/") {
                 return environmentURL.appending(path: location.relativePath, directoryHint: .isDirectory)
             }
             return installationURL.appending(path: location.relativePath, directoryHint: .isDirectory)
+        }
+        var seenLocations = Set<String>()
+        let absoluteLocations = (detectedAbsoluteLocations + additionalLocations).filter {
+            seenLocations.insert($0.standardizedFileURL.path).inserted
         }
         let trace = OperationTraceID()
         operationStates[trace] = BorealOperationState(id: trace, kind: .creatingSaveBackup, progress: 0, phase: "Backing up detected save locations")
@@ -1872,6 +2085,9 @@ final class BorealStore {
                 if builtIn.enforcedBackend == nil, let preferredBackend = builtIn.preferredBackend {
                     profile.graphicsBackend = preferredBackend
                 }
+                if let preferredLegacyWrapper = builtIn.preferredLegacyWrapper {
+                    profile.legacyWrapper = preferredLegacyWrapper
+                }
                 if let overlayCompatibleFullscreen = builtIn.overlayCompatibleFullscreen {
                     profile.overlayCompatibleFullscreen = overlayCompatibleFullscreen
                 }
@@ -2063,11 +2279,17 @@ final class BorealStore {
             requestedProfile,
             for: applications[index]
         )
-        if let features = compatibilityRuntimeFeatures(for: applications[index], backend: profile.graphicsBackend) {
+                if let features = compatibilityRuntimeFeatures(for: applications[index], backend: profile.graphicsBackend) {
             if !features.esync { profile.esyncEnabled = false }
             if !features.msync { profile.msyncEnabled = false }
             if !features.wineBusControllerMapping { profile.forceXInput = false }
-            if !features.dgVoodoo2 { profile.legacyWrapper = .none }
+            if !features.dd7to9, profile.legacyWrapper == .dd7to9,
+               GameGraphicsProfiles.profile(for: applications[index])?.enforcedLegacyWrapper != .some(.dd7to9) {
+                profile.legacyWrapper = .none
+            }
+            if !features.dgVoodoo2, profile.legacyWrapper == .dgVoodoo2 {
+                profile.legacyWrapper = .none
+            }
         }
         if profile.temporalUpscaling.mode == .metalFXBridge {
             profile.upscalingBridge = .ngxToMetalFX
@@ -5656,6 +5878,11 @@ final class BorealStore {
                 runtime: runtime
             )
             managed = try await services.environmentManager.configure(managed, runtime: runtime)
+            if applications[index].storeProvider == .gog,
+               let appID = applications[index].storeExternalID,
+               let storedGame = storeGames.first(where: { $0.provider == .gog && $0.externalID == appID }) {
+                try await syncCloudSavesBeforeLaunch(for: canonicalStoreGame(storedGame))
+            }
             applications[index].status = .starting
             let session: WindowsProcessSession
             if !usesExistingExecutable,
@@ -6166,6 +6393,7 @@ final class BorealStore {
 
     private func markEnvironmentEnded(appID: UUID, environmentSessionEnded: Bool = true) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+        let shouldUploadCloudSaves = applications[index].storeProvider == .gog && !applications[index].isInstallerOnly
         stopPerformanceProcessTracking(for: appID)
         endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
@@ -6197,6 +6425,7 @@ final class BorealStore {
         ControllerManager.shared.deactivate(for: appID)
         environmentMonitorIDs[appID] = nil
         save()
+        if shouldUploadCloudSaves { scheduleCloudSaveUpload(appID: appID) }
         if shouldRetryWithWineD3D {
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(350))
@@ -6204,6 +6433,22 @@ final class BorealStore {
                       self.applications.first(where: { $0.id == appID })?.status == .ready else { return }
                 await self.toggleRunningAsync(appID)
             }
+        }
+    }
+
+    private func scheduleCloudSaveUpload(appID: UUID) {
+        guard let application = application(id: appID),
+              let provider = application.storeProvider,
+              provider == .gog,
+              let externalID = application.storeExternalID,
+              let game = storeGames.first(where: { $0.provider == provider && $0.externalID == externalID }) else { return }
+        let pendingTask = cloudSaveTasks[game.storeReference]
+        Task { [weak self] in
+            guard let self else { return }
+            if let pendingTask { await pendingTask.value }
+            let configuration = await services.advancedConfigurationStore.configuration(for: appID)
+            guard configuration.automaticCloudSaveSync else { return }
+            syncCloudSaves(for: game, direction: .automatic)
         }
     }
 
@@ -6803,6 +7048,54 @@ final class BorealStore {
                     error,
                     title: "\(backend.displayName) couldn’t be installed",
                     stage: "Finding and installing the latest official graphics component"
+                )
+            }
+        }
+    }
+
+    func installLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        from source: URL,
+        into runtimeID: String
+    ) {
+        guard runtimeOperationDetail == nil else { return }
+        runtimeOperationDetail = "Validating and installing \(wrapper.displayName)…"
+        Task {
+            let hasSecurityScope = source.startAccessingSecurityScopedResource()
+            defer { if hasSecurityScope { source.stopAccessingSecurityScopedResource() } }
+            do {
+                _ = try await services.runtimeManager.installLegacyWrapper(wrapper, from: source, into: runtimeID)
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: "\(wrapper.displayName) couldn’t be installed",
+                    stage: "Validating and adding the legacy graphics wrapper component"
+                )
+            }
+        }
+    }
+
+    func downloadLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        into runtimeID: String
+    ) {
+        guard runtimeOperationDetail == nil else { return }
+        runtimeOperationDetail = "Finding the latest official \(wrapper.displayName) release…"
+        Task {
+            do {
+                runtimeOperationDetail = "Downloading, verifying, and installing \(wrapper.displayName)…"
+                _ = try await services.runtimeManager.downloadAndInstallLegacyWrapper(wrapper, into: runtimeID)
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+            } catch {
+                runtimeOperationDetail = nil
+                present(
+                    error,
+                    title: "\(wrapper.displayName) couldn’t be installed",
+                    stage: "Finding and installing the official legacy graphics wrapper"
                 )
             }
         }

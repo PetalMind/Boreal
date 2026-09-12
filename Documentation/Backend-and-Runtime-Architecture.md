@@ -642,7 +642,7 @@ RendererLaunchFailureDetector wymaga zarówno wskazówki Direct3D/Vulkan/DXVK/Mo
 ~~~text
 graphicsBackend = wineD3D
 graphicsFallback = wineD3DVulkan
-WINED3D_RENDERER=vulkan
+WINE_D3D_CONFIG=renderer=vulkan
 WINEDLLOVERRIDES=<relevant DLL>=b
 ~~~
 

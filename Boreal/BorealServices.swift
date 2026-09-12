@@ -23,6 +23,7 @@ nonisolated struct BorealServices: Sendable {
     let launchFailureAnalyzer: LaunchFailureAnalyzer
     let environmentSnapshotManager: EnvironmentSnapshotManager
     let gameSaveManager: GameSaveManager
+    let cloudSaveCoordinator: CloudSaveCoordinator
     let advancedConfigurationStore: GameAdvancedConfigurationStore
     let storageAnalyzer: StorageAnalyzer
     let shaderCacheManager: any ShaderCacheManaging
@@ -57,6 +58,7 @@ nonisolated struct BorealServices: Sendable {
         launchFailureAnalyzer: LaunchFailureAnalyzer = LaunchFailureAnalyzer(),
         environmentSnapshotManager: EnvironmentSnapshotManager? = nil,
         gameSaveManager: GameSaveManager? = nil,
+        cloudSaveCoordinator: CloudSaveCoordinator? = nil,
         advancedConfigurationStore: GameAdvancedConfigurationStore? = nil,
         storageAnalyzer: StorageAnalyzer = StorageAnalyzer(),
         shaderCacheManager: any ShaderCacheManaging = FileSystemShaderCacheManager(),
@@ -95,6 +97,11 @@ nonisolated struct BorealServices: Sendable {
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appending(path: "Boreal")
         self.environmentSnapshotManager = environmentSnapshotManager ?? EnvironmentSnapshotManager(applicationSupportURL: supportURL)
         self.gameSaveManager = gameSaveManager ?? GameSaveManager(applicationSupportURL: supportURL)
+        let cloudSaveProvider = (gogLibrary as? any GOGCloudAuthorizing).map {
+            GOGCloudSaveProvider(authorizer: $0)
+        }
+        self.cloudSaveCoordinator = cloudSaveCoordinator
+            ?? CloudSaveCoordinator(applicationSupportURL: supportURL, provider: cloudSaveProvider)
         self.advancedConfigurationStore = advancedConfigurationStore ?? GameAdvancedConfigurationStore(applicationSupportURL: supportURL)
         self.storageAnalyzer = storageAnalyzer
         self.shaderCacheManager = shaderCacheManager

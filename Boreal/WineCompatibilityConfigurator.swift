@@ -397,13 +397,21 @@ struct WineCompatibilityConfigurator: View {
             DisclosureGroup("Legacy compatibility") {
                 VStack(spacing: 10) {
                     CompatibilityPickerRow(title: "Compatibility fix", detail: nil) {
-                        Picker("Compatibility fix", selection: $profile.legacyWrapper) { ForEach(LegacyGraphicsWrapper.allCases) { Text(compatibilityLocalizedLegacyWrapperName($0)).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment || runtimeFeatures?.dgVoodoo2 != true)
+                        Picker("Compatibility fix", selection: $profile.legacyWrapper) {
+                            ForEach(LegacyGraphicsWrapper.allCases) { wrapper in
+                                Text(compatibilityLocalizedLegacyWrapperName(wrapper))
+                                    .tag(wrapper)
+                                    .disabled(wrapper != .none && !legacyWrapperAvailable(wrapper))
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(usesSharedSteamEnvironment)
                     }
-                    if runtimeFeatures?.dgVoodoo2 != true {
-                        CompatibilityCallout(text: String(localized: "dgVoodoo2 is unavailable because the selected runtime does not contain a valid component package."), symbol: "exclamationmark.triangle.fill", tint: .orange)
+                    if let legacyWrapperAvailabilityMessage {
+                        CompatibilityCallout(text: legacyWrapperAvailabilityMessage, symbol: "exclamationmark.triangle.fill", tint: .orange)
                     }
-                    if profile.legacyWrapper == .dgVoodoo2 {
-                        CompatibilityPickerRow(title: "Older graphics API", detail: String(localized: "Uses dgVoodoo2 for the selected graphics API. Requires a runtime that includes dgVoodoo2.")) {
+                    if profile.legacyWrapper != .none {
+                        CompatibilityPickerRow(title: "Older graphics API", detail: legacyWrapperDetail) {
                             Picker("Older graphics API", selection: $profile.legacyGraphicsAPI) { ForEach(LegacyGraphicsAPI.allCases) { Text($0.displayName).tag($0) } }.labelsHidden()
                         }
                     } else {
@@ -571,6 +579,7 @@ struct WineCompatibilityConfigurator: View {
         guard let graphicsProfile else { return value }
         value.graphicsAPI = graphicsProfile.defaultAPI
         if let backend = graphicsProfile.preferredBackend { value.graphicsBackend = backend }
+        if let wrapper = graphicsProfile.preferredLegacyWrapper { value.legacyWrapper = wrapper }
         if let overlay = graphicsProfile.overlayCompatibleFullscreen { value.overlayCompatibleFullscreen = overlay }
         return value
     }
@@ -622,6 +631,28 @@ struct WineCompatibilityConfigurator: View {
             return selected.features
         }
         return store.compatibilityRuntimeFeatures(for: application, backend: profile.graphicsBackend)
+    }
+    private func legacyWrapperAvailable(_ wrapper: LegacyGraphicsWrapper) -> Bool {
+        switch wrapper {
+        case .none: true
+        case .dd7to9: runtimeFeatures?.dd7to9 == true
+        case .dgVoodoo2: runtimeFeatures?.dgVoodoo2 == true
+        }
+    }
+    private var legacyWrapperAvailabilityMessage: String? {
+        guard profile.legacyWrapper != .none, !legacyWrapperAvailable(profile.legacyWrapper) else { return nil }
+        return switch profile.legacyWrapper {
+        case .none: nil
+        case .dd7to9: String(localized: "Dd7to9 is unavailable because the selected runtime has no verified Dd7to9 component. Install it from Settings → Runtime.")
+        case .dgVoodoo2: String(localized: "dgVoodoo2 is unavailable because the selected runtime has no verified component package.")
+        }
+    }
+    private var legacyWrapperDetail: String {
+        switch profile.legacyWrapper {
+        case .none: ""
+        case .dd7to9: String(localized: "Uses Dd7to9 to convert DirectDraw / Direct3D 1–7 calls to D3D9. Requires the verified Dd7to9 component and a D3D9-capable backend.")
+        case .dgVoodoo2: String(localized: "Uses dgVoodoo2 for the selected graphics API. Requires a runtime that includes dgVoodoo2.")
+        }
     }
     private var fullscreenFSRCapabilities: FullscreenFSRCapabilities {
         runtimeFeatures?.fullscreenFSRCapabilities

@@ -217,7 +217,35 @@ nonisolated enum GameGraphicsProfiles {
             preferredBackend: .wineD3D,
             enforcedBackend: .wineD3D,
             overlayCompatibleFullscreen: false,
-            launchEnvironment: ["WINED3D_RENDERER": "gl"]
+            launchEnvironment: ["WINE_D3D_CONFIG": "renderer=gl"]
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1207658688",
+            availableAPIs: [.directX9],
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. Its native
+            // WineD3D path spends most of its frame time in the legacy
+            // frontbuffer/GDI bridge. Dd7to9 keeps the game's old API while
+            // handing the actual device creation to D3D9 and DXVK.
+            preferredBackend: .dxvk,
+            enforcedBackend: .dxvk,
+            enforcedAPI: .directX9,
+            preferredLegacyWrapper: .dd7to9,
+            enforcedLegacyWrapper: .dd7to9,
+            enforcedLegacyGraphicsAPI: .directDraw,
+            overlayCompatibleFullscreen: false,
+            legacyWrapperSettings: [
+                // Sacred creates a 1024x768 window but Dd7to9 otherwise asks
+                // D3D9 for the host display mode. On ultrawide/high-resolution
+                // displays that device creation fails with D3DERR_NOTAVAILABLE.
+                "DdrawOverrideWidth": "1024",
+                "DdrawOverrideHeight": "768",
+                "DdrawLimitDisplayModeCount": "1"
+            ]
         )
     ]
 
@@ -236,14 +264,21 @@ nonisolated enum GameGraphicsProfiles {
         for application: WindowsApplication
     ) -> WineCompatibilityProfile {
         var effective = currentProfile
-        if let builtIn = profile(for: application),
-           builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil {
-            effective.graphicsAPI = builtIn.defaultAPI
+        if let builtIn = profile(for: application) {
+            if builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil {
+                effective.graphicsAPI = builtIn.defaultAPI
+            }
             if let enforcedAPI = builtIn.enforcedAPI {
                 effective.graphicsAPI = enforcedAPI
             }
             if let enforcedBackend = builtIn.enforcedBackend {
                 effective.graphicsBackend = enforcedBackend
+            }
+            if let enforcedLegacyWrapper = builtIn.enforcedLegacyWrapper {
+                effective.legacyWrapper = enforcedLegacyWrapper
+            }
+            if let enforcedLegacyGraphicsAPI = builtIn.enforcedLegacyGraphicsAPI {
+                effective.legacyGraphicsAPI = enforcedLegacyGraphicsAPI
             }
         }
         if GameRuntimeProfiles.requiredEngine(for: application) == .gamePortingToolkit,

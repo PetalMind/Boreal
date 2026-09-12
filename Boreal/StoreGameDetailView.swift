@@ -457,6 +457,9 @@ struct StoreGameDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 libraryOverview(width: width)
+                if currentGame.provider == .gog {
+                    CloudSaveCard(game: currentGame)
+                }
                 if currentGame.supportsNativeMacOS != true { compatibilityOverview(width: width) }
                 mediaSection(width: width)
                 overviewEditorialGrid(width: width)
@@ -932,14 +935,46 @@ struct StoreGameDetailView: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
                 primaryLaunchAction
+                cloudSaveCompactStatus
                 secondaryHeroActions
             }.fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: 10) {
                 primaryLaunchAction
+                cloudSaveCompactStatus
                 secondaryHeroActions
             }
         }
         .tint(.blue)
+    }
+
+    @ViewBuilder private var cloudSaveCompactStatus: some View {
+        if discoveryGame == nil, currentGame.provider == .gog, linkedApplication != nil {
+            switch store.cloudSaveStatus(for: currentGame).state {
+            case .synced:
+                Label("Synced", systemImage: "icloud.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.green.opacity(0.12), in: Capsule())
+            case .syncing:
+                Label("Syncing…", systemImage: "icloud.and.arrow.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.cyan.opacity(0.12), in: Capsule())
+            case .conflict:
+                Label("Conflict", systemImage: "exclamationmark.icloud")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.orange.opacity(0.12), in: Capsule())
+            case .unavailable, .needsConfiguration, .checking, .failed:
+                EmptyView()
+            }
+        }
     }
 
     @ViewBuilder private var primaryLaunchAction: some View {

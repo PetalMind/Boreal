@@ -347,10 +347,14 @@ struct DownloadsView: View {
                             Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
                             Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: runtime.id) }
                             Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
+                            Button("Install Dd7to9") { store.downloadLegacyWrapper(.dd7to9, into: runtime.id) }
+                            Button("Install dgVoodoo2") { store.downloadLegacyWrapper(.dgVoodoo2, into: runtime.id) }
                             Divider()
                             Menu("Advanced") {
                                 Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
                                 Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
+                                Button("Import Dd7to9 Package…") { selectLegacyWrapperPackage(.dd7to9, for: runtime) }
+                                Button("Import dgVoodoo2 Package…") { selectLegacyWrapperPackage(.dgVoodoo2, for: runtime) }
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -418,6 +422,21 @@ struct DownloadsView: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let source = panel.url else { return }
         store.installGraphicsComponent(backend, from: source, into: runtime.id)
+    }
+
+    private func selectLegacyWrapperPackage(_ wrapper: LegacyGraphicsWrapper, for runtime: RuntimeStatus) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Extracted \(wrapper.displayName) Package"
+        panel.message = wrapper == .dd7to9
+            ? "Choose the official dxwrapper ZIP or an extracted folder containing Stub/ddraw.dll, dxwrapper.dll and dxwrapper.ini."
+            : "Choose the official dgVoodoo2 ZIP or an extracted folder containing MS/x86 or MS/x64 DDraw/D3D8/D3D9 DLLs."
+        panel.prompt = "Install"
+        panel.allowedContentTypes = [.zip]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        store.installLegacyWrapper(wrapper, from: source, into: runtime.id)
     }
 
     private func localRuntimeRow(_ candidate: LocalRuntimeCandidate) -> some View {

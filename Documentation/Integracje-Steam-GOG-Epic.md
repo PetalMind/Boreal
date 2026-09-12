@@ -934,8 +934,9 @@ Ustawienia per gra, które mogą pozostać lokalne dla launchu, obejmują argume
 | Steam `1547000` | DirectX 12 i `-dx12` |
 | Steam `200710` | wymuszony WineD3D dla DirectX 9 |
 | GOG `1446463013` | DX11 wymaga `Darksiders2.wsl`; dostępny także DX9 |
-| GOG `1787707874` | wymuszony WineD3D z `WINED3D_RENDERER=gl` |
+| GOG `1787707874` | wymuszony WineD3D z `WINE_D3D_CONFIG=renderer=gl` |
 | GOG `1449651388` | Grim Dawn x64: wymuszony DX11 przez DXVK w wirtualnym pulpicie Boreal |
+| GOG `1207658688` | Sacred Gold: Dd7to9 dla DirectDraw/Direct3D 7, DirectX 9 przez DXVK, natywne okno |
 
 Dla Grim Dawn Boreal przed każdym uruchomieniem ustawia w pliku użytkownika
 `Documents/My Games/Grim Dawn/Settings/options.txt` wartość `screenMode = 1`
@@ -944,10 +945,27 @@ Dla Grim Dawn Boreal przed każdym uruchomieniem ustawia w pliku użytkownika
 
 `GOGService` ma także providerowy fallback dla znanych z kodu identyfikatorów:
 
-- GOG `1196955511` (Titan Quest): przy Wine wybiera `/dx9` i `WINED3D_RENDERER=vulkan` zamiast primary `/dx11`;
-- GOG `2022341186`: GPTK preferuje `-dx10`, a Wine `-dx9` i `WINED3D_RENDERER=vulkan`.
+- GOG `1196955511` (Titan Quest): przy Wine wybiera `/dx9` i `WINE_D3D_CONFIG=renderer=vulkan` zamiast primary `/dx11`;
+- GOG `2022341186`: GPTK preferuje `-dx10`, a Wine `-dx9` i `WINE_D3D_CONFIG=renderer=vulkan`.
 
 Te reguły są wyjątkami jawnie związanymi z ID. Nie wolno uogólniać ich na wszystkie gry GOG, Epic albo Steam.
+
+Sacred Gold korzysta z opcjonalnego komponentu `Dd7to9` instalowanego z oficjalnego
+wydania `elishacloud/dxwrapper`. Boreal pobiera i weryfikuje `dxwrapper.zip`, a
+następnie przechowuje wersjonowany snapshot poza runtime'em Wine. Przy uruchomieniu
+do katalogu gry trafiają tylko zarządzane `ddraw.dll`, `dxwrapper.dll` i
+`dxwrapper.ini`; plik INI jest aktywowany przez `Dd7to9 = 1`, a Wine dostaje
+`WINEDLLOVERRIDES=ddraw=n,b`. Brak komponentu lub obecny obcy `ddraw.dll` zatrzymuje
+launch z jawnym błędem zamiast nadpisywać pliki użytkownika.
+
+Opcjonalny komponent `dgVoodoo2` jest pobierany z oficjalnego repozytorium
+`dege-diosg/dgVoodoo2`. Boreal wybiera standardowy ZIP wydania, weryfikuje jego
+sumę SHA-256 i zapisuje wersjonowany snapshot poza runtime'em Wine. Dla gry
+32-bitowej dostępne są osobne wejścia `ddraw.dll`, `d3d8.dll` i `d3d9.dll`, a
+pakiet x64 udostępnia `d3d9.dll`; Boreal nie instaluje bibliotek ARM, `D3DImm`
+ani pliku `dgVoodoo.conf` automatycznie. Konfiguracja dgVoodoo2 pozostaje więc
+jawnie kontrolowana przez użytkownika, a do katalogu gry trafia tylko wybrane
+przez profil API DLL.
 
 ## 12. Aktualizacja, weryfikacja i odinstalowanie
 

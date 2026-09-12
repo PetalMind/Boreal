@@ -249,6 +249,76 @@ actor RuntimeManager: RuntimeManaging {
         )
     }
 
+    func downloadAndInstallLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        let repository: String
+        let releaseAsset: (GitHubRelease.Asset) -> Bool
+        switch wrapper {
+        case .dd7to9:
+            repository = "elishacloud/dxwrapper"
+            releaseAsset = { $0.name.caseInsensitiveCompare("dxwrapper.zip") == .orderedSame }
+        case .dgVoodoo2:
+            repository = "dege-diosg/dgVoodoo2"
+            releaseAsset = { asset in
+                let name = asset.name.lowercased()
+                return name.hasPrefix("dgvoodoo2_")
+                    && name.hasSuffix(".zip")
+                    && !name.contains("_dbg")
+                    && !name.contains("_dev")
+                    && !name.contains("api")
+                    && !name.contains("winmm")
+            }
+        case .none:
+            throw RuntimeManagerError.localRuntimeInvalid("Disabled legacy graphics wrappers cannot be downloaded.")
+        }
+        guard let releaseURL = URL(string: "https://api.github.com/repos/\(repository)/releases/latest") else {
+            throw RuntimeManagerError.invalidManifest
+        }
+        var request = URLRequest(url: releaseURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Boreal", forHTTPHeaderField: "User-Agent")
+        let (releaseData, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw RuntimeManagerError.downloadFailed("The official \(wrapper.displayName) release service is currently unavailable.")
+        }
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
+        guard let asset = release.assets.first(where: releaseAsset),
+              asset.browserDownloadURL.scheme == "https",
+              asset.browserDownloadURL.host == "github.com",
+              asset.size > 0,
+              asset.size <= 250 * 1_024 * 1_024,
+              let digest = verifiedDigest(asset.digest) else {
+            throw RuntimeManagerError.downloadFailed("The official \(wrapper.displayName) release does not contain a verified standard package artifact.")
+        }
+
+        try prepareDirectories()
+        let transactionRoot = componentStore.rootURL.appending(path: ".downloads/legacy-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let archive = transactionRoot.appending(path: asset.name)
+        let extracted = transactionRoot.appending(path: "package", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: extracted, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: transactionRoot) }
+        try await download(
+            RuntimeArtifact(url: asset.browserDownloadURL, sha256: digest, compressedSize: asset.size),
+            to: archive
+        )
+        let actual = try RuntimeSecurity.sha256(of: archive)
+        guard actual.caseInsensitiveCompare(digest) == .orderedSame else {
+            throw RuntimeManagerError.checksumMismatch(expected: digest, actual: actual)
+        }
+        try await extractGraphicsArchive(archive, to: extracted)
+        return try await installLegacyWrapper(
+            wrapper,
+            from: extracted,
+            into: runtimeID,
+            version: release.tagName,
+            sha256: digest,
+            compressedSize: asset.size,
+            sourceRepository: repository
+        )
+    }
+
     func componentUpdates() async throws -> [RuntimeComponentUpdate] {
         let runtimes = try await installedRuntimes().filter { $0.resolvedEngine == .wine }
         guard !runtimes.isEmpty else { return [] }
@@ -498,6 +568,67 @@ actor RuntimeManager: RuntimeManaging {
         )
     }
 
+    func installLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        from source: URL,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        try prepareDirectories()
+        guard wrapper != .none else {
+            throw RuntimeManagerError.localRuntimeInvalid("Disabled legacy graphics wrappers cannot be imported.")
+        }
+        guard !runtimeID.isEmpty, !runtimeID.contains("/"), !runtimeID.contains(".."),
+              let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }),
+              runtime.resolvedEngine == .wine else {
+            throw RuntimeManagerError.localRuntimeInvalid("\(wrapper.displayName) requires an installed Wine runtime.")
+        }
+
+        let source = source.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected \(wrapper.displayName) package no longer exists.")
+        }
+        let extractionRoot: URL?
+        let packageRoot: URL
+        if isDirectory.boolValue {
+            extractionRoot = nil
+            packageRoot = source
+        } else if source.pathExtension.caseInsensitiveCompare("zip") == .orderedSame {
+            let root = componentStore.rootURL.appending(path: ".downloads/import-legacy-\(UUID().uuidString)", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            extractionRoot = root
+            packageRoot = root.appending(path: "package", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+            let request = ProcessLaunchRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/ditto"),
+                arguments: ["-x", "-k", source.path, packageRoot.path],
+                environment: ProcessInfo.processInfo.environment,
+                currentDirectory: root,
+                stdoutLog: root.appending(path: "extract.stdout.log"),
+                stderrLog: root.appending(path: "extract.stderr.log")
+            )
+            let receipt = try await processExecutor.launch(request)
+            let result = try await processExecutor.waitForExit(receipt.id)
+            guard result.exitCode == 0 else {
+                try? fileManager.removeItem(at: root)
+                throw RuntimeManagerError.localRuntimeInvalid("The \(wrapper.displayName) ZIP archive could not be extracted safely.")
+            }
+        } else {
+            throw RuntimeManagerError.localRuntimeInvalid("Choose an extracted \(wrapper.displayName) package folder or a ZIP archive.")
+        }
+        defer { if let extractionRoot { try? fileManager.removeItem(at: extractionRoot) } }
+        let digest = try RuntimeSecurity.sha256(ofDirectory: packageRoot)
+        return try await installLegacyWrapper(
+            wrapper,
+            from: packageRoot,
+            into: runtimeID,
+            version: "imported-\(digest.prefix(16))",
+            sha256: digest,
+            compressedSize: nil,
+            sourceRepository: "local-import"
+        )
+    }
+
     private func installGraphicsComponent(
         _ backend: WineGraphicsBackend,
         from packageRoot: URL,
@@ -580,6 +711,121 @@ actor RuntimeManager: RuntimeManaging {
                 installedFiles: installedFiles.sorted()
             )
             try makeEncoder().encode(receipt).write(to: staging.appending(path: "component.json"), options: .atomic)
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.moveItem(at: staging, to: destination)
+            published = true
+            try makeImmutable(destination)
+            return refreshingDetectedFeatures(of: runtime)
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            if published {
+                try? makeWritable(destination)
+                try? fileManager.removeItem(at: destination)
+            }
+            throw error
+        }
+    }
+
+    private func installLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        from packageRoot: URL,
+        into runtimeID: String,
+        version: String,
+        sha256: String,
+        compressedSize: Int64?,
+        sourceRepository: String
+    ) async throws -> InstalledRuntime {
+        guard wrapper != .none,
+              let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }),
+              runtime.resolvedEngine == .wine else {
+            throw RuntimeManagerError.localRuntimeInvalid("\(wrapper.displayName) requires an installed Wine runtime.")
+        }
+        guard GraphicsComponentStore.isSafeVersion(version) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The \(wrapper.displayName) release version contains an unsafe path.")
+        }
+
+        let sourceFilesByArchitecture: [String: [String: URL]]
+        let supportedAPIsByArchitecture: [String: [String]]
+        let manifestFiles: [String]?
+        let manifestFilesByAPI: [String: [String]]?
+        switch wrapper {
+        case .dd7to9:
+            let sourceFiles = try discoverDd7to9Files(in: packageRoot)
+            sourceFilesByArchitecture = ["x86": sourceFiles]
+            supportedAPIsByArchitecture = ["x86": [LegacyGraphicsAPI.directDraw.rawValue]]
+            manifestFiles = ["ddraw.dll", "dxwrapper.dll", "dxwrapper.ini"]
+            manifestFilesByAPI = nil
+        case .dgVoodoo2:
+            let sourceFiles = try discoverDgVoodooFiles(in: packageRoot)
+            guard !sourceFiles.isEmpty else {
+                throw RuntimeManagerError.localRuntimeInvalid("The dgVoodoo2 package does not contain supported Windows DLLs.")
+            }
+            sourceFilesByArchitecture = sourceFiles
+            supportedAPIsByArchitecture = sourceFiles.mapValues { files in
+                LegacyGraphicsAPI.allCases.compactMap { api in
+                    files["\(api.libraryName).dll"] == nil ? nil : api.rawValue
+                }
+            }
+            manifestFiles = nil
+            manifestFilesByAPI = Dictionary(uniqueKeysWithValues: LegacyGraphicsAPI.allCases.compactMap { api in
+                let fileName = "\(api.libraryName).dll"
+                guard sourceFiles.values.contains(where: { $0[fileName] != nil }) else { return nil }
+                return (api.rawValue, [fileName])
+            })
+        case .none:
+            throw RuntimeManagerError.localRuntimeInvalid("Disabled legacy graphics wrappers cannot be installed.")
+        }
+        let supportedAPIs = LegacyGraphicsAPI.allCases.filter { api in
+            supportedAPIsByArchitecture.values.contains { $0.contains(api.rawValue) }
+        }
+        guard !supportedAPIs.isEmpty else {
+            throw RuntimeManagerError.localRuntimeInvalid("The \(wrapper.displayName) package does not contain a supported API entry point.")
+        }
+        let destination = LegacyWrapperManager.componentStorageURL(
+            for: wrapper,
+            version: version,
+            runtime: runtime
+        )
+        let expectedFiles = sourceFilesByArchitecture.flatMap { architecture, files in
+            files.keys.map { "\(architecture)/\($0)" }
+        }
+        if fileManager.fileExists(atPath: destination.path) {
+            let manifestURL = destination.appending(path: "manifest.json")
+            if let data = try? Data(contentsOf: manifestURL),
+               let manifest = try? JSONDecoder().decode(LegacyWrapperComponentManifest.self, from: data),
+               manifest.id.caseInsensitiveCompare(wrapper.rawValue) == .orderedSame,
+               manifest.version == version,
+               expectedFiles.allSatisfy({
+                   fileManager.fileExists(atPath: destination.appending(path: $0).path)
+               }) {
+                return refreshingDetectedFeatures(of: runtime)
+            }
+            throw RuntimeManagerError.localRuntimeInvalid("A \(wrapper.displayName) component with version \(version) is already installed with a different payload.")
+        }
+
+        let staging = componentStore.rootURL.appending(path: ".installing/legacy-\(UUID().uuidString)", directoryHint: .isDirectory)
+        var published = false
+        do {
+            for (architecture, sourceFiles) in sourceFilesByArchitecture {
+                let stagingArchitecture = staging.appending(path: architecture, directoryHint: .isDirectory)
+                try fileManager.createDirectory(at: stagingArchitecture, withIntermediateDirectories: true)
+                for (name, source) in sourceFiles {
+                    try fileManager.copyItem(at: source, to: stagingArchitecture.appending(path: name))
+                }
+            }
+            let manifest = LegacyWrapperComponentManifest(
+                id: wrapper.rawValue,
+                version: version,
+                architectures: sourceFilesByArchitecture.keys.sorted(),
+                supportedAPIs: supportedAPIs,
+                files: manifestFiles,
+                filesByAPI: manifestFilesByAPI,
+                supportedAPIsByArchitecture: wrapper == .dgVoodoo2 ? supportedAPIsByArchitecture : nil,
+                sourceRepository: sourceRepository,
+                sha256: sha256,
+                compressedSize: compressedSize
+            )
+            try makeEncoder().encode(manifest).write(to: staging.appending(path: "manifest.json"), options: .atomic)
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fileManager.moveItem(at: staging, to: destination)
             published = true
@@ -1884,6 +2130,7 @@ actor RuntimeManager: RuntimeManaging {
         let hasSDL = ["lib/libSDL2-2.0.0.dylib", "lib/libSDL3.0.dylib", "lib/libSDL3.dylib"]
             .contains { fileManager.fileExists(atPath: wineRoot.appending(path: $0).path) }
         features.wineBusControllerMapping = hasWineBus && hasSDL
+        features.dd7to9 = LegacyWrapperManager().isAvailable(.dd7to9, in: runtime)
         features.dgVoodoo2 = hasValidDGvoodooComponent(in: runtime)
         return InstalledRuntime(
             id: runtime.id,
@@ -1943,23 +2190,93 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     private func hasValidDGvoodooComponent(in runtime: InstalledRuntime) -> Bool {
-        let roots = [
-            runtime.rootURL.appending(path: "GraphicsComponents/dgVoodoo2", directoryHint: .isDirectory),
-            runtime.rootURL.appending(path: "Support/Graphics/dgVoodoo2", directoryHint: .isDirectory)
-        ]
-        return roots.contains { root in
-            let manifest = root.appending(path: "manifest.json")
-            guard let data = try? Data(contentsOf: manifest),
-                  let descriptor = try? JSONDecoder().decode(LegacyWrapperComponentManifest.self, from: data),
-                  descriptor.id.caseInsensitiveCompare(LegacyGraphicsWrapper.dgVoodoo2.rawValue) == .orderedSame else {
-                return false
-            }
-            return descriptor.architectures.contains { architecture in
-                descriptor.supportedAPIs.contains { api in
-                    fileManager.fileExists(atPath: root.appending(path: "\(architecture)/\(api.libraryName).dll").path)
-                }
+        LegacyWrapperManager().isAvailable(.dgVoodoo2, in: runtime)
+    }
+
+    private func discoverDd7to9Files(in root: URL) throws -> [String: URL] {
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The Dd7to9 package could not be read.")
+        }
+        var matches: [String: URL] = [:]
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            let name = url.lastPathComponent.lowercased()
+            if name == "ddraw.dll" {
+                let parent = url.deletingLastPathComponent().lastPathComponent.lowercased()
+                if parent == "stub" || matches["ddraw.dll"] == nil { matches["ddraw.dll"] = url }
+            } else if name == "dxwrapper.dll" || name == "dxwrapper.ini" {
+                if matches[name] == nil { matches[name] = url }
             }
         }
+        let required = ["ddraw.dll", "dxwrapper.dll", "dxwrapper.ini"]
+        guard required.allSatisfy({ matches[$0] != nil }) else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The Dd7to9 package is incomplete. Required files: \(required.joined(separator: ", "))."
+            )
+        }
+        guard required.dropLast().allSatisfy({ WindowsExecutableArchitecture.inspect(matches[$0]!) == .x86 }) else {
+            throw RuntimeManagerError.localRuntimeInvalid("Dd7to9 must provide 32-bit ddraw.dll and dxwrapper.dll for this 32-bit DirectDraw game.")
+        }
+        guard let ini = matches["dxwrapper.ini"],
+              let contents = try? String(contentsOf: ini, encoding: .utf8),
+              contents.range(of: "Dd7to9", options: .caseInsensitive) != nil else {
+            throw RuntimeManagerError.localRuntimeInvalid("dxwrapper.ini does not contain the Dd7to9 compatibility option.")
+        }
+        return matches
+    }
+
+    private func discoverDgVoodooFiles(in root: URL) throws -> [String: [String: URL]] {
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The dgVoodoo2 package could not be read.")
+        }
+        let supportedNames = Set(LegacyGraphicsAPI.allCases.map { "\($0.libraryName).dll" })
+        var matches: [String: [String: URL]] = [:]
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            let name = url.lastPathComponent.lowercased()
+            guard supportedNames.contains(name) else { continue }
+
+            // The official archive stores Windows binaries under MS/x86 and
+            // MS/x64. Restricting the importer to these folders avoids
+            // accidentally installing ARM/ARM64X or D3DImm binaries.
+            let architectureFolder = url.deletingLastPathComponent().lastPathComponent.lowercased()
+            let productFolder = url.deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .lastPathComponent.lowercased()
+            let architecture: String
+            let expectedArchitecture: WindowsExecutableArchitecture
+            switch architectureFolder {
+            case "x86":
+                architecture = "x86"
+                expectedArchitecture = .x86
+            case "x64":
+                architecture = "x64"
+                expectedArchitecture = .x86_64
+            default:
+                continue
+            }
+            guard productFolder == "ms",
+                  WindowsExecutableArchitecture.inspect(url) == expectedArchitecture else { continue }
+            if matches[architecture]?[name] == nil {
+                matches[architecture, default: [:]][name] = url
+            }
+        }
+        guard !matches.isEmpty else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The dgVoodoo2 package is incomplete. Expected 32-bit or 64-bit DDraw/D3D8/D3D9 DLLs under MS/x86 or MS/x64."
+            )
+        }
+        return matches
     }
 
     private func localRuntimeID(name: String, version: String, architecture: RuntimeArchitecture) -> String {

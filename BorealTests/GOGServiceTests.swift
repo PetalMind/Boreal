@@ -17,7 +17,7 @@ struct GOGServiceTests {
             arguments: ["/dx11", "-windowed"]
         )
         #expect(wine.arguments == ["-windowed", "/dx9"])
-        #expect(wine.environment["WINED3D_RENDERER"] == "vulkan")
+        #expect(wine.environment["WINE_D3D_CONFIG"] == "renderer=vulkan")
 
         let gptk = GOGService.compatibilityLaunchConfiguration(
             appID: "1196955511",
@@ -43,7 +43,7 @@ struct GOGServiceTests {
             arguments: ["-dx10"]
         )
         #expect(wine.arguments == ["-dx9"])
-        #expect(wine.environment["WINED3D_RENDERER"] == "vulkan")
+        #expect(wine.environment["WINE_D3D_CONFIG"] == "renderer=vulkan")
     }
 
     @Test func collapsesPromotionalDuplicateIntoRichCanonicalRelease() {

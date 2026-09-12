@@ -143,7 +143,7 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
     }
 }
 
-actor GOGService: GOGLibraryProviding {
+actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
     private struct ReleaseArtifact: Sendable {
         let url: URL
         let sha256: String
@@ -152,10 +152,12 @@ actor GOGService: GOGLibraryProviding {
     private struct Credentials: Decodable, Sendable {
         let accessToken: String
         let userID: String
+        var refreshToken: String?
 
         enum CodingKeys: String, CodingKey {
             case accessToken = "access_token"
             case userID = "user_id"
+            case refreshToken = "refresh_token"
         }
     }
 
@@ -186,6 +188,7 @@ actor GOGService: GOGLibraryProviding {
     private let authURL: URL
     private let configURL: URL
     private let gamesURL: URL
+    private var cloudAuthorizationCache: [String: GOGCloudAuthorization] = [:]
 
     init(applicationSupportURL: URL, fileManager: FileManager = .default, session: URLSession = .shared) {
         self.fileManager = fileManager
@@ -236,6 +239,9 @@ actor GOGService: GOGLibraryProviding {
         let data = try await run(["auth", "--code", code])
         guard let credentials = try? JSONDecoder().decode(Credentials.self, from: data) else {
             throw GOGServiceError.notAuthenticated
+        }
+        if let refreshToken = credentials.refreshToken {
+            try? GOGCredentialKeychain.store(refreshToken: refreshToken)
         }
         return try? await userDisplayName(credentials: credentials)
     }
@@ -542,7 +548,7 @@ actor GOGService: GOGLibraryProviding {
                 ["/dx11", "-dx11", "/dx9", "-dx9"].contains($0.lowercased())
             }
             arguments.append("/dx9")
-            environment["WINED3D_RENDERER"] = "vulkan"
+            environment["WINE_D3D_CONFIG"] = "renderer=vulkan"
             return (arguments, environment)
         }
 
@@ -561,22 +567,94 @@ actor GOGService: GOGLibraryProviding {
             }
             // WineD3D's OpenGL card selector does not recognize Apple GPUs
             // on the affected runtime. Its Vulkan backend avoids that path.
-            environment["WINED3D_RENDERER"] = "vulkan"
+            environment["WINE_D3D_CONFIG"] = "renderer=vulkan"
         }
         return (arguments, environment)
     }
 
     func disconnect() async throws {
-        guard fileManager.isExecutableFile(atPath: helperURL.path) else { throw GOGServiceError.helperUnavailable }
+        let helperAvailable = fileManager.isExecutableFile(atPath: helperURL.path)
         if fileManager.fileExists(atPath: authURL.path) { try fileManager.removeItem(at: authURL) }
+        try? GOGCredentialKeychain.remove()
+        cloudAuthorizationCache.removeAll()
+        guard helperAvailable else { throw GOGServiceError.helperUnavailable }
+    }
+
+    func cloudAuthorization(for appID: String) async throws -> GOGCloudAuthorization {
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
+        if let cached = cloudAuthorizationCache[appID], cached.expiresAt.map({ $0.timeIntervalSinceNow > 60 }) ?? true {
+            return cached
+        }
+        let base = try await credentials()
+
+        var buildsComponents = URLComponents(string: "https://content-system.gog.com/products/\(appID)/os/windows/builds")!
+        buildsComponents.queryItems = [URLQueryItem(name: "generation", value: "2")]
+        var buildsRequest = URLRequest(url: buildsComponents.url!)
+        buildsRequest.setValue("Bearer \(base.accessToken)", forHTTPHeaderField: "Authorization")
+        buildsRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (buildsData, buildsResponse) = try await session.data(for: buildsRequest)
+        guard (buildsResponse as? HTTPURLResponse)?.statusCode == 200,
+              let buildsRoot = GOGCloudMetadataDecoder.object(from: buildsData) as? [String: Any],
+              let items = buildsRoot["items"] as? [[String: Any]],
+              let metadataLink = items.compactMap({ $0["link"] as? String }).first,
+              let metadataURL = URL(string: metadataLink),
+              metadataURL.scheme?.lowercased() == "https" else {
+            throw GOGServiceError.invalidResponse
+        }
+
+        var metadataRequest = URLRequest(url: metadataURL)
+        metadataRequest.setValue("Bearer \(base.accessToken)", forHTTPHeaderField: "Authorization")
+        let (metadataData, metadataResponse) = try await session.data(for: metadataRequest)
+        guard (metadataResponse as? HTTPURLResponse)?.statusCode == 200,
+              let metadata = GOGCloudMetadataDecoder.object(from: metadataData) as? [String: Any],
+              let clientID = Self.stringValue(metadata["clientId"]),
+              let clientSecret = Self.stringValue(metadata["clientSecret"]),
+              !clientID.isEmpty,
+              !clientSecret.isEmpty,
+              let refreshToken = base.refreshToken else {
+            throw GOGServiceError.notAuthenticated
+        }
+
+        var tokenComponents = URLComponents(string: "https://auth.gog.com/token")!
+        tokenComponents.queryItems = [
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "client_secret", value: clientSecret),
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "without_new_session", value: "1"),
+        ]
+        var tokenRequest = URLRequest(url: tokenComponents.url!)
+        tokenRequest.httpMethod = "GET"
+        let (tokenData, tokenResponse) = try await session.data(for: tokenRequest)
+        guard (tokenResponse as? HTTPURLResponse)?.statusCode == 200,
+              let tokenRoot = try? JSONSerialization.jsonObject(with: tokenData) as? [String: Any],
+              let accessToken = tokenRoot["access_token"] as? String,
+              !accessToken.isEmpty else {
+            throw GOGServiceError.notAuthenticated
+        }
+        let userID = Self.stringValue(tokenRoot["user_id"]) ?? base.userID
+        let expiresAt = (tokenRoot["expires_in"] as? NSNumber).map { Date().addingTimeInterval($0.doubleValue) }
+        let authorization = GOGCloudAuthorization(
+            userID: userID,
+            accessToken: accessToken,
+            clientID: clientID,
+            expiresAt: expiresAt
+        )
+        cloudAuthorizationCache[appID] = authorization
+        return authorization
     }
 
     private func credentials() async throws -> Credentials {
         guard fileManager.fileExists(atPath: authURL.path) else { throw GOGServiceError.notAuthenticated }
         let data = try await run(["auth"])
-        guard let credentials = try? JSONDecoder().decode(Credentials.self, from: data),
+        guard var credentials = try? JSONDecoder().decode(Credentials.self, from: data),
               !credentials.accessToken.isEmpty, !credentials.userID.isEmpty else {
             throw GOGServiceError.notAuthenticated
+        }
+        if credentials.refreshToken == nil {
+            credentials.refreshToken = try? GOGCredentialKeychain.read()
+        } else if let refreshToken = credentials.refreshToken {
+            try? GOGCredentialKeychain.store(refreshToken: refreshToken)
         }
         return credentials
     }

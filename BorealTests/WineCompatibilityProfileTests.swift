@@ -586,7 +586,7 @@ struct WineCompatibilityProfileTests {
         #expect(profile?.preferredBackend == .wineD3D)
         #expect(profile?.enforcedBackend == .wineD3D)
         #expect(profile?.overlayCompatibleFullscreen == false)
-        #expect(profile?.launchEnvironment?["WINED3D_RENDERER"] == "gl")
+        #expect(profile?.launchEnvironment?["WINE_D3D_CONFIG"] == "renderer=gl")
         #expect(effective.graphicsBackend == .wineD3D)
         #expect(effective.graphicsAPI == .directX9)
     }

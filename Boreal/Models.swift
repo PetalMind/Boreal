@@ -228,12 +228,22 @@ nonisolated struct CompatibilityFallbackEvent: Codable, Hashable, Sendable, Iden
 
 nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case none
+    case dd7to9
     case dgVoodoo2
 
     var id: String { rawValue }
     var displayName: String {
         switch self {
         case .none: "Disabled"
+        case .dd7to9: "Dd7to9 (DirectDraw → D3D9)"
+        case .dgVoodoo2: "dgVoodoo2"
+        }
+    }
+
+    var componentDirectoryName: String {
+        switch self {
+        case .none: ""
+        case .dd7to9: "Dd7to9"
         case .dgVoodoo2: "dgVoodoo2"
         }
     }
@@ -325,11 +335,18 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     /// applied even if an older persisted profile selected another backend.
     var enforcedBackend: WineGraphicsBackend? = nil
     var enforcedAPI: GraphicsAPI? = nil
+    var preferredLegacyWrapper: LegacyGraphicsWrapper? = nil
+    var enforcedLegacyWrapper: LegacyGraphicsWrapper? = nil
+    var enforcedLegacyGraphicsAPI: LegacyGraphicsAPI? = nil
     var overlayCompatibleFullscreen: Bool? = nil
     // Optional so profiles persisted by older Boreal versions remain
     // decodable. These values are merged into the launch plan only when the
     // selected compatibility backend matches the profile's intended backend.
     var launchEnvironment: [String: String]? = nil
+    // Per-game settings for an injected legacy graphics wrapper. These are
+    // applied to the managed copy in the game directory, never to the shared
+    // component package.
+    var legacyWrapperSettings: [String: String]? = nil
 
     func launchOption(for api: GraphicsAPI) -> GraphicsAPILaunchOption? {
         launchOptions.first { $0.api == api }

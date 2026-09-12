@@ -183,7 +183,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             // DLL. Force Wine builtin D3D for this process as well, so the
             // first retry works even before the next environment reconfigure
             // has restored the managed prefix files.
-            processEnvironment["WINED3D_RENDERER"] = "vulkan"
+            processEnvironment["WINE_D3D_CONFIG"] = "renderer=vulkan"
             let libraries = Set(RendererLaunchFailureDetector.builtinDLLOverrides(for: environment.configuration.graphicsAPI))
             let existing = processEnvironment["WINEDLLOVERRIDES"]?.split(separator: ";").map(String.init) ?? []
             let preserved = existing.filter { entry in
@@ -210,7 +210,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             // DirectDraw blit and palette semantics needed by the menu/video
             // frontbuffer.
             // Keep this renderer override scoped to Heroes 3 only.
-            processEnvironment["WINED3D_RENDERER"] = "gdi"
+            processEnvironment["WINE_D3D_CONFIG"] = "renderer=gdi"
         }
         // The managed environment always owns these values. Provider metadata
         // cannot redirect a launch into another prefix or runtime search path.
@@ -542,6 +542,11 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values.removeValue(forKey: "WINEDLLPATH")
         values.removeValue(forKey: "D3DMETAL_FRAMEWORK_PATH")
         values.removeValue(forKey: "DYLD_FALLBACK_LIBRARY_PATH")
+        // Renderer selection is process-scoped. Do not let a host shell or an
+        // older Boreal build leak either the documented Wine key or the old
+        // unsupported WINED3D_RENDERER spelling into another game.
+        values.removeValue(forKey: "WINE_D3D_CONFIG")
+        values.removeValue(forKey: "WINED3D_RENDERER")
         // GPTK 4 chooses its Metal generation automatically. Do not inherit
         // D3DM_MTL4 from Boreal's parent process, since it is not a GreedFall
         // setting and primarily controls the D3D12 path.

@@ -1203,6 +1203,7 @@ nonisolated enum SaveBackupTrigger: String, Codable, Hashable, Sendable {
     case beforeEnvironmentRebuild
     case beforeUninstall
     case beforeSnapshotRestore
+    case beforeCloudSaveSync
     case afterGameExit
 }
 
@@ -1617,6 +1618,15 @@ nonisolated struct GameAdvancedConfiguration: Codable, Hashable, Sendable {
     var dllOverrides: [DLLOverride]
     var environmentVariables: [CustomEnvironmentVariable]
     var manualSavePaths: [String]
+    /// Optional GOG cloud path in Windows form, resolved inside the game's
+    /// managed prefix. It remains separate from generic manual backup paths.
+    var cloudSaveWindowsPath: String?
+    /// Last path selected by Boreal's detector. It is retained separately from
+    /// the manual override so a reset can return to a previously trusted path
+    /// without rescanning a different similarly named directory.
+    var detectedCloudSaveWindowsPath: String?
+    /// Cloud sync is opt-out after a user has configured a save path.
+    var automaticCloudSaveSync: Bool
     var controllerProfile: GameControllerProfile
     var updatedAt: Date
 
@@ -1625,6 +1635,9 @@ nonisolated struct GameAdvancedConfiguration: Codable, Hashable, Sendable {
         dllOverrides: [DLLOverride] = [],
         environmentVariables: [CustomEnvironmentVariable] = [],
         manualSavePaths: [String] = [],
+        cloudSaveWindowsPath: String? = nil,
+        detectedCloudSaveWindowsPath: String? = nil,
+        automaticCloudSaveSync: Bool = true,
         controllerProfile: GameControllerProfile = .default,
         updatedAt: Date = .now
     ) {
@@ -1632,11 +1645,17 @@ nonisolated struct GameAdvancedConfiguration: Codable, Hashable, Sendable {
         self.dllOverrides = dllOverrides
         self.environmentVariables = environmentVariables
         self.manualSavePaths = manualSavePaths
+        self.cloudSaveWindowsPath = cloudSaveWindowsPath
+        self.detectedCloudSaveWindowsPath = detectedCloudSaveWindowsPath
+        self.automaticCloudSaveSync = automaticCloudSaveSync
         self.controllerProfile = controllerProfile
         self.updatedAt = updatedAt
     }
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, applicationID, dllOverrides, environmentVariables, manualSavePaths, controllerProfile, updatedAt }
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, applicationID, dllOverrides, environmentVariables, manualSavePaths
+        case cloudSaveWindowsPath, detectedCloudSaveWindowsPath, automaticCloudSaveSync, controllerProfile, updatedAt
+    }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -1648,6 +1667,9 @@ nonisolated struct GameAdvancedConfiguration: Codable, Hashable, Sendable {
         dllOverrides = try values.decodeIfPresent([DLLOverride].self, forKey: .dllOverrides) ?? []
         environmentVariables = try values.decodeIfPresent([CustomEnvironmentVariable].self, forKey: .environmentVariables) ?? []
         manualSavePaths = try values.decodeIfPresent([String].self, forKey: .manualSavePaths) ?? []
+        cloudSaveWindowsPath = try values.decodeIfPresent(String.self, forKey: .cloudSaveWindowsPath)
+        detectedCloudSaveWindowsPath = try values.decodeIfPresent(String.self, forKey: .detectedCloudSaveWindowsPath)
+        automaticCloudSaveSync = try values.decodeIfPresent(Bool.self, forKey: .automaticCloudSaveSync) ?? true
         controllerProfile = try values.decodeIfPresent(GameControllerProfile.self, forKey: .controllerProfile) ?? .default
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
     }

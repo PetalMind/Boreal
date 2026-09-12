@@ -28,12 +28,14 @@ nonisolated struct GraphicsCompatibilityManager: Sendable {
         environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime
     ) throws -> GraphicsLayerPlan {
+        let wrapperSettings = GameGraphicsProfiles.profile(for: application)?.legacyWrapperSettings ?? [:]
         let wrapper = try wrapperManager.activate(
             configuration.legacyWrapper,
             api: configuration.legacyGraphicsAPI,
             gameExecutable: executable,
             environment: environment,
-            runtime: runtime
+            runtime: runtime,
+            settings: wrapperSettings
         )
         return GraphicsLayerPlan(
             legacyWrapper: wrapper.wrapper,

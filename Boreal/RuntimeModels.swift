@@ -466,15 +466,16 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var fullscreenFSR: Bool = false
     var fullscreenFSRCapabilities: FullscreenFSRCapabilities?
     var wineBusControllerMapping: Bool = false
+    var dd7to9: Bool = false
     var dgVoodoo2: Bool = false
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
         case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
-        case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dgVoodoo2, graphicsCapabilities
+        case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dd7to9, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
         self.architectureCapabilities = architectureCapabilities
         self.supportsWin32Execution = supportsWin32Execution ?? architectureCapabilities?.canRunX86
@@ -490,6 +491,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         self.fullscreenFSR = fullscreenFSR
         self.fullscreenFSRCapabilities = fullscreenFSRCapabilities
         self.wineBusControllerMapping = wineBusControllerMapping
+        self.dd7to9 = dd7to9
         self.dgVoodoo2 = dgVoodoo2
     }
 
@@ -512,6 +514,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         fullscreenFSR = try values.decodeIfPresent(Bool.self, forKey: .fullscreenFSR) ?? false
         fullscreenFSRCapabilities = try values.decodeIfPresent(FullscreenFSRCapabilities.self, forKey: .fullscreenFSRCapabilities)
         wineBusControllerMapping = try values.decodeIfPresent(Bool.self, forKey: .wineBusControllerMapping) ?? false
+        dd7to9 = try values.decodeIfPresent(Bool.self, forKey: .dd7to9) ?? false
         dgVoodoo2 = try values.decodeIfPresent(Bool.self, forKey: .dgVoodoo2) ?? false
         graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
     }
@@ -537,6 +540,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encode(fullscreenFSR, forKey: .fullscreenFSR)
         try values.encodeIfPresent(fullscreenFSRCapabilities, forKey: .fullscreenFSRCapabilities)
         try values.encode(wineBusControllerMapping, forKey: .wineBusControllerMapping)
+        try values.encode(dd7to9, forKey: .dd7to9)
         try values.encode(dgVoodoo2, forKey: .dgVoodoo2)
         try values.encodeIfPresent(graphicsCapabilities, forKey: .graphicsCapabilities)
     }
@@ -1202,6 +1206,15 @@ nonisolated protocol RuntimeManaging: Sendable {
         _ backend: WineGraphicsBackend,
         into runtimeID: String
     ) async throws -> InstalledRuntime
+    func installLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        from source: URL,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime
+    func downloadAndInstallLegacyWrapper(
+        _ wrapper: LegacyGraphicsWrapper,
+        into runtimeID: String
+    ) async throws -> InstalledRuntime
     func componentUpdates() async throws -> [RuntimeComponentUpdate]
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime
     func installUpscalingBridge(_ bridge: TemporalUpscalingBridge, fromRuntimeID runtimeID: String) async throws -> UpscalingBridgeReference
@@ -1244,6 +1257,21 @@ nonisolated extension RuntimeManaging {
     func downloadAndInstallGraphicsComponent(
         _ backend: WineGraphicsBackend,
         into runtimeID: String
+    ) async throws -> InstalledRuntime {
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func installLegacyWrapper(
+        _: LegacyGraphicsWrapper,
+        from _: URL,
+        into _: String
+    ) async throws -> InstalledRuntime {
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func downloadAndInstallLegacyWrapper(
+        _: LegacyGraphicsWrapper,
+        into _: String
     ) async throws -> InstalledRuntime {
         throw CocoaError(.featureUnsupported)
     }
