@@ -352,7 +352,12 @@ nonisolated extension RuntimeManaging {
         for candidate in localCandidates {
             guard candidate.features.resolvedArchitectureCapabilities.canRunX86 || !request.architectures.contains(.x86) else { continue }
             guard request.requiredEngine == nil || candidate.engine == request.requiredEngine else { continue }
-            let imported = try await importLocalRuntime(candidate)
+            let imported: InstalledRuntime
+            if candidate.engine == .gamePortingToolkit {
+                imported = try await importSelectedGPTKRuntime(from: candidate.appURL)
+            } else {
+                imported = try await importLocalRuntime(candidate)
+            }
             if CompatibilityPreparationResolver.runtimeSatisfies(imported, request: request), try await validate(imported).isReady {
                 return imported
             }

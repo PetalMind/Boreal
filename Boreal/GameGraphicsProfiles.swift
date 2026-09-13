@@ -550,7 +550,7 @@ nonisolated enum GraphicsBackendResolver {
     ) -> Bool {
         let featuresAvailable = stack.requiredRuntimeFeatures.allSatisfy { feature in
             switch feature {
-            case .d3dMetal: runtime.features?.d3dmetal == true
+            case .d3dMetal: runtime.features?.hasVerifiedD3DMetal == true
             case .dxmt: runtime.features?.dxmt == true
             case .dxvk: runtime.features?.dxvk == true
             case .vkd3d: runtime.features?.vkd3d == true

@@ -23,10 +23,15 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		7A1B4E2C9D6F4800A3C17B52 /* BorealGraphicsProbe.exe in Resources */ = {isa = PBXBuildFile; fileRef = 7A1B4E2C9D6F4800A3C17B51 /* BorealGraphicsProbe.exe */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		B4C2B177303C5306000C8CC5 /* Boreal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Boreal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4C2B184303C5307000C8CC5 /* BorealTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BorealTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4C2B18E303C5307000C8CC5 /* BorealUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BorealUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7A1B4E2C9D6F4800A3C17B51 /* BorealGraphicsProbe.exe */ = {isa = PBXFileReference; explicitFileType = archive.executable; includeInIndex = 1; path = BorealRuntimeProbe/BorealGraphicsProbe.exe; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -72,6 +77,7 @@
 				B4C2B179303C5306000C8CC5 /* Boreal */,
 				B4C2B187303C5307000C8CC5 /* BorealTests */,
 				B4C2B191303C5307000C8CC5 /* BorealUITests */,
+				7A1B4E2C9D6F4800A3C17B51 /* BorealGraphicsProbe.exe */,
 				B4C2B178303C5306000C8CC5 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -198,6 +204,7 @@
 		B4C2B175303C5306000C8CC5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				7A1B4E2C9D6F4800A3C17B52 /* BorealGraphicsProbe.exe in Resources */,
 			);
 		};
 		B4C2B182303C5307000C8CC5 /* Resources */ = {

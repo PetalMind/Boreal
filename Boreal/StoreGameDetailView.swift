@@ -1065,6 +1065,12 @@ struct StoreGameDetailView: View {
                     compatibilityApplication = app
                 }
                 if !app.isInstallerOnly, !app.isSteamRuntimeHost {
+                    Button("Change Main Executable…", systemImage: "doc.badge.gearshape") {
+                        selectMainExecutable(for: app)
+                    }
+                    .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
+                }
+                if !app.isInstallerOnly, !app.isSteamRuntimeHost {
                     Button(.Library.installPatchOrDLC, systemImage: "shippingbox.and.arrow.backward") {
                         selectWindowsInstaller(for: app)
                     }
@@ -1087,8 +1093,15 @@ struct StoreGameDetailView: View {
                 if !gameActions.isEmpty {
                     Section(content: {
                         ForEach(gameActions) { action in
-                            Button(action.displayName, systemImage: action.role.symbol) {
-                                store.runAuxiliaryExecutable(action, for: app.id)
+                            Menu {
+                                Button("Run", systemImage: "play.fill") {
+                                    store.runAuxiliaryExecutable(action, for: app.id)
+                                }
+                                Button("Use as Main Executable", systemImage: "star") {
+                                    store.setPrimaryExecutable(URL(fileURLWithPath: action.executablePath), for: app.id)
+                                }
+                            } label: {
+                                Label(action.displayName, systemImage: action.role.symbol)
                             }
                             .disabled(app.status == .running || app.status.isBusy || storeOperation != nil)
                         }
@@ -2526,6 +2539,22 @@ struct StoreGameDetailView: View {
         ]
         guard panel.runModal() == .OK, let installer = panel.url else { return }
         store.runWindowsInstaller(installer, for: application.id)
+    }
+
+    private func selectMainExecutable(for application: WindowsApplication) {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Change Main Executable")
+        panel.message = String(localized: "Choose the Windows executable Boreal should start with the main Play action.")
+        panel.prompt = String(localized: "Use as Main")
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "exe") ?? .data]
+        panel.directoryURL = URL(fileURLWithPath: application.executablePath).deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { url.stopAccessingSecurityScopedResource() } }
+        store.setPrimaryExecutable(url, for: application.id)
     }
 
     private func selectDLSSUnlockerArchive(for application: WindowsApplication) {

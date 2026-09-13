@@ -1498,8 +1498,79 @@ final class BorealStore {
         }
     }
 
+    /// Changes the executable used by the main Play action while keeping the
+    /// other discovered executables as auxiliary game actions. Provider launch
+    /// plans must not replace an explicit user choice on the next launch.
+    func setPrimaryExecutable(_ requestedURL: URL, for applicationID: UUID) {
+        let selected = requestedURL.standardizedFileURL
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
+        let application = applications[index]
+        guard !application.isSteamRuntimeHost,
+              !application.isInstallerOnly,
+              application.status != .running,
+              !application.status.isBusy,
+              selected.pathExtension.caseInsensitiveCompare("exe") == .orderedSame,
+              FileManager.default.fileExists(atPath: selected.path),
+              ExecutableDiscovery.isEligibleExecutablePath(selected.lastPathComponent) else {
+            presentedIssue = BorealIssue(
+                title: String(localized: "This executable couldn’t be selected"),
+                stage: String(localized: "Validating the Windows executable for the main Play action."),
+                recovery: String(localized: "Choose an existing Windows .exe file, not an installer, updater, helper, or uninstaller."),
+                technicalDetails: selected.path
+            )
+            return
+        }
+
+        let previousRoot = auxiliarySearchRoot(for: application)
+        let searchRoot = isWithin(selected, root: previousRoot)
+            ? previousRoot
+            : selected.deletingLastPathComponent().standardizedFileURL
+        applications[index].executablePath = selected.path
+        applications[index].usesCustomLaunchExecutable = true
+        applications[index].auxiliaryExecutables = nil
+        applications[index].status = .ready
+        applications[index].lastResult = String(
+            format: String(localized: "Main executable changed to %@"),
+            selected.lastPathComponent
+        )
+        applications[index].lastExitCode = nil
+        applications[index].lastFailureStage = nil
+        applications[index].lastErrorDetail = nil
+        executionStates[applicationID] = .idle
+        lastLaunchDiagnoses[applicationID] = nil
+        lastLaunchPlans[applicationID] = nil
+
+        if let provider = application.storeProvider,
+           let externalID = application.storeExternalID,
+           let game = storeGames.first(where: { $0.provider == provider && $0.externalID == externalID }),
+           let installation = installation(for: game),
+           isWithin(selected, root: InstallationStateResolver.resolvedLocation(for: installation, layout: storageLayout)) {
+            let platform = installation.platform
+            recordInstallation(
+                for: game,
+                location: InstallationStateResolver.resolvedLocation(for: installation, layout: storageLayout),
+                platform: platform,
+                environmentID: application.environmentID,
+                executable: selected
+            )
+        }
+        save()
+
+        Task { [weak self] in
+            guard let self else { return }
+            await refreshAuxiliaryExecutables(for: applicationID, searchRoot: searchRoot)
+            save()
+        }
+    }
+
     func runAuxiliaryExecutable(_ action: AuxiliaryExecutable, for applicationID: UUID) {
         Task { await runAuxiliaryExecutableAsync(action, for: applicationID) }
+    }
+
+    private func isWithin(_ child: URL, root: URL) -> Bool {
+        let childPath = child.standardizedFileURL.path
+        let rootPath = root.standardizedFileURL.path
+        return childPath == rootPath || childPath.hasPrefix(rootPath + "/")
     }
 
     func runWindowsInstaller(_ installer: URL, for applicationID: UUID) {
@@ -2414,8 +2485,8 @@ final class BorealStore {
             break
         }
         switch profile.graphicsBackend {
-        case .d3dMetal where runtime.features?.d3dmetal != true:
-            return "This runtime does not contain D3DMetal."
+        case .d3dMetal where runtime.features?.hasVerifiedD3DMetal != true:
+            return "This runtime does not contain a verified D3DMetal graphics stack."
         case .dxmt where runtime.features?.dxmt != true:
             return "This runtime does not contain the DXMT component package."
         case .dxvk where runtime.features?.dxvk != true:
@@ -2483,7 +2554,7 @@ final class BorealStore {
         }
         switch backend {
         case .d3dMetal:
-            return compatibleRuntimes.contains { $0.features?.d3dmetal == true } ? nil : "The installed GPTK runtime does not contain D3DMetal."
+            return compatibleRuntimes.contains { $0.features?.hasVerifiedD3DMetal == true } ? nil : "The installed GPTK runtime does not contain a verified D3DMetal graphics stack."
         case .dxmt:
             return compatibleRuntimes.contains { $0.features?.dxmt == true } ? nil : "No installed Wine runtime contains the DXMT component package."
         case .dxvk:
@@ -2526,7 +2597,7 @@ final class BorealStore {
         }
         let supportsBackend: (RuntimeStatus) -> Bool = { status in
             switch backend {
-            case .d3dMetal: status.features?.d3dmetal == true
+            case .d3dMetal: status.features?.hasVerifiedD3DMetal == true
             case .dxmt: status.features?.dxmt == true
             case .dxvk: status.features?.dxvk == true
             case .vkd3d: status.features?.vkd3d == true
@@ -2580,7 +2651,7 @@ final class BorealStore {
         let requestedEngine = selectedRuntime?.engine ?? profile.graphicsBackend.requiredEngine ?? currentEngine
         let currentRuntimeSupportsBackend: Bool
         switch profile.graphicsBackend {
-        case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.d3dmetal == true
+        case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.hasVerifiedD3DMetal == true
         case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true
         case .dxvk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxvk == true
         case .vkd3d: currentRuntimeSupportsBackend = currentRuntimeFeatures?.vkd3d == true
@@ -4137,7 +4208,7 @@ final class BorealStore {
                 let app = WindowsApplication(
                     name: metadata?.name ?? gogIdentity?.name ?? name,
                     publisher: metadata?.developer ?? "Windows application",
-                    executablePath: selected.path,
+                    executablePath: primary.url.path,
                     installerPath: "existing-installation",
                     environmentID: managed.id,
                     status: .ready,
@@ -4309,7 +4380,7 @@ final class BorealStore {
                 let app = WindowsApplication(
                     name: game.name,
                     publisher: game.developer ?? game.provider.rawValue,
-                    executablePath: selected.path,
+                    executablePath: primary.url.path,
                     installerPath: "existing-installation",
                     environmentID: managed.id,
                     compatibility: compatibility?.tier.rating ?? .unknown,
@@ -4334,7 +4405,7 @@ final class BorealStore {
                         location: selected.deletingLastPathComponent(),
                         platform: .windows,
                         environmentID: managed.id,
-                        executable: selected
+                        executable: primary.url
                     )
                     if storeGames[index].compatibility == nil { storeGames[index].compatibility = compatibility }
                 }
@@ -5076,7 +5147,7 @@ final class BorealStore {
                 if unsupported { return false }
             }
             switch backend {
-            case .d3dMetal: return $0.features?.d3dmetal == true
+            case .d3dMetal: return $0.features?.hasVerifiedD3DMetal == true
             case .dxmt: return $0.features?.dxmt == true
             case .dxvk: return $0.features?.dxvk == true
             case .vkd3d: return $0.features?.vkd3d == true
@@ -5600,7 +5671,9 @@ final class BorealStore {
 
     private func normalizeLauncherRedirectors() async {
         let candidates = applications.compactMap { application -> (UUID, URL, URL)? in
-            guard !application.isSteamRuntimeHost, !application.isInstallerOnly else { return nil }
+            guard !application.isSteamRuntimeHost,
+                  !application.isInstallerOnly,
+                  !application.hasCustomLaunchExecutable else { return nil }
             let primary = URL(fileURLWithPath: application.executablePath).standardizedFileURL
             return (application.id, primary, auxiliarySearchRoot(for: application))
         }
@@ -6029,6 +6102,7 @@ final class BorealStore {
         }
         let usesExistingExecutable = applications[index].installerPath == "existing-installation"
             || applications[index].usesStoreMetadataOnly
+            || applications[index].hasCustomLaunchExecutable
         let refreshesExecutableAtLaunch = !usesExistingExecutable && [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
         guard refreshesExecutableAtLaunch || FileManager.default.fileExists(atPath: applications[index].executablePath) else {
             let itemType = applications[index].isInstallerOnly ? "installer" : "application executable"
@@ -6086,10 +6160,12 @@ final class BorealStore {
                 save()
             }
             let configuredExecutable = URL(fileURLWithPath: applications[index].executablePath)
-            let executable = ExecutableDiscovery.preferredLaunchExecutable(
-                for: configuredExecutable,
-                searchRoot: auxiliarySearchRoot(for: applications[index])
-            )
+            let executable = applications[index].hasCustomLaunchExecutable
+                ? configuredExecutable
+                : ExecutableDiscovery.preferredLaunchExecutable(
+                    for: configuredExecutable,
+                    searchRoot: auxiliarySearchRoot(for: applications[index])
+                )
             if executable != configuredExecutable {
                 applications[index].executablePath = executable.path
                 applications[index].auxiliaryExecutables = nil
@@ -7101,14 +7177,24 @@ final class BorealStore {
         runtimeOperationDetail = "Copying and validating \(candidate.displayName) as an isolated Boreal runtime…"
         Task {
             do {
-                _ = try await services.runtimeManager.importLocalRuntime(candidate)
+                if candidate.engine == .gamePortingToolkit {
+                    _ = try await services.runtimeManager.importSelectedGPTKRuntime(from: candidate.appURL)
+                } else {
+                    _ = try await services.runtimeManager.importLocalRuntime(candidate)
+                }
                 runtimeOperationDetail = nil
                 await refreshRuntimeStatuses()
                 NotificationCenter.default.post(name: .borealRuntimeImportCompleted, object: nil)
             } catch {
                 runtimeOperationDetail = nil
                 runtimeDiscoveryState = .failed(runtimeCatalogDetails(error: error))
-                present(error, title: "Installed Wine couldn’t be imported", stage: "Copying, validating, and smoke-testing the local runtime")
+                present(
+                    error,
+                    title: candidate.engine == .gamePortingToolkit
+                        ? String(localized: "Game Porting Toolkit couldn’t be imported")
+                        : "Installed Wine couldn’t be imported",
+                    stage: "Copying, validating, and smoke-testing the local runtime"
+                )
             }
         }
     }

@@ -709,7 +709,7 @@ struct WineCompatibilityConfigurator: View {
         switch profile.graphicsBackend {
         case .automatic:
             let api = graphicsAPIBinding.wrappedValue
-            if runtimeFeatures?.d3dmetal == true, (api == .directX11 || api == .directX12) { return .d3dMetal }
+            if runtimeFeatures?.hasVerifiedD3DMetal == true, (api == .directX11 || api == .directX12) { return .d3dMetal }
             if runtimeFeatures?.dxvk == true, api != .directX12 { return .dxvk }
             if runtimeFeatures?.vkd3d == true, api == .directX12 { return .vkd3d }
             if runtimeFeatures?.dxmt == true { return .dxmt }
@@ -1346,7 +1346,7 @@ private struct ComponentsAndPatchesView: View {
         switch profile.graphicsBackend {
         case .automatic:
             let api = profile.graphicsAPI ?? .automatic
-            if runtimeFeatures?.d3dmetal == true, (api == .directX11 || api == .directX12) { return .d3dMetal }
+            if runtimeFeatures?.hasVerifiedD3DMetal == true, (api == .directX11 || api == .directX12) { return .d3dMetal }
             if runtimeFeatures?.dxvk == true, api != .directX12 { return .dxvk }
             if runtimeFeatures?.vkd3d == true, api == .directX12 { return .vkd3d }
             if runtimeFeatures?.dxmt == true { return .dxmt }

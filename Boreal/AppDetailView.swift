@@ -36,6 +36,12 @@ struct AppDetailView: View {
                                 .buttonStyle(.borderedProminent).controlSize(.large)
                             Menu {
                                 Button("Compatibility Settings…", systemImage: "slider.horizontal.3") { showsCompatibilityConfigurator = true }
+                                if !app.isInstallerOnly, !app.isSteamRuntimeHost {
+                                    Button("Change Main Executable…", systemImage: "doc.badge.gearshape") {
+                                        selectMainExecutable()
+                                    }
+                                    .disabled(app.status == .running || app.status.isBusy)
+                                }
                                 if !app.isInstallerOnly {
                                     Button("Saves…", systemImage: "externaldrive.badge.timemachine") { showsSaves = true }
                                     Button("Per-game Overrides…", systemImage: "gearshape.2") { showsAdvancedGameConfiguration = true }
@@ -65,8 +71,15 @@ struct AppDetailView: View {
                                     Divider()
                                     Section("Game Actions") {
                                         ForEach(gameActions) { action in
-                                            Button(action.displayName, systemImage: action.role.symbol) {
-                                                store.runAuxiliaryExecutable(action, for: app.id)
+                                            Menu {
+                                                Button("Run", systemImage: "play.fill") {
+                                                    store.runAuxiliaryExecutable(action, for: app.id)
+                                                }
+                                                Button("Use as Main Executable", systemImage: "star") {
+                                                    store.setPrimaryExecutable(URL(fileURLWithPath: action.executablePath), for: app.id)
+                                                }
+                                            } label: {
+                                                Label(action.displayName, systemImage: action.role.symbol)
                                             }
                                             .disabled(app.status == .running || app.status.isBusy)
                                         }
@@ -137,7 +150,7 @@ struct AppDetailView: View {
                         DetailRow(title: "Windows version", value: app.windowsVersion, symbol: "rectangle.on.rectangle")
                         DetailRow(title: "Graphics", value: app.graphics, symbol: "display")
                         DetailRow(title: "Environment", value: store.environment(id: app.environmentID)?.name ?? "Unavailable", symbol: "externaldrive")
-                        DetailRow(title: app.isInstallerOnly ? "Installer" : "Executable", value: URL(fileURLWithPath: app.executablePath).lastPathComponent, symbol: app.isInstallerOnly ? "shippingbox" : "doc.badge.gearshape")
+                        DetailRow(title: app.isInstallerOnly ? "Installer" : String(localized: "Main executable"), value: URL(fileURLWithPath: app.executablePath).lastPathComponent, symbol: app.isInstallerOnly ? "shippingbox" : "doc.badge.gearshape")
                         ForEach(store.auxiliaryExecutables(for: app)) { action in
                             DetailRow(
                                 title: action.role.displayName,
@@ -216,6 +229,22 @@ struct AppDetailView: View {
         ]
         guard panel.runModal() == .OK, let installer = panel.url else { return }
         store.runWindowsInstaller(installer, for: app.id)
+    }
+
+    private func selectMainExecutable() {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Change Main Executable")
+        panel.message = String(localized: "Choose the Windows executable Boreal should start with the main Play action.")
+        panel.prompt = String(localized: "Use as Main")
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "exe") ?? .data]
+        panel.directoryURL = URL(fileURLWithPath: app.executablePath).deletingLastPathComponent()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { url.stopAccessingSecurityScopedResource() } }
+        store.setPrimaryExecutable(url, for: app.id)
     }
 
     private func selectDLSSUnlockerArchive() {

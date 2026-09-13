@@ -746,6 +746,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
     var customArtworkCrop: ArtworkCrop?
     var storeReference: StoreReference?
     var storeMetadataOnly: Bool?
+    var usesCustomLaunchExecutable: Bool?
     var applicationRole: WindowsApplicationRole?
     var communityCompatibility: CommunityCompatibility?
     var compatibilityProfile: WineCompatibilityProfile?
@@ -779,6 +780,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
         customArtworkCrop = application.customArtworkCrop
         storeReference = application.storeReference
         storeMetadataOnly = application.storeMetadataOnly
+        usesCustomLaunchExecutable = application.usesCustomLaunchExecutable
         applicationRole = application.applicationRole
         communityCompatibility = application.communityCompatibility
         compatibilityProfile = application.compatibilityProfile
@@ -809,6 +811,7 @@ nonisolated struct LibraryApplicationRecord: Codable, Hashable, Sendable {
             storeProvider: storeReference?.provider,
             storeExternalID: storeReference?.externalID,
             storeMetadataOnly: storeMetadataOnly,
+            usesCustomLaunchExecutable: usesCustomLaunchExecutable,
             communityCompatibility: communityCompatibility,
             compatibilityProfile: compatibilityProfile,
             auxiliaryExecutables: auxiliaryExecutables?.map { $0.resolve(layout: layout) },

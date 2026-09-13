@@ -5,6 +5,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 OUTPUT_DIR="$SCRIPT_DIR/bin"
 SOURCE="$SCRIPT_DIR/src/BorealRuntimeTest.c"
 OUTPUT="$OUTPUT_DIR/BorealRuntimeTest.exe"
+PROBE_SOURCE="$SCRIPT_DIR/src/BorealGraphicsProbe.c"
+PROBE_DIR="$SCRIPT_DIR/../../BorealRuntimeProbe"
+PROBE_OUTPUT="$PROBE_DIR/BorealGraphicsProbe.exe"
 COMPILER=${CC_WINDOWS:-x86_64-w64-mingw32-gcc}
 
 if ! command -v "$COMPILER" >/dev/null 2>&1; then
@@ -13,7 +16,7 @@ if ! command -v "$COMPILER" >/dev/null 2>&1; then
     exit 2
 fi
 
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR" "$PROBE_DIR"
 "$COMPILER" \
     -std=c11 \
     -O2 \
@@ -25,4 +28,17 @@ mkdir -p "$OUTPUT_DIR"
     "$SOURCE" \
     -luser32
 
+"$COMPILER" \
+    -std=c11 \
+    -O2 \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -mconsole \
+    -o "$PROBE_OUTPUT" \
+    "$PROBE_SOURCE" \
+    -ld3d11 \
+    -ldxgi
+
 echo "Built $OUTPUT"
+echo "Built $PROBE_OUTPUT"

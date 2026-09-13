@@ -178,7 +178,7 @@ struct ModsView: View {
                     }
                     HStack {
                         if let lastDeployment = health.lastDeployment {
-                            Text("Last deployment (lastDeployment.formatted(date: .abbreviated, time: .shortened))")
+                            Text("Last deployment \(lastDeployment.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

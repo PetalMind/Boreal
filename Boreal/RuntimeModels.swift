@@ -384,7 +384,7 @@ nonisolated struct GraphicsBackendConfiguration: Sendable, Hashable {
         // load even when the HUD itself is requested.
         if result.metalHUD == nil,
            resolved == .d3dMetal,
-           runtime.features?.d3dmetal == true {
+           runtime.features?.hasVerifiedD3DMetal == true {
             result.metalHUD = true
         }
         return result
@@ -458,6 +458,16 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wineMono: Bool
     var wineGecko: Bool
     var d3dmetal: Bool
+    /// Version of the separately supplied D3DMetal graphics payload. This is
+    /// intentionally distinct from `wineVersion`: GPTK graphics can be
+    /// layered onto a compatible full Wine runtime.
+    var d3dmetalVersion: String?
+    /// A D3DMetal marker or framework is not enough to make the backend
+    /// usable for a newly imported runtime. `nil` is retained as the legacy
+    /// value for snapshots written before the graphics probe was introduced;
+    /// those snapshots already passed the older D3DMetal payload validation.
+    /// An explicit `false` always means that the probe failed.
+    var d3dmetalVerified: Bool?
     var dxmt: Bool
     var dxvk: Bool = false
     var vkd3d: Bool = false
@@ -471,11 +481,11 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, dxmt, dxvk, d9vk, vkd3d
+        case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, d3dmetalVersion, d3dmetalVerified, dxmt, dxvk, d9vk, vkd3d
         case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dd7to9, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, d3dmetalVersion: String? = nil, d3dmetalVerified: Bool? = nil, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
         self.architectureCapabilities = architectureCapabilities
         self.supportsWin32Execution = supportsWin32Execution ?? architectureCapabilities?.canRunX86
@@ -483,6 +493,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         self.wineMono = wineMono
         self.wineGecko = wineGecko
         self.d3dmetal = d3dmetal
+        self.d3dmetalVersion = d3dmetalVersion
+        self.d3dmetalVerified = d3dmetalVerified
         self.dxmt = dxmt
         self.dxvk = dxvk || d9vk
         self.vkd3d = vkd3d
@@ -504,6 +516,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         wineMono = try values.decodeIfPresent(Bool.self, forKey: .wineMono) ?? false
         wineGecko = try values.decodeIfPresent(Bool.self, forKey: .wineGecko) ?? false
         d3dmetal = try values.decodeIfPresent(Bool.self, forKey: .d3dmetal) ?? false
+        d3dmetalVersion = try values.decodeIfPresent(String.self, forKey: .d3dmetalVersion)
+        d3dmetalVerified = try values.decodeIfPresent(Bool.self, forKey: .d3dmetalVerified)
         dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
         let storedDXVK = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
         let storedLegacyD9VK = try values.decodeIfPresent(Bool.self, forKey: .d9vk) ?? false
@@ -532,6 +546,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encode(wineMono, forKey: .wineMono)
         try values.encode(wineGecko, forKey: .wineGecko)
         try values.encode(d3dmetal, forKey: .d3dmetal)
+        try values.encodeIfPresent(d3dmetalVersion, forKey: .d3dmetalVersion)
+        try values.encodeIfPresent(d3dmetalVerified, forKey: .d3dmetalVerified)
         try values.encode(dxmt, forKey: .dxmt)
         try values.encode(dxvk, forKey: .dxvk)
         try values.encode(vkd3d, forKey: .vkd3d)
@@ -557,6 +573,10 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     }
 
     var supportsWoW64: Bool { resolvedArchitectureCapabilities.usesNewWoW64 }
+
+    var hasVerifiedD3DMetal: Bool {
+        d3dmetal && d3dmetalVerified != false
+    }
 }
 
 nonisolated enum RuntimeComponent: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
@@ -1191,8 +1211,8 @@ nonisolated protocol RuntimeManaging: Sendable {
     func importLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
     func importSelectedLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
     /// Imports either a GPTK `.app` bundle or Apple's mounted evaluation
-    /// environment directory. The latter is a graphics-layer distribution
-    /// and is merged into a local GPTK app before the snapshot is published.
+    /// environment directory. GPTK 4 graphics are layered onto a complete,
+    /// compatible Wine base before the snapshot is published.
     func importSelectedGPTKRuntime(from source: URL) async throws -> InstalledRuntime
     func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation

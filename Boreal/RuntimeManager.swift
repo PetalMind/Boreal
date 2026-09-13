@@ -2,6 +2,11 @@ import Foundation
 import Security
 
 actor RuntimeManager: RuntimeManaging {
+    private struct RuntimeSmokeTestResult {
+        let architectureCapabilities: RuntimeArchitectureCapabilities?
+        let d3dmetalVerified: Bool?
+    }
+
     private struct GraphicsLibrary {
         let url: URL
         let architecture: WindowsExecutableArchitecture
@@ -34,7 +39,10 @@ actor RuntimeManager: RuntimeManaging {
     private let requirementChecker: any RuntimeRequirementChecking
     private let session: URLSession
     private let localApplicationRoots: [URL]
+    private let graphicsProbeURL: URL?
     private let fileManager = FileManager.default
+
+    private static let minimumGPTKWineVersion = "11.17"
 
     init(
         applicationSupportURL: URL,
@@ -42,7 +50,8 @@ actor RuntimeManager: RuntimeManaging {
         processExecutor: any ProcessExecuting,
         requirementChecker: any RuntimeRequirementChecking,
         session: URLSession = .shared,
-        localApplicationRoots: [URL]? = nil
+        localApplicationRoots: [URL]? = nil,
+        graphicsProbeURL: URL? = nil
     ) {
         self.runtimesURL = applicationSupportURL.appending(path: "Runtimes", directoryHint: .isDirectory)
         self.componentStore = GraphicsComponentStore(applicationSupportURL: applicationSupportURL)
@@ -54,11 +63,17 @@ actor RuntimeManager: RuntimeManaging {
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             FileManager.default.homeDirectoryForCurrentUser.appending(path: "Applications", directoryHint: .isDirectory)
         ]
+        self.graphicsProbeURL = graphicsProbeURL
+            ?? Bundle.main.url(forResource: "BorealGraphicsProbe", withExtension: "exe")
     }
 
     func availableRuntimes() async throws -> [BorealRuntime] { try await catalog.loadCatalog() }
 
     func localRuntimeCandidates() async -> [LocalRuntimeCandidate] {
+        discoveredLocalRuntimeCandidates()
+    }
+
+    private func discoveredLocalRuntimeCandidates() -> [LocalRuntimeCandidate] {
         var candidates: [LocalRuntimeCandidate] = []
         var seen = Set<String>()
         for root in localApplicationRoots {
@@ -138,6 +153,8 @@ actor RuntimeManager: RuntimeManaging {
                 wineMono: false,
                 wineGecko: false,
                 d3dmetal: engine == .gamePortingToolkit,
+                d3dmetalVersion: engine == .gamePortingToolkit ? readD3DMetalPayloadVersion(inApp: app) : nil,
+                d3dmetalVerified: engine == .gamePortingToolkit ? false : nil,
                 dxmt: false
             ),
             layout: RuntimeLayout(
@@ -928,13 +945,14 @@ actor RuntimeManager: RuntimeManaging {
         if source.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
             let candidate = try await localRuntimeCandidate(at: source)
             try validateGPTK4Candidate(candidate)
-            try validateGPTK4Payload(
-                in: source.appending(path: "Contents/Resources/wine/lib", directoryHint: .isDirectory)
-            )
-            if let existing = try await installedRuntimes().first(where: { $0.id == candidate.id }) {
-                return existing
+            try validateD3DMetalCodeSignature(in: source)
+            guard let d3dMetalVersion = candidate.features.d3dmetalVersion else {
+                throw RuntimeManagerError.localRuntimeInvalid("The selected D3DMetal payload version could not be read.")
             }
-            return try await importSelectedLocalRuntime(candidate)
+            return try await importGPTKGraphicsOverlay(
+                from: source.appending(path: "Contents/Resources/wine/lib", directoryHint: .isDirectory),
+                version: d3dMetalVersion
+            )
         }
 
         let redist = source.appending(path: "redist/lib", directoryHint: .isDirectory)
@@ -948,50 +966,81 @@ actor RuntimeManager: RuntimeManaging {
                 "The selected folder is not an Apple evaluation environment with a complete D3DMetal redist/lib payload."
             )
         }
-        guard let baseApp = localGPTKApplication() else {
-            throw RuntimeManagerError.localRuntimeInvalid(
-                "Install or select a base Game Porting Toolkit app before importing the evaluation environment libraries."
-            )
-        }
-        guard let infoData = try? Data(contentsOf: d3dMetalInfo),
-              let info = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any],
-              let d3dMetalVersion = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let d3dMetalVersion = try? readD3DMetalPayloadVersion(from: redist),
               let majorVersion = runtimeMajorVersion(d3dMetalVersion), majorVersion >= 4 else {
             throw RuntimeManagerError.localRuntimeInvalid("The selected evaluation environment does not report D3DMetal 4 or newer.")
         }
 
+        return try await importGPTKGraphicsOverlay(
+            from: redist,
+            version: d3dMetalVersion
+        )
+    }
+
+    private func importGPTKGraphicsOverlay(
+        from payloadLibrary: URL,
+        version d3dMetalVersion: String
+    ) async throws -> InstalledRuntime {
+        let base = try compatibleWineBaseCandidate()
+        guard base.architecture == .x86_64 else {
+            throw RuntimeManagerError.localRuntimeInvalid("GPTK 4 D3DMetal requires an x86_64 Wine 11.17 or newer base runtime.")
+        }
+        try validateGPTK4Payload(in: payloadLibrary)
         try prepareDirectories()
+
+        let displayName = "Wine \(base.wineVersion) + D3DMetal \(d3dMetalVersion)"
+        let composedID = localRuntimeID(
+            name: "wine-\(base.wineVersion)-d3dmetal",
+            version: d3dMetalVersion,
+            architecture: base.architecture
+        )
+        let destination = runtimesURL.appending(path: composedID, directoryHint: .isDirectory)
+        if let existing = try await installedRuntimes().first(where: { $0.id == composedID }) {
+            return existing
+        }
+
         let stagingApp = runtimesURL.appending(
-            path: ".installing/gptk-(UUID().uuidString).app",
+            path: ".installing/gptk-overlay-\(UUID().uuidString).app",
             directoryHint: .isDirectory
         )
         defer { try? fileManager.removeItem(at: stagingApp) }
         do {
-            try fileManager.copyItem(at: baseApp, to: stagingApp)
+            try fileManager.copyItem(at: base.appURL, to: stagingApp)
             let wineLibraries = stagingApp.appending(
                 path: "Contents/Resources/wine/lib",
                 directoryHint: .isDirectory
             )
-            try mergeDirectory(
-                from: redist.appending(path: "external", directoryHint: .isDirectory),
-                into: wineLibraries.appending(path: "external", directoryHint: .isDirectory)
-            )
-            try mergeDirectory(
-                from: redist.appending(path: "wine", directoryHint: .isDirectory),
-                into: wineLibraries.appending(path: "wine", directoryHint: .isDirectory)
-            )
+            try overlayGPTKGraphicsPayload(from: payloadLibrary, into: wineLibraries)
             try validateGPTK4Payload(in: wineLibraries)
-            try updateGPTKBundleVersion(
-                at: stagingApp,
-                version: d3dMetalVersion,
-                displayName: "Game Porting Toolkit"
+            try validateD3DMetalCodeSignature(in: stagingApp)
+
+            let candidate = LocalRuntimeCandidate(
+                id: composedID,
+                displayName: displayName,
+                wineVersion: base.wineVersion,
+                appURL: stagingApp,
+                architecture: base.architecture,
+                requirements: base.requirements,
+                minimumMacOS: base.minimumMacOS,
+                estimatedSize: nil,
+                engine: .gamePortingToolkit,
+                features: RuntimeFeatures(
+                    wow64: base.features.wow64,
+                    supportsWin32Execution: base.features.supportsWin32Execution,
+                    supportsWin64Execution: base.features.supportsWin64Execution,
+                    architectureCapabilities: base.features.architectureCapabilities,
+                    wineMono: base.features.wineMono,
+                    wineGecko: base.features.wineGecko,
+                    d3dmetal: true,
+                    d3dmetalVersion: d3dMetalVersion,
+                    d3dmetalVerified: false,
+                    dxmt: false
+                ),
+                layout: base.layout
             )
-            guard let candidate = makeLocalRuntimeCandidate(at: stagingApp) else {
-                throw RuntimeManagerError.localRuntimeInvalid("The merged GPTK and D3DMetal payload failed runtime discovery.")
-            }
             try validateGPTK4Candidate(candidate)
-            if let existing = try await installedRuntimes().first(where: { $0.id == candidate.id }) {
-                return existing
+            guard !fileManager.fileExists(atPath: destination.path) else {
+                throw RuntimeManagerError.alreadyInstalled(composedID)
             }
             return try await importSelectedLocalRuntime(candidate)
         } catch {
@@ -1004,6 +1053,10 @@ actor RuntimeManager: RuntimeManaging {
             path: "Contents/Resources/wine/lib/external/D3DMetal.framework",
             directoryHint: .isDirectory
         )
+        try validateD3DMetalCodeSignature(at: framework)
+    }
+
+    private func validateD3DMetalCodeSignature(at framework: URL) throws {
         var staticCode: SecStaticCode?
         let createStatus = SecStaticCodeCreateWithPath(framework as CFURL, [], &staticCode)
         guard createStatus == errSecSuccess, let staticCode else {
@@ -1027,9 +1080,10 @@ actor RuntimeManager: RuntimeManaging {
         guard candidate.engine == .gamePortingToolkit, candidate.features.d3dmetal else {
             throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is not a Game Porting Toolkit D3DMetal environment.")
         }
-        guard let majorVersion = runtimeMajorVersion(candidate.wineVersion), majorVersion >= 4 else {
+        guard let d3dMetalVersion = candidate.features.d3dmetalVersion,
+              let majorVersion = runtimeMajorVersion(d3dMetalVersion), majorVersion >= 4 else {
             throw RuntimeManagerError.localRuntimeInvalid(
-                "Select Game Porting Toolkit 4 or newer. The selected runtime reports version (candidate.wineVersion)."
+                "Select Game Porting Toolkit 4 or newer. The selected D3DMetal payload version could not be verified."
             )
         }
     }
@@ -1054,10 +1108,7 @@ actor RuntimeManager: RuntimeManaging {
                 "The GPTK 4 payload is incomplete. Missing: \(missing.joined(separator: ", "))."
             )
         }
-        let d3dMetalInfo = libraryRoot.appending(path: "external/D3DMetal.framework/Resources/Info.plist")
-        guard let infoData = try? Data(contentsOf: d3dMetalInfo),
-              let info = try? PropertyListSerialization.propertyList(from: infoData, options: [], format: nil) as? [String: Any],
-              let version = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let version = try? readD3DMetalPayloadVersion(from: libraryRoot),
               let majorVersion = runtimeMajorVersion(version), majorVersion >= 4 else {
             throw RuntimeManagerError.localRuntimeInvalid(
                 "The GPTK 4 D3DMetal framework does not report version 4 or newer."
@@ -1087,57 +1138,120 @@ actor RuntimeManager: RuntimeManaging {
         version.split(whereSeparator: { !$0.isNumber }).first.flatMap { Int($0) }
     }
 
-    private func localGPTKApplication() -> URL? {
-        for root in localApplicationRoots {
-            guard let apps = try? fileManager.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for app in apps where app.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
-                guard let candidate = makeLocalRuntimeCandidate(at: app), candidate.engine == .gamePortingToolkit else { continue }
-                return app
-            }
-        }
-        return nil
-    }
-
-    private func mergeDirectory(from source: URL, into destination: URL) throws {
-        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
-        guard let items = try? fileManager.contentsOfDirectory(
-            at: source,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: []
-        ) else { throw RuntimeManagerError.localRuntimeInvalid("The D3DMetal redist directory could not be read.") }
-        for item in items {
-            let target = destination.appending(path: item.lastPathComponent)
-            let values = try item.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            if values.isSymbolicLink == true {
-                if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
-                try fileManager.copyItem(at: item, to: target)
-            } else if values.isDirectory == true {
-                if fileManager.fileExists(atPath: target.path),
-                   (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true {
-                    try fileManager.removeItem(at: target)
-                }
-                try mergeDirectory(from: item, into: target)
-            } else {
-                if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
-                try fileManager.copyItem(at: item, to: target)
-            }
-        }
-    }
-
-    private func updateGPTKBundleVersion(at app: URL, version: String, displayName: String) throws {
-        let infoURL = app.appending(path: "Contents/Info.plist")
+    private func readD3DMetalPayloadVersion(from libraryRoot: URL) throws -> String {
+        let infoURL = libraryRoot.appending(path: "external/D3DMetal.framework/Resources/Info.plist")
         let data = try Data(contentsOf: infoURL)
-        guard var plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
-            throw RuntimeManagerError.localRuntimeInvalid("The base Game Porting Toolkit app has an invalid Info.plist.")
+        guard let info = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let version = (info["CFBundleShortVersionString"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !version.isEmpty else {
+            throw RuntimeManagerError.localRuntimeInvalid("The D3DMetal framework does not contain a readable version.")
         }
-        plist["CFBundleShortVersionString"] = version
-        plist["CFBundleVersion"] = version
-        plist["CFBundleName"] = displayName
-        try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0).write(to: infoURL, options: .atomic)
+        return version
+    }
+
+    private func readD3DMetalPayloadVersion(inApp app: URL) -> String? {
+        try? readD3DMetalPayloadVersion(
+            from: app.appending(path: "Contents/Resources/wine/lib", directoryHint: .isDirectory)
+        )
+    }
+
+    private func overlayGPTKGraphicsPayload(from source: URL, into wineLibraries: URL) throws {
+        let externalSource = source.appending(path: "external", directoryHint: .isDirectory)
+        let externalDestination = wineLibraries.appending(path: "external", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: externalDestination, withIntermediateDirectories: true)
+        for name in ["libd3dshared.dylib", "D3DMetal.framework"] {
+            try overlayItem(
+                from: externalSource.appending(path: name),
+                to: externalDestination.appending(path: name)
+            )
+        }
+
+        for directory in ["x86_64-unix", "x86_64-windows"] {
+            let sourceDirectory = source.appending(path: "wine/\(directory)", directoryHint: .isDirectory)
+            let destinationDirectory = wineLibraries.appending(path: "wine/\(directory)", directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+            guard let items = try? fileManager.contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: []) else {
+                throw RuntimeManagerError.localRuntimeInvalid("The GPTK 4 graphics payload is missing its \(directory) overlay directory.")
+            }
+            for item in items where isGPTKGraphicsLibrary(item.lastPathComponent) {
+                try overlayItem(from: item, to: destinationDirectory.appending(path: item.lastPathComponent))
+            }
+        }
+    }
+
+    private func isGPTKGraphicsLibrary(_ name: String) -> Bool {
+        let normalized = name.lowercased()
+        return normalized.hasPrefix("d3d")
+            || normalized.hasPrefix("dxgi")
+            || normalized.hasPrefix("nvapi")
+            || normalized.hasPrefix("nvngx")
+            || normalized.hasPrefix("winemetal")
+    }
+
+    private func overlayItem(from source: URL, to destination: URL) throws {
+        guard fileManager.fileExists(atPath: source.path) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The GPTK graphics payload is missing \(source.lastPathComponent).")
+        }
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.copyItem(at: source, to: destination)
+    }
+
+    private func compatibleWineBaseCandidate() throws -> LocalRuntimeCandidate {
+        let wineCandidates = discoveredLocalRuntimeCandidates()
+            .filter { candidate in
+                candidate.engine == .wine
+                    && candidate.architecture == .x86_64
+                    && candidate.features.supportsWin64Execution == true
+            }
+            .sorted { isRuntimeVersion($0.wineVersion, newerThan: $1.wineVersion) }
+        guard let candidate = wineCandidates.first(where: {
+            isRuntimeVersion($0.wineVersion, atLeast: Self.minimumGPTKWineVersion)
+        }) else {
+            let available = wineCandidates.first?.wineVersion ?? "none"
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "GPTK 4 requires a complete x86_64 Wine \(Self.minimumGPTKWineVersion)+ base runtime. Available Wine base: \(available). Import Wine 11.17 or newer first."
+            )
+        }
+        return candidate
+    }
+
+    private func isRuntimeVersion(_ lhs: String, atLeast rhs: String) -> Bool {
+        let left = runtimeVersionComponents(lhs)
+        let right = runtimeVersionComponents(rhs)
+        for index in 0..<max(left.count, right.count) {
+            let lhsValue = index < left.count ? left[index] : 0
+            let rhsValue = index < right.count ? right[index] : 0
+            if lhsValue != rhsValue { return lhsValue > rhsValue }
+        }
+        return true
+    }
+
+    private func isRuntimeVersion(_ lhs: String, newerThan rhs: String) -> Bool {
+        let left = runtimeVersionComponents(lhs)
+        let right = runtimeVersionComponents(rhs)
+        for index in 0..<max(left.count, right.count) {
+            let lhsValue = index < left.count ? left[index] : 0
+            let rhsValue = index < right.count ? right[index] : 0
+            if lhsValue != rhsValue { return lhsValue > rhsValue }
+        }
+        return false
+    }
+
+    private func runtimeVersionComponents(_ version: String) -> [Int] {
+        var components: [Int] = []
+        var digits = ""
+        for character in version {
+            if character.isNumber {
+                digits.append(character)
+            } else if !digits.isEmpty {
+                components.append(Int(digits) ?? 0)
+                digits.removeAll(keepingCapacity: true)
+            }
+        }
+        if !digits.isEmpty { components.append(Int(digits) ?? 0) }
+        return components
     }
 
     private func importLocalRuntime(
@@ -1255,11 +1369,20 @@ actor RuntimeManager: RuntimeManaging {
             // starting this transaction. Do not repeat a platform probe after
             // the expensive copy: Rosetta detection is an external check and a
             // transient second failure must not invalidate a sound snapshot.
-            let validation = try await validate(provisional, checkingRequirements: false)
+            let validation = try await validate(
+                provisional,
+                checkingRequirements: false,
+                requireGraphicsVerification: false
+            )
             guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
-            let probedCapabilities = try await smokeTest(provisional)
-            if let probedCapabilities {
+            let smoke = try await smokeTest(provisional)
+            if let probedCapabilities = smoke.architectureCapabilities {
                 detectedFeatures = applying(probedCapabilities, to: detectedFeatures)
+            }
+            if let d3dmetalVerified = smoke.d3dmetalVerified {
+                detectedFeatures.d3dmetalVerified = d3dmetalVerified
+            }
+            if smoke.architectureCapabilities != nil || smoke.d3dmetalVerified != nil {
                 let updatedManifest = BorealRuntime(
                     schemaVersion: localManifest.schemaVersion,
                     id: localManifest.id,
@@ -1277,6 +1400,16 @@ actor RuntimeManager: RuntimeManaging {
                 )
                 try makeEncoder().encode(updatedManifest.packageManifest)
                     .write(to: staging.appending(path: "runtime.json"), options: .atomic)
+            }
+
+            let verifiedProvisional = runtimeWithFeatures(provisional, features: detectedFeatures)
+            let verifiedValidation = try await validate(
+                verifiedProvisional,
+                checkingRequirements: false,
+                requireGraphicsVerification: true
+            )
+            guard verifiedValidation.isReady else {
+                throw RuntimeManagerError.validationFailed(verifiedValidation)
             }
 
             let installed = InstalledRuntime(
@@ -1349,11 +1482,48 @@ actor RuntimeManager: RuntimeManaging {
                 throw RuntimeManagerError.packageManifestMismatch
             }
             let provisional = try resolveRuntime(manifest: runtime, root: staging)
-            let validation = try await validate(provisional)
+            let validation = try await validate(
+                provisional,
+                checkingRequirements: false,
+                requireGraphicsVerification: false
+            )
             guard validation.isReady else { throw RuntimeManagerError.validationFailed(validation) }
             var installedFeatures = runtime.features
-            if let probedCapabilities = try await smokeTest(provisional) {
+            let smoke = try await smokeTest(provisional)
+            if let probedCapabilities = smoke.architectureCapabilities {
                 installedFeatures = applying(probedCapabilities, to: installedFeatures)
+            }
+            if let d3dmetalVerified = smoke.d3dmetalVerified {
+                installedFeatures.d3dmetalVerified = d3dmetalVerified
+            }
+            if smoke.architectureCapabilities != nil || smoke.d3dmetalVerified != nil {
+                let updatedManifest = BorealRuntime(
+                    schemaVersion: runtime.schemaVersion,
+                    id: runtime.id,
+                    displayName: runtime.displayName,
+                    wineVersion: runtime.wineVersion,
+                    borealRevision: runtime.borealRevision,
+                    architecture: runtime.architecture,
+                    minimumMacOS: runtime.minimumMacOS,
+                    channel: runtime.channel,
+                    engine: runtime.engine,
+                    requirements: runtime.requirements,
+                    features: installedFeatures,
+                    components: runtime.components,
+                    layout: runtime.layout,
+                    artifact: runtime.artifact
+                )
+                try makeEncoder().encode(updatedManifest.packageManifest)
+                    .write(to: staging.appending(path: "runtime.json"), options: .atomic)
+            }
+            let verifiedProvisional = runtimeWithFeatures(provisional, features: installedFeatures)
+            let verifiedValidation = try await validate(
+                verifiedProvisional,
+                checkingRequirements: false,
+                requireGraphicsVerification: true
+            )
+            guard verifiedValidation.isReady else {
+                throw RuntimeManagerError.validationFailed(verifiedValidation)
             }
 
             let relativeWine = try relativePath(of: provisional.wineExecutable, inside: staging)
@@ -1393,20 +1563,31 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation {
-        try await validate(runtime, checkingRequirements: true)
+        try await validate(runtime, checkingRequirements: true, requireGraphicsVerification: true)
     }
 
-    private func validate(_ runtime: InstalledRuntime, checkingRequirements: Bool) async throws -> RuntimeValidation {
+    private func validate(
+        _ runtime: InstalledRuntime,
+        checkingRequirements: Bool,
+        requireGraphicsVerification: Bool
+    ) async throws -> RuntimeValidation {
         let executables = [runtime.wineExecutable, runtime.wineServerExecutable, runtime.wineBootExecutable]
         var missing = executables.filter { !fileManager.isExecutableFile(atPath: $0.path) }.map(\.path)
         let metadata = runtime.rootURL.appending(path: "runtime.json")
+        var manifestD3DMetalVerified = false
         if let data = try? Data(contentsOf: metadata),
            let manifest = try? JSONDecoder().decode(RuntimePackageManifest.self, from: data) {
+            manifestD3DMetalVerified = manifest.features.hasVerifiedD3DMetal
             for path in [manifest.layout.dependenciesDirectory, manifest.layout.supportDirectory, manifest.layout.licensesDirectory, manifest.layout.noticesFile, manifest.layout.sbomFile] {
                 if let required = try? containedURL(path, root: runtime.rootURL), !fileManager.fileExists(atPath: required.path) { missing.append(required.path) }
             }
         } else {
             missing.append(metadata.path)
+        }
+        if requireGraphicsVerification,
+           runtime.resolvedEngine == .gamePortingToolkit,
+           (runtime.features?.hasVerifiedD3DMetal != true || !manifestD3DMetalVerified) {
+            missing.append("D3DMetal graphics self-test")
         }
         var unmet: Set<RuntimeRequirement> = []
         if checkingRequirements {
@@ -1435,18 +1616,30 @@ actor RuntimeManager: RuntimeManaging {
                 detectedVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        let versionMatchesManifest: Bool
-        if runtime.resolvedEngine == .gamePortingToolkit {
-            // GPTK's app bundle version (for example 3.0-2) intentionally
-            // differs from the embedded Wine version string (for example
-            // wine-7.7 (Game Porting Toolkit 1.1)). Confirm the engine
-            // identity here; the package version remains sourced from the
-            // copied app's signed Info.plist metadata.
-            versionMatchesManifest = detectedVersion?.localizedCaseInsensitiveContains("Game Porting Toolkit") == true
-        } else {
-            versionMatchesManifest = detectedVersion?.contains(runtime.wineVersion) == true
-        }
+        let versionMatchesManifest = runtimeVersionMatchesManifest(
+            detectedVersion,
+            runtime: runtime
+        )
         return RuntimeValidation(detectedWineVersion: detectedVersion, versionMatchesManifest: versionMatchesManifest, missingPaths: missing, unmetRequirements: unmet, executablePaths: executables.map(\.path))
+    }
+
+    private func runtimeVersionMatchesManifest(
+        _ detectedVersion: String?,
+        runtime: InstalledRuntime
+    ) -> Bool {
+        guard let detectedVersion else { return false }
+        if runtime.resolvedEngine == .gamePortingToolkit {
+            // Older GPTK app bundles identify themselves in Wine's version
+            // string (for example `wine-7.7 (Game Porting Toolkit 1.1)`),
+            // while newer composed snapshots report the compatible Wine base
+            // version (for example `wine-11.17`). The manifest's
+            // `wineVersion` is the bundle version for the former and the base
+            // Wine version for the latter, so accept either authoritative
+            // identity instead of comparing unlike version namespaces.
+            return detectedVersion.localizedCaseInsensitiveContains("Game Porting Toolkit")
+                || detectedVersion.localizedCaseInsensitiveContains(runtime.wineVersion)
+        }
+        return detectedVersion.localizedCaseInsensitiveContains(runtime.wineVersion)
     }
 
     func remove(_ runtime: InstalledRuntime) async throws {
@@ -1596,14 +1789,18 @@ actor RuntimeManager: RuntimeManaging {
         return InstalledRuntime(id: manifest.id, displayName: manifest.displayName, wineVersion: manifest.wineVersion, rootURL: root, wineExecutable: wine, wineServerExecutable: server, wineBootExecutable: boot, architecture: manifest.architecture, requirements: manifest.requirements, engine: manifest.engine, features: manifest.features)
     }
 
-    private func smokeTest(_ runtime: InstalledRuntime) async throws -> RuntimeArchitectureCapabilities? {
+    private func smokeTest(_ runtime: InstalledRuntime) async throws -> RuntimeSmokeTestResult {
         let prefix = runtimesURL.appending(path: ".installing/smoke-\(UUID().uuidString)", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: prefix, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: prefix) }
         var environment = runtimeEnvironment(runtime)
         environment["WINEPREFIX"] = prefix.path
+        // A modern WoW64 runtime chooses its architecture from the prefix.
+        // Never let an inherited WINEARCH force the wrong mode during import.
+        environment.removeValue(forKey: "WINEARCH")
         environment["WINEDEBUG"] = "-all"
         var probedCapabilities: RuntimeArchitectureCapabilities?
+        var d3dmetalVerified: Bool?
         let request = ProcessLaunchRequest(
             executable: runtime.wineBootExecutable,
             arguments: ["--init"],
@@ -1649,12 +1846,110 @@ actor RuntimeManager: RuntimeManaging {
                 ))
             }
             probedCapabilities = await probeArchitectureCapabilities(runtime, prefix: prefix)
+            if runtime.resolvedEngine == .gamePortingToolkit {
+                try await runD3DMetalGraphicsProbe(runtime, prefix: prefix)
+                d3dmetalVerified = true
+            }
         } catch {
             await stopWineServer(runtime, environment: environment, prefix: prefix)
             throw error
         }
         await stopWineServer(runtime, environment: environment, prefix: prefix)
-        return probedCapabilities
+        return RuntimeSmokeTestResult(
+            architectureCapabilities: probedCapabilities,
+            d3dmetalVerified: d3dmetalVerified
+        )
+    }
+
+    private func runD3DMetalGraphicsProbe(_ runtime: InstalledRuntime, prefix: URL) async throws {
+        guard let graphicsProbeURL,
+              fileManager.isReadableFile(atPath: graphicsProbeURL.path) else {
+            throw RuntimeManagerError.validationFailed(RuntimeValidation(
+                detectedWineVersion: runtime.wineVersion,
+                versionMatchesManifest: true,
+                missingPaths: ["BorealGraphicsProbe.exe is not bundled with Boreal"],
+                unmetRequirements: [],
+                executablePaths: [runtime.wineExecutable.path]
+            ))
+        }
+
+        let wineLibraries = runtime.rootURL.appending(
+            path: "Runtime/Wine.app/Contents/Resources/wine/lib",
+            directoryHint: .isDirectory
+        )
+        let d3dMetalBinary = wineLibraries.appending(
+            path: "external/D3DMetal.framework/D3DMetal"
+        )
+        let externalLibraries = wineLibraries.appending(path: "external", directoryHint: .isDirectory)
+        let unixLibraries = wineLibraries.appending(
+            path: "wine/x86_64-unix",
+            directoryHint: .isDirectory
+        )
+        guard fileManager.isReadableFile(atPath: d3dMetalBinary.path),
+              fileManager.fileExists(atPath: externalLibraries.path),
+              fileManager.fileExists(atPath: unixLibraries.path) else {
+            throw RuntimeManagerError.validationFailed(RuntimeValidation(
+                detectedWineVersion: runtime.wineVersion,
+                versionMatchesManifest: true,
+                missingPaths: [
+                    "D3DMetal.framework/D3DMetal",
+                    "D3DMetal external library directory",
+                    "GPTK x86_64 Unix shim directory"
+                ],
+                unmetRequirements: [],
+                executablePaths: [runtime.wineExecutable.path]
+            ))
+        }
+
+        var environment = runtimeEnvironment(runtime)
+        environment["WINEPREFIX"] = prefix.path
+        environment.removeValue(forKey: "WINEARCH")
+        environment["WINEDEBUG"] = "err+all"
+        environment["D3DMETAL_FRAMEWORK_PATH"] = d3dMetalBinary.path
+        environment["DYLD_FALLBACK_LIBRARY_PATH"] = [externalLibraries.path, wineLibraries.path].joined(separator: ":")
+        // The n,b overrides select GPTK's route first and retain Wine's
+        // bundled implementation as a controlled fallback. WINEDLLPATH is
+        // for the Unix-side shims; the bundled x86_64 Windows route DLLs are
+        // resolved by this runtime's Wine loader.
+        environment["WINEDLLPATH"] = unixLibraries.path
+        environment["WINEDLLOVERRIDES"] = [
+            "d3d10=n,b",
+            "d3d10_1=n,b",
+            "d3d10core=n,b",
+            "d3d11=n,b",
+            "d3d12=n,b",
+            "d3d12core=n,b",
+            "dxgi=n,b"
+        ].joined(separator: ";")
+
+        let stdoutLog = prefix.appending(path: "d3dmetal-probe.stdout.log")
+        let stderrLog = prefix.appending(path: "d3dmetal-probe.stderr.log")
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineExecutable,
+            arguments: [graphicsProbeURL.path],
+            environment: environment,
+            currentDirectory: prefix,
+            stdoutLog: stdoutLog,
+            stderrLog: stderrLog
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        let output = (try? String(contentsOf: stdoutLog, encoding: .utf8)) ?? ""
+        let hasDXGI = output.contains("BOREAL_DXGI_INITIALIZED")
+        let hasD3D11 = output.contains("BOREAL_D3D11_DEVICE_INITIALIZED")
+        guard result.exitCode == 0, hasDXGI, hasD3D11 else {
+            throw RuntimeManagerError.validationFailed(RuntimeValidation(
+                detectedWineVersion: runtime.wineVersion,
+                versionMatchesManifest: true,
+                missingPaths: [
+                    "D3DMetal graphics probe failed (exit \(result.exitCode)); see \(stderrLog.lastPathComponent)",
+                    !hasDXGI ? "DXGI initialization marker" : nil,
+                    !hasD3D11 ? "D3D11 device initialization marker" : nil
+                ].compactMap { $0 },
+                unmetRequirements: [],
+                executablePaths: [runtime.wineExecutable.path, graphicsProbeURL.path]
+            ))
+        }
     }
 
     private func stopWineServer(_ runtime: InstalledRuntime, environment: [String: String], prefix: URL) async {
@@ -1791,6 +2086,23 @@ actor RuntimeManager: RuntimeManaging {
         let bin = runtime.wineExecutable.deletingLastPathComponent().path
         environment["PATH"] = bin + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
         return environment
+    }
+
+    private func runtimeWithFeatures(_ runtime: InstalledRuntime, features: RuntimeFeatures) -> InstalledRuntime {
+        InstalledRuntime(
+            id: runtime.id,
+            displayName: runtime.displayName,
+            wineVersion: runtime.wineVersion,
+            rootURL: runtime.rootURL,
+            wineExecutable: runtime.wineExecutable,
+            wineServerExecutable: runtime.wineServerExecutable,
+            wineBootExecutable: runtime.wineBootExecutable,
+            architecture: runtime.architecture,
+            requirements: runtime.requirements,
+            origin: runtime.origin,
+            engine: runtime.engine,
+            features: features
+        )
     }
 
     private func relocated(_ runtime: InstalledRuntime, from oldRoot: URL, to newRoot: URL) -> InstalledRuntime {

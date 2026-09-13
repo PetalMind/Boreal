@@ -565,6 +565,9 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     /// True when the linked store record supplies presentation metadata only.
     /// Boreal still launches the imported executable directly.
     var storeMetadataOnly: Bool? = nil
+    /// True when the user explicitly selected the executable used by the main
+    /// Play action. Optional keeps older library files decodable.
+    var usesCustomLaunchExecutable: Bool? = nil
     var communityCompatibility: CommunityCompatibility?
     var compatibilityProfile: WineCompatibilityProfile?
     /// Optional keeps library files written by older Boreal builds decodable.
@@ -592,6 +595,7 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
         usesSharedSteamEnvironment && !isSteamRuntimeHost
     }
     var resolvedAuxiliaryExecutables: [AuxiliaryExecutable] { auxiliaryExecutables ?? [] }
+    var hasCustomLaunchExecutable: Bool { usesCustomLaunchExecutable == true }
     var storeReference: StoreReference? {
         guard let storeProvider, let storeExternalID, !storeExternalID.isEmpty else { return nil }
         return StoreReference(provider: storeProvider, externalID: storeExternalID)
