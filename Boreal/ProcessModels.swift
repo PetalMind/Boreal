@@ -122,6 +122,7 @@ nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
     case steamAppIDFileUnavailable(URL, underlying: String)
     case unityWinRTShimUnavailable(URL, underlying: String)
     case grimDawnSettingsUnavailable(URL, underlying: String)
+    case sacredGoldSettingsUnavailable(URL, underlying: String)
     case dlssUnlockerArchiveUnsupported(URL)
     case dlssUnlockerArchiveUnsafe(String)
     case dlssUnlockerMissingFiles([String])
@@ -138,6 +139,8 @@ nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
             "Boreal couldn’t prepare Tainted Grail’s Unity runtime compatibility file at \(url.path): \(underlying)"
         case .grimDawnSettingsUnavailable(let url, let underlying):
             "Boreal couldn’t prepare Grim Dawn’s display settings at \(url.path): \(underlying)"
+        case .sacredGoldSettingsUnavailable(let url, let underlying):
+            "Boreal couldn’t prepare Sacred Gold’s display settings at \(url.path): \(underlying)"
         case .dlssUnlockerArchiveUnsupported(let url):
             "The GTA San Andreas DLSS Unlocker must be supplied as a ZIP archive: \(url.lastPathComponent)."
         case .dlssUnlockerArchiveUnsafe(let path):
@@ -161,6 +164,7 @@ nonisolated enum GameLaunchCompatibilityError: LocalizedError, Sendable {
 nonisolated enum GameLaunchCompatibility {
     private static let torchlightAppID = "200710"
     private static let taintedGrailIDs: Set<String> = ["1887281589", "1466060"]
+    private static let sacredGoldAppID = "1207658688"
     static let gtaSanAndreasDefinitiveEditionSteamAppID = "1547000"
     private static let dlssUnlockerFiles = ["nvngx.dll", "nvngx.ini", "winmm.dll"]
     private static let dlssUnlockerRegistryFiles = ["EnableSignatureOverride.reg", "DisableSignatureOverride.reg"]
@@ -473,6 +477,11 @@ nonisolated enum GameLaunchCompatibility {
         runtime: InstalledRuntime? = nil
     ) throws {
         if application.storeProvider == .gog,
+           application.storeExternalID == sacredGoldAppID {
+            try prepareSacredGoldSettings(for: application)
+        }
+
+        if application.storeProvider == .gog,
            application.storeExternalID == "1449651388",
            let environment {
             try prepareGrimDawnDisplaySettings(in: environment)
@@ -503,6 +512,87 @@ nonisolated enum GameLaunchCompatibility {
         } catch {
             throw GameLaunchCompatibilityError.steamAppIDFileUnavailable(
                 appIDFile,
+                underlying: error.localizedDescription
+            )
+        }
+    }
+
+    /// Sacred's original configuration defaults are unsafe on modern display
+    /// stacks. Keep the game windowed, request its 32-bit surface, disable
+    /// the old vertical-retrace wait, and skip the startup movie path. The
+    /// first version written by Boreal is retained beside the file so the
+    /// user's original settings are not lost.
+    private static func prepareSacredGoldSettings(
+        for application: WindowsApplication,
+        fileManager: FileManager = .default
+    ) throws {
+        let configuredExecutable = URL(fileURLWithPath: application.executablePath)
+        let roots = [
+            configuredExecutable.deletingLastPathComponent(),
+            configuredExecutable
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+        ]
+        guard let gameDirectory = roots.first(where: { directory in
+            let executable = directory.appending(path: "Sacred.exe")
+            return fileManager.isReadableFile(atPath: executable.path)
+        }) else {
+            // GOG metadata can temporarily point to a launcher while the
+            // store service is resolving the real executable. Do not turn
+            // that transient state into a launch failure.
+            return
+        }
+
+        let settingsURL = gameDirectory.appending(path: "Settings.cfg")
+        guard fileManager.isReadableFile(atPath: settingsURL.path) else { return }
+        let backupURL = gameDirectory.appending(path: "Settings.cfg.boreal-backup")
+
+        do {
+            let existing = try String(contentsOf: settingsURL, encoding: .utf8)
+            if !fileManager.fileExists(atPath: backupURL.path) {
+                try existing.write(to: backupURL, atomically: true, encoding: .utf8)
+            }
+
+            let newline = existing.contains("\r\n") ? "\r\n" : "\n"
+            var lines = existing
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .components(separatedBy: "\n")
+            let values = [
+                "FULLSCREEN": "0",
+                "GFX32": "1",
+                "GFX_LIMIT128": "0",
+                "SHOWMOVIE": "0",
+                "WAITRETRACE": "0"
+            ]
+            var changed = false
+            for (key, value) in values {
+                let replacement = "\(key) : \(value)"
+                if let index = lines.firstIndex(where: { line in
+                    line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                        .first
+                        .map(String.init)?
+                        .caseInsensitiveCompare(key) == .orderedSame
+                }) {
+                    if lines[index] != replacement {
+                        lines[index] = replacement
+                        changed = true
+                    }
+                } else {
+                    if !lines.isEmpty, !lines[lines.count - 1].isEmpty {
+                        lines.append("")
+                    }
+                    lines.append(replacement)
+                    changed = true
+                }
+            }
+            guard changed else { return }
+            let output = lines.joined(separator: "\n")
+                .replacingOccurrences(of: "\n", with: newline)
+            try output.write(to: settingsURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw GameLaunchCompatibilityError.sacredGoldSettingsUnavailable(
+                settingsURL,
                 underlying: error.localizedDescription
             )
         }

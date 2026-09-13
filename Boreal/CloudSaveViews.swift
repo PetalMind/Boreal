@@ -31,8 +31,8 @@ struct CloudSaveCard: View {
                 Text(reason)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            } else if linkedApplication == nil {
-                Label("Prepare the Windows game environment to enable GOG Cloud Saves.", systemImage: "info.circle")
+            } else if let setupMessage {
+                Label(setupMessage, systemImage: "info.circle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -71,7 +71,7 @@ struct CloudSaveCard: View {
                     Text("Save location")
                         .font(.callout.weight(.medium))
                     HStack(spacing: 8) {
-                        TextField(#"C:\Users\boreal\Documents\Game\Saves"#, text: $windowsPath)
+                        TextField(#"e.g. C:\Users\boreal\Documents\Game\Saves"#, text: $windowsPath)
                             .textFieldStyle(.roundedBorder)
                             .font(.callout.monospaced())
                         Button("Save") {
@@ -85,7 +85,12 @@ struct CloudSaveCard: View {
                         savePath()
                     }
                     .buttonStyle(.link)
-                    .disabled(isSavingPath || windowsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isSavingPath)
+                    if status.pathSource == nil {
+                        Text("No save folder was detected. Enter the actual Windows folder used by this game; Boreal will not sync a guessed or empty folder.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if let pathSource = status.pathSource {
                         Label(
                             pathSource == .detected ? "Detected automatically" : "Configured manually",
@@ -197,29 +202,54 @@ struct CloudSaveCard: View {
         }
     }
 
+    private var setupMessage: String? {
+        guard let application = linkedApplication else {
+            return "Prepare the Windows game environment to enable GOG Cloud Saves."
+        }
+        guard let installation = store.installation(for: game) else {
+            return "Install the Windows version of this game before configuring GOG Cloud Saves."
+        }
+        guard installation.platform == .windows else {
+            return "GOG Cloud Saves require the Windows version of this game."
+        }
+        guard installation.state == .installed else {
+            return "Finish preparing the Windows game environment before configuring GOG Cloud Saves."
+        }
+        guard let environmentPath = store.environment(id: application.environmentID)?.prefixPath,
+              !environmentPath.isEmpty else {
+            return "Prepare the Windows game environment to enable GOG Cloud Saves."
+        }
+        return nil
+    }
+
     @ViewBuilder private var statusBadge: some View {
-        switch status.state {
-        case .synced:
-            Label("Synced", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .syncing:
-            Label("Syncing…", systemImage: "arrow.triangle.2.circlepath")
-                .foregroundStyle(.cyan)
-        case .checking:
-            Label("Checking…", systemImage: "ellipsis.circle")
-                .foregroundStyle(.secondary)
-        case .conflict:
-            Label("Conflict", systemImage: "exclamationmark.triangle.fill")
+        if setupMessage != nil {
+            Label("Setup required", systemImage: "wrench.and.screwdriver")
                 .foregroundStyle(.orange)
-        case .needsConfiguration:
-            Label("Path required", systemImage: "folder.badge.questionmark")
-                .foregroundStyle(.orange)
-        case .failed:
-            Label("Unavailable", systemImage: "xmark.circle.fill")
-                .foregroundStyle(.orange)
-        case .unavailable:
-            Label("Unavailable", systemImage: "minus.circle")
-                .foregroundStyle(.secondary)
+        } else {
+            switch status.state {
+            case .synced:
+                Label("Synced", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .syncing:
+                Label("Syncing…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.cyan)
+            case .checking:
+                Label("Checking…", systemImage: "ellipsis.circle")
+                    .foregroundStyle(.secondary)
+            case .conflict:
+                Label("Conflict", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            case .needsConfiguration:
+                Label("Path required", systemImage: "folder.badge.questionmark")
+                    .foregroundStyle(.orange)
+            case .failed:
+                Label("Unavailable", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.orange)
+            case .unavailable:
+                Label("Unavailable", systemImage: "minus.circle")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

@@ -93,11 +93,17 @@ final class BorealStore {
     var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
     var diskStorageOperationIDs: Set<UUID> = []
     var gameRelocationProgress: String?
+    /// Per-game mod profiles are stored outside the Library database because
+    /// they own staged files and deployment receipts, not library metadata.
+    private(set) var modStates: [UUID: ModGameState] = [:]
+    private(set) var modHealth: [UUID: ModDeploymentHealth] = [:]
+    private(set) var modOperationGameIDs: Set<UUID> = []
     private let storageURL: URL
     private let storageLayout: BorealStorageLayout
     private let libraryRepository: LibraryRepository
     private let usesLayeredStorage: Bool
     private let services: BorealServices
+    private let modManager: ModManager
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
     /// Developer-mode diagnostics: the last immutable plan prepared for each
@@ -166,6 +172,7 @@ final class BorealStore {
         self.libraryRepository = LibraryRepository(layout: layout)
         self.usesLayeredStorage = storageURL == nil
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
+        self.modManager = ModManager(applicationSupportURL: supportRoot)
         load()
         let savedDiscoveryURL = supportRoot.appending(path: "Discovery/saved-games.json")
         if FileManager.default.fileExists(atPath: savedDiscoveryURL.path) {
@@ -638,7 +645,8 @@ final class BorealStore {
               let environmentRecord = environment(id: application.environmentID),
               let prefixPath = environmentRecord.prefixPath,
               let installation = installation(for: game),
-              installation.platform == .windows else { return nil }
+              installation.platform == .windows,
+              installation.state == .installed else { return nil }
         let configuration = await services.advancedConfigurationStore.configuration(for: application.id)
         let prefixURL = URL(fileURLWithPath: prefixPath, isDirectory: true)
         let resolution = await Task.detached(priority: .utility) {
@@ -1853,6 +1861,266 @@ final class BorealStore {
                 && $0.storeExternalID == game.externalID
         }
     }
+
+    // MARK: - Mods
+
+    func supportsMods(for game: StoreLibraryGame) -> Bool {
+        SkyrimModAdapter.supports(game: game) && modGameContext(for: game) != nil
+    }
+
+    func modGameRoot(for game: StoreLibraryGame) -> URL? {
+        modGameContext(for: game)?.gameRoot
+    }
+
+    func modState(for game: StoreLibraryGame) -> ModGameState? {
+        modStates[game.id]
+    }
+
+    func modProfiles(for game: StoreLibraryGame) -> [ModProfileDescriptor] {
+        modManager.profiles(for: game.id)
+    }
+
+    func modDeploymentHealth(for game: StoreLibraryGame) -> ModDeploymentHealth? {
+        modHealth[game.id]
+    }
+
+    func isModOperationActive(for game: StoreLibraryGame) -> Bool {
+        modOperationGameIDs.contains(game.id)
+    }
+
+    func refreshMods(for game: StoreLibraryGame) {
+        guard SkyrimModAdapter.supports(game: game),
+              let context = modGameContext(for: game) else {
+            modStates[game.id] = nil
+            modHealth[game.id] = nil
+            return
+        }
+        let gameID = game.id
+        let manager = modManager
+        Task { @MainActor [weak self] in
+            do {
+                let state = try await Task.detached(priority: .utility) {
+                    try manager.load(gameID: gameID, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile)
+                }.value
+                self?.modStates[gameID] = state
+                self?.refreshModHealth(for: game, state: state, context: context)
+            } catch {
+                self?.present(error, title: "Mods couldn’t be loaded", stage: "Reading the mod profile")
+            }
+        }
+    }
+
+    func inspectModArchive(_ archive: URL, for game: StoreLibraryGame) async -> ModInstallPreview? {
+        guard SkyrimModAdapter.supports(game: game) else {
+            present(ModManagerError.unsupportedGame(game.name), title: "Mod manager unavailable", stage: "Checking the selected game")
+            return nil
+        }
+        do {
+            let manager = modManager
+            return try await Task.detached(priority: .userInitiated) {
+                try manager.inspect(archive: archive, gameID: game.id)
+            }.value
+        } catch {
+            present(error, title: "Mod archive couldn’t be read", stage: "Inspecting the archive")
+            return nil
+        }
+    }
+
+    func discardModInstallPreview(_ preview: ModInstallPreview) {
+        modManager.discardPreview(preview)
+    }
+
+    func installMod(_ preview: ModInstallPreview, for game: StoreLibraryGame) {
+        guard preview.gameID == game.id,
+              let context = modGameContext(for: game),
+              let profileID = modStates[game.id]?.profileID,
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let gameID = game.id
+        let manager = modManager
+        Task { @MainActor [weak self] in
+            defer { self?.modOperationGameIDs.remove(gameID) }
+            do {
+                let state = try await Task.detached(priority: .userInitiated) {
+                    try manager.install(preview: preview, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile, profileID: profileID)
+                }.value
+                self?.modStates[gameID] = state
+                self?.refreshModHealth(for: game, state: state, context: context)
+            } catch {
+                self?.present(error, title: "Mod couldn’t be installed", stage: "Staging the mod archive")
+            }
+        }
+    }
+
+    func setModEnabled(_ enabled: Bool, modID: UUID, for game: StoreLibraryGame) {
+        guard var state = modStates[game.id], let index = state.mods.firstIndex(where: { $0.id == modID }) else { return }
+        state.mods[index].enabled = enabled
+        persistModState(state, for: game)
+    }
+
+    func moveMod(from offsets: IndexSet, to destination: Int, for game: StoreLibraryGame) {
+        guard var state = modStates[game.id] else { return }
+        var mods = state.mods.sorted { $0.priority < $1.priority }
+        mods = reordered(mods, from: offsets, to: destination)
+        for index in mods.indices { mods[index].priority = index }
+        state.mods = mods
+        persistModState(state, for: game)
+    }
+
+    func setPluginEnabled(_ enabled: Bool, pluginID: String, for game: StoreLibraryGame) {
+        guard var state = modStates[game.id], let index = state.plugins.firstIndex(where: { $0.id == pluginID }) else { return }
+        state.plugins[index].enabled = enabled
+        persistModState(state, for: game)
+    }
+
+    func movePlugin(from offsets: IndexSet, to destination: Int, for game: StoreLibraryGame) {
+        guard var state = modStates[game.id] else { return }
+        var plugins = state.plugins.sorted { $0.loadOrder < $1.loadOrder }
+        plugins = reordered(plugins, from: offsets, to: destination)
+        for index in plugins.indices { plugins[index].loadOrder = index }
+        state.plugins = plugins
+        persistModState(state, for: game)
+    }
+
+    func deployMods(for game: StoreLibraryGame) {
+        guard let state = modStates[game.id],
+              let context = modGameContext(for: game),
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let gameID = game.id
+        let manager = modManager
+        Task { @MainActor [weak self] in
+            defer { self?.modOperationGameIDs.remove(gameID) }
+            do {
+                let deployed = try await Task.detached(priority: .userInitiated) {
+                    try manager.deploy(state: state, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile)
+                }.value
+                self?.modStates[gameID] = deployed
+                self?.refreshModHealth(for: game, state: deployed, context: context)
+            } catch {
+                self?.present(error, title: "Mods couldn’t be deployed", stage: "Applying the selected mod profile")
+            }
+        }
+    }
+
+    func switchModProfile(to profileID: String, for game: StoreLibraryGame) {
+        guard let context = modGameContext(for: game),
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let gameID = game.id
+        let manager = modManager
+        Task { @MainActor [weak self] in
+            defer { self?.modOperationGameIDs.remove(gameID) }
+            do {
+                try manager.activateProfile(profileID, for: gameID)
+                let state = try await Task.detached(priority: .userInitiated) {
+                    try manager.load(gameID: gameID, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile, profileID: profileID)
+                }.value
+                self?.modStates[gameID] = state
+                self?.refreshModHealth(for: game, state: state, context: context)
+            } catch {
+                self?.present(error, title: "Mod profile couldn’t be loaded", stage: "Switching the active profile")
+            }
+        }
+    }
+
+    func createModProfile(named name: String, for game: StoreLibraryGame) {
+        guard let state = modStates[game.id],
+              let context = modGameContext(for: game),
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let gameID = game.id
+        let manager = modManager
+        Task { @MainActor [weak self] in
+            defer { self?.modOperationGameIDs.remove(gameID) }
+            do {
+                let created = try await Task.detached(priority: .userInitiated) {
+                    try manager.createProfile(name: name, from: state)
+                }.value
+                self?.modStates[gameID] = created
+                self?.refreshModHealth(for: game, state: created, context: context)
+            } catch {
+                self?.present(error, title: "Mod profile couldn’t be created", stage: "Saving the new profile")
+            }
+        }
+    }
+
+    private func persistModState(_ state: ModGameState, for game: StoreLibraryGame) {
+        var normalized = state
+        normalized.mods = normalized.mods.enumerated().map { index, mod in
+            var value = mod
+            value.priority = index
+            return value
+        }
+        normalized.plugins = normalized.plugins.enumerated().map { index, plugin in
+            var value = plugin
+            value.loadOrder = index
+            return value
+        }
+        do {
+            try modManager.saveProfile(
+                gameID: game.id,
+                profileID: normalized.profileID,
+                profileName: normalized.profileName,
+                mods: normalized.mods,
+                plugins: normalized.plugins
+            )
+            modStates[game.id] = normalized
+            if let context = modGameContext(for: game) {
+                refreshModHealth(for: game, state: normalized, context: context)
+            }
+        } catch {
+            present(error, title: "Mod profile couldn’t be saved", stage: "Saving mod changes")
+        }
+    }
+
+    private func refreshModHealth(for game: StoreLibraryGame, state: ModGameState, context: ModGameContext) {
+        let manager = modManager
+        let gameID = game.id
+        let fingerprint = ModProfileFingerprint.make(mods: state.mods, plugins: state.plugins)
+        Task { @MainActor [weak self] in
+            let health = await Task.detached(priority: .utility) {
+                manager.deploymentHealth(for: state, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile)
+            }.value
+            guard let self,
+                  let current = self.modStates[gameID],
+                  current.profileID == state.profileID,
+                  ModProfileFingerprint.make(mods: current.mods, plugins: current.plugins) == fingerprint else { return }
+            self.modHealth[gameID] = health
+        }
+    }
+
+    /// Foundation's IndexSet does not provide the SwiftUI Array.move helper.
+    /// Keep the reorder operation in the store independent from the view layer.
+    private func reordered<Element>(_ values: [Element], from offsets: IndexSet, to destination: Int) -> [Element] {
+        let validOffsets = offsets.sorted().filter { values.indices.contains($0) }
+        guard !validOffsets.isEmpty else { return values }
+
+        let moving = validOffsets.map { values[$0] }
+        var remaining = values.enumerated()
+            .filter { !offsets.contains($0.offset) }
+            .map(\.element)
+        let removedBeforeDestination = validOffsets.filter { $0 < destination }.count
+        let insertionIndex = min(
+            max(destination - removedBeforeDestination, 0),
+            remaining.count
+        )
+        remaining.insert(contentsOf: moving, at: insertionIndex)
+        return remaining
+    }
+
+    private struct ModGameContext: Sendable {
+        let gameRoot: URL
+        let pluginsFile: URL?
+    }
+
+    private func modGameContext(for game: StoreLibraryGame) -> ModGameContext? {
+        guard SkyrimModAdapter.supports(game: game) else { return nil }
+        let installationRoot = installedLocation(for: game)
+        let executable = linkedApplication(for: game).map { URL(fileURLWithPath: $0.executablePath) }
+        guard let gameRoot = SkyrimModAdapter.gameRoot(installationRoot: installationRoot, executable: executable) else { return nil }
+        let pluginsFile = linkedApplication(for: game)
+            .flatMap { environment(id: $0.environmentID)?.prefixPath }
+            .flatMap { SkyrimModAdapter.pluginsFile(in: URL(fileURLWithPath: $0, isDirectory: true)) }
+        return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile)
+    }
+
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
 
     func installation(for game: StoreLibraryGame) -> GameInstallation? {
@@ -5802,6 +6070,14 @@ final class BorealStore {
                 profile.prefixMode = managed.configuration.prefixMode
                 profile.requiredDependencies = managed.configuration.requiredDependencies
             }
+            // A built-in profile may intentionally replace a renderer that was
+            // persisted by an older Boreal version. Apply it again after the
+            // environment merge above, otherwise a stale DXVK/dgVoodoo2
+            // selection can win on the first launch after a compatibility fix.
+            profile = GameGraphicsProfiles.effectiveCompatibilityProfile(
+                profile,
+                for: applications[index]
+            )
             if GameGraphicsProfiles.profile(for: applications[index])?.enforcedBackend != nil,
                applications[index].compatibilityProfile != profile {
                 applications[index].compatibilityProfile = profile

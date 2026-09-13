@@ -222,30 +222,25 @@ nonisolated enum GameGraphicsProfiles {
         GameGraphicsProfile(
             provider: .gog,
             externalID: "1207658688",
-            availableAPIs: [.directX9],
-            defaultAPI: .directX9,
-            launchOptions: [
-                GraphicsAPILaunchOption(api: .directX9, arguments: [])
-            ],
-            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. Its native
-            // WineD3D path spends most of its frame time in the legacy
-            // frontbuffer/GDI bridge. Dd7to9 keeps the game's old API while
-            // handing the actual device creation to D3D9 and DXVK.
-            preferredBackend: .dxvk,
-            enforcedBackend: .dxvk,
-            enforcedAPI: .directX9,
-            preferredLegacyWrapper: .dd7to9,
-            enforcedLegacyWrapper: .dd7to9,
+            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. Its
+            // DirectDraw entry point must stay on Wine's builtin path here:
+            // dgVoodoo2's D3D11 device negotiation is not reliable under this
+            // Wine runtime, and Dd7to9's D3D9 path previously returned
+            // D3DERR_NOTAVAILABLE on the same machine.
+            availableAPIs: [.automatic],
+            defaultAPI: .automatic,
+            launchOptions: [],
+            preferredBackend: .wineD3D,
+            enforcedBackend: .wineD3D,
+            enforcedAPI: .automatic,
+            preferredLegacyWrapper: LegacyGraphicsWrapper.none,
+            enforcedLegacyWrapper: LegacyGraphicsWrapper.none,
             enforcedLegacyGraphicsAPI: .directDraw,
             overlayCompatibleFullscreen: false,
-            legacyWrapperSettings: [
-                // Sacred creates a 1024x768 window but Dd7to9 otherwise asks
-                // D3D9 for the host display mode. On ultrawide/high-resolution
-                // displays that device creation fails with D3DERR_NOTAVAILABLE.
-                "DdrawOverrideWidth": "1024",
-                "DdrawOverrideHeight": "768",
-                "DdrawLimitDisplayModeCount": "1"
-            ]
+            enforcedOverlayCompatibleFullscreen: false,
+            // Force WineD3D's OpenGL renderer instead of allowing a runtime
+            // default to select a different legacy path for this game.
+            launchEnvironment: ["WINE_D3D_CONFIG": "renderer=gl"]
         )
     ]
 
@@ -279,6 +274,9 @@ nonisolated enum GameGraphicsProfiles {
             }
             if let enforcedLegacyGraphicsAPI = builtIn.enforcedLegacyGraphicsAPI {
                 effective.legacyGraphicsAPI = enforcedLegacyGraphicsAPI
+            }
+            if let enforcedOverlayCompatibleFullscreen = builtIn.enforcedOverlayCompatibleFullscreen {
+                effective.overlayCompatibleFullscreen = enforcedOverlayCompatibleFullscreen
             }
         }
         if GameRuntimeProfiles.requiredEngine(for: application) == .gamePortingToolkit,

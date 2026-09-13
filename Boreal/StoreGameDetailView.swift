@@ -11,6 +11,7 @@ struct StoreGameDetailView: View {
         case offers
         case activity
         case files
+        case mods
 
         var title: LocalizedStringResource {
             switch self {
@@ -19,6 +20,7 @@ struct StoreGameDetailView: View {
             case .offers: .Library.offersTab
             case .activity: .Library.activityTab
             case .files: .Library.filesTab
+            case .mods: LocalizedStringResource("Mods", defaultValue: "Mods", table: "Library")
             }
         }
     }
@@ -400,6 +402,7 @@ struct StoreGameDetailView: View {
             case .activity: discoveryGame == nil
             case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: store.installedLocation(for: currentGame) != nil || linkedApplication != nil
+            case .mods: store.supportsMods(for: currentGame)
             }
         }
     }
@@ -448,6 +451,8 @@ struct StoreGameDetailView: View {
             activitySection
         case .files:
             installationFilesSection
+        case .mods:
+            ModsView(game: currentGame)
         }
     }
 

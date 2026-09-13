@@ -339,6 +339,10 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     var enforcedLegacyWrapper: LegacyGraphicsWrapper? = nil
     var enforcedLegacyGraphicsAPI: LegacyGraphicsAPI? = nil
     var overlayCompatibleFullscreen: Bool? = nil
+    /// Some games cannot initialize correctly when Wine launches them inside
+    /// the explorer virtual desktop. When set, this value replaces a stale
+    /// persisted overlay setting during profile resolution.
+    var enforcedOverlayCompatibleFullscreen: Bool? = nil
     // Optional so profiles persisted by older Boreal versions remain
     // decodable. These values are merged into the launch plan only when the
     // selected compatibility backend matches the profile's intended backend.

@@ -49,9 +49,9 @@ nonisolated struct LegacyWrapperComponentManifest: Codable, Sendable, Hashable {
     let version: String
     let architectures: [String]
     let supportedAPIs: [LegacyGraphicsAPI]
-    /// Optional for backwards compatibility with the original dgVoodoo2
-    /// package format, where the selected API DLL was the only managed file.
-    /// Dd7to9 uses this list for ddraw.dll, dxwrapper.dll and dxwrapper.ini.
+    /// Optional list shared by every selected API. Dd7to9 uses this list for
+    /// ddraw.dll, dxwrapper.dll and dxwrapper.ini. Older manifests without a
+    /// list fall back to the selected API DLL name.
     let files: [String]?
     /// Maps a legacy API to the DLL that should be copied for that API. This
     /// is needed by dgVoodoo2 because it exposes separate DDraw, D3D8 and
