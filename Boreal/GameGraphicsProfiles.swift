@@ -13,6 +13,10 @@ nonisolated enum GameRuntimeProfiles {
             // WoW64 runtime so its D3DMetal path is selected instead of the
             // legacy GPTK build that cannot create a modern WoW64 prefix.
             return .gamePortingToolkit
+        case (.gog, "1711230643"):
+            // Skyrim Special Edition is a 64-bit DirectX 11 title. Keep it
+            // away from stale GPTK/D3DMetal snapshots and WineD3D.
+            return .wine
         default:
             return nil
         }
@@ -31,6 +35,17 @@ nonisolated enum GameRuntimeProfiles {
 
 nonisolated enum GameGraphicsProfiles {
     static let builtIn: [GameGraphicsProfile] = [
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "1711230643",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX11, arguments: [])],
+            preferredBackend: .dxvk,
+            enforcedBackend: .dxvk,
+            enforcedAPI: .directX11,
+            overlayCompatibleFullscreen: true
+        ),
         GameGraphicsProfile(
             provider: .gog,
             externalID: "1887281589",
@@ -289,6 +304,11 @@ nonisolated enum GameGraphicsProfiles {
             effective.prefixMode = .wow64
             effective.windowsVersion = .windows10
             effective.overlayCompatibleFullscreen = false
+            effective.runtimeIDOverride = nil
+        }
+        if application.storeProvider == .gog,
+           application.storeExternalID == "1711230643",
+           effective.runtimeIDOverride?.contains("game-porting-toolkit") == true {
             effective.runtimeIDOverride = nil
         }
         return effective

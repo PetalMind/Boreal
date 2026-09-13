@@ -463,10 +463,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     /// layered onto a compatible full Wine runtime.
     var d3dmetalVersion: String?
     /// A D3DMetal marker or framework is not enough to make the backend
-    /// usable for a newly imported runtime. `nil` is retained as the legacy
-    /// value for snapshots written before the graphics probe was introduced;
-    /// those snapshots already passed the older D3DMetal payload validation.
-    /// An explicit `false` always means that the probe failed.
+    /// usable. Only a successful DXGI/D3D11 graphics probe sets this flag to
+    /// true; legacy snapshots with no result must be treated as unverified.
     var d3dmetalVerified: Bool?
     var dxmt: Bool
     var dxvk: Bool = false
@@ -575,7 +573,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var supportsWoW64: Bool { resolvedArchitectureCapabilities.usesNewWoW64 }
 
     var hasVerifiedD3DMetal: Bool {
-        d3dmetal && d3dmetalVerified != false
+        d3dmetal && d3dmetalVerified == true
     }
 }
 
