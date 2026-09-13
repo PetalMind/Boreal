@@ -319,12 +319,36 @@ nonisolated enum ExecutableDiscovery {
         guard path.pathExtension.caseInsensitiveCompare("exe") == .orderedSame else { return false }
         let lowerPath = "/" + path.replacingOccurrences(of: "\\", with: "/").lowercased()
         if lowerPath.hasPrefix("/windows/") { return false }
+        if isKnownSystemApplicationPath(lowerPath) { return false }
         let components = normalizedWords(path)
         let joined = components.joined()
         let forbiddenWords: Set<String> = ["uninstall", "uninstaller", "unins"]
         if !Set(components).isDisjoint(with: forbiddenWords) { return false }
         return !["uninstall", "unins"]
             .contains { joined.contains($0) }
+    }
+
+    private static func isKnownSystemApplicationPath(_ lowerPath: String) -> Bool {
+        let systemDirectories = [
+            "/internet explorer/",
+            "/windows media player/",
+            "/windows defender/",
+            "/windows mail/",
+            "/microsoft.net/",
+            "/common files/microsoft shared/",
+            "/windowsapps/",
+        ]
+        if systemDirectories.contains(where: lowerPath.contains) { return true }
+
+        let executableName = lowerPath.split(separator: "/").last.map(String.init) ?? ""
+        let systemExecutables: Set<String> = [
+            "iexplore.exe", "wmplayer.exe", "winmail.exe", "mspaint.exe", "notepad.exe",
+            "wordpad.exe", "calc.exe", "charmap.exe", "magnify.exe", "narrator.exe",
+            "osk.exe", "sndvol.exe", "taskmgr.exe", "regedit.exe", "control.exe",
+            "explorer.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe",
+            "cscript.exe", "msiexec.exe", "rundll32.exe", "hh.exe",
+        ]
+        return systemExecutables.contains(executableName)
     }
 
     private static func nameSimilarity(_ lhs: String, _ rhs: String) -> Double {

@@ -1140,6 +1140,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case alreadyInstalled(String)
     case checksumMismatch(expected: String, actual: String)
     case unsupportedArchive
+    case archiveToolUnavailable(String)
     case runtimeLayoutNotFound
     case packageManifestMismatch
     case unsafeArchive(String)
@@ -1161,6 +1162,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .alreadyInstalled(let id): return "Runtime \(id) is already installed."
         case .checksumMismatch: return "Runtime verification failed because its SHA-256 checksum does not match."
         case .unsupportedArchive: return "The runtime archive format is not supported."
+        case .archiveToolUnavailable(let tool): return "This runtime archive requires \(tool), but the extractor is not installed."
         case .runtimeLayoutNotFound: return "Boreal couldn’t locate Wine inside the runtime package."
         case .packageManifestMismatch: return "The runtime package manifest does not match the signed catalog entry."
         case .unsafeArchive(let path): return "The runtime archive contains an unsafe path: \(path)"

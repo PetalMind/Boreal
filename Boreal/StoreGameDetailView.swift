@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct StoreGameDetailView: View {
     private enum DetailTab: String, CaseIterable {
         case overview
+        case cloudSaves
         case compatibility
         case offers
         case activity
@@ -16,6 +17,7 @@ struct StoreGameDetailView: View {
         var title: LocalizedStringResource {
             switch self {
             case .overview: .Library.overviewTab
+            case .cloudSaves: LocalizedStringResource("Cloud Saves", defaultValue: "Cloud Saves", table: "Library")
             case .compatibility: .Library.compatibilityTab
             case .offers: .Library.offersTab
             case .activity: .Library.activityTab
@@ -403,6 +405,7 @@ struct StoreGameDetailView: View {
             case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: store.installedLocation(for: currentGame) != nil || linkedApplication != nil
             case .mods: store.supportsMods(for: currentGame)
+            case .cloudSaves: discoveryGame == nil && currentGame.provider == .gog
             }
         }
     }
@@ -453,6 +456,8 @@ struct StoreGameDetailView: View {
             installationFilesSection
         case .mods:
             ModsView(game: currentGame)
+        case .cloudSaves:
+            CloudSaveCard(game: currentGame)
         }
     }
 
@@ -462,9 +467,6 @@ struct StoreGameDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 libraryOverview(width: width)
-                if currentGame.provider == .gog {
-                    CloudSaveCard(game: currentGame)
-                }
                 if currentGame.supportsNativeMacOS != true { compatibilityOverview(width: width) }
                 mediaSection(width: width)
                 overviewEditorialGrid(width: width)

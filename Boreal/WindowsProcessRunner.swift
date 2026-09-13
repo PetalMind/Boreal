@@ -47,34 +47,7 @@ nonisolated enum WineLaunchArguments {
 }
 
 actor WindowsProcessRunner: WindowsProcessRunning {
-    private static let metalHUDEnvironmentKeys = [
-        "MTL_HUD_ENABLED",
-        "MTL_HUD_LOG_ENABLED",
-        "MTL_HUD_ELEMENTS",
-        "MTL_HUD_OPACITY",
-        "MTL_HUD_DISABLE_MENU_BAR"
-    ]
-    // Xcode injects Metal/GPUTools validation into the app process when it is
-    // launched from a scheme with GPU diagnostics enabled. Wine inherits the
-    // parent environment, so forwarding these variables would also enable
-    // Apple's MTLTools validation inside the Windows game process. D3DMetal
-    // can then abort on resources still referenced by a command buffer while
-    // the game is loading a save.
-    private static let developerToolsEnvironmentKeys = [
-        "GPUTOOLS_LOAD_GTMTLCAPTURE",
-        "GPUTOOLS_XCODE_DEVELOPER_PATH",
-        "MTL_DEBUG_LAYER",
-        "MTL_DEBUG_LAYER_VALIDATE_LOAD_ACTIONS",
-        "MTL_DEBUG_LAYER_VALIDATE_STORE_ACTIONS",
-        "METAL_LOAD_INTERPOSER",
-        "MTLCAPTURE_DESTINATION_DEVELOPER_TOOLS_ENABLE",
-        "DYMTL_TOOLS_DYLIB_PATH",
-        "DYLD_INSERT_LIBRARIES",
-        "DYLD_LIBRARY_PATH",
-        "DYLD_FRAMEWORK_PATH",
-        "__XPC_DYLD_LIBRARY_PATH",
-        "__XPC_DYLD_FRAMEWORK_PATH"
-    ]
+    private static let metalHUDEnvironmentKeys = WineProcessEnvironment.metalHUDEnvironmentKeys
     private let processExecutor: any ProcessExecuting
     private let probeObservationWindow: Duration
     private var executorIDs: [UUID: UUID] = [:]
@@ -476,9 +449,19 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             let relative = String(normalizedPath.dropFirst(prefixURL.standardizedFileURL.path.count + 1))
             windowsPath = "z:\\" + relative.replacingOccurrences(of: "/", with: "\\")
         } else {
-            return []
+            // Imported games may remain outside the managed prefix. Wine
+            // exposes those files through its default Z: drive, so retain a
+            // path hint instead of falling back to an executable-name-only
+            // match.
+            let absolute = normalizedPath.hasPrefix("/")
+                ? String(normalizedPath.dropFirst())
+                : normalizedPath
+            windowsPath = "z:\\" + absolute.replacingOccurrences(of: "/", with: "\\")
         }
-        return [windowsPath, windowsPath.replacingOccurrences(of: "\\", with: "/")]
+        return [
+            windowsPath.lowercased(),
+            windowsPath.replacingOccurrences(of: "\\", with: "/").lowercased()
+        ]
     }
 
     private func controlRequest(executable: URL, arguments: [String], name: String, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> ProcessLaunchRequest {
@@ -522,7 +505,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
 
     private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
-        Self.removeDeveloperToolsEnvironment(from: &values)
+        WineProcessEnvironment.removeInheritedRuntimeConfiguration(from: &values)
         values["WINEPREFIX"] = environment.prefixURL.path
         let prefixMode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         if let architecture = prefixMode.explicitWineArchitecture {
@@ -644,8 +627,6 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     }
 
     private static func removeDeveloperToolsEnvironment(from values: inout [String: String]) {
-        for key in developerToolsEnvironmentKeys {
-            values.removeValue(forKey: key)
-        }
+        WineProcessEnvironment.removeDeveloperToolsEnvironment(from: &values)
     }
 }

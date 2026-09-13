@@ -10,6 +10,86 @@ nonisolated struct ProcessExecutionResult: Sendable, Equatable {
     let stderrLog: URL
 }
 
+/// Environment values that must not leak from Boreal's parent process into a
+/// Wine runtime. In particular, Xcode's Metal/GPUTools diagnostics can be
+/// injected into the app process and make D3DMetal validation fail before the
+/// runtime has a chance to initialize its own device.
+nonisolated enum WineProcessEnvironment {
+    static let metalHUDEnvironmentKeys = [
+        "MTL_HUD_ENABLED",
+        "MTL_HUD_LOG_ENABLED",
+        "MTL_HUD_ELEMENTS",
+        "MTL_HUD_OPACITY",
+        "MTL_HUD_DISABLE_MENU_BAR"
+    ]
+
+    static let developerToolsEnvironmentKeys = [
+        "GPUTOOLS_LOAD_GTMTLCAPTURE",
+        "GPUTOOLS_XCODE_DEVELOPER_PATH",
+        "MTL_DEBUG_LAYER",
+        "MTL_DEBUG_LAYER_VALIDATE_LOAD_ACTIONS",
+        "MTL_DEBUG_LAYER_VALIDATE_STORE_ACTIONS",
+        "METAL_LOAD_INTERPOSER",
+        "MTLCAPTURE_DESTINATION_DEVELOPER_TOOLS_ENABLE",
+        "DYMTL_TOOLS_DYLIB_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "__XPC_DYLD_LIBRARY_PATH",
+        "__XPC_DYLD_FRAMEWORK_PATH"
+    ]
+
+    /// These values are owned by the selected runtime, prefix, or game
+    /// profile. They may be re-added explicitly after sanitization, but an
+    /// inherited value can silently select a different Wine prefix, DLL set,
+    /// renderer, or D3DMetal generation.
+    static let inheritedRuntimeConfigurationKeys = [
+        "WINEPREFIX",
+        "WINEARCH",
+        "WINEDEBUG",
+        "WINEESYNC",
+        "WINEMSYNC",
+        "WINESERVER",
+        "WINEHOME",
+        "WINEDATADIR",
+        "WINEDLLDIR",
+        "WINEDLLOVERRIDES",
+        "WINEDLLPATH",
+        "WINE_FULLSCREEN_FSR",
+        "WINE_FULLSCREEN_FSR_MODE",
+        "WINE_FULLSCREEN_FSR_STRENGTH",
+        "WINE_FULLSCREEN_FSR_CUSTOM_MODE",
+        "WINE_D3D_CONFIG",
+        "WINED3D_RENDERER",
+        "D3DM_ENABLE_METALFX",
+        "D3DMETAL_FRAMEWORK_PATH",
+        "D3DM_MTL4",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "DXVK_CONFIG_FILE",
+        "DXVK_HUD",
+        "DXVK_HUD_ACTIVE",
+        "DXVK_LOG_PATH",
+        "DXVK_STATE_CACHE_PATH",
+        "MVK_CONFIG_LOG_LEVEL",
+        "VK_INSTANCE_LAYERS",
+        "VK_LAYER_PATH",
+        "VK_LOADER_DEBUG"
+    ]
+
+    static func removeDeveloperToolsEnvironment(from values: inout [String: String]) {
+        for key in developerToolsEnvironmentKeys {
+            values.removeValue(forKey: key)
+        }
+    }
+
+    static func removeInheritedRuntimeConfiguration(from values: inout [String: String]) {
+        for key in inheritedRuntimeConfigurationKeys {
+            values.removeValue(forKey: key)
+        }
+        removeDeveloperToolsEnvironment(from: &values)
+    }
+}
+
 nonisolated struct WindowsProcessSession: Identifiable, Sendable, Hashable {
     let id: UUID
     let environmentID: UUID

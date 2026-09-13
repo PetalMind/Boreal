@@ -22,6 +22,7 @@ struct ContentView: View {
     @AppStorage("libraryCompatibilityFilters") private var libraryCompatibilityFilters = ""
     @AppStorage("libraryProducerFilter") private var libraryProducerFilter = ""
     @State private var showsImporter = false
+    @State private var showsGameDiscovery = false
     @State private var installCandidate: InstallCandidate?
     @State private var showsNewEnvironment = false
     @State private var newEnvironmentName = ""
@@ -110,6 +111,9 @@ struct ContentView: View {
         }
         .sheet(item: $installCandidate) { candidate in
             InstallationSheet(candidate: candidate) { installedID in showLibrary(route: .application(installedID)) }.environment(store)
+        }
+        .sheet(isPresented: $showsGameDiscovery) {
+            GameDiscoverySheet().environment(store)
         }
         .alert("New Environment", isPresented: $showsNewEnvironment) {
             TextField("Name", text: $newEnvironmentName)
@@ -391,6 +395,13 @@ struct ContentView: View {
                 selectStoreGameAction: { libraryPath.append(.storeGame($0)) },
                 selectDiscoveryGameAction: { libraryPath.append(.discoveryGame($0)) }
             )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if selection == .library, !store.gameDiscoveryCandidates.isEmpty {
+                    GameDiscoveryBanner(candidateCount: store.gameDiscoveryCandidates.count) {
+                        showsGameDiscovery = true
+                    }
+                }
+            }
             .searchable(text: $searchText, placement: .toolbar, prompt: Text(.Navigation.searchLibrary))
         case .accounts: AccountsView()
         case .environments: EnvironmentsView { showsNewEnvironment = true }
@@ -470,6 +481,7 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("Install Windows App…", systemImage: "shippingbox") { showsImporter = true }.keyboardShortcut("o", modifiers: [.command, .shift])
+                Button("Find Installed Games…", systemImage: "magnifyingglass") { showsGameDiscovery = true }
                 Button("Import Steam Library", systemImage: "arrow.triangle.2.circlepath") { store.syncSteamLibrary() }
                     .disabled(store.isLibrarySyncing(.steam))
                 if developerMode {

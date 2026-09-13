@@ -528,7 +528,26 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             runtimeEngine: runtime.resolvedEngine,
             arguments: arguments
         )
-        return WindowsLaunchPlan(executable: executable, arguments: configuration.arguments, environment: configuration.environment, workingDirectory: workingDirectory)
+        var plan = WindowsLaunchPlan(
+            executable: executable,
+            arguments: configuration.arguments,
+            environment: configuration.environment,
+            workingDirectory: workingDirectory
+        )
+
+        // GOG metadata can expose a launcher as the primary task while the
+        // actual game is a hidden secondary task. Keep the launcher as the
+        // process Boreal starts, but identify the game process that owns the
+        // user-visible session after the launcher exits.
+        if let gameExecutable = Self.gameExecutable(
+            in: tasks,
+            primaryRelativePath: relativeExecutable,
+            gameDirectory: gameDirectory
+        ) {
+            plan.processExecutableName = gameExecutable.lastPathComponent
+            plan.processExecutablePath = gameExecutable.path
+        }
+        return plan
     }
 
     nonisolated static func compatibilityLaunchConfiguration(
@@ -788,6 +807,30 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         guard !normalized.hasPrefix("/"), !normalized.contains(":") else { return nil }
         let value = root.appending(path: normalized).resolvingSymlinksInPath().standardizedFileURL
         return value.path.hasPrefix(root.path + "/") ? value : nil
+    }
+
+    private static func gameExecutable(
+        in tasks: [[String: Any]],
+        primaryRelativePath: String,
+        gameDirectory: URL
+    ) -> URL? {
+        let primaryPath = primaryRelativePath.replacingOccurrences(of: "\\", with: "/")
+        let candidates = tasks.compactMap { task -> (URL, String, Bool)? in
+            guard let path = task["path"] as? String,
+                  !path.isEmpty,
+                  path.replacingOccurrences(of: "\\", with: "/").caseInsensitiveCompare(primaryPath) != .orderedSame,
+                  let executable = safeChild(path, of: gameDirectory),
+                  FileManager.default.isExecutableFile(atPath: executable.path)
+                    || FileManager.default.fileExists(atPath: executable.path) else {
+                return nil
+            }
+            let category = (task["category"] as? String)?.lowercased() ?? ""
+            let hidden = task["isHidden"] as? Bool ?? false
+            return (executable, category, hidden)
+        }
+
+        return candidates.first(where: { $0.1 == "game" })?.0
+            ?? candidates.first(where: { $0.2 })?.0
     }
 
     private static func parseCommandLine(_ input: String) -> [String] {

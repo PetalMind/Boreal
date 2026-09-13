@@ -7,6 +7,16 @@ actor RuntimeManager: RuntimeManaging {
         let d3dmetalVerified: Bool?
     }
 
+    private struct WineBase {
+        let sourceAppURL: URL
+        let wineVersion: String
+        let architecture: RuntimeArchitecture
+        let requirements: Set<RuntimeRequirement>
+        let minimumMacOS: String
+        let features: RuntimeFeatures
+        let layout: RuntimeLayout
+    }
+
     private struct GraphicsLibrary {
         let url: URL
         let architecture: WindowsExecutableArchitecture
@@ -187,7 +197,8 @@ actor RuntimeManager: RuntimeManaging {
             // snapshot before any launch can load both Objective-C class
             // implementations into the same Wine process.
             try normalizeInstalledRuntimePayload(of: runtime)
-            runtimes.append(refreshingDetectedFeatures(of: runtime))
+            let refreshed = refreshingDetectedFeatures(of: runtime)
+            runtimes.append(await revalidateLegacyGPTKRuntime(refreshed))
         }
         return runtimes
     }
@@ -944,44 +955,62 @@ actor RuntimeManager: RuntimeManaging {
         let source = source.standardizedFileURL
         if source.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
             let candidate = try await localRuntimeCandidate(at: source)
-            try validateGPTK4Candidate(candidate)
-            try validateD3DMetalCodeSignature(in: source)
-            guard let d3dMetalVersion = candidate.features.d3dmetalVersion else {
-                throw RuntimeManagerError.localRuntimeInvalid("The selected D3DMetal payload version could not be read.")
-            }
-            return try await importGPTKGraphicsOverlay(
-                from: source.appending(path: "Contents/Resources/wine/lib", directoryHint: .isDirectory),
-                version: d3dMetalVersion
-            )
+            // An app bundle already owns its Wine loader and its matching
+            // D3DMetal integration. Importing it as a graphics overlay onto a
+            // different Wine build can mix incompatible Wine/D3DMetal ABIs
+            // and make the D3D11 probe exit before either marker is emitted.
+            // Only a standalone GPTK 4 `lib`/`redist/lib` tree is an overlay.
+            return try await importSelectedLocalRuntime(candidate)
         }
 
-        let redist = source.appending(path: "redist/lib", directoryHint: .isDirectory)
-        try validateGPTK4Payload(in: redist)
-        let d3dMetalInfo = redist.appending(
+        // Apple has shipped the evaluation environment in both an extracted
+        // `redist/lib` tree and a folder whose `lib` directory is already at
+        // the selected root. Resolve the payload layout before validating it;
+        // otherwise a valid GPTK 4 download fails before D3DMetal is tested.
+        let payloadLibrary = try gptk4PayloadLibrary(at: source)
+        try validateGPTK4Payload(in: payloadLibrary)
+        let d3dMetalInfo = payloadLibrary.appending(
             path: "external/D3DMetal.framework/Versions/A/Resources/Info.plist"
         )
         guard fileManager.fileExists(atPath: d3dMetalInfo.path),
-              fileManager.fileExists(atPath: redist.appending(path: "external/D3DMetal.framework/Versions/A/D3DMetal").path) else {
+              fileManager.fileExists(atPath: payloadLibrary.appending(path: "external/D3DMetal.framework/Versions/A/D3DMetal").path) else {
             throw RuntimeManagerError.localRuntimeInvalid(
-                "The selected folder is not an Apple evaluation environment with a complete D3DMetal redist/lib payload."
+                "The selected folder is not an Apple evaluation environment with a complete D3DMetal lib payload."
             )
         }
-        guard let d3dMetalVersion = try? readD3DMetalPayloadVersion(from: redist),
+        guard let d3dMetalVersion = try? readD3DMetalPayloadVersion(from: payloadLibrary),
               let majorVersion = runtimeMajorVersion(d3dMetalVersion), majorVersion >= 4 else {
             throw RuntimeManagerError.localRuntimeInvalid("The selected evaluation environment does not report D3DMetal 4 or newer.")
         }
 
         return try await importGPTKGraphicsOverlay(
-            from: redist,
+            from: payloadLibrary,
             version: d3dMetalVersion
         )
+    }
+
+    private func gptk4PayloadLibrary(at source: URL) throws -> URL {
+        let candidates = [
+            source.appending(path: "redist/lib", directoryHint: .isDirectory),
+            source.appending(path: "lib", directoryHint: .isDirectory),
+            source
+        ]
+        let marker = "external/D3DMetal.framework/D3DMetal"
+        guard let payload = candidates.first(where: {
+            fileManager.isReadableFile(atPath: $0.appending(path: marker).path)
+        }) else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "The selected folder is not an Apple evaluation environment with a complete D3DMetal lib payload."
+            )
+        }
+        return payload
     }
 
     private func importGPTKGraphicsOverlay(
         from payloadLibrary: URL,
         version d3dMetalVersion: String
     ) async throws -> InstalledRuntime {
-        let base = try compatibleWineBaseCandidate()
+        let base = try await compatibleWineBase()
         guard base.architecture == .x86_64 else {
             throw RuntimeManagerError.localRuntimeInvalid("GPTK 4 D3DMetal requires an x86_64 Wine 11.17 or newer base runtime.")
         }
@@ -1005,7 +1034,7 @@ actor RuntimeManager: RuntimeManaging {
         )
         defer { try? fileManager.removeItem(at: stagingApp) }
         do {
-            try fileManager.copyItem(at: base.appURL, to: stagingApp)
+            try fileManager.copyItem(at: base.sourceAppURL, to: stagingApp)
             let wineLibraries = stagingApp.appending(
                 path: "Contents/Resources/wine/lib",
                 directoryHint: .isDirectory
@@ -1069,23 +1098,33 @@ actor RuntimeManager: RuntimeManaging {
             SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures),
             nil
         )
-        guard validationStatus == errSecSuccess else {
+        guard validationStatus == errSecSuccess || isAppleEvaluationD3DMetal(staticCode, status: validationStatus) else {
             throw RuntimeManagerError.localRuntimeInvalid(
                 "D3DMetal failed Apple code-signing validation (status \(validationStatus)). Download and extract a fresh Game Porting Toolkit evaluation environment, then import that folder again."
             )
         }
     }
 
-    private func validateGPTK4Candidate(_ candidate: LocalRuntimeCandidate) throws {
-        guard candidate.engine == .gamePortingToolkit, candidate.features.d3dmetal else {
-            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is not a Game Porting Toolkit D3DMetal environment.")
+    private func isAppleEvaluationD3DMetal(_ staticCode: SecStaticCode, status: OSStatus) -> Bool {
+        // Apple's GPTK evaluation framework carries an embedded Apple
+        // D3DMetal signature, but its evaluation certificate is not trusted by
+        // every macOS installation. Keep strict validation as the first path;
+        // for this one documented trust-only failure, require the signed
+        // identifier before allowing the runtime smoke test to decide whether
+        // the payload is actually usable.
+        guard status == CSSMERR_TP_NOT_TRUSTED else { return false }
+        var signingInformation: CFDictionary?
+        let informationStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        )
+        guard informationStatus == errSecSuccess,
+              let information = signingInformation as? [String: Any],
+              let identifier = information[kSecCodeInfoIdentifier as String] as? String else {
+            return false
         }
-        guard let d3dMetalVersion = candidate.features.d3dmetalVersion,
-              let majorVersion = runtimeMajorVersion(d3dMetalVersion), majorVersion >= 4 else {
-            throw RuntimeManagerError.localRuntimeInvalid(
-                "Select Game Porting Toolkit 4 or newer. The selected D3DMetal payload version could not be verified."
-            )
-        }
+        return identifier == "com.apple.D3DMetal"
     }
 
     private func validateGPTK4Payload(in libraryRoot: URL) throws {
@@ -1198,23 +1237,70 @@ actor RuntimeManager: RuntimeManaging {
         try fileManager.copyItem(at: source, to: destination)
     }
 
-    private func compatibleWineBaseCandidate() throws -> LocalRuntimeCandidate {
-        let wineCandidates = discoveredLocalRuntimeCandidates()
+    private func compatibleWineBase() async throws -> WineBase {
+        let localCandidates = discoveredLocalRuntimeCandidates()
             .filter { candidate in
                 candidate.engine == .wine
                     && candidate.architecture == .x86_64
-                    && candidate.features.supportsWin64Execution == true
+                    && supportsWin64Execution(candidate.features)
             }
             .sorted { isRuntimeVersion($0.wineVersion, newerThan: $1.wineVersion) }
-        guard let candidate = wineCandidates.first(where: {
+        if let candidate = localCandidates.first(where: {
             isRuntimeVersion($0.wineVersion, atLeast: Self.minimumGPTKWineVersion)
-        }) else {
-            let available = wineCandidates.first?.wineVersion ?? "none"
-            throw RuntimeManagerError.localRuntimeInvalid(
-                "GPTK 4 requires a complete x86_64 Wine \(Self.minimumGPTKWineVersion)+ base runtime. Available Wine base: \(available). Import Wine 11.17 or newer first."
+        }) {
+            return WineBase(
+                sourceAppURL: candidate.appURL,
+                wineVersion: candidate.wineVersion,
+                architecture: candidate.architecture,
+                requirements: candidate.requirements,
+                minimumMacOS: candidate.minimumMacOS,
+                features: candidate.features,
+                layout: candidate.layout
             )
         }
-        return candidate
+
+        let installedRuntimeSnapshot = try await installedRuntimes()
+        let installedBases = installedRuntimeSnapshot
+            .compactMap { runtime -> WineBase? in
+                guard runtime.resolvedEngine == .wine,
+                      runtime.architecture == .x86_64,
+                      let manifestData = try? Data(contentsOf: runtime.rootURL.appending(path: "runtime.json")),
+                      let manifest = try? JSONDecoder().decode(RuntimePackageManifest.self, from: manifestData),
+                      supportsWin64Execution(runtime.features ?? manifest.features) else {
+                    return nil
+                }
+                let sourceAppURL = runtime.rootURL.appending(path: "Runtime/Wine.app", directoryHint: .isDirectory)
+                guard fileManager.fileExists(atPath: sourceAppURL.path),
+                      isRuntimeVersion(runtime.wineVersion, atLeast: Self.minimumGPTKWineVersion) else {
+                    return nil
+                }
+                return WineBase(
+                    sourceAppURL: sourceAppURL,
+                    wineVersion: runtime.wineVersion,
+                    architecture: runtime.architecture,
+                    requirements: runtime.requirements,
+                    minimumMacOS: manifest.minimumMacOS,
+                    features: runtime.features ?? manifest.features,
+                    layout: manifest.layout
+                )
+            }
+            .sorted { isRuntimeVersion($0.wineVersion, newerThan: $1.wineVersion) }
+        if let installedBase = installedBases.first {
+            return installedBase
+        }
+
+        let availableVersions = (localCandidates.map(\.wineVersion) + installedRuntimeSnapshot
+            .filter { $0.resolvedEngine == .wine }
+            .map(\.wineVersion))
+            .sorted { isRuntimeVersion($0, newerThan: $1) }
+        let available = availableVersions.first ?? "none"
+        throw RuntimeManagerError.localRuntimeInvalid(
+            "GPTK 4 requires a complete x86_64 Wine \(Self.minimumGPTKWineVersion)+ base runtime. Available Wine base: \(available). Import Wine 11.17 or newer first."
+        )
+    }
+
+    private func supportsWin64Execution(_ features: RuntimeFeatures) -> Bool {
+        features.supportsWin64Execution ?? features.resolvedArchitectureCapabilities.canRunX86_64
     }
 
     private func isRuntimeVersion(_ lhs: String, atLeast rhs: String) -> Bool {
@@ -2083,6 +2169,12 @@ actor RuntimeManager: RuntimeManaging {
 
     private func runtimeEnvironment(_ runtime: InstalledRuntime) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
+        // Runtime validation is launched from the Boreal process itself. If
+        // Boreal was started with Xcode GPU diagnostics, or from a shell that
+        // already has Wine/D3DMetal overrides, forwarding that environment
+        // makes the probe load the wrong interposer or prefix. Rebuild only
+        // the runtime-owned values explicitly at each call site.
+        WineProcessEnvironment.removeInheritedRuntimeConfiguration(from: &environment)
         let bin = runtime.wineExecutable.deletingLastPathComponent().path
         environment["PATH"] = bin + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
         return environment
@@ -2175,36 +2267,77 @@ actor RuntimeManager: RuntimeManaging {
 
     private func extractComponentArchive(_ archive: URL, to destination: URL) async throws {
         if archive.lastPathComponent.lowercased().hasSuffix(".tar.zst") {
-            let listing = ProcessLaunchRequest(
-                executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-tf", archive.path],
+            guard let zstd = zstdTool() else {
+                throw RuntimeManagerError.archiveToolUnavailable("Zstandard (zstd)")
+            }
+            let uncompressed = archive.deletingLastPathComponent()
+                .appending(path: ".\(UUID().uuidString).tar")
+            defer { try? fileManager.removeItem(at: uncompressed) }
+
+            let decompression = ProcessLaunchRequest(
+                executable: zstd,
+                arguments: ["--decompress", "--force", archive.path, "-o", uncompressed.path],
                 environment: ProcessInfo.processInfo.environment, currentDirectory: destination,
-                stdoutLog: destination.appending(path: "listing.stdout.log"),
-                stderrLog: destination.appending(path: "listing.stderr.log")
+                stdoutLog: destination.appending(path: "decompress.stdout.log"),
+                stderrLog: destination.appending(path: "decompress.stderr.log")
             )
-            let listingReceipt = try await processExecutor.launch(listing)
-            let listingResult = try await processExecutor.waitForExit(listingReceipt.id)
-            guard listingResult.exitCode == 0,
-                  let contents = try? String(contentsOf: listingResult.stdoutLog, encoding: .utf8) else {
+            let decompressionReceipt = try await processExecutor.launch(decompression)
+            guard try await processExecutor.waitForExit(decompressionReceipt.id).exitCode == 0,
+                  fileManager.isReadableFile(atPath: uncompressed.path) else {
                 throw RuntimeManagerError.unsupportedArchive
             }
-            for entry in contents.split(whereSeparator: \.isNewline).map(String.init) {
-                guard !entry.hasPrefix("/"), !entry.split(separator: "/").contains("..") else {
-                    throw RuntimeManagerError.unsafeArchive(entry)
-                }
-            }
-            let extraction = ProcessLaunchRequest(
-                executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-xf", archive.path, "-C", destination.path],
-                environment: ProcessInfo.processInfo.environment, currentDirectory: destination,
-                stdoutLog: destination.appending(path: "extract.stdout.log"),
-                stderrLog: destination.appending(path: "extract.stderr.log")
-            )
-            let receipt = try await processExecutor.launch(extraction)
-            guard try await processExecutor.waitForExit(receipt.id).exitCode == 0 else {
-                throw RuntimeManagerError.unsupportedArchive
-            }
+            try await extractTarArchive(uncompressed, to: destination)
             return
         }
         try await extractGraphicsArchive(archive, to: destination)
+    }
+
+    private func extractTarArchive(_ archive: URL, to destination: URL) async throws {
+        let listing = ProcessLaunchRequest(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-tf", archive.path],
+            environment: ProcessInfo.processInfo.environment, currentDirectory: destination,
+            stdoutLog: destination.appending(path: "listing.stdout.log"),
+            stderrLog: destination.appending(path: "listing.stderr.log")
+        )
+        let listingReceipt = try await processExecutor.launch(listing)
+        let listingResult = try await processExecutor.waitForExit(listingReceipt.id)
+        guard listingResult.exitCode == 0,
+              let contents = try? String(contentsOf: listingResult.stdoutLog, encoding: .utf8) else {
+            throw RuntimeManagerError.unsupportedArchive
+        }
+        for entry in contents.split(whereSeparator: \.isNewline).map(String.init) {
+            guard !entry.hasPrefix("/"), !entry.split(separator: "/").contains("..") else {
+                throw RuntimeManagerError.unsafeArchive(entry)
+            }
+        }
+        let extraction = ProcessLaunchRequest(
+            executable: URL(fileURLWithPath: "/usr/bin/tar"), arguments: ["-xf", archive.path, "-C", destination.path],
+            environment: ProcessInfo.processInfo.environment, currentDirectory: destination,
+            stdoutLog: destination.appending(path: "extract.stdout.log"),
+            stderrLog: destination.appending(path: "extract.stderr.log")
+        )
+        let extractionReceipt = try await processExecutor.launch(extraction)
+        guard try await processExecutor.waitForExit(extractionReceipt.id).exitCode == 0 else {
+            throw RuntimeManagerError.unsupportedArchive
+        }
+    }
+
+    private func zstdTool() -> URL? {
+        let standardLocations = [
+            "/opt/homebrew/bin/zstd",
+            "/usr/local/bin/zstd",
+            "/opt/local/bin/zstd",
+            "/usr/bin/zstd",
+            "/bin/zstd"
+        ]
+        let pathLocations = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map { String($0) + "/zstd" }
+        var seen = Set<String>()
+        return (standardLocations + pathLocations)
+            .filter { seen.insert($0).inserted }
+            .map(URL.init(fileURLWithPath:))
+            .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
     private func discoverGraphicsLibraries(
@@ -2458,6 +2591,79 @@ actor RuntimeManager: RuntimeManaging {
             engine: runtime.engine,
             features: features
         )
+    }
+
+    private func revalidateLegacyGPTKRuntime(_ runtime: InstalledRuntime) async -> InstalledRuntime {
+        guard runtime.resolvedEngine == .gamePortingToolkit,
+              runtime.features?.d3dmetal == true,
+              runtime.features?.d3dmetalVerified != true else { return runtime }
+
+        // Older snapshots were published before D3DMetal verification was
+        // persisted. Re-run the same disposable-prefix probe used by imports;
+        // a framework marker alone never upgrades a runtime to ready.
+        guard let smoke = try? await smokeTest(runtime),
+              smoke.d3dmetalVerified == true else { return runtime }
+
+        var features = runtime.features ?? RuntimeFeatures(
+            wow64: false,
+            wineMono: false,
+            wineGecko: false,
+            d3dmetal: true,
+            dxmt: false
+        )
+        if let capabilities = smoke.architectureCapabilities {
+            features = applying(capabilities, to: features)
+        }
+        features.d3dmetalVerified = true
+        return (try? persistRuntimeFeatures(features, for: runtime)) ?? runtime
+    }
+
+    private func persistRuntimeFeatures(
+        _ features: RuntimeFeatures,
+        for runtime: InstalledRuntime
+    ) throws -> InstalledRuntime {
+        let manifestURL = runtime.rootURL.appending(path: "runtime.json")
+        let descriptorURL = runtime.rootURL.appending(path: "installed-runtime.json")
+        guard let manifestData = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONDecoder().decode(RuntimePackageManifest.self, from: manifestData),
+              let descriptorData = try? Data(contentsOf: descriptorURL) else {
+            return runtime
+        }
+
+        let updatedManifest = RuntimePackageManifest(
+            schemaVersion: manifest.schemaVersion,
+            id: manifest.id,
+            displayName: manifest.displayName,
+            wineVersion: manifest.wineVersion,
+            borealRevision: manifest.borealRevision,
+            architecture: manifest.architecture,
+            minimumMacOS: manifest.minimumMacOS,
+            requiresRosetta: manifest.requiresRosetta,
+            channel: manifest.channel,
+            engine: manifest.engine,
+            features: features,
+            components: manifest.components,
+            layout: manifest.layout
+        )
+        let updatedRuntime = runtimeWithFeatures(runtime, features: features)
+        let updatedManifestData = try makeEncoder().encode(updatedManifest)
+        let updatedDescriptorData = try makeEncoder().encode(updatedRuntime)
+
+        // The snapshot remains immutable after the metadata-only migration.
+        // Restore both original descriptors if either write or republishing
+        // fails, so validation can never observe a half-upgraded snapshot.
+        try makeWritable(runtime.rootURL)
+        do {
+            try updatedManifestData.write(to: manifestURL, options: .atomic)
+            try updatedDescriptorData.write(to: descriptorURL, options: .atomic)
+            try makeImmutable(runtime.rootURL)
+        } catch {
+            try? manifestData.write(to: manifestURL, options: .atomic)
+            try? descriptorData.write(to: descriptorURL, options: .atomic)
+            try? makeImmutable(runtime.rootURL)
+            throw error
+        }
+        return updatedRuntime
     }
 
     private func hasGraphicsComponent(

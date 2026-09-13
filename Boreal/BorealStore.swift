@@ -112,6 +112,7 @@ final class BorealStore {
     private var performanceLogURLs: [UUID: URL] = [:]
     private var performanceProcessIDs: [UUID: [Int32]] = [:]
     private var performanceProcessTasks: [UUID: Task<Void, Never>] = [:]
+    private var observedGameProcesses: Set<UUID> = []
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
     private var requestedStops: Set<UUID> = []
@@ -142,6 +143,11 @@ final class BorealStore {
     private var installationToken: UUID?
     private var lastAutomaticLibraryRefreshAt: Date?
     private var isRunningAutomaticLibraryRefresh = false
+    var gameDiscoveryCandidates: [GameDiscoveryCandidate] = []
+    var gameDiscoveryState: GameDiscoveryState = .idle
+    var gameDiscoveryLastScannedAt: Date?
+    private var gameDiscoveryTask: Task<Void, Never>?
+    private var gameDiscoveryCache = GameDiscoveryCache()
     private var activeLibrarySyncs: Set<GameLibraryProvider> = []
     private var isEnrichingInstalledApplicationMetadata = false
     private var discoveryLoadTask: Task<Void, Never>?
@@ -173,6 +179,9 @@ final class BorealStore {
         self.usesLayeredStorage = storageURL == nil
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
         self.modManager = ModManager(applicationSupportURL: supportRoot)
+        self.gameDiscoveryCache = GameDiscoveryCacheStore.load(
+            at: supportRoot.appending(path: "Discovery/game-discovery.json")
+        )
         load()
         let savedDiscoveryURL = supportRoot.appending(path: "Discovery/saved-games.json")
         if FileManager.default.fileExists(atPath: savedDiscoveryURL.path) {
@@ -1763,6 +1772,7 @@ final class BorealStore {
     ) {
         performanceProcessTasks[appID]?.cancel()
         performanceProcessIDs[appID] = []
+        observedGameProcesses.remove(appID)
         performanceProcessTasks[appID] = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -1771,6 +1781,14 @@ final class BorealStore {
                 )
                 guard !Task.isCancelled else { return }
                 self.performanceProcessIDs[appID] = ids
+                if !ids.isEmpty,
+                   let processName = session.processExecutableName,
+                   self.observedGameProcesses.insert(appID).inserted,
+                   let index = self.applications.firstIndex(where: { $0.id == appID }) {
+                    self.applications[index].lastResult = "Running \(processName)"
+                    self.applications[index].lastErrorDetail = nil
+                    self.save()
+                }
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
@@ -1780,6 +1798,7 @@ final class BorealStore {
         performanceProcessTasks[appID]?.cancel()
         performanceProcessTasks[appID] = nil
         performanceProcessIDs[appID] = nil
+        observedGameProcesses.remove(appID)
     }
 
     func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
@@ -3955,6 +3974,232 @@ final class BorealStore {
         }
     }
 
+    // MARK: - Installed game discovery
+
+    var gameDiscoveryConfiguration: GameDiscoveryConfiguration {
+        GameDiscoveryConfiguration.load()
+    }
+
+    func updateGameDiscoveryConfiguration(_ configuration: GameDiscoveryConfiguration) {
+        configuration.save()
+        scanForInstalledGames(force: true)
+    }
+
+    func addGameDiscoveryRoot(_ url: URL) {
+        var configuration = gameDiscoveryConfiguration
+        let selected = url.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: selected.path),
+              !configuration.customRoots.contains(where: { $0.standardizedFileURL.path.caseInsensitiveCompare(selected.path) == .orderedSame }) else { return }
+        configuration.customRoots.append(selected)
+        configuration.save()
+        scanForInstalledGames(force: true)
+    }
+
+    func removeGameDiscoveryRoot(_ url: URL) {
+        var configuration = gameDiscoveryConfiguration
+        configuration.customRoots.removeAll { $0.standardizedFileURL.path.caseInsensitiveCompare(url.standardizedFileURL.path) == .orderedSame }
+        configuration.save()
+        scanForInstalledGames(force: true)
+    }
+
+    func scanForInstalledGames(force: Bool = true) {
+        guard gameDiscoveryTask == nil else { return }
+        let configuration = gameDiscoveryConfiguration
+        let context = makeGameDiscoveryContext(configuration: configuration)
+        let cache = gameDiscoveryCache
+        let cacheURL = storageLayout.rootURL.appending(path: "Discovery/game-discovery.json")
+        gameDiscoveryState = .scanning
+        let task = Task { [weak self] in
+            let outcome = await Task.detached(priority: .utility) {
+                GameDiscoveryService.scan(context: context, configuration: configuration, cache: cache, force: force)
+            }.value
+            guard !Task.isCancelled else {
+                self?.gameDiscoveryTask = nil
+                return
+            }
+            guard let self else { return }
+            self.gameDiscoveryCache = outcome.cache
+            self.gameDiscoveryLastScannedAt = outcome.result.scannedAt
+            self.gameDiscoveryCandidates = outcome.result.candidates
+            self.gameDiscoveryState = .loaded(
+                candidateCount: outcome.result.candidates.count,
+                changedRootCount: outcome.result.changedRootCount
+            )
+            GameDiscoveryCacheStore.save(outcome.cache, at: cacheURL)
+            self.gameDiscoveryTask = nil
+            self.automaticallyImportDiscoveredGames(outcome.result.candidates, configuration: configuration)
+        }
+        gameDiscoveryTask = task
+    }
+
+    func runAutomaticGameDiscovery() async {
+        scanForInstalledGames(force: false)
+        while gameDiscoveryTask != nil {
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    func importDiscoveredGame(_ candidate: GameDiscoveryCandidate) {
+        gameDiscoveryCandidates.removeAll { $0.id == candidate.id }
+
+        // Windows Steam is an authoritative client/runtime. A discovery hit
+        // refreshes Steam's canonical library instead of registering the game
+        // as a direct EXE application and bypassing Steamworks/DRM.
+        if candidate.storeReference?.provider == .steam {
+            syncSteamLibrary()
+            return
+        }
+
+        if let environmentID = candidate.environmentID {
+            importDiscoveredGameIntoExistingEnvironment(candidate, environmentID: environmentID)
+            return
+        }
+
+        if let reference = candidate.storeReference {
+            let game: StoreLibraryGame
+            if let existing = storeGames.first(where: { $0.storeReference == reference }) {
+                game = existing
+            } else {
+                game = StoreLibraryGame(provider: reference.provider, externalID: reference.externalID, name: candidate.name)
+                storeGames.append(game)
+                storeGames.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                save()
+            }
+            registerExistingGame(game, at: candidate.executablePath)
+            return
+        }
+
+        addExistingWindowsApp(at: candidate.executablePath)
+    }
+
+    private func makeGameDiscoveryContext(configuration: GameDiscoveryConfiguration) -> GameDiscoveryContext {
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+        let environments = environments.compactMap { environment -> GameDiscoveryEnvironment? in
+            guard let prefixPath = environment.prefixPath else { return nil }
+            let prefixURL = URL(fileURLWithPath: prefixPath, isDirectory: true).standardizedFileURL
+            let rootURL = environment.rootPath.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
+                ?? prefixURL.deletingLastPathComponent()
+            return GameDiscoveryEnvironment(id: environment.id, rootURL: rootURL, prefixURL: prefixURL)
+        }
+        let existingExecutablePaths = Set(applications.map { normalizedDiscoveryPath(URL(fileURLWithPath: $0.executablePath)) })
+        let existingInstallPaths = Set(
+            installations.compactMap { installation -> String? in
+                guard installation.state.representsAnInstallation else { return nil }
+                return normalizedDiscoveryPath(InstallationStateResolver.resolvedLocation(for: installation, layout: storageLayout))
+            }
+            + storeGames.compactMap { game -> String? in
+                guard game.isInstalled, let installPath = game.installPath else { return nil }
+                return normalizedDiscoveryPath(URL(fileURLWithPath: installPath, isDirectory: true))
+            }
+        )
+        let existingStoreReferences = Set(
+            applications.compactMap(\.storeReference)
+                + installations.compactMap(\.storeReference)
+                + storeGames.filter(\.isInstalled).map(\.storeReference)
+        )
+        return GameDiscoveryContext(
+            homeURL: homeURL,
+            applicationSupportURL: storageLayout.rootURL,
+            borealGamesRoot: storageLayout.gamesURL,
+            environments: environments,
+            customRoots: configuration.customRoots,
+            existingExecutablePaths: existingExecutablePaths,
+            existingInstallPaths: existingInstallPaths,
+            existingStoreReferences: existingStoreReferences
+        )
+    }
+
+    private func automaticallyImportDiscoveredGames(
+        _ candidates: [GameDiscoveryCandidate],
+        configuration: GameDiscoveryConfiguration
+    ) {
+        guard configuration.automaticImportMode != .never else { return }
+        let eligible = candidates.filter {
+            configuration.automaticImportMode == .all || $0.isAutomaticallyImportable
+        }
+        var importedUnlinkedExecutable = false
+        for candidate in eligible {
+            if candidate.storeReference != nil || candidate.environmentID != nil {
+                importDiscoveredGame(candidate)
+            } else if !importedUnlinkedExecutable {
+                // `addExistingWindowsApp` owns one global preparation task. Do
+                // not silently discard the remaining candidates by starting
+                // several imports against that same task.
+                importedUnlinkedExecutable = true
+                importDiscoveredGame(candidate)
+            }
+        }
+    }
+
+    private func importDiscoveredGameIntoExistingEnvironment(
+        _ candidate: GameDiscoveryCandidate,
+        environmentID: UUID
+    ) {
+        guard let environmentRecord = environment(id: environmentID),
+              let prefixPath = environmentRecord.prefixPath,
+              FileManager.default.fileExists(atPath: candidate.executablePath.path),
+              isWithin(candidate.executablePath, root: URL(fileURLWithPath: prefixPath, isDirectory: true)),
+              !applications.contains(where: {
+                  $0.executablePath.caseInsensitiveCompare(candidate.executablePath.path) == .orderedSame
+                      || (candidate.storeReference != nil && $0.storeReference == candidate.storeReference)
+              }) else { return }
+
+        let game: StoreLibraryGame?
+        if let reference = candidate.storeReference {
+            if let existing = storeGames.first(where: { $0.storeReference == reference }) {
+                game = existing
+            } else {
+                let created = StoreLibraryGame(provider: reference.provider, externalID: reference.externalID, name: candidate.name)
+                storeGames.append(created)
+                game = created
+            }
+        } else {
+            game = nil
+        }
+        let application = WindowsApplication(
+            name: candidate.name,
+            publisher: candidate.storeReference?.provider.rawValue ?? "Windows application",
+            executablePath: candidate.executablePath.path,
+            installerPath: "existing-installation",
+            environmentID: environmentID,
+            status: .ready,
+            compatibility: game?.compatibility?.tier.rating ?? .unknown,
+            windowsVersion: environmentRecord.windowsVersion,
+            graphics: environmentRecord.graphics,
+            storageBytes: GameStorage.allocatedSize(of: candidate.installPath) ?? 0,
+            iconSymbol: candidate.storeReference?.provider.symbol ?? "gamecontroller.fill",
+            lastResult: "Imported by Game Discovery",
+            storeProvider: candidate.storeReference?.provider,
+            storeExternalID: candidate.storeReference?.externalID
+        )
+        applications.append(application)
+        if let game {
+            guard let gameIndex = storeGames.firstIndex(where: { $0.id == game.id }) else { return }
+            storeGames[gameIndex].isInstalled = true
+            storeGames[gameIndex].installPath = candidate.installPath.path
+            storeGames[gameIndex].installedPlatform = .windows
+            storeGames[gameIndex].storageBytes = application.storageBytes
+            recordInstallation(
+                for: game,
+                location: candidate.installPath,
+                platform: .windows,
+                environmentID: environmentID,
+                executable: candidate.executablePath
+            )
+        }
+        save()
+        Task { [weak self, applicationID = application.id] in
+            guard let self else { return }
+            await refreshAuxiliaryExecutables(for: applicationID)
+            save()
+        }
+    }
+
+    private func normalizedDiscoveryPath(_ url: URL) -> String {
+        url.standardizedFileURL.path.lowercased()
+    }
+
     private func preserveCustomInstalledMetadata(
         for provider: GameLibraryProvider,
         excluding importedExternalIDs: Set<String>,
@@ -5645,6 +5890,40 @@ final class BorealStore {
         return URL(fileURLWithPath: application.executablePath).deletingLastPathComponent()
     }
 
+    /// Existing GOG installations can have their hidden game executable
+    /// stored as Boreal's custom primary executable. If the GOG manifest also
+    /// exposes a launcher, adopt that launcher only when it is unambiguously
+    /// paired with the selected executable. This preserves intentional custom
+    /// choices such as SKSE while repairing the common SkyrimSE.exe setup.
+    private func gogLauncherHandoffPlan(
+        for application: WindowsApplication,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async -> WindowsLaunchPlan? {
+        guard application.storeProvider == .gog,
+              let externalID = application.storeExternalID,
+              let storedGame = storeGames.first(where: {
+                  $0.provider == .gog && $0.externalID == externalID
+              }) else { return nil }
+
+        let game = canonicalStoreGame(storedGame)
+        guard let candidate = try? await services.launchCoordinator.makeStoreLaunchPlan(
+            for: game,
+            runtime: runtime,
+            environment: environment,
+            providerRegistry: services.storeProviders
+        ),
+        let expectedGamePath = candidate.processExecutablePath,
+        !expectedGamePath.isEmpty else { return nil }
+
+        let normalizedPath: (URL) -> String = { $0.standardizedFileURL.path.lowercased() }
+        let selectedPath = normalizedPath(URL(fileURLWithPath: application.executablePath))
+        let expectedPath = normalizedPath(URL(fileURLWithPath: expectedGamePath))
+        let launcherPath = normalizedPath(candidate.executable)
+        guard selectedPath == expectedPath || selectedPath == launcherPath else { return nil }
+        return candidate
+    }
+
     private func refreshAuxiliaryExecutables(for applicationID: UUID, searchRoot: URL? = nil) async {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }),
               !applications[index].isSteamRuntimeHost,
@@ -6100,7 +6379,7 @@ final class BorealStore {
             )
             return
         }
-        let usesExistingExecutable = applications[index].installerPath == "existing-installation"
+        var usesExistingExecutable = applications[index].installerPath == "existing-installation"
             || applications[index].usesStoreMetadataOnly
             || applications[index].hasCustomLaunchExecutable
         let refreshesExecutableAtLaunch = !usesExistingExecutable && [.epic, .gog].contains(applications[index].storeProvider) && applications[index].storeExternalID != nil
@@ -6230,6 +6509,21 @@ final class BorealStore {
                 runtime: runtime
             )
             managed = try await services.environmentManager.configure(managed, runtime: runtime)
+            var providerLaunchPlanOverride: WindowsLaunchPlan?
+            if usesExistingExecutable,
+               applications[index].storeProvider == .gog {
+                providerLaunchPlanOverride = await gogLauncherHandoffPlan(
+                    for: applications[index],
+                    environment: managed,
+                    runtime: runtime
+                )
+                if providerLaunchPlanOverride != nil {
+                    usesExistingExecutable = false
+                    applications[index].usesCustomLaunchExecutable = false
+                    applications[index].lastResult = "Using the GOG launcher and tracking the game process"
+                    save()
+                }
+            }
             if applications[index].storeProvider == .gog,
                let appID = applications[index].storeExternalID,
                let storedGame = storeGames.first(where: { $0.provider == .gog && $0.externalID == appID }) {
@@ -6287,12 +6581,16 @@ final class BorealStore {
                     if let installPath = installedLocation(for: storedGame) {
                         gameDirectory = installPath
                     }
-                    plan = try await services.launchCoordinator.makeStoreLaunchPlan(
-                        for: game,
-                        runtime: runtime,
-                        environment: managed,
-                        providerRegistry: services.storeProviders
-                    )
+                    if let providerLaunchPlanOverride {
+                        plan = providerLaunchPlanOverride
+                    } else {
+                        plan = try await services.launchCoordinator.makeStoreLaunchPlan(
+                            for: game,
+                            runtime: runtime,
+                            environment: managed,
+                            providerRegistry: services.storeProviders
+                        )
+                    }
                 }
                 applications[index].executablePath = plan.executable.path
                 var configuredPlan = try GameGraphicsProfiles.applying(
@@ -6506,6 +6804,25 @@ final class BorealStore {
             guard let self else { return }
             let result = try? await services.processRunner.waitForExit(session)
             guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+
+            // A store launcher can finish after handing the game process to
+            // Wine. The launcher is not the user-visible session in that
+            // case: keep the session, process discovery, and performance
+            // tracking alive until the expected game process/environment ends.
+            let launchedProcessName = lastLaunchPlans[appID]?.executable.lastPathComponent.lowercased()
+            let expectedProcessName = session.processExecutableName?.lowercased()
+            let hasLauncherHandoff = expectedProcessName != nil
+                && launchedProcessName != expectedProcessName
+            if hasLauncherHandoff {
+                applications[index].lastExitCode = result?.exitCode
+                applications[index].lastResult = result?.exitCode == 0
+                    ? "Launcher closed; waiting for \(session.processExecutableName ?? "the game")"
+                    : "Launcher exited with code \(result?.exitCode ?? -1); waiting for \(session.processExecutableName ?? "the game")"
+                applications[index].lastErrorDetail = nil
+                save()
+                return
+            }
+
             let wasRequested = requestedStops.contains(appID)
             let fallbackWasAlreadyPrepared = automaticRendererFallbackLogURLs.remove(session.stderrLog) != nil
             let shouldRetryWithWineD3D = !wasRequested
@@ -6746,6 +7063,8 @@ final class BorealStore {
     private func markEnvironmentEnded(appID: UUID, environmentSessionEnded: Bool = true) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
         let shouldUploadCloudSaves = applications[index].storeProvider == .gog && !applications[index].isInstallerOnly
+        let expectedProcessName = activeSessions[appID]?.processExecutableName
+        let gameProcessWasObserved = observedGameProcesses.remove(appID) != nil
         stopPerformanceProcessTracking(for: appID)
         endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
@@ -6762,6 +7081,10 @@ final class BorealStore {
             applications[index].lastErrorDetail = nil
         } else if unexpectedLauncherFailures.remove(appID) != nil && !wasRequested {
             applications[index].status = .needsAttention
+        } else if let expectedProcessName, !gameProcessWasObserved, !wasRequested {
+            applications[index].status = .needsAttention
+            applications[index].lastResult = "\(expectedProcessName) did not start"
+            applications[index].lastErrorDetail = "The store launcher ended, but Boreal did not observe the expected game process in the Windows environment."
         } else {
             applications[index].status = .ready
             if wasRequested { applications[index].lastResult = "Stopped" }

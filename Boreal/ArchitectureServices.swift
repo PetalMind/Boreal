@@ -542,6 +542,11 @@ actor LaunchCoordinator: LaunchCoordinating {
         let recipe = try await provider.launchRecipe(for: game, runtime: runtime, environment: environment)
         var plan = recipe.windowsPlan
         plan.sessionScope = recipe.sessionPolicy
+        plan.processExecutableName = recipe.processExpectation.executableName ?? plan.processExecutableName
+        plan.processExecutablePath = recipe.processExpectation.executablePath ?? plan.processExecutablePath
+        if recipe.processExpectation.requiresParentProcess {
+            plan.sessionScope = .processGroup
+        }
         return plan
     }
 

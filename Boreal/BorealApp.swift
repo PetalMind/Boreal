@@ -26,6 +26,7 @@ struct BorealApp: App {
                 .task {
                     ControllerManager.shared.start()
                     await store.runAutomaticCompatibilityUpdateCheck()
+                    await store.runAutomaticGameDiscovery()
                     await store.runAutomaticLibraryRefreshLoop()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in

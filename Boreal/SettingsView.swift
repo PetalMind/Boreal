@@ -276,6 +276,8 @@ struct GeneralSettingsView: View {
                         }
                     }
                 }
+
+                GameDiscoverySettingsCard()
             }
             .padding(.horizontal, 32)
             .padding(.bottom, 28)
