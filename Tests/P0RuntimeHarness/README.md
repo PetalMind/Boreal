@@ -25,7 +25,7 @@ The harness reports these cases independently:
 
 ## Build the Windows executable
 
-Install an x86-64 MinGW-w64 cross-compiler, then run:
+Install x86-64 and i686 MinGW-w64 cross-compilers, then run:
 
 ```sh
 cd Tests/P0RuntimeHarness
@@ -36,9 +36,16 @@ To use a compiler with a nonstandard name:
 
 ```sh
 CC_WINDOWS=/absolute/path/to/x86_64-w64-mingw32-gcc ./build.sh
+# Optional override for the 32-bit probe compiler:
+CC_WINDOWS_32=/absolute/path/to/i686-w64-mingw32-gcc ./build.sh
 ```
 
 The output is `bin/BorealRuntimeTest.exe`. The executable uses the console subsystem so redirected standard handles remain testable, and it explicitly creates a normal visible Win32 window.
+The same build also refreshes the production D3D11 graphics probes at
+`BorealRuntimeProbe/BorealGraphicsProbe.exe` (PE32+) and
+`BorealRuntimeProbe/BorealGraphicsProbe32.exe` (PE32). The probes independently
+check DXGI, device creation, feature level `11_0`, swapchain, render target,
+`Clear`, and `Present`.
 
 ## Run against a Boreal Runtime
 

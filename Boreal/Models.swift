@@ -249,6 +249,33 @@ nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable,
     }
 }
 
+nonisolated enum LegacyWrapperDecisionSource: String, Codable, Sendable, Hashable {
+    case userOverride
+    case profilePreference
+    case profileEnforcement
+    case automaticDefault
+
+    var displayName: String {
+        switch self {
+        case .userOverride: "User override"
+        case .profilePreference: "Game profile preference"
+        case .profileEnforcement: "Game profile enforcement"
+        case .automaticDefault: "Default"
+        }
+    }
+}
+
+/// Explains how the wrapper that reaches the launch plan was selected. This is
+/// deliberately a value type so the UI and diagnostics can show the same
+/// decision without reimplementing the precedence rules.
+nonisolated struct LegacyWrapperDecision: Codable, Sendable, Hashable {
+    let requested: LegacyGraphicsWrapper
+    let profilePreference: LegacyGraphicsWrapper?
+    let profileEnforcement: LegacyGraphicsWrapper?
+    let effective: LegacyGraphicsWrapper
+    let source: LegacyWrapperDecisionSource
+}
+
 /// The legacy API is selected explicitly in the first implementation. Boreal
 /// does not guess from a filename and never installs every wrapper DLL.
 nonisolated enum LegacyGraphicsAPI: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {

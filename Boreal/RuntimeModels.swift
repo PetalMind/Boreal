@@ -467,6 +467,13 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     /// true; legacy snapshots with no result must be treated as unverified.
     var d3dmetalVerified: Bool?
     var dxmt: Bool
+    /// A package marker is not enough to make a D3D11 translation layer
+    /// usable. This flag is promoted only by Boreal's independent graphics
+    /// probe, after device, render-target, clear and present succeed.
+    var d3d11Verified: Bool?
+    /// Keeps the Win32/Win64 evidence separate. `d3d11Verified` remains the
+    /// aggregate compatibility bit used by older manifests and the resolver.
+    var d3d11VerifiedArchitectures: Set<WindowsExecutableArchitecture>?
     var dxvk: Bool = false
     var vkd3d: Bool = false
     var esync: Bool = false
@@ -479,11 +486,11 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
-        case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, d3dmetalVersion, d3dmetalVerified, dxmt, dxvk, d9vk, vkd3d
+        case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, d3dmetalVersion, d3dmetalVerified, dxmt, d3d11Verified, d3d11VerifiedArchitectures, dxvk, d9vk, vkd3d
         case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dd7to9, dgVoodoo2, graphicsCapabilities
     }
 
-    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, d3dmetalVersion: String? = nil, d3dmetalVerified: Bool? = nil, dxmt: Bool, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, d3dmetalVersion: String? = nil, d3dmetalVerified: Bool? = nil, dxmt: Bool, d3d11Verified: Bool? = nil, d3d11VerifiedArchitectures: Set<WindowsExecutableArchitecture>? = nil, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false) {
         self.wow64 = wow64
         self.architectureCapabilities = architectureCapabilities
         self.supportsWin32Execution = supportsWin32Execution ?? architectureCapabilities?.canRunX86
@@ -494,6 +501,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         self.d3dmetalVersion = d3dmetalVersion
         self.d3dmetalVerified = d3dmetalVerified
         self.dxmt = dxmt
+        self.d3d11Verified = d3d11Verified
+        self.d3d11VerifiedArchitectures = d3d11VerifiedArchitectures
         self.dxvk = dxvk || d9vk
         self.vkd3d = vkd3d
         self.esync = esync
@@ -517,6 +526,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         d3dmetalVersion = try values.decodeIfPresent(String.self, forKey: .d3dmetalVersion)
         d3dmetalVerified = try values.decodeIfPresent(Bool.self, forKey: .d3dmetalVerified)
         dxmt = try values.decodeIfPresent(Bool.self, forKey: .dxmt) ?? false
+        d3d11Verified = try values.decodeIfPresent(Bool.self, forKey: .d3d11Verified)
+        d3d11VerifiedArchitectures = try values.decodeIfPresent(Set<WindowsExecutableArchitecture>.self, forKey: .d3d11VerifiedArchitectures)
         let storedDXVK = try values.decodeIfPresent(Bool.self, forKey: .dxvk) ?? false
         let storedLegacyD9VK = try values.decodeIfPresent(Bool.self, forKey: .d9vk) ?? false
         dxvk = storedDXVK || storedLegacyD9VK
@@ -547,6 +558,8 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encodeIfPresent(d3dmetalVersion, forKey: .d3dmetalVersion)
         try values.encodeIfPresent(d3dmetalVerified, forKey: .d3dmetalVerified)
         try values.encode(dxmt, forKey: .dxmt)
+        try values.encodeIfPresent(d3d11Verified, forKey: .d3d11Verified)
+        try values.encodeIfPresent(d3d11VerifiedArchitectures, forKey: .d3d11VerifiedArchitectures)
         try values.encode(dxvk, forKey: .dxvk)
         try values.encode(vkd3d, forKey: .vkd3d)
         try values.encode(esync, forKey: .esync)
@@ -1134,6 +1147,37 @@ nonisolated struct RuntimeValidation: Sendable, Equatable {
     var isReady: Bool { missingPaths.isEmpty && unmetRequirements.isEmpty && detectedWineVersion != nil && versionMatchesManifest }
 }
 
+/// Result of the independent Windows-side D3D11 probe. A component is not
+/// considered usable merely because its DLLs exist: the probe must create a
+/// device, swapchain, render target, clear it, and present one frame.
+nonisolated struct D3D11SelfTestResult: Codable, Sendable, Hashable {
+    let backend: GraphicsBackend
+    let architecture: WindowsExecutableArchitecture
+    let dxgiInitialized: Bool
+    let adapterInitialized: Bool
+    let deviceInitialized: Bool
+    let featureLevel: String?
+    let swapchainInitialized: Bool
+    let renderTargetInitialized: Bool
+    let clearSucceeded: Bool
+    let presentSucceeded: Bool
+    let processExitCode: Int32
+    let stdoutLog: URL?
+    let stderrLog: URL?
+
+    var passed: Bool {
+        dxgiInitialized
+            && adapterInitialized
+            && deviceInitialized
+            && featureLevel == "11_0"
+            && swapchainInitialized
+            && renderTargetInitialized
+            && clearSucceeded
+            && presentSucceeded
+            && processExitCode == 0
+    }
+}
+
 nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case invalidManifest
     case manifestSignatureInvalid
@@ -1239,6 +1283,11 @@ nonisolated protocol RuntimeManaging: Sendable {
     func downloadAndInstallComponent(_ component: RuntimeComponent, into runtimeID: String) async throws -> InstalledRuntime
     func installUpscalingBridge(_ bridge: TemporalUpscalingBridge, fromRuntimeID runtimeID: String) async throws -> UpscalingBridgeReference
     func upscalingBridgeReferences(_ bridge: TemporalUpscalingBridge) async throws -> [UpscalingBridgeReference]
+    func d3d11SelfTest(
+        runtimeID: String,
+        backend: WineGraphicsBackend,
+        architecture: WindowsExecutableArchitecture
+    ) async throws -> D3D11SelfTestResult
 }
 
 nonisolated extension RuntimeManaging {
@@ -1266,6 +1315,13 @@ nonisolated extension RuntimeManaging {
     }
 
     func upscalingBridgeReferences(_ bridge: TemporalUpscalingBridge) async throws -> [UpscalingBridgeReference] { [] }
+    func d3d11SelfTest(
+        runtimeID _: String,
+        backend _: WineGraphicsBackend,
+        architecture _: WindowsExecutableArchitecture
+    ) async throws -> D3D11SelfTestResult {
+        throw CocoaError(.featureUnsupported)
+    }
     func installGraphicsComponent(
         _ backend: WineGraphicsBackend,
         from source: URL,

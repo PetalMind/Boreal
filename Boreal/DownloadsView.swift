@@ -7,6 +7,9 @@ struct DownloadsView: View {
     @Environment(BorealStore.self) private var store
     @AppStorage("developerMode") private var developerMode = false
     @State private var showsRuntimeDetails = false
+    @State private var d3d11SelfTest: D3D11SelfTestResult?
+    @State private var d3d11SelfTestRuntimeID: String?
+    @State private var d3d11SelfTestError: String?
 
     var body: some View {
         ScrollView {
@@ -338,6 +341,13 @@ struct DownloadsView: View {
                         if developerMode {
                             Text("\(runtime.engine.displayName) \(runtime.wineVersion) · \(runtime.architecture.rawValue) · \(runtime.engine.graphicsName)")
                                 .font(.caption).foregroundStyle(.tertiary)
+                            if runtime.features?.dxmt == true {
+                                let verification = runtime.features?.d3d11Verified == true
+                                    ? "passed"
+                                    : "not verified for all supported architectures"
+                                Text("DXMT D3D11 verification: " + verification)
+                                    .font(.caption).foregroundStyle(.tertiary)
+                            }
                         }
                     }
                     Spacer()
@@ -362,7 +372,36 @@ struct DownloadsView: View {
                         .menuStyle(.borderlessButton)
                         .help("Manage graphics translation components")
                     }
+                    if developerMode, runtime.source == .installed {
+                        Menu {
+                            Button("Win64") { runD3D11SelfTest(for: runtime, architecture: .x86_64) }
+                            if runtime.engine != .gamePortingToolkit,
+                               runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true {
+                                Button("Win32") { runD3D11SelfTest(for: runtime, architecture: .x86) }
+                            }
+                        } label: {
+                            Image(systemName: d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true && d3d11SelfTest == nil
+                                ? "progress.indicator"
+                                : "waveform.path.ecg")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .help("Run the independent D3D11 device, swapchain, clear, and Present self-test")
+                    }
                 }.padding(16)
+                if developerMode, let result = d3d11SelfTest,
+                   d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true {
+                    D3D11SelfTestCard(result: result)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+                }
+                if developerMode, let error = d3d11SelfTestError,
+                   d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+                }
                 if index < store.runtimeStatuses.count - 1 { Divider().padding(.leading, 66) }
             }
             }
@@ -413,7 +452,7 @@ struct DownloadsView: View {
         let panel = NSOpenPanel()
         panel.title = "Choose Extracted \(backend.displayName) Package"
         panel.message = backend == .dxmt
-            ? "Choose an extracted folder or ZIP containing the official DXMT 64-bit DLLs."
+            ? "Choose an extracted folder or ZIP containing the official DXMT Win32/Win64 DLLs and x64 Unix Metal shim."
             : "Choose an extracted folder or ZIP containing a macOS-compatible \(backend.displayName) package and its DLLs."
         panel.prompt = "Install"
         panel.allowedContentTypes = [.zip]
@@ -422,6 +461,38 @@ struct DownloadsView: View {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let source = panel.url else { return }
         store.installGraphicsComponent(backend, from: source, into: runtime.id)
+    }
+
+    private func runD3D11SelfTest(
+        for runtime: RuntimeStatus,
+        architecture: WindowsExecutableArchitecture
+    ) {
+        let backend: WineGraphicsBackend = if runtime.engine == .gamePortingToolkit {
+            .d3dMetal
+        } else if runtime.features?.dxmt == true {
+            .dxmt
+        } else {
+            .wineD3D
+        }
+        let key = runtime.id + ":" + architecture.rawValue
+        d3d11SelfTestRuntimeID = key
+        d3d11SelfTest = nil
+        d3d11SelfTestError = nil
+        Task {
+            do {
+                let result = try await store.d3d11SelfTest(
+                    runtimeID: runtime.id,
+                    backend: backend,
+                    architecture: architecture
+                )
+                d3d11SelfTest = result
+                if result.passed {
+                    await store.refreshRuntimeStatuses()
+                }
+            } catch {
+                d3d11SelfTestError = error.localizedDescription
+            }
+        }
     }
 
     private func selectLegacyWrapperPackage(_ wrapper: LegacyGraphicsWrapper, for runtime: RuntimeStatus) {
@@ -1068,6 +1139,46 @@ private struct InspectorRow: View {
                 .textSelection(.enabled)
         }
         .font(.caption)
+    }
+}
+
+private struct D3D11SelfTestCard: View {
+    let result: D3D11SelfTestResult
+
+    private func mark(_ value: Bool) -> String { value ? "Passed" : "Failed" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(
+                result.passed ? "D3D11 self-test passed" : "D3D11 self-test failed",
+                systemImage: result.passed ? "checkmark.seal.fill" : "xmark.octagon.fill"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(result.passed ? Color.green : Color.orange)
+            InspectorRow(title: "Path", value: result.backend.displayName + " · " + result.architecture.rawValue)
+            InspectorRow(title: "DXGI", value: mark(result.dxgiInitialized))
+            InspectorRow(title: "Adapter", value: mark(result.adapterInitialized))
+            InspectorRow(title: "Device", value: mark(result.deviceInitialized))
+            InspectorRow(title: "Feature level", value: result.featureLevel ?? "Not reported")
+            InspectorRow(title: "Swapchain", value: mark(result.swapchainInitialized))
+            InspectorRow(title: "Render target", value: mark(result.renderTargetInitialized))
+            InspectorRow(title: "Clear", value: mark(result.clearSucceeded))
+            InspectorRow(title: "Present", value: mark(result.presentSucceeded))
+            InspectorRow(title: "Process exit", value: String(result.processExitCode))
+            HStack(spacing: 10) {
+                if let stdoutLog = result.stdoutLog {
+                    Button("Open stdout") { NSWorkspace.shared.open(stdoutLog) }
+                }
+                if let stderrLog = result.stderrLog {
+                    Button("Open stderr") { NSWorkspace.shared.open(stderrLog) }
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background((result.passed ? Color.green : Color.orange).opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
     }
 }
 

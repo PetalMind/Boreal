@@ -5,6 +5,7 @@ actor RuntimeManager: RuntimeManaging {
     private struct RuntimeSmokeTestResult {
         let architectureCapabilities: RuntimeArchitectureCapabilities?
         let d3dmetalVerified: Bool?
+        let d3d11Verified: Bool?
     }
 
     private struct WineBase {
@@ -50,6 +51,7 @@ actor RuntimeManager: RuntimeManaging {
     private let session: URLSession
     private let localApplicationRoots: [URL]
     private let graphicsProbeURL: URL?
+    private let graphicsProbe32URL: URL?
     private let fileManager = FileManager.default
 
     private static let minimumGPTKWineVersion = "11.17"
@@ -61,7 +63,8 @@ actor RuntimeManager: RuntimeManaging {
         requirementChecker: any RuntimeRequirementChecking,
         session: URLSession = .shared,
         localApplicationRoots: [URL]? = nil,
-        graphicsProbeURL: URL? = nil
+        graphicsProbeURL: URL? = nil,
+        graphicsProbe32URL: URL? = nil
     ) {
         self.runtimesURL = applicationSupportURL.appending(path: "Runtimes", directoryHint: .isDirectory)
         self.componentStore = GraphicsComponentStore(applicationSupportURL: applicationSupportURL)
@@ -75,6 +78,8 @@ actor RuntimeManager: RuntimeManaging {
         ]
         self.graphicsProbeURL = graphicsProbeURL
             ?? Bundle.main.url(forResource: "BorealGraphicsProbe", withExtension: "exe")
+        self.graphicsProbe32URL = graphicsProbe32URL
+            ?? Bundle.main.url(forResource: "BorealGraphicsProbe32", withExtension: "exe")
     }
 
     func availableRuntimes() async throws -> [BorealRuntime] { try await catalog.loadCatalog() }
@@ -686,9 +691,17 @@ actor RuntimeManager: RuntimeManaging {
         let required = backend == .dxmt
             ? Set(["dxgi.dll", "d3d11.dll", "winemetal.dll"])
             : Set(["d3d10core.dll", "d3d11.dll"])
-        let names = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
-        guard required.isSubset(of: names) else {
+        let names64 = Set(discovered.filter { $0.architecture == .x86_64 }.map { $0.url.lastPathComponent.lowercased() })
+        guard required.isSubset(of: names64) else {
             throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 64-bit libraries: \(required.sorted().joined(separator: ", ")).")
+        }
+        if backend == .dxmt,
+           runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true {
+            let names32 = Set(discovered.filter { $0.architecture == .x86 }.map { $0.url.lastPathComponent.lowercased() })
+            let required32 = Set(["dxgi.dll", "d3d11.dll", "winemetal.dll"])
+            guard required32.isSubset(of: names32) else {
+                throw RuntimeManagerError.localRuntimeInvalid("The package is incomplete. Required 32-bit libraries: \(required32.sorted().joined(separator: ", ")).")
+            }
         }
         if backend == .dxmt, discoveredUnix.isEmpty {
             throw RuntimeManagerError.localRuntimeInvalid("The DXMT package is incomplete. Required 64-bit Unix library: winemetal.so.")
@@ -743,7 +756,37 @@ actor RuntimeManager: RuntimeManaging {
             try fileManager.moveItem(at: staging, to: destination)
             published = true
             try makeImmutable(destination)
-            return refreshingDetectedFeatures(of: runtime)
+            let refreshed = refreshingDetectedFeatures(of: runtime)
+            guard backend != .dxmt else {
+                let architectures: [WindowsExecutableArchitecture] = [
+                    .x86_64,
+                    runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true ? .x86 : nil
+                ].compactMap { $0 }
+                var verifiedArchitectures = Set<WindowsExecutableArchitecture>()
+                for architecture in architectures {
+                    let result = try await d3d11SelfTest(
+                        runtimeID: runtimeID,
+                        backend: .dxmt,
+                        architecture: architecture
+                    )
+                    guard result.passed else {
+                        throw graphicsProbeValidationError(result, runtime: refreshed, executable: nil)
+                    }
+                    verifiedArchitectures.insert(architecture)
+                }
+                var features = refreshed.features ?? RuntimeFeatures(
+                    wow64: false,
+                    wineMono: false,
+                    wineGecko: false,
+                    d3dmetal: false,
+                    dxmt: true
+                )
+                features.d3d11Verified = true
+                features.d3d11VerifiedArchitectures = verifiedArchitectures
+                let verifiedRuntime = runtimeWithFeatures(refreshed, features: features)
+                return try persistRuntimeFeatures(features, for: verifiedRuntime)
+            }
+            return refreshed
         } catch {
             try? fileManager.removeItem(at: staging)
             if published {
@@ -1480,7 +1523,11 @@ actor RuntimeManager: RuntimeManaging {
             if let d3dmetalVerified = smoke.d3dmetalVerified {
                 detectedFeatures.d3dmetalVerified = d3dmetalVerified
             }
-            if smoke.architectureCapabilities != nil || smoke.d3dmetalVerified != nil {
+            if let d3d11Verified = smoke.d3d11Verified {
+                detectedFeatures.d3d11Verified = d3d11Verified
+                detectedFeatures.d3d11VerifiedArchitectures = [.x86_64]
+            }
+            if smoke.architectureCapabilities != nil || smoke.d3dmetalVerified != nil || smoke.d3d11Verified != nil {
                 let updatedManifest = BorealRuntime(
                     schemaVersion: localManifest.schemaVersion,
                     id: localManifest.id,
@@ -1594,7 +1641,11 @@ actor RuntimeManager: RuntimeManaging {
             if let d3dmetalVerified = smoke.d3dmetalVerified {
                 installedFeatures.d3dmetalVerified = d3dmetalVerified
             }
-            if smoke.architectureCapabilities != nil || smoke.d3dmetalVerified != nil {
+            if let d3d11Verified = smoke.d3d11Verified {
+                installedFeatures.d3d11Verified = d3d11Verified
+                installedFeatures.d3d11VerifiedArchitectures = [.x86_64]
+            }
+            if smoke.architectureCapabilities != nil || smoke.d3dmetalVerified != nil || smoke.d3d11Verified != nil {
                 let updatedManifest = BorealRuntime(
                     schemaVersion: runtime.schemaVersion,
                     id: runtime.id,
@@ -1899,6 +1950,7 @@ actor RuntimeManager: RuntimeManaging {
         environment["WINEDEBUG"] = "-all"
         var probedCapabilities: RuntimeArchitectureCapabilities?
         var d3dmetalVerified: Bool?
+        var d3d11Verified: Bool?
         let request = ProcessLaunchRequest(
             executable: runtime.wineBootExecutable,
             arguments: ["--init"],
@@ -1945,8 +1997,18 @@ actor RuntimeManager: RuntimeManaging {
             }
             probedCapabilities = await probeArchitectureCapabilities(runtime, prefix: prefix)
             if runtime.resolvedEngine == .gamePortingToolkit {
-                try await runD3DMetalGraphicsProbe(runtime, prefix: prefix)
+                let probe = try await runD3D11GraphicsProbe(
+                    runtime,
+                    prefix: prefix,
+                    backend: .d3dMetal,
+                    architecture: .x86_64,
+                    logRoot: prefix
+                )
+                guard probe.passed else {
+                    throw graphicsProbeValidationError(probe, runtime: runtime, executable: graphicsProbeURL)
+                }
                 d3dmetalVerified = true
+                d3d11Verified = true
             }
         } catch {
             await stopWineServer(runtime, environment: environment, prefix: prefix)
@@ -1955,17 +2017,123 @@ actor RuntimeManager: RuntimeManaging {
         await stopWineServer(runtime, environment: environment, prefix: prefix)
         return RuntimeSmokeTestResult(
             architectureCapabilities: probedCapabilities,
-            d3dmetalVerified: d3dmetalVerified
+            d3dmetalVerified: d3dmetalVerified,
+            d3d11Verified: d3d11Verified
         )
     }
 
-    private func runD3DMetalGraphicsProbe(_ runtime: InstalledRuntime, prefix: URL) async throws {
-        guard let graphicsProbeURL,
-              fileManager.isReadableFile(atPath: graphicsProbeURL.path) else {
+    /// Runs the independent Windows-side check and keeps its logs under
+    /// Runtime diagnostics. The disposable prefix is removed afterwards, but
+    /// the stdout/stderr pair remains available for Developer Mode reports.
+    func d3d11SelfTest(
+        runtimeID: String,
+        backend: WineGraphicsBackend,
+        architecture: WindowsExecutableArchitecture
+    ) async throws -> D3D11SelfTestResult {
+        guard [.wineD3D, .dxmt, .d3dMetal].contains(backend) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The D3D11 self-test supports WineD3D, DXMT, and D3DMetal only.")
+        }
+        guard architecture != .unknown,
+              let runtime = try await installedRuntimes().first(where: { $0.id == runtimeID }) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is no longer installed.")
+        }
+        guard !(backend == .d3Metal && architecture == .x86) else {
+            throw RuntimeManagerError.localRuntimeInvalid("D3DMetal is available only for Win64. Use DXMT for the Win32 D3D11 path.")
+        }
+        guard architecture == .x86_64 || runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime does not provide verified Win32 execution.")
+        }
+
+        let logRoot = runtimesURL.appending(
+            path: ".diagnostics/d3d11-" + runtimeID + "-" + UUID().uuidString,
+            directoryHint: .isDirectory
+        )
+        let prefix = logRoot.appending(path: "prefix", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: prefix, withIntermediateDirectories: true)
+        var environment = runtimeEnvironment(runtime)
+        environment["WINEPREFIX"] = prefix.path
+        if runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true {
+            environment.removeValue(forKey: "WINEARCH")
+        } else {
+            environment["WINEARCH"] = architecture == .x86
+                ? WinePrefixArchitecture.win32.rawValue
+                : WinePrefixArchitecture.win64.rawValue
+        }
+        environment["WINEDEBUG"] = "-all"
+        let boot = ProcessLaunchRequest(
+            executable: runtime.wineBootExecutable,
+            arguments: ["--init"],
+            environment: environment,
+            currentDirectory: prefix,
+            stdoutLog: logRoot.appending(path: "wineboot.stdout.log"),
+            stderrLog: logRoot.appending(path: "wineboot.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(boot)
+        let bootResult = try await processExecutor.waitForExit(receipt.id)
+        guard bootResult.exitCode == 0, await waitForProbePrefix(prefix) else {
+            await stopWineServer(runtime, environment: environment, prefix: prefix)
             throw RuntimeManagerError.validationFailed(RuntimeValidation(
                 detectedWineVersion: runtime.wineVersion,
                 versionMatchesManifest: true,
-                missingPaths: ["BorealGraphicsProbe.exe is not bundled with Boreal"],
+                missingPaths: ["D3D11 self-test prefix initialization"],
+                unmetRequirements: [],
+                executablePaths: [runtime.wineBootExecutable.path]
+            ))
+        }
+
+        do {
+            let result = try await runD3D11GraphicsProbe(
+                runtime,
+                prefix: prefix,
+                backend: backend,
+                architecture: architecture,
+                logRoot: logRoot
+            )
+            await stopWineServer(runtime, environment: environment, prefix: prefix)
+            if result.passed, backend == .dxmt {
+                var features = runtime.features ?? RuntimeFeatures(
+                    wow64: false,
+                    wineMono: false,
+                    wineGecko: false,
+                    d3dmetal: false,
+                    dxmt: true
+                )
+                var verifiedArchitectures = features.d3d11VerifiedArchitectures ?? []
+                verifiedArchitectures.insert(architecture)
+                features.d3d11VerifiedArchitectures = verifiedArchitectures
+                let requiredArchitectures: Set<WindowsExecutableArchitecture> = runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true
+                    ? [.x86, .x86_64]
+                    : [.x86_64]
+                features.d3d11Verified = requiredArchitectures.isSubset(of: verifiedArchitectures)
+                _ = try? persistRuntimeFeatures(features, for: runtimeWithFeatures(runtime, features: features))
+            }
+            return result
+        } catch {
+            await stopWineServer(runtime, environment: environment, prefix: prefix)
+            throw error
+        }
+    }
+
+    private func runD3D11GraphicsProbe(
+        _ runtime: InstalledRuntime,
+        prefix: URL,
+        backend: WineGraphicsBackend,
+        architecture: WindowsExecutableArchitecture,
+        logRoot: URL
+    ) async throws -> D3D11SelfTestResult {
+        let probeURL: URL?
+        switch architecture {
+        case .x86: probeURL = graphicsProbe32URL
+        case .x86_64: probeURL = graphicsProbeURL
+        case .unknown: probeURL = nil
+        }
+        let probeName = architecture == .x86 ? "BorealGraphicsProbe32.exe" : "BorealGraphicsProbe.exe"
+        guard let probeURL,
+              fileManager.isReadableFile(atPath: probeURL.path) else {
+            throw RuntimeManagerError.validationFailed(RuntimeValidation(
+                detectedWineVersion: runtime.wineVersion,
+                versionMatchesManifest: true,
+                missingPaths: ["\(probeName) is not bundled with Boreal"],
                 unmetRequirements: [],
                 executablePaths: [runtime.wineExecutable.path]
             ))
@@ -1975,79 +2143,165 @@ actor RuntimeManager: RuntimeManaging {
             path: "Runtime/Wine.app/Contents/Resources/wine/lib",
             directoryHint: .isDirectory
         )
-        let d3dMetalBinary = wineLibraries.appending(
-            path: "external/D3DMetal.framework/D3DMetal"
-        )
-        let externalLibraries = wineLibraries.appending(path: "external", directoryHint: .isDirectory)
-        let unixLibraries = wineLibraries.appending(
-            path: "wine/x86_64-unix",
-            directoryHint: .isDirectory
-        )
-        guard fileManager.isReadableFile(atPath: d3dMetalBinary.path),
-              fileManager.fileExists(atPath: externalLibraries.path),
-              fileManager.fileExists(atPath: unixLibraries.path) else {
-            throw RuntimeManagerError.validationFailed(RuntimeValidation(
-                detectedWineVersion: runtime.wineVersion,
-                versionMatchesManifest: true,
-                missingPaths: [
-                    "D3DMetal.framework/D3DMetal",
-                    "D3DMetal external library directory",
-                    "GPTK x86_64 Unix shim directory"
-                ],
-                unmetRequirements: [],
-                executablePaths: [runtime.wineExecutable.path]
-            ))
-        }
-
         var environment = runtimeEnvironment(runtime)
         environment["WINEPREFIX"] = prefix.path
-        environment.removeValue(forKey: "WINEARCH")
+        if runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true {
+            environment.removeValue(forKey: "WINEARCH")
+        } else {
+            environment["WINEARCH"] = architecture == .x86
+                ? WinePrefixArchitecture.win32.rawValue
+                : WinePrefixArchitecture.win64.rawValue
+        }
         environment["WINEDEBUG"] = "err+all"
-        environment["D3DMETAL_FRAMEWORK_PATH"] = d3dMetalBinary.path
-        environment["DYLD_FALLBACK_LIBRARY_PATH"] = [externalLibraries.path, wineLibraries.path].joined(separator: ":")
-        // The n,b overrides select GPTK's route first and retain Wine's
-        // bundled implementation as a controlled fallback. WINEDLLPATH is
-        // for the Unix-side shims; the bundled x86_64 Windows route DLLs are
-        // resolved by this runtime's Wine loader.
-        environment["WINEDLLPATH"] = unixLibraries.path
-        environment["WINEDLLOVERRIDES"] = [
-            "d3d10=n,b",
-            "d3d10_1=n,b",
-            "d3d10core=n,b",
-            "d3d11=n,b",
-            "d3d12=n,b",
-            "d3d12core=n,b",
-            "dxgi=n,b"
-        ].joined(separator: ";")
+        var managedEnvironment: ManagedBorealEnvironment?
+        var graphicsManager: GraphicsBackendManager?
+        if backend == .d3Metal {
+            let d3dMetalBinary = wineLibraries.appending(path: "external/D3DMetal.framework/D3DMetal")
+            let externalLibraries = wineLibraries.appending(path: "external", directoryHint: .isDirectory)
+            let unixLibraries = wineLibraries.appending(path: "wine/x86_64-unix", directoryHint: .isDirectory)
+            guard fileManager.isReadableFile(atPath: d3dMetalBinary.path),
+                  fileManager.fileExists(atPath: externalLibraries.path),
+                  fileManager.fileExists(atPath: unixLibraries.path) else {
+                throw RuntimeManagerError.validationFailed(RuntimeValidation(
+                    detectedWineVersion: runtime.wineVersion,
+                    versionMatchesManifest: true,
+                    missingPaths: [
+                        "D3DMetal.framework/D3DMetal",
+                        "D3DMetal external library directory",
+                        "GPTK x86_64 Unix shim directory"
+                    ],
+                    unmetRequirements: [],
+                    executablePaths: [runtime.wineExecutable.path]
+                ))
+            }
+            environment["D3DMETAL_FRAMEWORK_PATH"] = d3dMetalBinary.path
+            environment["DYLD_FALLBACK_LIBRARY_PATH"] = [externalLibraries.path, wineLibraries.path].joined(separator: ":")
+            environment["WINEDLLPATH"] = unixLibraries.path
+            environment["WINEDLLOVERRIDES"] = [
+                "d3d10=n,b", "d3d10_1=n,b", "d3d10core=n,b", "d3d11=n,b",
+                "d3d12=n,b", "d3d12core=n,b", "dxgi=n,b"
+            ].joined(separator: ";")
+        } else if backend == .dxmt {
+            var configuration = EnvironmentConfiguration(
+                name: "D3D11 self-test",
+                architecture: architecture == .x86 ? WinePrefixArchitecture.win32.rawValue : WinePrefixArchitecture.win64.rawValue,
+                prefixMode: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
+                    ? .wow64
+                    : (architecture == .x86 ? .legacyWin32 : .legacyWin64)
+            )
+            configuration.graphicsBackend = .dxmt
+            configuration.graphicsAPI = .directX11
+            let managed = ManagedBorealEnvironment(
+                id: UUID(),
+                configuration: configuration,
+                runtimeID: runtime.id,
+                rootURL: logRoot,
+                prefixURL: prefix,
+                logsURL: logRoot,
+                state: .ready,
+                purpose: .temporary
+            )
+            var testRuntime = runtime
+            // The component is being tested before it can be promoted to
+            // d3d11Verified. The actual component files still have to be
+            // present and activation remains fully capability-aware.
+            var features = testRuntime.features ?? RuntimeFeatures(
+                wow64: false,
+                wineMono: false,
+                wineGecko: false,
+                d3dmetal: false,
+                dxmt: true
+            )
+            features.dxmt = true
+            features.d3d11Verified = true
+            testRuntime.features = features
+            let manager = GraphicsBackendManager(componentsURL: componentStore.rootURL)
+            let activation = try manager.activate(.dxmt, in: managed, runtime: testRuntime)
+            guard activation.backend == .dxmt else {
+                throw GraphicsBackendManagerError.componentPackageMissing(.dxmt)
+            }
+            let componentRoot = activation.componentReference.map {
+                componentStore.componentURL($0.component, version: $0.version)
+            } ?? runtime.rootURL.appending(path: "GraphicsComponents/DXMT", directoryHint: .isDirectory)
+            let unixLibraries = componentRoot.appending(path: "x64-unix", directoryHint: .isDirectory)
+            guard fileManager.fileExists(atPath: unixLibraries.appending(path: "winemetal.so").path) else {
+                try? manager.reset(managed)
+                throw GraphicsBackendManagerError.componentPackageEmpty(.dxmt)
+            }
+            environment["WINEDLLPATH"] = unixLibraries.path
+            environment["WINEDLLOVERRIDES"] = activation.dllOverrides
+                .map { $0 + "=n,b" }
+                .joined(separator: ";")
+            managedEnvironment = managed
+            graphicsManager = manager
+        }
 
-        let stdoutLog = prefix.appending(path: "d3dmetal-probe.stdout.log")
-        let stderrLog = prefix.appending(path: "d3dmetal-probe.stderr.log")
+        defer {
+            if let managedEnvironment, let graphicsManager {
+                try? graphicsManager.reset(managedEnvironment)
+            }
+        }
+        let logPrefix = "d3d11-" + backend.rawValue + "-" + architecture.rawValue
+        let stdoutLog = logRoot.appending(path: logPrefix + ".stdout.log")
+        let stderrLog = logRoot.appending(path: logPrefix + ".stderr.log")
         let request = ProcessLaunchRequest(
             executable: runtime.wineExecutable,
-            arguments: [graphicsProbeURL.path],
+            arguments: [probeURL.path],
             environment: environment,
             currentDirectory: prefix,
             stdoutLog: stdoutLog,
             stderrLog: stderrLog
         )
         let receipt = try await processExecutor.launch(request)
-        let result = try await processExecutor.waitForExit(receipt.id)
+        let processResult = try await processExecutor.waitForExit(receipt.id)
         let output = (try? String(contentsOf: stdoutLog, encoding: .utf8)) ?? ""
-        let hasDXGI = output.contains("BOREAL_DXGI_INITIALIZED")
-        let hasD3D11 = output.contains("BOREAL_D3D11_DEVICE_INITIALIZED")
-        guard result.exitCode == 0, hasDXGI, hasD3D11 else {
-            throw RuntimeManagerError.validationFailed(RuntimeValidation(
-                detectedWineVersion: runtime.wineVersion,
-                versionMatchesManifest: true,
-                missingPaths: [
-                    "D3DMetal graphics probe failed (exit \(result.exitCode)); see \(stderrLog.lastPathComponent)",
-                    !hasDXGI ? "DXGI initialization marker" : nil,
-                    !hasD3D11 ? "D3D11 device initialization marker" : nil
-                ].compactMap { $0 },
-                unmetRequirements: [],
-                executablePaths: [runtime.wineExecutable.path, graphicsProbeURL.path]
-            ))
-        }
+        let featureLevel = output.split(whereSeparator: \.isNewline)
+            .compactMap { line -> String? in
+                let value = String(line)
+                guard value.hasPrefix("BOREAL_D3D11_FEATURE_LEVEL=") else { return nil }
+                return String(value.dropFirst("BOREAL_D3D11_FEATURE_LEVEL=".count))
+            }
+            .first
+        return D3D11SelfTestResult(
+            backend: backend,
+            architecture: architecture,
+            dxgiInitialized: output.contains("BOREAL_DXGI_INITIALIZED"),
+            adapterInitialized: output.contains("BOREAL_DXGI_ADAPTER_INITIALIZED"),
+            deviceInitialized: output.contains("BOREAL_D3D11_DEVICE_INITIALIZED"),
+            featureLevel: featureLevel,
+            swapchainInitialized: output.contains("BOREAL_D3D11_SWAPCHAIN_INITIALIZED"),
+            renderTargetInitialized: output.contains("BOREAL_D3D11_RENDER_TARGET_INITIALIZED"),
+            clearSucceeded: output.contains("BOREAL_D3D11_CLEAR_SUCCEEDED"),
+            presentSucceeded: output.contains("BOREAL_D3D11_PRESENT_SUCCEEDED"),
+            processExitCode: processResult.exitCode,
+            stdoutLog: stdoutLog,
+            stderrLog: stderrLog
+        )
+    }
+
+    private func graphicsProbeValidationError(
+        _ result: D3D11SelfTestResult,
+        runtime: InstalledRuntime,
+        executable: URL?
+    ) -> RuntimeManagerError {
+        var missing = [String]()
+        if !result.dxgiInitialized { missing.append("DXGI initialization") }
+        if !result.adapterInitialized { missing.append("DXGI adapter enumeration") }
+        if !result.deviceInitialized { missing.append("D3D11 device initialization") }
+        if result.featureLevel == nil { missing.append("D3D11 feature level") }
+        if !result.swapchainInitialized { missing.append("swapchain initialization") }
+        if !result.renderTargetInitialized { missing.append("render-target initialization") }
+        if !result.clearSucceeded { missing.append("render-target clear") }
+        if !result.presentSucceeded { missing.append("Present") }
+        if result.processExitCode != 0 { missing.append("process exit " + String(result.processExitCode)) }
+        let logs = [result.stdoutLog, result.stderrLog].compactMap { $0?.lastPathComponent }.joined(separator: ", ")
+        return RuntimeManagerError.validationFailed(RuntimeValidation(
+            detectedWineVersion: runtime.wineVersion,
+            versionMatchesManifest: true,
+            missingPaths: ["D3D11 graphics probe failed: " + missing.joined(separator: ", "), "Probe logs: " + logs],
+            unmetRequirements: [],
+            executablePaths: [runtime.wineExecutable.path, executable?.path].compactMap { $0 }
+        ))
     }
 
     private func stopWineServer(_ runtime: InstalledRuntime, environment: [String: String], prefix: URL) async {
@@ -2558,6 +2812,10 @@ actor RuntimeManager: RuntimeManaging {
             features.supportsWin64Execution = capabilities.canRunX86_64
         }
         features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
+        if !features.dxmt, !features.d3dmetal {
+            features.d3d11Verified = nil
+            features.d3d11VerifiedArchitectures = nil
+        }
         features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["d3d10core.dll", "d3d11.dll"], in: runtime)
             || hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
@@ -2699,7 +2957,20 @@ actor RuntimeManager: RuntimeManaging {
         let names = Set(files.map { $0.lastPathComponent.lowercased() })
         let hasFiles = requiredX64.isSubset(of: names)
         if directoryName.caseInsensitiveCompare("DXMT") == .orderedSame {
-            return hasFiles && fileManager.fileExists(atPath: root.appending(path: "x64-unix/winemetal.so").path)
+            let hasX32: Bool
+            if runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true {
+                let x32Root = root.appending(path: "x32", directoryHint: .isDirectory)
+                guard let files32 = try? fileManager.contentsOfDirectory(at: x32Root, includingPropertiesForKeys: nil) else {
+                    return false
+                }
+                let names32 = Set(files32.map { $0.lastPathComponent.lowercased() })
+                hasX32 = Set(["dxgi.dll", "d3d11.dll", "winemetal.dll"]).isSubset(of: names32)
+            } else {
+                hasX32 = true
+            }
+            return hasFiles
+                && hasX32
+                && fileManager.fileExists(atPath: root.appending(path: "x64-unix/winemetal.so").path)
         }
         return hasFiles
     }

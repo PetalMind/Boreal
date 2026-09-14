@@ -180,7 +180,14 @@ nonisolated struct LegacyWrapperManager: Sendable {
         for (fileName, source) in zip(fileNames, sources) where !fileManager.fileExists(atPath: source.path) {
             throw GraphicsCompatibilityError.wrapperLibraryMissing(fileName)
         }
-        let destinations = fileNames.map { gameDirectory.appending(path: $0) }
+        let dllDestinations = fileNames.map { gameDirectory.appending(path: $0) }
+        let dgVoodooConfiguration = try dgVoodooConfiguration(
+            for: wrapper,
+            settings: settings
+        )
+        let destinations = dllDestinations + (dgVoodooConfiguration == nil
+            ? []
+            : [gameDirectory.appending(path: "dgVoodoo.conf")])
         let previous = try installationSnapshot(in: gameDirectory)
         let previouslyManaged = Set(previous?.files.map { $0.url.standardizedFileURL } ?? [])
         for destination in destinations {
@@ -195,11 +202,15 @@ nonisolated struct LegacyWrapperManager: Sendable {
             try reset(gameDirectory: gameDirectory)
             try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
             var installed: [InstalledFile] = []
-            for (source, destination) in zip(sources, destinations) {
+            for (index, destination) in destinations.enumerated() {
                 try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fileManager.copyItem(at: source, to: destination)
-                if wrapper == .dd7to9, destination.lastPathComponent.caseInsensitiveCompare("dxwrapper.ini") == .orderedSame {
-                    try configureDd7to9(in: destination, settings: settings)
+                if index < sources.count {
+                    try fileManager.copyItem(at: sources[index], to: destination)
+                    if wrapper == .dd7to9, destination.lastPathComponent.caseInsensitiveCompare("dxwrapper.ini") == .orderedSame {
+                        try configureDd7to9(in: destination, settings: settings)
+                    }
+                } else if let dgVoodooConfiguration {
+                    try dgVoodooConfiguration.write(to: destination, options: .atomic)
                 }
                 installed.append(InstalledFile(destination: destination, backup: nil, installedSHA256: try sha256(of: destination)))
             }
@@ -349,6 +360,49 @@ nonisolated struct LegacyWrapperManager: Sendable {
         }
         contents = lines.joined(separator: "\n")
         try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func dgVoodooConfiguration(
+        for wrapper: LegacyGraphicsWrapper,
+        settings: [String: String]
+    ) throws -> Data? {
+        guard wrapper == .dgVoodoo2, !settings.isEmpty else { return nil }
+        let allowedOutputAPIs = Set([
+            "d3d11warp",
+            "d3d11_fl10_0",
+            "d3d11_fl10_1",
+            "d3d11_fl11_0",
+            "d3d12_fl11_0",
+            "d3d12_fl12_0",
+            "bestavailable"
+        ])
+        let outputAPI = settings.first { $0.key.caseInsensitiveCompare("OutputAPI") == .orderedSame }?.value
+            ?? "bestavailable"
+        guard allowedOutputAPIs.contains(outputAPI.lowercased()) else {
+            throw GraphicsCompatibilityError.invalidComponentManifest(
+                "dgVoodoo2 requested an unsupported OutputAPI: \(outputAPI)"
+            )
+        }
+        let unknownKeys = settings.keys.filter {
+            $0.caseInsensitiveCompare("OutputAPI") != .orderedSame
+        }
+        guard unknownKeys.isEmpty else {
+            throw GraphicsCompatibilityError.invalidComponentManifest(
+                "dgVoodoo2 does not support the requested settings: \(unknownKeys.sorted().joined(separator: ", "))"
+            )
+        }
+        return Data("""
+        ; Boreal-managed dgVoodoo2 configuration. It is removed with the
+        ; wrapper activation manifest when the compatibility fix is disabled.
+        Version = 0x287
+
+        [General]
+        OutputAPI = \(outputAPI)
+        Adapters = all
+        FullScreenMode = false
+        KeepWindowAspectRatio = true
+        CaptureMouse = true
+        """.utf8)
     }
 
     private func resolvedArchitecture(for executable: URL, environment: ManagedBorealEnvironment) -> String {

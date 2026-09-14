@@ -226,13 +226,20 @@ nonisolated struct GraphicsBackendManager: Sendable {
         runtime: InstalledRuntime,
         componentReference: GraphicsComponentReference?
     ) -> Bool {
+        // A component reference proves that the package is present, not that
+        // its D3D11 implementation can create a device and present a frame.
+        // Keep DXMT behind the independent runtime probe even when a profile
+        // pins an explicit component version.
+        if backend == .dxmt, runtime.features?.d3d11Verified != true {
+            return false
+        }
         if let componentReference,
            let componentStore,
            componentStore.contains(componentReference, fileManager: fileManager) {
             return true
         }
         return switch backend {
-        case .dxmt: runtime.features?.dxmt == true
+        case .dxmt: runtime.features?.dxmt == true && runtime.features?.d3d11Verified == true
         case .dxvk: runtime.features?.dxvk == true
         case .vkd3d: runtime.features?.vkd3d == true
         default: true

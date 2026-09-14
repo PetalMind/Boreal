@@ -936,7 +936,7 @@ Ustawienia per gra, które mogą pozostać lokalne dla launchu, obejmują argume
 | GOG `1446463013` | DX11 wymaga `Darksiders2.wsl`; dostępny także DX9 |
 | GOG `1787707874` | wymuszony WineD3D z `WINE_D3D_CONFIG=renderer=gl` |
 | GOG `1449651388` | Grim Dawn x64: wymuszony DX11 przez DXVK w wirtualnym pulpicie Boreal |
-| GOG `1207658688` | Sacred Gold: Dd7to9 dla DirectDraw/Direct3D 7, DirectX 9 przez DXVK, natywne okno |
+| GOG `1207658688` | Sacred Gold: rekomendowany WineD3D/OpenGL oraz kontrolowane profile A–D dla Dd7to9, dgVoodoo2/WineD3D i dgVoodoo2/DXMT |
 
 Dla Grim Dawn Boreal przed każdym uruchomieniem ustawia w pliku użytkownika
 `Documents/My Games/Grim Dawn/Settings/options.txt` wartość `screenMode = 1`
@@ -950,22 +950,31 @@ Dla Grim Dawn Boreal przed każdym uruchomieniem ustawia w pliku użytkownika
 
 Te reguły są wyjątkami jawnie związanymi z ID. Nie wolno uogólniać ich na wszystkie gry GOG, Epic albo Steam.
 
-Sacred Gold korzysta z opcjonalnego komponentu `Dd7to9` instalowanego z oficjalnego
-wydania `elishacloud/dxwrapper`. Boreal pobiera i weryfikuje `dxwrapper.zip`, a
-następnie przechowuje wersjonowany snapshot poza runtime'em Wine. Przy uruchomieniu
-do katalogu gry trafiają tylko zarządzane `ddraw.dll`, `dxwrapper.dll` i
-`dxwrapper.ini`; plik INI jest aktywowany przez `Dd7to9 = 1`, a Wine dostaje
-`WINEDLLOVERRIDES=ddraw=n,b`. Brak komponentu lub obecny obcy `ddraw.dll` zatrzymuje
-launch z jawnym błędem zamiast nadpisywać pliki użytkownika.
+Sacred Gold ma cztery kontrolowane profile ścieżki D3D7, dostępne w konfiguratorze
+zgodności: (A) natywne Wine DDraw/WineD3D z OpenGL, (B) Dd7to9 → D3D9,
+(C) dgVoodoo2 → D3D11/WineD3D oraz (D) dgVoodoo2 → D3D11/DXMT/Metal. Profil A
+pozostaje rekomendacją gry, ale nie blokuje ręcznego wyboru B–D. Dd7to9 jest
+opcjonalnym komponentem instalowanym z oficjalnego wydania `elishacloud/dxwrapper`.
+Boreal pobiera i weryfikuje `dxwrapper.zip`, a następnie przechowuje wersjonowany
+snapshot poza runtime'em Wine. Przy uruchomieniu do katalogu gry trafiają tylko
+zarządzane `ddraw.dll`, `dxwrapper.dll` i `dxwrapper.ini`; plik INI jest aktywowany
+przez `Dd7to9 = 1`, a Wine dostaje `WINEDLLOVERRIDES=ddraw=n,b`. Brak komponentu
+lub obecny obcy `ddraw.dll` zatrzymuje launch z jawnym błędem zamiast nadpisywać
+pliki użytkownika.
 
 Opcjonalny komponent `dgVoodoo2` jest pobierany z oficjalnego repozytorium
 `dege-diosg/dgVoodoo2`. Boreal wybiera standardowy ZIP wydania, weryfikuje jego
 sumę SHA-256 i zapisuje wersjonowany snapshot poza runtime'em Wine. Dla gry
 32-bitowej dostępne są osobne wejścia `ddraw.dll`, `d3d8.dll` i `d3d9.dll`, a
-pakiet x64 udostępnia `d3d9.dll`; Boreal nie instaluje bibliotek ARM, `D3DImm`
-ani pliku `dgVoodoo.conf` automatycznie. Konfiguracja dgVoodoo2 pozostaje więc
-jawnie kontrolowana przez użytkownika, a do katalogu gry trafia tylko wybrane
-przez profil API DLL.
+pakiet x64 udostępnia `d3d9.dll`; Boreal nie instaluje bibliotek ARM ani `D3DImm`.
+Konfiguracja dgVoodoo2 pozostaje jawnie kontrolowana przez profil: dla profili C i D Boreal zapisuje obok gry
+zarządzany `dgVoodoo.conf` z `OutputAPI = d3d11_fl11_0`; przy zmianie wrappera
+plik jest usuwany wyłącznie wtedy, gdy należy do manifestu Boreal. Profil D jest
+uznawany za dostępny dopiero po niezależnym probe D3D11, który sprawdza kolejno
+DXGI, urządzenie, feature level `11_0`, swapchain, render target, `Clear` i `Present`.
+To nadal ścieżka eksperymentalna: upstream dgVoodoo2 nie deklaruje Linux/Wine
+jako wspieranego celu, więc przejście probe backendu nie jest gwarancją, że
+konkretna gra Sacred poprawnie przejdzie całą ścieżkę D3D7 → dgVoodoo2.
 
 ## 12. Aktualizacja, weryfikacja i odinstalowanie
 

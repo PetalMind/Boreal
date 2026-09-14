@@ -2508,6 +2508,8 @@ final class BorealStore {
             return "This runtime does not contain a verified D3DMetal graphics stack."
         case .dxmt where runtime.features?.dxmt != true:
             return "This runtime does not contain the DXMT component package."
+        case .dxmt where runtime.features?.d3d11Verified != true:
+            return "DXMT is installed but its D3D11 device/swapchain self-test has not passed. Run the D3D11 self-test in Developer Mode."
         case .dxvk where runtime.features?.dxvk != true:
             return "This runtime does not contain the DXVK component package."
         case .vkd3d where runtime.features?.vkd3d != true:
@@ -2559,8 +2561,8 @@ final class BorealStore {
 
     func graphicsBackendIssue(_ backend: WineGraphicsBackend, for application: WindowsApplication) -> String? {
         guard backend != .automatic, backend != .wineD3D else { return nil }
-        if (backend == .dxmt || backend == .d3dMetal), compatibilityProfile(for: application).architecture == .win32 {
-            return "\(backend.displayName) currently supports only 64-bit Windows games. Choose Win64 or another renderer."
+        if backend == .d3dMetal, compatibilityProfile(for: application).architecture == .win32 {
+            return "D3DMetal currently supports only 64-bit Windows games. Choose Win64 or another renderer."
         }
         let requiredEngine = backend.requiredEngine ?? .wine
         let compatibleRuntimes = runtimeStatuses.filter {
@@ -2575,7 +2577,12 @@ final class BorealStore {
         case .d3dMetal:
             return compatibleRuntimes.contains { $0.features?.hasVerifiedD3DMetal == true } ? nil : "The installed GPTK runtime does not contain a verified D3DMetal graphics stack."
         case .dxmt:
-            return compatibleRuntimes.contains { $0.features?.dxmt == true } ? nil : "No installed Wine runtime contains the DXMT component package."
+            if compatibleRuntimes.contains(where: { $0.features?.dxmt == true && $0.features?.d3d11Verified == true }) {
+                return nil
+            }
+            return compatibleRuntimes.contains(where: { $0.features?.dxmt == true })
+                ? "DXMT is installed, but no runtime has passed the D3D11 device/swapchain self-test. Run the D3D11 self-test in Developer Mode."
+                : "No installed Wine runtime contains the DXMT component package."
         case .dxvk:
             return compatibleRuntimes.contains { $0.features?.dxvk == true } ? nil : "No installed Wine runtime contains the DXVK component package."
         case .vkd3d:
@@ -2617,7 +2624,7 @@ final class BorealStore {
         let supportsBackend: (RuntimeStatus) -> Bool = { status in
             switch backend {
             case .d3dMetal: status.features?.hasVerifiedD3DMetal == true
-            case .dxmt: status.features?.dxmt == true
+            case .dxmt: status.features?.dxmt == true && status.features?.d3d11Verified == true
             case .dxvk: status.features?.dxvk == true
             case .vkd3d: status.features?.vkd3d == true
             case .automatic, .wineD3D: true
@@ -2671,7 +2678,7 @@ final class BorealStore {
         let currentRuntimeSupportsBackend: Bool
         switch profile.graphicsBackend {
         case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.hasVerifiedD3DMetal == true
-        case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true
+        case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true && currentRuntimeFeatures?.d3d11Verified == true
         case .dxvk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxvk == true
         case .vkd3d: currentRuntimeSupportsBackend = currentRuntimeFeatures?.vkd3d == true
         case .automatic, .wineD3D: currentRuntimeSupportsBackend = true
@@ -7736,6 +7743,18 @@ final class BorealStore {
                 )
             }
         }
+    }
+
+    func d3d11SelfTest(
+        runtimeID: String,
+        backend: WineGraphicsBackend,
+        architecture: WindowsExecutableArchitecture
+    ) async throws -> D3D11SelfTestResult {
+        try await services.runtimeManager.d3d11SelfTest(
+            runtimeID: runtimeID,
+            backend: backend,
+            architecture: architecture
+        )
     }
 
     func installLegacyWrapper(

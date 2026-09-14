@@ -237,25 +237,27 @@ nonisolated enum GameGraphicsProfiles {
         GameGraphicsProfile(
             provider: .gog,
             externalID: "1207658688",
-            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. Its
-            // DirectDraw entry point must stay on Wine's builtin path here:
-            // dgVoodoo2's D3D11 device negotiation is not reliable under this
-            // Wine runtime, and Dd7to9's D3D9 path previously returned
-            // D3DERR_NOTAVAILABLE on the same machine.
-            availableAPIs: [.automatic],
+            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. WineD3D
+            // remains the recommendation, but the compatibility sheet must
+            // allow an explicit wrapper/backend override so the legacy paths
+            // can be tested independently instead of being silently replaced.
+            availableAPIs: [.automatic, .directX9, .directX11],
             defaultAPI: .automatic,
             launchOptions: [],
             preferredBackend: .wineD3D,
-            enforcedBackend: .wineD3D,
-            enforcedAPI: .automatic,
             preferredLegacyWrapper: LegacyGraphicsWrapper.none,
-            enforcedLegacyWrapper: LegacyGraphicsWrapper.none,
             enforcedLegacyGraphicsAPI: .directDraw,
             overlayCompatibleFullscreen: false,
             enforcedOverlayCompatibleFullscreen: false,
-            // Force WineD3D's OpenGL renderer instead of allowing a runtime
-            // default to select a different legacy path for this game.
-            launchEnvironment: ["WINE_D3D_CONFIG": "renderer=gl"]
+            // Keep WineD3D/OpenGL as the recommended A-profile path. The
+            // value is applied only when that backend is selected; choosing
+            // DXMT for the D profile does not inherit this Wine-only setting.
+            launchEnvironment: ["WINE_D3D_CONFIG": "renderer=gl"],
+            // dgVoodoo is an experimental per-game path. Generate its config
+            // next to the game DLL and force the D3D11 feature-level path so
+            // the first comparison is deterministic rather than
+            // best-available output selection.
+            legacyWrapperSettings: ["OutputAPI": "d3d11_fl11_0"]
         )
     ]
 
@@ -312,6 +314,36 @@ nonisolated enum GameGraphicsProfiles {
             effective.runtimeIDOverride = nil
         }
         return effective
+    }
+
+    static func legacyWrapperDecision(
+        for application: WindowsApplication,
+        requested profile: WineCompatibilityProfile
+    ) -> LegacyWrapperDecision {
+        let builtIn = Self.profile(for: application)
+        let enforcement = builtIn?.enforcedLegacyWrapper
+        let preference = builtIn?.preferredLegacyWrapper
+        if let enforcement {
+            return LegacyWrapperDecision(
+                requested: profile.legacyWrapper,
+                profilePreference: preference,
+                profileEnforcement: enforcement,
+                effective: enforcement,
+                source: .profileEnforcement
+            )
+        }
+
+        let matchesPreference = preference == profile.legacyWrapper
+        let source: LegacyWrapperDecisionSource = matchesPreference
+            ? (preference == nil ? .automaticDefault : .profilePreference)
+            : .userOverride
+        return LegacyWrapperDecision(
+            requested: profile.legacyWrapper,
+            profilePreference: preference,
+            profileEnforcement: nil,
+            effective: profile.legacyWrapper,
+            source: source
+        )
     }
 
     static func applying(
@@ -430,7 +462,10 @@ nonisolated enum GraphicsStackCatalog {
         GraphicsStack(
             backend: .dxmt,
             supportedAPIs: [.directX10, .directX11],
-            supportedArchitectures: [.win64],
+            // DXMT ships separate Win32 and Win64 entry points. The Unix
+            // Metal side remains x64, while Wine's WoW64 loader dispatches
+            // the x86 Windows DLL for a 32-bit game.
+            supportedArchitectures: [.win32, .win64],
             hostAPI: .metal,
             requiredRuntimeFeatures: [.dxmt],
             requiredComponents: [.dxmt],
@@ -571,14 +606,14 @@ nonisolated enum GraphicsBackendResolver {
         let featuresAvailable = stack.requiredRuntimeFeatures.allSatisfy { feature in
             switch feature {
             case .d3dMetal: runtime.features?.hasVerifiedD3DMetal == true
-            case .dxmt: runtime.features?.dxmt == true
+            case .dxmt: runtime.features?.dxmt == true && runtime.features?.d3d11Verified == true
             case .dxvk: runtime.features?.dxvk == true
             case .vkd3d: runtime.features?.vkd3d == true
             }
         }
         let componentsAvailable = stack.requiredComponents.allSatisfy { component in
             switch component {
-            case .dxmt: runtime.features?.dxmt == true
+            case .dxmt: runtime.features?.dxmt == true && runtime.features?.d3d11Verified == true
             case .dxvk: runtime.features?.dxvk == true
             case .vkd3d: runtime.features?.vkd3d == true
             }

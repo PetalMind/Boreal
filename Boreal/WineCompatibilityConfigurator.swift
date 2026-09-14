@@ -89,6 +89,65 @@ private enum CompatibilityPreset: CaseIterable, Identifiable {
     }
 }
 
+private enum LegacyGraphicsTestProfile: String, CaseIterable, Identifiable {
+    case wineD3D
+    case dd7to9
+    case dgVoodooWineD3D
+    case dgVoodooDXMT
+    case manual
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .wineD3D: "A · Wine DDraw / WineD3D"
+        case .dd7to9: "B · Dd7to9 / WineD3D D3D9"
+        case .dgVoodooWineD3D: "C · dgVoodoo2 / WineD3D D3D11"
+        case .dgVoodooDXMT: "D · dgVoodoo2 / DXMT Metal D3D11"
+        case .manual: "Manual configuration"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .wineD3D: "Native DirectDraw/Direct3D 7 path with Wine's OpenGL renderer."
+        case .dd7to9: "Converts DirectDraw/Direct3D 7 to D3D9 through Dd7to9."
+        case .dgVoodooWineD3D: "Converts DirectDraw/Direct3D 7 to D3D11, then uses WineD3D."
+        case .dgVoodooDXMT: "Converts DirectDraw/Direct3D 7 to D3D11, then uses DXMT/Metal."
+        case .manual: "Keep the current individual compatibility selections."
+        }
+    }
+
+    func applying(to value: WineCompatibilityProfile) -> WineCompatibilityProfile {
+        var result = value
+        switch self {
+        case .wineD3D:
+            result.legacyWrapper = .none
+            result.legacyGraphicsAPI = .directDraw
+            result.graphicsAPI = .automatic
+            result.graphicsBackend = .wineD3D
+        case .dd7to9:
+            result.legacyWrapper = .dd7to9
+            result.legacyGraphicsAPI = .directDraw
+            result.graphicsAPI = .directX9
+            result.graphicsBackend = .wineD3D
+        case .dgVoodooWineD3D:
+            result.legacyWrapper = .dgVoodoo2
+            result.legacyGraphicsAPI = .directDraw
+            result.graphicsAPI = .directX11
+            result.graphicsBackend = .wineD3D
+        case .dgVoodooDXMT:
+            result.legacyWrapper = .dgVoodoo2
+            result.legacyGraphicsAPI = .directDraw
+            result.graphicsAPI = .directX11
+            result.graphicsBackend = .dxmt
+        case .manual:
+            break
+        }
+        return result
+    }
+}
+
 struct WineCompatibilityConfigurator: View {
     private struct DisplayChoice: Identifiable { let id: UInt32; let label: String }
     private enum GameLaunchMode: String, CaseIterable, Identifiable {
@@ -114,6 +173,7 @@ struct WineCompatibilityConfigurator: View {
     @State private var showsComponentsPatches = false
     @State private var showsControllerSettings = false
     @State private var temporalInspector: TemporalUpscalingInspectorSnapshot?
+    @AppStorage("developerMode") private var developerMode = false
 
     init(application: WindowsApplication) {
         self.application = application
@@ -410,12 +470,28 @@ struct WineCompatibilityConfigurator: View {
                     if let legacyWrapperAvailabilityMessage {
                         CompatibilityCallout(text: legacyWrapperAvailabilityMessage, symbol: "exclamationmark.triangle.fill", tint: .orange)
                     }
+                    CompatibilityPickerRow(
+                        title: "Legacy graphics test profile",
+                        detail: selectedLegacyTestProfile.detail
+                    ) {
+                        Picker("Legacy graphics test profile", selection: legacyTestProfileBinding) {
+                            ForEach(LegacyGraphicsTestProfile.allCases) { testProfile in
+                                Text(testProfile.title)
+                                    .tag(testProfile)
+                                    .disabled(!legacyTestProfileAvailable(testProfile))
+                            }
+                        }
+                        .labelsHidden()
+                    }
                     if profile.legacyWrapper != .none {
                         CompatibilityPickerRow(title: "Older graphics API", detail: legacyWrapperDetail) {
                             Picker("Older graphics API", selection: $profile.legacyGraphicsAPI) { ForEach(LegacyGraphicsAPI.allCases) { Text($0.displayName).tag($0) } }.labelsHidden()
                         }
                     } else {
                         Text("For older games that use DirectDraw or early Direct3D. Leave disabled unless needed.").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if developerMode {
+                        LegacyWrapperDecisionCard(decision: legacyWrapperDecision)
                     }
                 }.padding(.top, 8)
             }
@@ -611,6 +687,9 @@ struct WineCompatibilityConfigurator: View {
         return Int(exactly: Double(value.rounded()))
     }
     private var graphicsProfile: GameGraphicsProfile? { GameGraphicsProfiles.profile(for: application) }
+    private var legacyWrapperDecision: LegacyWrapperDecision {
+        GameGraphicsProfiles.legacyWrapperDecision(for: application, requested: profile)
+    }
     private var availableRuntimes: [RuntimeStatus] { store.installedRuntimeStatusesForGameConfiguration() }
     private var selectedRuntimeIssue: String? {
         guard let runtimeID = profile.runtimeIDOverride else { return nil }
@@ -651,7 +730,33 @@ struct WineCompatibilityConfigurator: View {
         switch profile.legacyWrapper {
         case .none: ""
         case .dd7to9: String(localized: "Uses Dd7to9 to convert DirectDraw / Direct3D 1–7 calls to D3D9. Requires the verified Dd7to9 component and a D3D9-capable backend.")
-        case .dgVoodoo2: String(localized: "Uses dgVoodoo2 for the selected graphics API. Requires a runtime that includes dgVoodoo2.")
+        case .dgVoodoo2: String(localized: "Uses dgVoodoo2 for DirectDraw/Direct3D 7. Boreal writes a per-game config and forces the D3D11 FL 11.0 path for this test profile.")
+        }
+    }
+    private var selectedLegacyTestProfile: LegacyGraphicsTestProfile {
+        switch (profile.legacyWrapper, profile.graphicsBackend, profile.graphicsAPI ?? .automatic) {
+        case (.none, .wineD3D, .automatic): .wineD3D
+        case (.dd7to9, .wineD3D, .directX9): .dd7to9
+        case (.dgVoodoo2, .wineD3D, .directX11): .dgVoodooWineD3D
+        case (.dgVoodoo2, .dxmt, .directX11): .dgVoodooDXMT
+        default: .manual
+        }
+    }
+    private var legacyTestProfileBinding: Binding<LegacyGraphicsTestProfile> {
+        Binding(
+            get: { selectedLegacyTestProfile },
+            set: { profile = $0.applying(to: profile) }
+        )
+    }
+    private func legacyTestProfileAvailable(_ testProfile: LegacyGraphicsTestProfile) -> Bool {
+        switch testProfile {
+        case .wineD3D, .manual: true
+        case .dd7to9: runtimeFeatures?.dd7to9 == true
+        case .dgVoodooWineD3D: runtimeFeatures?.dgVoodoo2 == true
+        case .dgVoodooDXMT:
+            runtimeFeatures?.dgVoodoo2 == true
+                && runtimeFeatures?.dxmt == true
+                && runtimeFeatures?.d3d11Verified == true
         }
     }
     private var fullscreenFSRCapabilities: FullscreenFSRCapabilities {
@@ -971,6 +1076,30 @@ private struct CompatibilityCallout: View {
     var body: some View {
         Label(text, systemImage: symbol).font(.caption).foregroundStyle(tint).frame(maxWidth: .infinity, alignment: .leading).padding(9)
             .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8)).overlay { RoundedRectangle(cornerRadius: 8).stroke(tint.opacity(0.22)) }
+    }
+}
+
+private struct LegacyWrapperDecisionCard: View {
+    let decision: LegacyWrapperDecision
+
+    private func wrapperName(_ wrapper: LegacyGraphicsWrapper?) -> String {
+        wrapper?.displayName ?? String(localized: "Not set")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Wrapper decision (Developer Mode)", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.caption.weight(.semibold))
+            InspectorValueRow(title: "Requested wrapper", value: decision.requested.displayName, monospaced: true)
+            InspectorValueRow(title: "Profile preference", value: wrapperName(decision.profilePreference), monospaced: true)
+            InspectorValueRow(title: "Profile enforcement", value: wrapperName(decision.profileEnforcement), monospaced: true)
+            InspectorValueRow(title: "Effective wrapper", value: decision.effective.displayName, monospaced: true)
+            InspectorValueRow(title: "Source of decision", value: decision.source.displayName, monospaced: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .overlay { RoundedRectangle(cornerRadius: 8).stroke(.blue.opacity(0.18)) }
     }
 }
 
