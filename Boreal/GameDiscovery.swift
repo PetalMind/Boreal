@@ -751,7 +751,7 @@ nonisolated enum GameDiscoveryService {
         if lower.contains("setup") || lower.contains("installer") { values.append("installer executable") }
         if lower.contains("helper") || lower.contains("crash") { values.append("helper or crash executable") }
         if lower.contains("redistributable") || lower.contains("redist") || lower.contains("directx")
-            || lower.contains("dotnet") || lower.contains("vcredist") {
+            || lower .contains("dotnet") || lower.contains("vcredist") {
             values.append("runtime or redistributable executable")
         }
         return values

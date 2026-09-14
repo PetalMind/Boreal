@@ -1127,6 +1127,18 @@ actor RuntimeManager: RuntimeManaging {
         return identifier == "com.apple.D3DMetal"
     }
 
+    private func validateGPTK4Candidate(_ candidate: LocalRuntimeCandidate) throws {
+        guard candidate.engine == .gamePortingToolkit, candidate.features.d3dmetal else {
+            throw RuntimeManagerError.localRuntimeInvalid("The selected runtime is not a Game Porting Toolkit D3DMetal environment.")
+        }
+        guard let d3dMetalVersion = candidate.features.d3dmetalVersion,
+              let majorVersion = runtimeMajorVersion(d3dMetalVersion), majorVersion >= 4 else {
+            throw RuntimeManagerError.localRuntimeInvalid(
+                "Select Game Porting Toolkit 4 or newer. The selected D3DMetal payload version could not be verified."
+            )
+        }
+    }
+
     private func validateGPTK4Payload(in libraryRoot: URL) throws {
         let requiredPaths = [
             "external/libd3dshared.dylib",
