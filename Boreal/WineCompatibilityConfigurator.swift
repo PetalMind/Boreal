@@ -94,6 +94,7 @@ private enum LegacyGraphicsTestProfile: String, CaseIterable, Identifiable {
     case dd7to9
     case dgVoodooWineD3D
     case dgVoodooDXMT
+    case borealLegacyGraphicsDXMT
     case manual
 
     var id: Self { self }
@@ -104,6 +105,7 @@ private enum LegacyGraphicsTestProfile: String, CaseIterable, Identifiable {
         case .dd7to9: "B · Dd7to9 / WineD3D D3D9"
         case .dgVoodooWineD3D: "C · dgVoodoo2 / WineD3D D3D11"
         case .dgVoodooDXMT: "D · dgVoodoo2 / DXMT Metal D3D11"
+        case .borealLegacyGraphicsDXMT: "E · Boreal Legacy Graphics / DXMT Metal D3D11"
         case .manual: "Manual configuration"
         }
     }
@@ -114,6 +116,7 @@ private enum LegacyGraphicsTestProfile: String, CaseIterable, Identifiable {
         case .dd7to9: "Converts DirectDraw/Direct3D 7 to D3D9 through Dd7to9."
         case .dgVoodooWineD3D: "Converts DirectDraw/Direct3D 7 to D3D11, then uses WineD3D."
         case .dgVoodooDXMT: "Converts DirectDraw/Direct3D 7 to D3D11, then uses DXMT/Metal."
+        case .borealLegacyGraphicsDXMT: "Routes Sacred's DirectDraw/Direct3D 7 calls through Boreal's traced D3D11 bridge and DXMT/Metal."
         case .manual: "Keep the current individual compatibility selections."
         }
     }
@@ -138,6 +141,11 @@ private enum LegacyGraphicsTestProfile: String, CaseIterable, Identifiable {
             result.graphicsBackend = .wineD3D
         case .dgVoodooDXMT:
             result.legacyWrapper = .dgVoodoo2
+            result.legacyGraphicsAPI = .directDraw
+            result.graphicsAPI = .directX11
+            result.graphicsBackend = .dxmt
+        case .borealLegacyGraphicsDXMT:
+            result.legacyWrapper = .borealLegacyGraphics
             result.legacyGraphicsAPI = .directDraw
             result.graphicsAPI = .directX11
             result.graphicsBackend = .dxmt
@@ -716,6 +724,7 @@ struct WineCompatibilityConfigurator: View {
         case .none: true
         case .dd7to9: runtimeFeatures?.dd7to9 == true
         case .dgVoodoo2: runtimeFeatures?.dgVoodoo2 == true
+        case .borealLegacyGraphics: runtimeFeatures?.borealLegacyGraphics == true
         }
     }
     private var legacyWrapperAvailabilityMessage: String? {
@@ -724,6 +733,7 @@ struct WineCompatibilityConfigurator: View {
         case .none: nil
         case .dd7to9: String(localized: "Dd7to9 is unavailable because the selected runtime has no verified Dd7to9 component. Install it from Settings → Runtime.")
         case .dgVoodoo2: String(localized: "dgVoodoo2 is unavailable because the selected runtime has no verified component package.")
+        case .borealLegacyGraphics: String(localized: "Boreal Legacy Graphics is unavailable because this app build does not contain its x86 ddraw.dll component.")
         }
     }
     private var legacyWrapperDetail: String {
@@ -731,6 +741,7 @@ struct WineCompatibilityConfigurator: View {
         case .none: ""
         case .dd7to9: String(localized: "Uses Dd7to9 to convert DirectDraw / Direct3D 1–7 calls to D3D9. Requires the verified Dd7to9 component and a D3D9-capable backend.")
         case .dgVoodoo2: String(localized: "Uses dgVoodoo2 for DirectDraw/Direct3D 7. Boreal writes a per-game config and forces the D3D11 FL 11.0 path for this test profile.")
+        case .borealLegacyGraphics: String(localized: "Uses Boreal's x86 ddraw.dll proxy with COM tracing and a D3D11 first-draw path through DXMT. The bridge currently targets Sacred's DirectDraw/Direct3D 7 surface and texture path.")
         }
     }
     private var selectedLegacyTestProfile: LegacyGraphicsTestProfile {
@@ -739,6 +750,7 @@ struct WineCompatibilityConfigurator: View {
         case (.dd7to9, .wineD3D, .directX9): .dd7to9
         case (.dgVoodoo2, .wineD3D, .directX11): .dgVoodooWineD3D
         case (.dgVoodoo2, .dxmt, .directX11): .dgVoodooDXMT
+        case (.borealLegacyGraphics, .dxmt, .directX11): .borealLegacyGraphicsDXMT
         default: .manual
         }
     }
@@ -755,6 +767,10 @@ struct WineCompatibilityConfigurator: View {
         case .dgVoodooWineD3D: runtimeFeatures?.dgVoodoo2 == true
         case .dgVoodooDXMT:
             runtimeFeatures?.dgVoodoo2 == true
+                && runtimeFeatures?.dxmt == true
+                && runtimeFeatures?.d3d11Verified == true
+        case .borealLegacyGraphicsDXMT:
+            runtimeFeatures?.borealLegacyGraphics == true
                 && runtimeFeatures?.dxmt == true
                 && runtimeFeatures?.d3d11Verified == true
         }

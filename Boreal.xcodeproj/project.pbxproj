@@ -105,6 +105,7 @@
 				B4C2B173303C5306000C8CC5 /* Sources */,
 				B4C2B174303C5306000C8CC5 /* Frameworks */,
 				B4C2B175303C5306000C8CC5 /* Resources */,
+				9D4E7F1A8B2C4D6E9F1029384756A1B3 /* Copy graphics components */,
 			);
 			buildRules = (
 			);
@@ -222,6 +223,25 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		9D4E7F1A8B2C4D6E9F1029384756A1B3 /* Copy graphics components */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Boreal/GraphicsComponents",
+			);
+			name = "Copy graphics components";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\ncomponent_source=\"${SRCROOT}/Boreal/GraphicsComponents\"\ncomponent_destination=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GraphicsComponents\"\nmkdir -p \"${component_destination}\"\n/usr/bin/ditto \"${component_source}/\" \"${component_destination}/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B4C2B173303C5306000C8CC5 /* Sources */ = {

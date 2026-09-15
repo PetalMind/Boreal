@@ -2655,6 +2655,9 @@ final class BorealStore {
             if !features.dgVoodoo2, profile.legacyWrapper == .dgVoodoo2 {
                 profile.legacyWrapper = .none
             }
+            if !features.borealLegacyGraphics, profile.legacyWrapper == .borealLegacyGraphics {
+                profile.legacyWrapper = .none
+            }
         }
         if profile.temporalUpscaling.mode == .metalFXBridge {
             profile.upscalingBridge = .ngxToMetalFX

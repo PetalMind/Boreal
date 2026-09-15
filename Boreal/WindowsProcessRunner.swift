@@ -525,6 +525,21 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values.removeValue(forKey: "WINEDLLPATH")
         values.removeValue(forKey: "D3DMETAL_FRAMEWORK_PATH")
         values.removeValue(forKey: "DYLD_FALLBACK_LIBRARY_PATH")
+        values.removeValue(forKey: "DXMT_CONFIG")
+        // BLG tuning switches are diagnostic-only and must not leak from the
+        // Boreal parent process into a normal game launch. The Sacred graphics
+        // plan adds back only the validated values it owns.
+        for key in [
+            "BLG_TEXTURE_SAMPLING",
+            "BLG_TEXTURE_STORAGE",
+            "BLG_SOFTWARE_RENDERING",
+            "BLG_FRAME_LATENCY",
+            "BLG_PRESENT_INTERVAL_MS",
+            "BLG_SWAPCHAIN_MODE",
+            "BLG_GEOMETRY_CULLING"
+        ] {
+            values.removeValue(forKey: key)
+        }
         // Renderer selection is process-scoped. Do not let a host shell or an
         // older Boreal build leak either the documented Wine key or the old
         // unsupported WINED3D_RENDERER spelling into another game.
@@ -571,11 +586,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
                 .deletingLastPathComponent()
                 .appending(path: "Components", directoryHint: .isDirectory)
             let componentStore = GraphicsComponentStore(rootURL: componentStoreRoot)
-            let dxmtUnixLibraries = environment.configuration.graphicsComponentReferences
+            let configuredDXMTLibraries = environment.configuration.graphicsComponentReferences
                 .first(where: { $0.component == .dxmt })
                 .map { componentStore.componentURL(.dxmt, version: $0.version).appending(path: "x64-unix", directoryHint: .isDirectory) }
-                ?? runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix", directoryHint: .isDirectory)
-            if FileManager.default.fileExists(atPath: dxmtUnixLibraries.appending(path: "winemetal.so").path) {
+            let dxmtUnixLibraries = [
+                configuredDXMTLibraries,
+                runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix", directoryHint: .isDirectory),
+                runtime.rootURL.appending(path: "Runtime/Wine.app/Contents/Resources/wine/lib/wine/x86_64-unix", directoryHint: .isDirectory)
+            ]
+            .compactMap { $0 }
+            .first { FileManager.default.fileExists(atPath: $0.appending(path: "winemetal.so").path) }
+            if let dxmtUnixLibraries {
                 values["WINEDLLPATH"] = dxmtUnixLibraries.path
             }
         }

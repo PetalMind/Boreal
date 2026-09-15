@@ -113,6 +113,64 @@ nonisolated struct LegacyWrapperManager: Sendable {
 
     private var fileManager: FileManager { .default }
 
+    /// The DXMT bridge used by Boreal Legacy Graphics needs a small host-side
+    /// Wine driver compatibility shim. Keep its location in the component so
+    /// activation can validate the complete payload before touching the
+    /// selected Wine runtime.
+    static func bundledHostUnixLibraryRoot(for wrapper: LegacyGraphicsWrapper) -> URL? {
+        guard wrapper == .borealLegacyGraphics,
+              let root = Bundle.main.resourceURL?.appending(
+                  path: "GraphicsComponents/\(wrapper.componentDirectoryName)/x64-unix",
+                  directoryHint: .isDirectory
+              ),
+              FileManager.default.isReadableFile(atPath: root.appending(path: "winemac.so").path) else {
+            return nil
+        }
+        return root
+    }
+
+    /// Installs the host-side driver shim in the selected Wine snapshot. Wine
+    /// loads `winemac.so` before DXMT resolves its callbacks, so a DLL search
+    /// path cannot reliably override an already loaded driver.
+    static func ensureBorealHostShim(
+        componentRoot: URL,
+        runtime: InstalledRuntime
+    ) throws {
+        guard runtime.wineVersion.contains("11.17") else {
+            throw GraphicsCompatibilityError.wrapperLibraryMissing(
+                "Wine 11.17 host-driver ABI"
+            )
+        }
+        let fileManager = FileManager.default
+        let source = componentRoot.appending(
+            path: "x64-unix/winemac.so",
+            directoryHint: .notDirectory
+        )
+        guard fileManager.isReadableFile(atPath: source.path) else {
+            throw GraphicsCompatibilityError.wrapperLibraryMissing("x64-unix/winemac.so")
+        }
+        let destination = runtime.rootURL.appending(
+            path: "Runtime/Wine.app/Contents/Resources/wine/lib/wine/x86_64-unix/winemac.so",
+            directoryHint: .notDirectory
+        )
+        guard fileManager.isReadableFile(atPath: destination.path) else {
+            throw GraphicsCompatibilityError.wrapperLibraryMissing("runtime x86_64-unix/winemac.so")
+        }
+
+        let replacement = try Data(contentsOf: source)
+        let current = try Data(contentsOf: destination)
+        guard replacement != current else { return }
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
+        do {
+            try replacement.write(to: destination)
+            try fileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: destination.path)
+        } catch {
+            try? current.write(to: destination)
+            try? fileManager.setAttributes([.posixPermissions: 0o555], ofItemAtPath: destination.path)
+            throw error
+        }
+    }
+
     /// Optional wrapper packages live beside, rather than inside, immutable
     /// Wine runtime snapshots. This keeps a wrapper update independent from
     /// the runtime that happens to consume it.
@@ -133,6 +191,10 @@ nonisolated struct LegacyWrapperManager: Sendable {
               let manifest = try? loadComponentManifest(at: root, expectedWrapper: wrapper),
               !manifest.architectures.isEmpty,
               !manifest.supportedAPIs.isEmpty else { return false }
+        if wrapper == .borealLegacyGraphics,
+           Self.bundledHostUnixLibraryRoot(for: wrapper) == nil {
+            return false
+        }
         return manifest.architectures.contains { architecture in
             supportedAPIs(from: manifest, architecture: architecture).contains { api in
                 guard let files = try? filesToInstall(from: manifest, api: api) else { return false }
@@ -161,6 +223,13 @@ nonisolated struct LegacyWrapperManager: Sendable {
 
         guard let componentRoot = componentRoot(for: wrapper, runtime: runtime) else {
             throw GraphicsCompatibilityError.componentPackageMissing(wrapper)
+        }
+        if wrapper == .borealLegacyGraphics,
+           Self.bundledHostUnixLibraryRoot(for: wrapper) == nil {
+            throw GraphicsCompatibilityError.wrapperLibraryMissing("x64-unix/winemac.so")
+        }
+        if wrapper == .borealLegacyGraphics {
+            try Self.ensureBorealHostShim(componentRoot: componentRoot, runtime: runtime)
         }
         let component = try loadComponentManifest(at: componentRoot, expectedWrapper: wrapper)
         let architecture = resolvedArchitecture(for: gameExecutable, environment: environment)
@@ -263,7 +332,10 @@ nonisolated struct LegacyWrapperManager: Sendable {
 
     private func componentRoot(for wrapper: LegacyGraphicsWrapper, runtime: InstalledRuntime) -> URL? {
         guard wrapper != .none else { return nil }
-        let embedded = [
+        let bundled = Bundle.main.resourceURL.map {
+            $0.appending(path: "GraphicsComponents/\(wrapper.componentDirectoryName)", directoryHint: .isDirectory)
+        }
+        let embedded = [bundled].compactMap { $0 } + [
             runtime.rootURL.appending(path: "GraphicsComponents/\(wrapper.componentDirectoryName)", directoryHint: .isDirectory),
             runtime.rootURL.appending(path: "Support/Graphics/\(wrapper.componentDirectoryName)", directoryHint: .isDirectory)
         ]

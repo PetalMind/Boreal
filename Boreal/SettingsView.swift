@@ -376,7 +376,7 @@ struct RuntimeSettingsView: View {
     private var runtimeImportCard: some View {
         SettingsCard(
             "Import runtimes",
-            subtitle: "Add an isolated Wine or GPTK graphics runtime. GPTK 4 uses a compatible Wine 11.17+ base, and original app bundles are never modified.",
+            subtitle: "Add an isolated Wine or GPTK graphics runtime. GPTK 4 requires a GPTK-capable Wine 11.17+ host, and original app bundles are never modified.",
             symbol: "square.and.arrow.down"
         ) {
             VStack(alignment: .leading, spacing: 10) {
@@ -386,7 +386,7 @@ struct RuntimeSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Game Porting Toolkit")
                             .font(.headline)
-                        Text("Choose a GPTK app or extracted Apple D3DMetal evaluation payload. GPTK 4 is layered onto a complete Wine 11.17+ base.")
+                        Text("Choose a GPTK app or extracted Apple D3DMetal evaluation payload. GPTK 4 is layered only onto a GPTK-capable Wine 11.17+ host.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -463,7 +463,7 @@ struct RuntimeSettingsView: View {
     private func selectGPTKRuntime() {
         let panel = NSOpenPanel()
         panel.title = "Import Game Porting Toolkit"
-        panel.message = "Choose a GPTK app bundle or an extracted Apple evaluation payload containing D3DMetal. Boreal also requires a complete x86_64 Wine 11.17+ base."
+        panel.message = "Choose a GPTK app bundle or an extracted Apple evaluation payload containing D3DMetal. A standalone GPTK 4 payload also requires a GPTK-capable x86_64 Wine 11.17+ host."
         panel.prompt = "Import"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true

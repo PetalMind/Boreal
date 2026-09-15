@@ -116,14 +116,26 @@ nonisolated struct GraphicsBackendManager: Sendable {
            componentStore?.contains(configuredReference, fileManager: fileManager) != true {
             throw GraphicsBackendManagerError.componentPackageMissing(backend)
         }
-        guard supports(backend, runtime: runtime, componentReference: componentReference),
-              let componentRoot = componentRoot(
-                  for: backend,
-                  api: configuration.api,
-                  runtime: runtime,
-                  reference: componentReference
-              ) else {
+        guard supports(backend, runtime: runtime, componentReference: componentReference) else {
             throw GraphicsBackendManagerError.componentPackageMissing(backend)
+        }
+        guard let componentRoot = componentRoot(
+            for: backend,
+            api: configuration.api,
+            runtime: runtime,
+            reference: componentReference
+        ) else {
+            // Imported Wine runtimes can ship DXMT inside Wine.app instead of
+            // as a detached Boreal component. The Windows modules and the
+            // Unix-side Metal bridge are still a complete renderer.
+            guard backend == .dxmt, builtinDXMTAvailable(in: environment, runtime: runtime) else {
+                throw GraphicsBackendManagerError.componentPackageMissing(backend)
+            }
+            return GraphicsBackendActivation(
+                backend: .dxmt,
+                dllOverrides: ["d3d11", "dxgi"],
+                componentReference: nil
+            )
         }
         if backend == .dxmt,
            !fileManager.fileExists(atPath: componentRoot.appending(path: "x64-unix/winemetal.so").path) {
@@ -334,6 +346,27 @@ nonisolated struct GraphicsBackendManager: Sendable {
             }
         }
         return result
+    }
+
+    private func builtinDXMTAvailable(
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) -> Bool {
+        let wineLibraries = runtime.rootURL.appending(
+            path: "Runtime/Wine.app/Contents/Resources/wine/lib",
+            directoryHint: .isDirectory
+        )
+        let architecture = environment.configuration.resolvedPrefixArchitecture(
+            runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
+        )
+        let windowsDirectory = architecture == .win32 ? "i386-windows" : "x86_64-windows"
+        let windowsLibraries = wineLibraries
+            .appending(path: "wine/\(windowsDirectory)", directoryHint: .isDirectory)
+        let unixLibraries = wineLibraries
+            .appending(path: "wine/x86_64-unix", directoryHint: .isDirectory)
+        return ["d3d11.dll", "dxgi.dll"].allSatisfy {
+            fileManager.isReadableFile(atPath: windowsLibraries.appending(path: $0).path)
+        } && fileManager.isReadableFile(atPath: unixLibraries.appending(path: "winemetal.so").path)
     }
 
     static func validateNativeDXVKLibrary(_ url: URL) throws {

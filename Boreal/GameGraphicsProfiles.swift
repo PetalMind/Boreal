@@ -237,27 +237,21 @@ nonisolated enum GameGraphicsProfiles {
         GameGraphicsProfile(
             provider: .gog,
             externalID: "1207658688",
-            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. WineD3D
-            // remains the recommendation, but the compatibility sheet must
-            // allow an explicit wrapper/backend override so the legacy paths
-            // can be tested independently instead of being silently replaced.
+            // Sacred Gold is a 32-bit DirectDraw/Direct3D 7 title. The default
+            // profile uses Boreal Legacy Graphics: a traced x86 ddraw proxy
+            // with a D3D11 first-draw path backed by the selected DXMT runtime.
             availableAPIs: [.automatic, .directX9, .directX11],
             defaultAPI: .automatic,
             launchOptions: [],
-            preferredBackend: .wineD3D,
-            preferredLegacyWrapper: LegacyGraphicsWrapper.none,
+            preferredBackend: .dxmt,
+            preferredLegacyWrapper: LegacyGraphicsWrapper.borealLegacyGraphics,
             enforcedLegacyGraphicsAPI: .directDraw,
             overlayCompatibleFullscreen: false,
             enforcedOverlayCompatibleFullscreen: false,
-            // Keep WineD3D/OpenGL as the recommended A-profile path. The
-            // value is applied only when that backend is selected; choosing
-            // DXMT for the D profile does not inherit this Wine-only setting.
-            launchEnvironment: ["WINE_D3D_CONFIG": "renderer=gl"],
-            // dgVoodoo is an experimental per-game path. Generate its config
-            // next to the game DLL and force the D3D11 feature-level path so
-            // the first comparison is deterministic rather than
-            // best-available output selection.
-            legacyWrapperSettings: ["OutputAPI": "d3d11_fl11_0"]
+            // The bundled BLG path creates D3D11 itself and relies on the
+            // selected runtime's DXMT libraries. No dgVoodoo configuration is
+            // written for this profile.
+            legacyWrapperSettings: [:]
         )
     ]
 

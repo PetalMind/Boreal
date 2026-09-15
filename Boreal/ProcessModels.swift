@@ -647,18 +647,21 @@ nonisolated enum GameLaunchCompatibility {
             var changed = false
             for (key, value) in values {
                 let replacement = "\(key) : \(value)"
-                if let index = lines.firstIndex(where: { line in
-                    line.trimmingCharacters(in: .whitespacesAndNewlines)
+                var found = false
+                for index in lines.indices {
+                    let lineKey = lines[index]
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
                         .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
                         .first
-                        .map(String.init)?
-                        .caseInsensitiveCompare(key) == .orderedSame
-                }) {
+                        .map(String.init)
+                    guard lineKey?.caseInsensitiveCompare(key) == .orderedSame else { continue }
+                    found = true
                     if lines[index] != replacement {
                         lines[index] = replacement
                         changed = true
                     }
-                } else {
+                }
+                if !found {
                     if !lines.isEmpty, !lines[lines.count - 1].isEmpty {
                         lines.append("")
                     }

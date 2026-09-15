@@ -230,6 +230,7 @@ nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable,
     case none
     case dd7to9
     case dgVoodoo2
+    case borealLegacyGraphics
 
     var id: String { rawValue }
     var displayName: String {
@@ -237,6 +238,7 @@ nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable,
         case .none: "Disabled"
         case .dd7to9: "Dd7to9 (DirectDraw → D3D9)"
         case .dgVoodoo2: "dgVoodoo2"
+        case .borealLegacyGraphics: "Boreal Legacy Graphics (DirectDraw → D3D11)"
         }
     }
 
@@ -245,6 +247,7 @@ nonisolated enum LegacyGraphicsWrapper: String, Codable, CaseIterable, Sendable,
         case .none: ""
         case .dd7to9: "Dd7to9"
         case .dgVoodoo2: "dgVoodoo2"
+        case .borealLegacyGraphics: "BorealLegacyGraphics"
         }
     }
 }

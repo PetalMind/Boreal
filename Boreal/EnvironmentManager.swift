@@ -553,11 +553,17 @@ actor EnvironmentManager: EnvironmentManaging {
             architecture: prefixArchitecture
         )
         if resolvedGraphicsBackend == .dxmt {
-            let dxmtUnixLibraries = environment.configuration.graphicsComponentReferences
+            let configuredDXMTLibraries = environment.configuration.graphicsComponentReferences
                 .first(where: { $0.component == .dxmt })
                 .map { componentStore.componentURL(.dxmt, version: $0.version).appending(path: "x64-unix", directoryHint: .isDirectory) }
-                ?? runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix", directoryHint: .isDirectory)
-            if fileManager.fileExists(atPath: dxmtUnixLibraries.appending(path: "winemetal.so").path) {
+            let dxmtUnixLibraries = [
+                configuredDXMTLibraries,
+                runtime.rootURL.appending(path: "GraphicsComponents/DXMT/x64-unix", directoryHint: .isDirectory),
+                runtime.rootURL.appending(path: "Runtime/Wine.app/Contents/Resources/wine/lib/wine/x86_64-unix", directoryHint: .isDirectory)
+            ]
+            .compactMap { $0 }
+            .first { fileManager.fileExists(atPath: $0.appending(path: "winemetal.so").path) }
+            if let dxmtUnixLibraries {
                 values["WINEDLLPATH"] = dxmtUnixLibraries.path
             }
         }

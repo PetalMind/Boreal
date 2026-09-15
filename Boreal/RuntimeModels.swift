@@ -483,14 +483,15 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
     var wineBusControllerMapping: Bool = false
     var dd7to9: Bool = false
     var dgVoodoo2: Bool = false
+    var borealLegacyGraphics: Bool = false
     var graphicsCapabilities: [String: GraphicsBackendCapabilities]?
 
     private enum CodingKeys: String, CodingKey {
         case wow64, supportsWin32Execution, supportsWin64Execution, architectureCapabilities, wineMono, wineGecko, d3dmetal, d3dmetalVersion, d3dmetalVerified, dxmt, d3d11Verified, d3d11VerifiedArchitectures, dxvk, d9vk, vkd3d
-        case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dd7to9, dgVoodoo2, graphicsCapabilities
+        case esync, msync, fullscreenFSR, fullscreenFSRCapabilities, wineBusControllerMapping, dd7to9, dgVoodoo2, borealLegacyGraphics, graphicsCapabilities
     }
 
-    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, d3dmetalVersion: String? = nil, d3dmetalVerified: Bool? = nil, dxmt: Bool, d3d11Verified: Bool? = nil, d3d11VerifiedArchitectures: Set<WindowsExecutableArchitecture>? = nil, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false) {
+    init(wow64: Bool, supportsWin32Execution: Bool? = nil, supportsWin64Execution: Bool? = nil, architectureCapabilities: RuntimeArchitectureCapabilities? = nil, wineMono: Bool, wineGecko: Bool, d3dmetal: Bool, d3dmetalVersion: String? = nil, d3dmetalVerified: Bool? = nil, dxmt: Bool, d3d11Verified: Bool? = nil, d3d11VerifiedArchitectures: Set<WindowsExecutableArchitecture>? = nil, dxvk: Bool = false, d9vk: Bool = false, vkd3d: Bool = false, esync: Bool = false, msync: Bool = false, fullscreenFSR: Bool = false, fullscreenFSRCapabilities: FullscreenFSRCapabilities? = nil, wineBusControllerMapping: Bool = false, dd7to9: Bool = false, dgVoodoo2: Bool = false, borealLegacyGraphics: Bool = false) {
         self.wow64 = wow64
         self.architectureCapabilities = architectureCapabilities
         self.supportsWin32Execution = supportsWin32Execution ?? architectureCapabilities?.canRunX86
@@ -512,6 +513,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         self.wineBusControllerMapping = wineBusControllerMapping
         self.dd7to9 = dd7to9
         self.dgVoodoo2 = dgVoodoo2
+        self.borealLegacyGraphics = borealLegacyGraphics
     }
 
     init(from decoder: Decoder) throws {
@@ -539,6 +541,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         wineBusControllerMapping = try values.decodeIfPresent(Bool.self, forKey: .wineBusControllerMapping) ?? false
         dd7to9 = try values.decodeIfPresent(Bool.self, forKey: .dd7to9) ?? false
         dgVoodoo2 = try values.decodeIfPresent(Bool.self, forKey: .dgVoodoo2) ?? false
+        borealLegacyGraphics = try values.decodeIfPresent(Bool.self, forKey: .borealLegacyGraphics) ?? false
         graphicsCapabilities = try values.decodeIfPresent([String: GraphicsBackendCapabilities].self, forKey: .graphicsCapabilities)
     }
 
@@ -569,6 +572,7 @@ nonisolated struct RuntimeFeatures: Codable, Sendable, Hashable {
         try values.encode(wineBusControllerMapping, forKey: .wineBusControllerMapping)
         try values.encode(dd7to9, forKey: .dd7to9)
         try values.encode(dgVoodoo2, forKey: .dgVoodoo2)
+        try values.encode(borealLegacyGraphics, forKey: .borealLegacyGraphics)
         try values.encodeIfPresent(graphicsCapabilities, forKey: .graphicsCapabilities)
     }
 
@@ -1256,7 +1260,7 @@ nonisolated protocol RuntimeManaging: Sendable {
     func importSelectedLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
     /// Imports either a GPTK `.app` bundle or Apple's mounted evaluation
     /// environment directory. GPTK 4 graphics are layered onto a complete,
-    /// compatible Wine base before the snapshot is published.
+    /// GPTK-capable Wine base before the snapshot is published.
     func importSelectedGPTKRuntime(from source: URL) async throws -> InstalledRuntime
     func install(_ runtime: BorealRuntime) async throws -> InstalledRuntime
     func validate(_ runtime: InstalledRuntime) async throws -> RuntimeValidation

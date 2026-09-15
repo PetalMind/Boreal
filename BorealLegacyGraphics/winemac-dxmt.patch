@@ -1,0 +1,18 @@
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -896,6 +896,14 @@
+         layer.framebufferOnly = YES;
+         layer.magnificationFilter = kCAFilterNearest;
+         layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+         layer.contentsScale = retina_on ? 2.0 : 1.0;
++        // DXMT owns frame pacing for the D3D swapchain. Leaving the default
++        // CAMetalLayer display synchronization enabled makes Present wait on
++        // the host display link before the next drawable becomes available;
++        // that is especially visible for legacy games issuing many small
++        // D3D11 draws. Keep a small drawable queue and let DXMT submit frames
++        // asynchronously.
++        layer.displaySyncEnabled = NO;
++        layer.maximumDrawableCount = 3;
+         return layer;
+     }
