@@ -336,7 +336,15 @@ struct ConsoleModeView: View {
                             .frame(width: 240, height: 160)
                             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 22))
                     case .storeGame(let game):
-                        GameArtworkView(game: game, width: 300, height: 180)
+                        GameArtworkView(
+                            game: game,
+                            width: 300,
+                            height: 180,
+                            usesCustomArtwork: false,
+                            kind: .hero,
+                            displayMode: .fill,
+                            showsChrome: false
+                        )
                             .clipShape(RoundedRectangle(cornerRadius: 22))
                     }
                     VStack(alignment: .leading, spacing: 10) {
@@ -792,12 +800,17 @@ private struct ConsoleHomeHero: View {
     }
 
     @ViewBuilder private var heroArtwork: some View {
-        if let game = storeGame,
-           let value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL,
-           let url = URL(string: value) {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image { image.resizable().scaledToFill() }
-                else { heroPlaceholder }
+        if let game = storeGame {
+            GeometryReader { geometry in
+                GameArtworkView(
+                    game: game,
+                    width: geometry.size.width,
+                    height: geometry.size.height,
+                    usesCustomArtwork: false,
+                    kind: .hero,
+                    displayMode: .fill,
+                    showsChrome: false
+                )
             }
         } else {
             heroPlaceholder
@@ -836,7 +849,15 @@ private struct ConsoleGameCard: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(.white.opacity(0.08))
                     case .storeGame(let game):
-                        GameArtworkView(game: game, width: 288, height: 172)
+                        GameArtworkView(
+                            game: game,
+                            width: 288,
+                            height: 172,
+                            usesCustomArtwork: false,
+                            kind: .hero,
+                            displayMode: .fill,
+                            showsChrome: false
+                        )
                     }
                 }
                 .frame(width: 288, height: 172)

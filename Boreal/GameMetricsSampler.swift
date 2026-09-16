@@ -94,8 +94,23 @@ actor WineFPSMetricsProvider: FrameMetricsProviding {
         let tailSize: UInt64 = 4 * 1_024 * 1_024
         try? handle.seek(toOffset: end > tailSize ? end - tailSize : 0)
         guard let data = try? handle.readToEnd(),
-              let text = String(data: data, encoding: .utf8),
-              let fps = Self.frameRate(inLogText: text), fps > 0 else { return latest }
+              let text = String(data: data, encoding: .utf8) else { return latest }
+
+        // D3DMetal writes its HUD records to the same stderr stream as Wine.
+        // Prefer the measured present intervals when the separate unified-log
+        // reader is unavailable, then fall back to Wine's approximate +fps
+        // channel for runtimes that do not emit metal-HUD records.
+        if let hud = MetalHUDMetricsProvider.latestReading(in: text) {
+            latest = FrameMetricsReading(
+                framesPerSecond: hud.framesPerSecond,
+                intervals: hud.intervals,
+                token: signature,
+                source: .metalHUD,
+                isMeasured: true
+            )
+            return latest
+        }
+        guard let fps = Self.frameRate(inLogText: text), fps > 0 else { return latest }
         latest = FrameMetricsReading(
             framesPerSecond: fps, intervals: [1_000 / fps], token: signature,
             source: .wineDebugLog, isMeasured: false
@@ -206,6 +221,12 @@ actor MetalHUDMetricsProvider: FrameMetricsProviding {
             framesPerSecond: 1_000 / average, intervals: intervals,
             token: String(Date().timeIntervalSince1970), source: .metalHUD, isMeasured: true
         )
+    }
+
+    nonisolated static func latestReading(in text: String) -> FrameMetricsReading? {
+        text.split(whereSeparator: \.isNewline)
+            .compactMap { reading(in: String($0)) }
+            .last
     }
 }
 
@@ -538,7 +559,8 @@ actor GameMetricsSampler {
 
     // Kept for existing parser callers and lightweight compatibility tests.
     nonisolated static func frameRate(inLogText text: String) -> Double? {
-        WineFPSMetricsProvider.frameRate(inLogText: text) ?? MetalHUDMetricsProvider.reading(in: text)?.framesPerSecond
+        MetalHUDMetricsProvider.latestReading(in: text)?.framesPerSecond
+            ?? WineFPSMetricsProvider.frameRate(inLogText: text)
     }
 
     // Compatibility entry point for integrations that still supply the old

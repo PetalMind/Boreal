@@ -169,7 +169,11 @@ struct StoreGameDetailView: View {
             StoreMediaViewer(selection: selection, game: currentGame) {
                 selectedMedia = nil
             }
-            .frame(minWidth: 960, minHeight: 800)
+            .frame(
+                minWidth: 720,
+                idealWidth: 900,
+                maxWidth: 1200
+            )
             .presentationBackground(.clear)
         }
         .sheet(item: $coverEditorState) { state in
@@ -299,7 +303,7 @@ struct StoreGameDetailView: View {
     private func hero(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: width < 620 ? 16 : 24) {
-                GameArtworkView(game: currentGame, width: width < 620 ? 82 : 124, height: width < 620 ? 116 : 174)
+                GameArtworkView(game: currentGame, width: width < 620 ? 82 : 124, height: width < 620 ? 123 : 186)
                 VStack(alignment: .leading, spacing: 8) {
                     heroIdentity
                     if width >= 620 {
@@ -318,7 +322,15 @@ struct StoreGameDetailView: View {
         .frame(maxWidth: .infinity, minHeight: 214, alignment: .leading)
         .background {
             GeometryReader { geometry in
-                heroBackground
+                GameArtworkView(
+                    game: currentGame,
+                    width: geometry.size.width,
+                    height: geometry.size.height,
+                    usesCustomArtwork: false,
+                    kind: .hero,
+                    displayMode: .fill,
+                    showsChrome: false
+                )
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
                     .overlay {
@@ -911,30 +923,6 @@ struct StoreGameDetailView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
-        }
-    }
-
-    @ViewBuilder private var heroBackground: some View {
-        if let value = currentGame.backgroundImageURL ?? currentGame.headerImageURL, let url = URL(string: value) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image): image.resizable().scaledToFill()
-                case .failure: storeImageFailurePlaceholder
-                case .empty: Color.accentColor.opacity(0.12).overlay { ProgressView().tint(.white) }
-                @unknown default: Color.accentColor.opacity(0.12)
-                }
-            }
-        } else {
-            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-        }
-    }
-
-    private var storeImageFailurePlaceholder: some View {
-        ZStack {
-            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-            Label(.Library.imageUnavailable, systemImage: "photo.badge.exclamationmark")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.82))
         }
     }
 
@@ -2955,7 +2943,7 @@ private struct StoreGameInstallationSheet: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 22) {
-            GameArtworkView(game: game, width: 130, height: 154)
+            GameArtworkView(game: game, width: 130, height: 195)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 12) {
                 Text(game.name)
@@ -3218,6 +3206,51 @@ private struct StoreMediaSelection: Identifiable {
     var id: String { "\(items.map(\.id).joined(separator: "|"))#\(initialIndex)" }
 }
 
+private struct GalleryScreenshotView: View {
+    let url: URL
+
+    var body: some View {
+        ZStack {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(1.12)
+                        .blur(radius: 32)
+                        .opacity(0.18)
+                case .failure, .empty:
+                    Color.black
+                @unknown default:
+                    Color.black
+                }
+            }
+            .overlay(Color(red: 0.015, green: 0.03, blue: 0.05).opacity(0.62))
+            .overlay(Color.black.opacity(0.22))
+
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFit()
+                case .failure:
+                    ContentUnavailableView("Screenshot Unavailable", systemImage: "photo.badge.exclamationmark")
+                case .empty:
+                    ProgressView()
+                @unknown default:
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.34))
+        .clipped()
+    }
+}
+
 private struct StoreMediaThumbnail: View {
     let item: StoreMediaItem
     let width: CGFloat
@@ -3227,52 +3260,70 @@ private struct StoreMediaThumbnail: View {
             if let url = item.thumbnailURL {
                 AsyncImage(url: url) { phase in
                     switch phase {
-                    case .success(let image): image.resizable().scaledToFill()
-                    case .failure: placeholder
-                    case .empty: Rectangle().fill(.background.secondary).overlay { ProgressView() }
-                    @unknown default: Rectangle().fill(.background.secondary)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure:
+                        placeholder
+                    case .empty:
+                        Rectangle()
+                            .fill(.background.secondary)
+                            .overlay { ProgressView().controlSize(.small) }
+                    @unknown default:
+                        Rectangle().fill(.background.secondary)
                     }
                 }
             } else {
                 placeholder
             }
+
             if item.isVideo {
-                LinearGradient(colors: [.black.opacity(0.05), .black.opacity(0.72)], startPoint: .top, endPoint: .bottom)
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 42))
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.72)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                Image(systemName: "play.fill")
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.white)
+                    .padding(9)
+                    .background(.black.opacity(0.46), in: Circle())
             }
         }
         .frame(width: width, height: width * 9 / 16)
-        .overlay(alignment: .bottomLeading) {
-            if item.isVideo {
-                Text(item.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .padding(8)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private var placeholder: some View {
         ZStack {
-            LinearGradient(colors: [.indigo.opacity(0.65), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-            Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.82))
+            LinearGradient(
+                colors: [Color.indigo.opacity(0.62), Color.black.opacity(0.92)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: "photo")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white.opacity(0.72))
         }
     }
 }
 
 private struct StoreMediaViewer: View {
+    private let mediaAspectRatio: CGFloat = 16.0 / 9.0
+    private let headerHeight: CGFloat = 64
+    private let metadataHeight: CGFloat = 58
+    private let filmstripHeight: CGFloat = 104
+
     let selection: StoreMediaSelection
     let game: StoreLibraryGame
     let onDismiss: () -> Void
+
     @State private var currentIndex: Int
     @State private var player = AVPlayer()
     @State private var isPlaying = false
+    @State private var showsImmersiveViewer = false
 
     init(selection: StoreMediaSelection, game: StoreLibraryGame, onDismiss: @escaping () -> Void) {
         self.selection = selection
@@ -3282,25 +3333,25 @@ private struct StoreMediaViewer: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let scale = min(1, max(0.6, min((geometry.size.width - 48) / 910, (geometry.size.height - 48) / 682)))
-
-            ZStack {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .overlay(Color(red: 0.015, green: 0.025, blue: 0.04).opacity(0.64))
-                    .ignoresSafeArea()
-
-                modalPanel
-                    .scaleEffect(scale)
+        Group {
+            if showsImmersiveViewer {
+                immersiveViewer
+            } else {
+                galleryContent
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(.dark)
+        .background { gallerySurface }
         .onAppear(perform: preparePlayer)
         .onChange(of: currentIndex) { preparePlayer() }
         .onDisappear { player.pause() }
-        .onExitCommand { onDismiss() }
+        .onExitCommand {
+            if showsImmersiveViewer {
+                showsImmersiveViewer = false
+            } else {
+                onDismiss()
+            }
+        }
         .background {
             Button("Previous media", action: showPrevious)
                 .keyboardShortcut(.leftArrow, modifiers: [])
@@ -3311,52 +3362,336 @@ private struct StoreMediaViewer: View {
             Button("Play or pause video", action: togglePlayback)
                 .keyboardShortcut(.space, modifiers: [])
                 .hidden()
-            Button("Toggle fullscreen", action: toggleFullscreen)
+            Button("Toggle fullscreen", action: toggleImmersiveViewer)
                 .keyboardShortcut(.return, modifiers: [.command])
                 .hidden()
-            Button("Toggle fullscreen", action: toggleFullscreen)
+            Button("Toggle fullscreen", action: toggleImmersiveViewer)
                 .keyboardShortcut("f", modifiers: [])
                 .hidden()
         }
     }
 
-    private var modalPanel: some View {
+    private var gallerySurface: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .overlay {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.055, green: 0.05, blue: 0.07),
+                        Color(red: 0.025, green: 0.025, blue: 0.035)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            .ignoresSafeArea()
+    }
+
+    private var galleryContent: some View {
         VStack(spacing: 0) {
-            header
-                .frame(width: 910, height: 76)
-            mediaStage
-                .frame(width: 910, height: 430)
-            metadata
-                .frame(width: 910, height: 50)
+            galleryHeader
+                .frame(height: headerHeight)
+                .frame(maxWidth: .infinity)
+            galleryMediaStage
+            galleryMetadata
+                .frame(height: metadataHeight)
+                .frame(maxWidth: .infinity)
             Divider()
-                .opacity(0.42)
-                .padding(.horizontal, 28)
-                .frame(width: 910, height: 1)
-            filmstrip
-                .frame(width: 910, height: 125)
+                .opacity(0.36)
+                .frame(height: 1)
+                .frame(maxWidth: .infinity)
+            galleryFilmstrip
+                .frame(height: filmstripHeight)
+                .frame(maxWidth: .infinity)
         }
-        .frame(width: 910, height: 682)
-        .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.12, green: 0.14, blue: 0.17).opacity(0.72),
-                            Color(red: 0.035, green: 0.045, blue: 0.06).opacity(0.88)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+        .frame(maxWidth: .infinity)
+    }
+
+    private var galleryHeader: some View {
+        HStack(spacing: 12) {
+            GameArtworkView(
+                game: game,
+                width: 38,
+                height: 38,
+                kind: .cover,
+                displayMode: .automatic,
+                showsChrome: false
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(game.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("Media")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+
+            Spacer(minLength: 16)
+
+            Text("\(currentIndex + 1) / \(selection.items.count)")
+                .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(.trailing, 4)
+
+            galleryHeaderButton(
+                title: "Fullscreen",
+                symbol: "arrow.up.left.and.arrow.down.right",
+                action: toggleImmersiveViewer
+            )
+            .help("Fullscreen (⌘↩)")
+
+            galleryHeaderButton(title: "Close", symbol: "xmark", action: onDismiss)
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 20)
+        .background(Color.white.opacity(0.025))
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.28)
+        }
+    }
+
+    private func galleryHeaderButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(.white.opacity(0.09), lineWidth: 1)
+        }
+        .accessibilityLabel(title)
+    }
+
+    private var galleryMediaStage: some View {
+        ZStack {
+            mediaContent
+                .id(currentItem.id)
+                .transition(.opacity)
+
+            if selection.items.count > 1 {
+                HStack {
+                    galleryNavigationButton(
+                        title: "Previous media",
+                        symbol: "chevron.left",
+                        action: showPrevious
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    Spacer()
+                    galleryNavigationButton(
+                        title: "Next media",
+                        symbol: "chevron.right",
+                        action: showNext
+                    )
+                }
+                .padding(.horizontal, 24)
+            }
+        }
+        .aspectRatio(mediaAspectRatio, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .background(Color.black.opacity(0.25))
+        .clipped()
+        .animation(.easeInOut(duration: 0.16), value: currentItem.id)
+    }
+
+    @ViewBuilder private var mediaContent: some View {
+        switch currentItem {
+        case .screenshot(let url):
+            Button {
+                showsImmersiveViewer = true
+            } label: {
+                GalleryScreenshotView(url: url)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open screenshot in fullscreen viewer")
+        case .video:
+            videoContent
+        }
+    }
+
+    private var videoContent: some View {
+        ZStack {
+            mediaBackdrop
+            VideoPlayer(player: player)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder private var mediaBackdrop: some View {
+        if let url = currentItem.thumbnailURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Color.black
+                }
+            }
+            .scaleEffect(1.14)
+            .blur(radius: 30)
+            .overlay(Color(red: 0.015, green: 0.03, blue: 0.05).opacity(0.65))
+            .overlay(Color.black.opacity(0.32))
+        } else {
+            Color.black
+        }
+    }
+
+    private var galleryMetadata: some View {
+        HStack(alignment: .center) {
+            Text(currentItem.isVideo ? "Video" : "Image")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.78))
+
+            Spacer(minLength: 20)
+
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(currentItem.isVideo ? currentItem.title : game.name)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+                Text(game.developer ?? game.provider.rawValue)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 28)
+        .background(Color.black.opacity(0.12))
+    }
+
+    private var galleryFilmstrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 14) {
+                    ForEach(Array(selection.items.enumerated()), id: \.element.id) { index, item in
+                        Button {
+                            selectMedia(at: index)
+                        } label: {
+                            StoreMediaThumbnail(item: item, width: 120)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .stroke(
+                                            index == currentIndex
+                                                ? Color.accentColor
+                                                : .white.opacity(0.1),
+                                            lineWidth: index == currentIndex ? 2 : 1
+                                        )
+                                }
+                                .shadow(
+                                    color: index == currentIndex
+                                        ? Color.accentColor.opacity(0.32)
+                                        : .clear,
+                                    radius: 4
+                                )
+                                .opacity(index == currentIndex ? 1 : 0.74)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(item.accessibilityTitle)
+                        .id(item.id)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+            }
+            .scrollIndicators(.hidden)
+            .onAppear {
+                scrollToCurrentItem(using: proxy, animated: false)
+            }
+            .onChange(of: currentIndex) {
+                scrollToCurrentItem(using: proxy, animated: true)
+            }
+        }
+        .background(Color.black.opacity(0.14))
+    }
+
+    private var immersiveViewer: some View {
+        GeometryReader { geometry in
+            let availableWidth = max(0, geometry.size.width - 48)
+            let availableHeight = max(0, geometry.size.height - 48)
+            let viewportWidth = min(availableWidth, availableHeight * mediaAspectRatio)
+            let viewportHeight = viewportWidth / mediaAspectRatio
+
+            ZStack {
+                Color.black.opacity(0.96)
+
+                immersiveMediaContent
+                    .id(currentItem.id)
+                    .transition(.opacity)
+                    .frame(width: viewportWidth, height: viewportHeight)
+
+                if selection.items.count > 1 {
+                    HStack {
+                        galleryNavigationButton(
+                            title: "Previous media",
+                            symbol: "chevron.left",
+                            action: showPrevious
+                        )
+                        Spacer()
+                        galleryNavigationButton(
+                            title: "Next media",
+                            symbol: "chevron.right",
+                            action: showNext
+                        )
+                    }
+                    .padding(.horizontal, 24)
+                }
+
+                VStack {
+                    Spacer()
+                    Text("\(currentIndex + 1) / \(selection.items.count)")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.82))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(.bottom, 18)
+                }
+            }
+            .animation(.easeInOut(duration: 0.16), value: currentItem.id)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder private var immersiveMediaContent: some View {
+        switch currentItem {
+        case .screenshot(let url):
+            Button {
+                showsImmersiveViewer = false
+            } label: {
+                GalleryScreenshotView(url: url)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Return to media gallery")
+        case .video:
+            videoContent
+        }
+    }
+
+    private func galleryNavigationButton(
+        title: String,
+        symbol: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay {
+                    Circle().stroke(.white.opacity(0.18), lineWidth: 1)
                 }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(.white.opacity(0.22), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.58), radius: 40, y: 20)
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
     }
 
     private var currentItem: StoreMediaItem {
@@ -3366,200 +3701,16 @@ private struct StoreMediaViewer: View {
         return selection.items[currentIndex]
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            headerArtwork
-            VStack(alignment: .leading, spacing: 2) {
-                Text(game.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("Media")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.58))
-            }
-            Spacer(minLength: 20)
-            Text("\(currentIndex + 1) / \(selection.items.count)")
-                .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.82))
-                .padding(.trailing, 6)
-            headerButton(title: "Fullscreen", symbol: "arrow.up.left.and.arrow.down.right", action: toggleFullscreen)
-                .help("Fullscreen (⌘↩)")
-            headerButton(title: "Close", symbol: "xmark", action: onDismiss)
-                .keyboardShortcut(.cancelAction)
-        }
-        .padding(.horizontal, 20)
-        .background {
-            LinearGradient(
-                colors: [.white.opacity(0.035), .black.opacity(0.08)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .overlay(alignment: .bottom) { Divider().opacity(0.34) }
-    }
-
-    private var headerArtwork: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LinearGradient(colors: [.indigo, .cyan.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            if let image = ArtworkImageCache.customImage(
-                processedPath: game.customArtworkPath,
-                originalPath: game.customArtworkOriginalPath
-            ) {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else if let path = game.artworkPath, let image = NSImage(contentsOfFile: path) {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Image(systemName: "gamecontroller.fill").foregroundStyle(.white.opacity(0.82))
-                    }
-                }
-            } else {
-                Image(systemName: "gamecontroller.fill").foregroundStyle(.white.opacity(0.82))
-            }
-        }
-        .frame(width: 40, height: 40)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.18)) }
-    }
-
-    private func headerButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 40, height: 40)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.white.opacity(0.08)) }
-        .accessibilityLabel(title)
-    }
-
-    private var mediaStage: some View {
-        ZStack {
-            mediaBackdrop
-            mediaContent
-                .frame(maxWidth: 720, maxHeight: 392)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(.white.opacity(0.14), lineWidth: 1)
-                }
-            if selection.items.count > 1 {
-                HStack {
-                    galleryButton(title: "Previous media", symbol: "chevron.left", action: showPrevious)
-                    Spacer()
-                    galleryButton(title: "Next media", symbol: "chevron.right", action: showNext)
-                }
-                .padding(.horizontal, 20)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.black.opacity(0.22))
-        .clipped()
-    }
-
-    @ViewBuilder private var mediaBackdrop: some View {
-        if let url = currentItem.thumbnailURL {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    Color.black
-                }
-            }
-            .scaleEffect(1.15)
-            .blur(radius: 36)
-            .overlay(Color(red: 0.015, green: 0.035, blue: 0.055).opacity(0.58))
-            .overlay(Color.black.opacity(0.34))
-        } else {
-            Color.black
-        }
-    }
-
-    @ViewBuilder private var mediaContent: some View {
-        switch currentItem {
-        case .screenshot(let url):
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFit()
-                } else if phase.error != nil {
-                    ContentUnavailableView("Screenshot Unavailable", systemImage: "photo.badge.exclamationmark")
-                } else {
-                    ProgressView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .video:
-            VideoPlayer(player: player)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private var metadata: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\(currentItem.isVideo ? "Video" : "Screenshot") \(currentIndex + 1) of \(selection.items.count)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                Text(currentItem.isVideo ? "Video" : "Image")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.48))
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(currentItem.isVideo ? currentItem.title : game.name)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .lineLimit(1)
-                Text(game.developer ?? game.provider.rawValue)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.46))
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 30)
-        .background(Color.black.opacity(0.08))
-    }
-
-    private var filmstrip: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 28) {
-                ForEach(Array(selection.items.enumerated()), id: \.element.id) { index, item in
-                    Button {
-                        currentIndex = index
-                    } label: {
-                        StoreMediaThumbnail(item: item, width: 146)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .stroke(index == currentIndex ? Color.accentColor : .white.opacity(0.12), lineWidth: index == currentIndex ? 3 : 1)
-                            }
-                            .shadow(color: index == currentIndex ? Color.accentColor.opacity(0.42) : .clear, radius: 4)
-                            .opacity(index == currentIndex ? 1 : 0.76)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(item.accessibilityTitle)
-                }
-            }
-            .padding(.horizontal, 28)
-            .frame(minHeight: 124)
-        }
-        .scrollIndicators(.hidden)
-        .background(Color.black.opacity(0.12))
-    }
-
     private func preparePlayer() {
         player.pause()
         isPlaying = false
-        guard case .video(let video) = currentItem, let url = URL(string: video.videoURL) else {
+
+        guard case .video(let video) = currentItem,
+              let url = URL(string: video.videoURL) else {
             player.replaceCurrentItem(with: nil)
             return
         }
+
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         player.play()
         isPlaying = true
@@ -3567,6 +3718,7 @@ private struct StoreMediaViewer: View {
 
     private func togglePlayback() {
         guard currentItem.isVideo else { return }
+
         if isPlaying {
             player.pause()
         } else {
@@ -3575,30 +3727,39 @@ private struct StoreMediaViewer: View {
         isPlaying.toggle()
     }
 
-    private func toggleFullscreen() {
-        (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(nil)
+    private func toggleImmersiveViewer() {
+        showsImmersiveViewer.toggle()
+    }
+
+    private func selectMedia(at index: Int) {
+        guard selection.items.indices.contains(index), index != currentIndex else { return }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            currentIndex = index
+        }
+    }
+
+    private func scrollToCurrentItem(using proxy: ScrollViewProxy, animated: Bool) {
+        guard selection.items.indices.contains(currentIndex) else { return }
+
+        let action = {
+            proxy.scrollTo(selection.items[currentIndex].id, anchor: .center)
+        }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.16), action)
+        } else {
+            action()
+        }
     }
 
     private func showPrevious() {
         guard !selection.items.isEmpty else { return }
-        currentIndex = (currentIndex - 1 + selection.items.count) % selection.items.count
+        selectMedia(at: (currentIndex - 1 + selection.items.count) % selection.items.count)
     }
 
     private func showNext() {
         guard !selection.items.isEmpty else { return }
-        currentIndex = (currentIndex + 1) % selection.items.count
-    }
-
-    private func galleryButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 52, height: 52)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay { Circle().stroke(.white.opacity(0.2)) }
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
+        selectMedia(at: (currentIndex + 1) % selection.items.count)
     }
 }

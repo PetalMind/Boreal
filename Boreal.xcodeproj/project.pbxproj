@@ -227,19 +227,28 @@
 /* Begin PBXShellScriptBuildPhase section */
 		9D4E7F1A8B2C4D6E9F1029384756A1B3 /* Copy graphics components */ = {
 			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
 			inputPaths = (
 				"$(SRCROOT)/Boreal/GraphicsComponents",
 			);
 			name = "Copy graphics components";
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents/BorealLegacyGraphics",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents/BorealLegacyGraphics/manifest.json",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents/BorealLegacyGraphics/x86",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents/BorealLegacyGraphics/x86/ddraw.dll",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents/BorealLegacyGraphics/x64-unix",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GraphicsComponents/BorealLegacyGraphics/x64-unix/winemac.so",
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\ncomponent_source=\"${SRCROOT}/Boreal/GraphicsComponents\"\ncomponent_destination=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GraphicsComponents\"\nmkdir -p \"${component_destination}\"\n/usr/bin/ditto \"${component_source}/\" \"${component_destination}/\"\n";
+			shellScript = (
+				"set -eu",
+				"component_source=\"${SRCROOT}/Boreal/GraphicsComponents\"",
+				"component_destination=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GraphicsComponents\"",
+				"mkdir -p \"${component_destination}\"",
+				"/bin/cp -R \"${component_source}/.\" \"${component_destination}/\"",
+				"",
+			);
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -313,7 +322,7 @@
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -377,7 +386,7 @@
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -414,6 +423,10 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Boreal/GraphicsComponents/BorealLegacyGraphics/x64-unix",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.Boreal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -445,6 +458,10 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Boreal/GraphicsComponents/BorealLegacyGraphics/x64-unix",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.Boreal;

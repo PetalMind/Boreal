@@ -1166,21 +1166,16 @@ struct LibraryView: View {
                     .overlay { Image(systemName: app.iconSymbol).font(.system(size: 92)).foregroundStyle(.white.opacity(0.22)) }
             }
         case .storeGame(let game):
-            if let image = ArtworkImageCache.customImage(
-                processedPath: game.customArtworkPath,
-                originalPath: game.customArtworkOriginalPath
-            ) {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else if let value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL,
-                      let url = URL(string: value) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image { image.resizable().scaledToFill() }
-                    else { LinearGradient(colors: [.indigo, .cyan.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing) }
-                }
-            } else {
-                LinearGradient(colors: [.indigo, .cyan.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            GeometryReader { geometry in
+                GameArtworkView(
+                    game: game,
+                    width: geometry.size.width,
+                    height: geometry.size.height,
+                    usesCustomArtwork: false,
+                    kind: .hero,
+                    displayMode: .fill,
+                    showsChrome: false
+                )
             }
         }
     }
@@ -1397,7 +1392,7 @@ struct LibraryView: View {
             GameArtworkView(
                 game: game,
                 width: compact ? 32 : 148,
-                height: compact ? 42 : 207,
+                height: compact ? 48 : 222,
                 usesCustomArtwork: false
             )
         }
@@ -1457,7 +1452,7 @@ struct LibraryView: View {
 
         func body(content: Content) -> some View {
             let shaped = content
-                .aspectRatio(0.82, contentMode: .fit)
+                .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             let outlined = shaped.overlay(LibraryCardOutline(hovering: hovering))
 

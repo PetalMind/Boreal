@@ -721,7 +721,7 @@ private struct DownloadOperationCard: View {
 
     private var header: some View {
         HStack(spacing: 15) {
-            GameArtworkView(game: game, width: 64, height: 88)
+            GameArtworkView(game: game, width: 64, height: 96)
             VStack(alignment: .leading, spacing: 6) {
                 Text(game.name)
                     .font(.title3.bold())
@@ -1061,7 +1061,7 @@ private struct DownloadQueueRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            GameArtworkView(game: game, width: 42, height: 56)
+            GameArtworkView(game: game, width: 42, height: 63)
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.name).font(.callout.weight(.semibold)).lineLimit(1)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)

@@ -1,5 +1,7 @@
+import Foundation
 import SwiftUI
 import AppKit
+import ImageIO
 
 struct BorealGlassBackdrop: View {
     var body: some View {
@@ -100,53 +102,168 @@ struct AppIconView: View {
     }
 }
 
+enum ArtworkKind: Sendable {
+    case cover
+    case hero
+}
+
+enum ArtworkDisplayMode: Sendable {
+    case automatic
+    case fill
+    case fit
+}
+
 struct GameArtworkView: View {
     let game: StoreLibraryGame
     var width: CGFloat = 156
     var height: CGFloat = 218
     var usesCustomArtwork = true
+    var kind: ArtworkKind = .cover
+    var displayMode: ArtworkDisplayMode = .automatic
+    var showsChrome = true
+
+    @State private var remoteImage: NSImage?
+    @State private var remoteLoadFinished = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(LinearGradient(colors: [.indigo.opacity(0.85), .cyan.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            artwork
+        Group {
+            if showsChrome {
+                artworkSurface
+                    .frame(width: width, height: height)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(.white.opacity(0.18), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.22), radius: 12, y: 7)
+            } else {
+                artworkSurface
+                    .frame(width: width, height: height)
+                    .clipped()
+            }
         }
-        .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.white.opacity(0.18), lineWidth: 1)
+        .task(id: remoteURL?.absoluteString ?? "") {
+            await loadRemoteArtwork()
         }
-        .shadow(color: .black.opacity(0.22), radius: 12, y: 7)
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder private var artwork: some View {
+    private var artworkSurface: some View {
+        ZStack {
+            LinearGradient(
+                colors: [.indigo.opacity(0.85), .cyan.opacity(0.5)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            content
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let image = localImage ?? remoteImage {
+            renderedArtwork(image)
+        } else if remoteURL != nil && !remoteLoadFinished {
+            placeholder.overlay { ProgressView().tint(.white) }
+        } else {
+            placeholder.overlay {
+                if remoteURL != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .padding(8)
+                        .foregroundStyle(.yellow)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func renderedArtwork(_ image: NSImage) -> some View {
+        switch resolvedDisplayMode(for: image) {
+        case .fill, .automatic:
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .fit:
+            ZStack {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .blur(radius: 22)
+                    .scaleEffect(1.12)
+                    .opacity(0.72)
+
+                Color.black.opacity(0.18)
+
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private var localImage: NSImage? {
         if usesCustomArtwork,
            let image = ArtworkImageCache.customImage(
                processedPath: game.customArtworkPath,
                originalPath: game.customArtworkOriginalPath
            ) {
-            Image(nsImage: image).resizable().scaledToFill()
-        } else if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
-            Image(nsImage: image).resizable().scaledToFill()
-        } else if let value = game.portraitImageURL ?? game.headerImageURL, let url = URL(string: value) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image): image.resizable().scaledToFill()
-                case .failure:
-                    placeholder.overlay(alignment: .topTrailing) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption).padding(8).foregroundStyle(.yellow)
-                    }
-                case .empty: placeholder.overlay { ProgressView().tint(.white) }
-                @unknown default: placeholder
-                }
-            }
-        } else {
-            placeholder
+            return image
         }
+        if kind == .hero, remoteURL != nil {
+            return nil
+        }
+        if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
+            return image
+        }
+        return nil
+    }
+
+    private var remoteURL: URL? {
+        let value: String?
+        switch kind {
+        case .cover:
+            value = game.portraitImageURL ?? game.headerImageURL ?? game.backgroundImageURL
+        case .hero:
+            value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL
+        }
+        return value.flatMap(URL.init(string:))
+    }
+
+    private func resolvedDisplayMode(for image: NSImage) -> ArtworkDisplayMode {
+        switch displayMode {
+        case .fill, .fit:
+            return displayMode
+        case .automatic:
+            guard kind == .cover,
+                  let aspectRatio = imageAspectRatio(for: image) else { return .fill }
+            return abs(aspectRatio - (2.0 / 3.0)) < 0.12 ? .fill : .fit
+        }
+    }
+
+    private func imageAspectRatio(for image: NSImage) -> CGFloat? {
+        let representation = image.representations.max {
+            ($0.pixelsWide * $0.pixelsHigh) < ($1.pixelsWide * $1.pixelsHigh)
+        }
+        let width = CGFloat(representation?.pixelsWide ?? Int(image.size.width))
+        let height = CGFloat(representation?.pixelsHigh ?? Int(image.size.height))
+        guard width > 0, height > 0 else { return nil }
+        return width / height
+    }
+
+    @MainActor
+    private func loadRemoteArtwork() async {
+        remoteImage = nil
+        remoteLoadFinished = false
+        guard localImage == nil, let remoteURL else {
+            remoteLoadFinished = true
+            return
+        }
+        let image = await BorealArtworkImagePipeline.shared.image(for: remoteURL, maxPixelSize: 1600)
+        guard !Task.isCancelled else { return }
+        remoteImage = image
+        remoteLoadFinished = true
     }
 
     private var placeholder: some View {
@@ -155,6 +272,53 @@ struct GameArtworkView: View {
             Text(game.provider.rawValue.uppercased()).font(.caption2).fontWeight(.bold).tracking(1.4)
         }
         .foregroundStyle(.white.opacity(0.9))
+    }
+}
+
+private actor BorealArtworkImagePipeline {
+    static let shared = BorealArtworkImagePipeline()
+
+    private let cache = NSCache<NSURL, NSImage>()
+    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+
+    func image(for url: URL, maxPixelSize: Int) async -> NSImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        if let task = inFlight[url] { return await task.value }
+
+        let task = Task.detached(priority: .utility) { () -> NSImage? in
+            var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
+            request.setValue("image/*", forHTTPHeaderField: "Accept")
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  !Task.isCancelled else { return nil }
+            return Self.downsampledImage(from: data, maxPixelSize: maxPixelSize)
+        }
+        inFlight[url] = task
+        let image = await task.value
+        inFlight[url] = nil
+        if let image {
+            cache.setObject(image, forKey: url as NSURL, cost: Self.imageCost(image))
+        }
+        return image
+    }
+
+    private static func downsampledImage(from data: Data, maxPixelSize: Int) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return NSImage(cgImage: thumbnail, size: .zero)
+    }
+
+    private static func imageCost(_ image: NSImage) -> Int {
+        let representation = image.representations.first
+        let width = representation?.pixelsWide ?? Int(image.size.width)
+        let height = representation?.pixelsHigh ?? Int(image.size.height)
+        return max(1, width * height * 4)
     }
 }
 
