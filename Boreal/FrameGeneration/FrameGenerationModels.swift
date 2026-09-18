@@ -38,6 +38,34 @@ nonisolated enum FrameGenerationState: Equatable, Sendable {
     case failed(String)
 }
 
+nonisolated enum TemporalResetReason: String, CaseIterable, Sendable {
+    case startup
+    case resize
+    case captureRestart
+    case windowChanged
+    case timestampDiscontinuity
+    case frameContinuityLoss
+    case sceneCut
+    case gpuError
+    case metalFXRecreation
+    case motionEstimatorRecreation
+
+    var displayName: String {
+        switch self {
+        case .startup: "startup"
+        case .resize: "resize"
+        case .captureRestart: "captureRestart"
+        case .windowChanged: "windowChanged"
+        case .timestampDiscontinuity: "timestampDiscontinuity"
+        case .frameContinuityLoss: "frameContinuityLoss"
+        case .sceneCut: "sceneCut"
+        case .gpuError: "gpuError"
+        case .metalFXRecreation: "metalFXRecreation"
+        case .motionEstimatorRecreation: "motionEstimatorRecreation"
+        }
+    }
+}
+
 nonisolated struct FrameGenerationStatistics: Equatable, Sendable {
     var inputFPS: Double = 0
     var generatedFPS: Double = 0
@@ -45,6 +73,13 @@ nonisolated struct FrameGenerationStatistics: Equatable, Sendable {
     var droppedInputFrames: UInt64 = 0
     var skippedGeneratedFrames: UInt64 = 0
     var averageGenerationTimeMS: Double = 0
+    var temporalResetCount: UInt64 = 0
+    var staleEpochDrops: UInt64 = 0
+    var motionEstimationDrops: UInt64 = 0
+    var presentationDrops: UInt64 = 0
+    var gpuErrorCount: UInt64 = 0
+    var lastTemporalResetReason: TemporalResetReason?
+    var captureToPresentationLatencyMS: Double = 0
 }
 
 nonisolated enum FrameGenerationError: LocalizedError, Sendable {

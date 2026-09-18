@@ -1,14 +1,16 @@
 import AppKit
 import Metal
-import QuartzCore
+@preconcurrency import QuartzCore
 
 @MainActor
 final class FrameGenerationOverlayWindow {
     private let panel: NSPanel
     private let metalView: FrameGenerationMetalView
+    private let hudView: FrameGenerationHUDView
 
     init(frame: CGRect, pixelWidth: Int, pixelHeight: Int) throws {
         metalView = FrameGenerationMetalView(frame: .zero)
+        hudView = FrameGenerationHUDView(frame: .zero)
         panel = NSPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -25,6 +27,15 @@ final class FrameGenerationOverlayWindow {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.contentView = metalView
+        metalView.addSubview(hudView)
+        hudView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            hudView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor, constant: 14),
+            hudView.topAnchor.constraint(equalTo: metalView.topAnchor, constant: 14),
+            hudView.widthAnchor.constraint(greaterThanOrEqualToConstant: 264),
+            hudView.heightAnchor.constraint(greaterThanOrEqualToConstant: 92)
+        ])
+        hudView.updateResolution(width: pixelWidth, height: pixelHeight)
         updateGeometry(frame: frame, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
     }
 
@@ -39,6 +50,15 @@ final class FrameGenerationOverlayWindow {
         metalView.frame = metalView.superview?.bounds ?? CGRect(origin: .zero, size: frame.size)
         metalView.metalLayer.drawableSize = CGSize(width: max(1, pixelWidth), height: max(1, pixelHeight))
         metalView.metalLayer.contentsScale = panel.backingScaleFactor
+        hudView.updateResolution(width: pixelWidth, height: pixelHeight)
+    }
+
+    func setStatisticsVisible(_ visible: Bool) {
+        hudView.setStatisticsVisible(visible)
+    }
+
+    func updateStatistics(_ statistics: FrameGenerationStatistics) {
+        hudView.updateStatistics(statistics)
     }
 
     func hide() {
@@ -48,6 +68,90 @@ final class FrameGenerationOverlayWindow {
     func close() {
         panel.orderOut(nil)
         panel.close()
+    }
+}
+
+@MainActor
+private final class FrameGenerationHUDView: NSVisualEffectView {
+    private let titleLabel = NSTextField(labelWithString: "Boreal • MetalFX Frame Generation")
+    private let resolutionLabel = NSTextField(labelWithString: "")
+    private let statisticsLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 9
+        layer?.masksToBounds = true
+
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .white
+        resolutionLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        resolutionLabel.textColor = .white.withAlphaComponent(0.75)
+        statisticsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        statisticsLabel.textColor = .white
+        detailLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        detailLabel.textColor = .white.withAlphaComponent(0.75)
+        detailLabel.maximumNumberOfLines = 3
+        detailLabel.lineBreakMode = .byWordWrapping
+
+        [titleLabel, resolutionLabel, statisticsLabel, detailLabel].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            resolutionLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            resolutionLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            resolutionLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            statisticsLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            statisticsLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            statisticsLabel.topAnchor.constraint(equalTo: resolutionLabel.bottomAnchor, constant: 5),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: statisticsLabel.bottomAnchor, constant: 2),
+            detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+        ])
+        setStatisticsVisible(false)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    func updateResolution(width: Int, height: Int) {
+        resolutionLabel.stringValue = "MetalFX • \(max(1, width))×\(max(1, height))"
+    }
+
+    func setStatisticsVisible(_ visible: Bool) {
+        statisticsLabel.isHidden = !visible
+        detailLabel.isHidden = !visible
+    }
+
+    func updateStatistics(_ statistics: FrameGenerationStatistics) {
+        statisticsLabel.stringValue = String(
+            format: "Input %3.0f  •  Generated %3.0f  •  Output %3.0f FPS",
+            statistics.inputFPS,
+            statistics.generatedFPS,
+            statistics.outputFPS
+        )
+        detailLabel.stringValue = String(
+            format: "Dropped %llu  •  Skipped %llu  •  %.1f ms\nResets %llu  •  Stale %llu  •  GPU %llu\nPresentation drops %llu  •  Capture→Presentation %.1f ms\nLast reset: %@",
+            statistics.droppedInputFrames,
+            statistics.skippedGeneratedFrames,
+            statistics.averageGenerationTimeMS,
+            statistics.temporalResetCount,
+            statistics.staleEpochDrops,
+            statistics.gpuErrorCount,
+            statistics.presentationDrops,
+            statistics.captureToPresentationLatencyMS,
+            statistics.lastTemporalResetReason?.displayName ?? "—"
+        )
     }
 }
 
@@ -87,26 +191,38 @@ private final class FrameGenerationMetalView: NSView {
 nonisolated final class FrameGenerationRenderer: @unchecked Sendable {
     private let layer: CAMetalLayer
     private let commandQueue: MTLCommandQueue
+    private let inFlightSemaphore = DispatchSemaphore(value: 3)
 
     init(layer: CAMetalLayer, commandQueue: MTLCommandQueue) {
         self.layer = layer
         self.commandQueue = commandQueue
     }
 
-    func present(texture: MTLTexture, completion: @escaping @Sendable () -> Void) {
-        guard let drawable = layer.nextDrawable(),
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
-            completion()
-            return
+    func present(
+        texture: MTLTexture,
+        drawable suppliedDrawable: CAMetalDrawable?,
+        completion: @escaping @Sendable () -> Void
+    ) -> Bool {
+        guard inFlightSemaphore.wait(timeout: .now()) == .success else {
+            return false
         }
-        commandBuffer.addCompletedHandler { _ in completion() }
+        guard let drawable = suppliedDrawable ?? layer.nextDrawable(),
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            inFlightSemaphore.signal()
+            return false
+        }
+        commandBuffer.addCompletedHandler { [inFlightSemaphore] _ in
+            inFlightSemaphore.signal()
+            completion()
+        }
         guard let blit = commandBuffer.makeBlitCommandEncoder() else {
-            commandBuffer.commit()
-            return
+            inFlightSemaphore.signal()
+            return false
         }
         blit.copy(from: texture, to: drawable.texture)
         blit.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        return true
     }
 }

@@ -20,11 +20,13 @@ nonisolated enum ModArchiveFormat: String, Codable, CaseIterable, Sendable {
 nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashable {
     case skyrimSpecialEdition
     case gtaSanAndreas
+    case gtaSanAndreasDefinitiveEdition
 
     var displayName: String {
         switch self {
         case .skyrimSpecialEdition: "Skyrim Special Edition"
         case .gtaSanAndreas: "GTA San Andreas"
+        case .gtaSanAndreasDefinitiveEdition: "GTA San Andreas — Definitive Edition"
         }
     }
 }
@@ -35,6 +37,7 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
     case cleo
     case coreComponent
     case rootOverlay
+    case unrealPak
     case config
     case manual
     case unknown
@@ -46,6 +49,7 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .cleo: "CLEO Script"
         case .coreComponent: "Core Component"
         case .rootOverlay: "Root Overlay"
+        case .unrealPak: "Unreal Pak"
         case .config: "Configuration"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
@@ -59,6 +63,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
     case scripts
     case cleo
     case manual
+    case unrealPaks
 
     var displayName: String {
         switch self {
@@ -67,6 +72,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
         case .scripts: "Scripts"
         case .cleo: "CLEO"
         case .manual: "Manual"
+        case .unrealPaks: "Unreal Paks"
         }
     }
 }

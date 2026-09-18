@@ -15,6 +15,7 @@ final class GameWindowCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     private var textureCache: CVMetalTextureCache?
     private var configuration: SCStreamConfiguration?
+    private var nextFrameSequence: UInt64 = 0
 
     init(device: MTLDevice, frameHandler: @escaping FrameHandler, errorHandler: @escaping ErrorHandler) {
         self.device = device
@@ -27,6 +28,7 @@ final class GameWindowCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func start(window: SCWindow, width: Int, height: Int) async throws {
+        nextFrameSequence = 0
         let configuration = makeConfiguration(width: width, height: height)
         let stream = SCStream(
             filter: SCContentFilter(desktopIndependentWindow: window),
@@ -82,9 +84,11 @@ final class GameWindowCapture: NSObject, SCStreamOutput, SCStreamDelegate {
                 texture: texture,
                 pixelBuffer: pixelBuffer,
                 metalTextureReference: metalTextureReference,
-                presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+                sequence: nextFrameSequence
             )
         )
+        nextFrameSequence &+= 1
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

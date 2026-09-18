@@ -41,9 +41,15 @@ nonisolated enum GTASAModLoaderAdapter {
     static let mergeableExtensions: Set<String> = ["dat", "ide", "ipl", "cfg"]
     static let manualExtensions: Set<String> = ["exe", "msi", "bat", "cmd", "ps1"]
 
+    static func isDefinitiveEdition(game: StoreLibraryGame) -> Bool {
+        let name = game.name.lowercased()
+        return game.externalID == GameLaunchCompatibility.gtaSanAndreasDefinitiveEditionSteamAppID
+            || (name.contains("san andreas") && name.contains("definitive edition"))
+    }
+
     static func supports(game: StoreLibraryGame) -> Bool {
         let name = game.name.lowercased()
-        if name.contains("definitive edition") || game.externalID == "1547000" {
+        if isDefinitiveEdition(game: game) {
             return false
         }
         let isSanAndreas = name.contains("san andreas")
@@ -631,7 +637,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
     }
 }
 
-private extension GTASAModManager {
+extension GTASAModManager {
     static let profilePath = "modloader/.profiles/Boreal.ini"
     static let generatedOwner = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
@@ -831,6 +837,8 @@ private extension GTASAModManager {
                     target = file.relativePath
                 case .modLoader, .scripts, .cleo, .manual:
                     target = "modloader/Boreal/\(modDirectoryName(for: mod))/\(file.relativePath)"
+                case .unrealPaks:
+                    continue
                 }
                 result[target.lowercased()] = ResolvedFile(
                     path: target,

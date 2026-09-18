@@ -18,11 +18,16 @@ struct ModsView: View {
     @State private var modToRemove: InstalledMod?
 
     private var state: ModGameState? { store.modState(for: game) }
+    private var isUnsupportedDefinitiveEdition: Bool {
+        GTASAModLoaderAdapter.isDefinitiveEdition(game: game) && !store.supportsMods(for: game)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if let state {
+            if isUnsupportedDefinitiveEdition {
+                definitiveEditionNotice
+            } else if let state {
                 profileControls(state)
                 if state.adapter == .gtaSanAndreas, let runtime = state.runtime {
                     gtaRuntime(runtime)
@@ -42,7 +47,7 @@ struct ModsView: View {
                     pendingChanges
                 }
 
-                if state.adapter == .gtaSanAndreas {
+                if isGTAAdapter(state.adapter) {
                     modsList(state)
                 } else {
                     switch tab {
@@ -128,9 +133,13 @@ struct ModsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(game.name)
                     .font(.title2.weight(.semibold))
-                Text(GTASAModLoaderAdapter.supports(game: game)
-                    ? "Manage GTA San Andreas mods through a controlled Mod Loader profile."
-                    : "Stage files outside the game, review conflicts, then deploy one controlled profile.")
+                Text(isUnsupportedDefinitiveEdition
+                    ? "Definitive Edition detected; a verified mod runtime is not available."
+                    : GTASADefinitiveEditionAdapter.supports(game: game)
+                        ? "Manage CLEO Redux and Unreal Engine .pak mods for the Definitive Edition."
+                        : GTASAModLoaderAdapter.supports(game: game)
+                            ? "Manage GTA San Andreas mods through a controlled Mod Loader profile."
+                            : "Stage files outside the game, review conflicts, then deploy one controlled profile.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -139,7 +148,49 @@ struct ModsView: View {
                 showsImporter = true
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isModOperationActive(for: game))
+            .disabled(isUnsupportedDefinitiveEdition || store.isModOperationActive(for: game))
+        }
+    }
+
+    private var definitiveEditionNotice: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Definitive Edition mod runtime unavailable")
+                        .font(.headline)
+                    Text("This installation is the Unreal Engine Definitive Edition. The manager described for classic GTA San Andreas uses ASI Loader and San Andreas Mod Loader, which are not verified for this executable.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            Label("Classic GTA SA / Enhanced Edition management is available only when Boreal detects gta_sa.exe and a compatible Mod Loader runtime.", systemImage: "info.circle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                if let installation = store.installedLocation(for: game) {
+                    Button("Open Game Files", systemImage: "folder") {
+                        NSWorkspace.shared.open(installation)
+                    }
+                }
+                Spacer()
+                Text("No files were copied or changed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.orange.opacity(0.25))
         }
     }
 
@@ -246,8 +297,12 @@ struct ModsView: View {
                         healthItem(
                             state.adapter == .gtaSanAndreas
                                 ? "Mod Loader profile synchronized"
+                                : state.adapter == .gtaSanAndreasDefinitiveEdition
+                                    ? "Pak profile synchronized"
                                 : "Plugins \(health.pluginsSynchronized ? "synchronized" : "out of sync")",
-                            symbol: state.adapter == .gtaSanAndreas ? "slider.horizontal.3" : "list.number"
+                            symbol: state.adapter == .gtaSanAndreas || state.adapter == .gtaSanAndreasDefinitiveEdition
+                                ? "shippingbox"
+                                : "list.number"
                         )
                         healthItem("Vanilla \(health.vanillaFilesProtected ? "protected" : "at risk")", symbol: "lock.shield")
                     }
@@ -275,7 +330,7 @@ struct ModsView: View {
                         Spacer()
                         if health.needsAttention {
                             Button("Review Problems") {
-                                tab = state.adapter == .gtaSanAndreas ? .mods : .plugins
+                                tab = isGTAAdapter(state.adapter) ? .mods : .plugins
                             }
                             .buttonStyle(.bordered)
                         }
@@ -302,7 +357,7 @@ struct ModsView: View {
             ModSummaryCard(title: "Installed", value: "\(state.mods.count)", symbol: "shippingbox")
             ModSummaryCard(title: "Active", value: "\(state.activeModCount)", symbol: "checkmark.circle")
             ModSummaryCard(title: "Conflicts", value: "\(state.conflictCount)", symbol: "exclamationmark.triangle", tint: state.conflictCount == 0 ? .green : .orange)
-            if state.adapter == .gtaSanAndreas {
+            if isGTAAdapter(state.adapter) {
                 let size = state.mods.reduce(Int64(0)) { total, mod in total + mod.files.reduce(0) { $0 + $1.size } }
                 ModSummaryCard(title: "Staged size", value: ByteCountFormatter.string(fromByteCount: size, countStyle: .file), symbol: "externaldrive")
             }
@@ -465,6 +520,10 @@ struct ModsView: View {
     private static var archiveTypes: [UTType] {
         [.archive, UTType(filenameExtension: "zip") ?? .archive, UTType(filenameExtension: "7z") ?? .archive, UTType(filenameExtension: "rar") ?? .archive]
     }
+
+    private func isGTAAdapter(_ adapter: ModGameAdapter) -> Bool {
+        adapter == .gtaSanAndreas || adapter == .gtaSanAndreasDefinitiveEdition
+    }
 }
 
 private struct ModSummaryCard: View {
@@ -509,7 +568,7 @@ private struct ModRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(mod.name).font(.body.weight(.medium))
                 HStack(spacing: 8) {
-                    if adapter == .gtaSanAndreas {
+                    if adapter == .gtaSanAndreas || adapter == .gtaSanAndreasDefinitiveEdition {
                         Text(mod.contentType.displayName)
                         Text(mod.deployStrategy.displayName)
                     }

@@ -417,7 +417,7 @@ struct StoreGameDetailView: View {
             case .activity: discoveryGame == nil
             case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: store.installedLocation(for: currentGame) != nil || linkedApplication != nil
-            case .mods: store.supportsMods(for: currentGame)
+            case .mods: store.shouldShowModsTab(for: currentGame)
             case .cloudSaves: discoveryGame == nil && currentGame.provider == .gog
             }
         }

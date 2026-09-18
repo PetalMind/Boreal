@@ -2,16 +2,52 @@ import CoreVideo
 import Foundation
 @preconcurrency import Metal
 
+struct MotionVectorConversion: Sendable {
+    let invertX: Bool
+    let invertY: Bool
+    let magnitudeScaleX: Float
+    let magnitudeScaleY: Float
+
+    // The transform is intentionally explicit. Spatial sampling (a motion
+    // buffer with one vector per 16x16 block) is separate from the vector's
+    // magnitude units. The diagnostic probe can validate these values on a
+    // supported device without changing them at every application launch.
+    static let videoToolboxToMetalFX = MotionVectorConversion(
+        invertX: false,
+        invertY: false,
+        magnitudeScaleX: 1,
+        magnitudeScaleY: 1
+    )
+
+    var isIdentity: Bool {
+        !invertX && !invertY && magnitudeScaleX == 1 && magnitudeScaleY == 1
+    }
+}
+
+private struct MotionVectorConversionGPU {
+    var magnitudeScale: SIMD2<Float>
+    var invert: SIMD2<UInt32>
+}
+
 nonisolated final class MotionVectorConverter: @unchecked Sendable {
     private let device: MTLDevice
     private let pipelineState: MTLComputePipelineState
     private let width: Int
     private let height: Int
+    private let conversion: MotionVectorConversion
 
-    init(device: MTLDevice, width: Int, height: Int) throws {
+    var requiresTransform: Bool { !conversion.isIdentity }
+
+    init(
+        device: MTLDevice,
+        width: Int,
+        height: Int,
+        conversion: MotionVectorConversion = .videoToolboxToMetalFX
+    ) throws {
         self.device = device
         self.width = max(1, width)
         self.height = max(1, height)
+        self.conversion = conversion
         do {
             let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
             guard let function = library.makeFunction(name: "borealResizeMotionVectors") else {
@@ -40,6 +76,11 @@ nonisolated final class MotionVectorConverter: @unchecked Sendable {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(destination, index: 1)
+        var gpuConversion = MotionVectorConversionGPU(
+            magnitudeScale: SIMD2(conversion.magnitudeScaleX, conversion.magnitudeScaleY),
+            invert: SIMD2(conversion.invertX ? 1 : 0, conversion.invertY ? 1 : 0)
+        )
+        encoder.setBytes(&gpuConversion, length: MemoryLayout<MotionVectorConversionGPU>.stride, index: 0)
         let threads = MTLSize(width: 8, height: 8, depth: 1)
         let grid = MTLSize(width: destination.width, height: destination.height, depth: 1)
         encoder.dispatchThreads(grid, threadsPerThreadgroup: threads)
@@ -50,9 +91,15 @@ nonisolated final class MotionVectorConverter: @unchecked Sendable {
     #include <metal_stdlib>
     using namespace metal;
 
+    struct MotionVectorConversionGPU {
+        float2 magnitudeScale;
+        uint2 invert;
+    };
+
     kernel void borealResizeMotionVectors(
         texture2d<float, access::read> source [[texture(0)]],
         texture2d<float, access::write> destination [[texture(1)]],
+        constant MotionVectorConversionGPU &conversion [[buffer(0)]],
         uint2 position [[thread_position_in_grid]]) {
         if (position.x >= destination.get_width() || position.y >= destination.get_height()) {
             return;
@@ -62,7 +109,9 @@ nonisolated final class MotionVectorConverter: @unchecked Sendable {
         float2 uv = (float2(position) + 0.5) / destinationSize;
         uint2 sourcePosition = min(uint2(uv * sourceSize), uint2(source.get_width() - 1, source.get_height() - 1));
         float4 vector = source.read(sourcePosition);
-        vector.xy *= destinationSize / sourceSize;
+        vector.xy *= conversion.magnitudeScale;
+        if (conversion.invert.x != 0) vector.x = -vector.x;
+        if (conversion.invert.y != 0) vector.y = -vector.y;
         destination.write(float4(vector.xy, 0.0, 0.0), position);
     }
     """

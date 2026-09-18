@@ -1,5 +1,10 @@
 # Police Pursuit Radar
 
+> Ten katalog zawiera wariant dla klasycznego GTA San Andreas 1.0 US x86.
+> Dla instalacji **Grand Theft Auto: San Andreas – The Definitive Edition**
+> użyj [PolicePursuitRadarDE](../PolicePursuitRadarDE/README.md), który działa
+> jako skrypt CLEO Redux x64.
+
 `PolicePursuitRadar.asi` is a native x86 plugin for the classic PC release of
 Grand Theft Auto: San Andreas. It adds a radar-only visualization layer over
 the vanilla wanted system:

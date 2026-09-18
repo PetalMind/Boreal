@@ -1,47 +1,64 @@
-import CoreVideo
-import Foundation
+import AppKit
+@preconcurrency import QuartzCore
 
-nonisolated final class FrameGenerationTimingController: @unchecked Sendable {
-    private var displayLink: CVDisplayLink?
-    private let queue: DispatchQueue
-    private let tickHandler: @Sendable () -> Void
+nonisolated final class FrameGenerationTimingController: NSObject, CAMetalDisplayLinkDelegate, @unchecked Sendable {
+    typealias UpdateHandler = @Sendable (
+        _ drawable: CAMetalDrawable,
+        _ targetTimestamp: CFTimeInterval,
+        _ targetPresentationTimestamp: CFTimeInterval
+    ) -> Void
 
-    init(displayID: CGDirectDisplayID?, tickHandler: @escaping @Sendable () -> Void) throws {
-        self.queue = DispatchQueue(label: "com.boreal.frame-generation.display", qos: .userInteractive)
-        self.tickHandler = tickHandler
-        var link: CVDisplayLink?
-        guard CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess, let link else {
-            throw FrameGenerationError.overlayCreationFailed
-        }
-        displayLink = link
-        if let displayID {
-            CVDisplayLinkSetCurrentCGDisplay(link, displayID)
-        }
-        let result = CVDisplayLinkSetOutputCallback(link, Self.outputCallback, Unmanaged.passUnretained(self).toOpaque())
-        guard result == kCVReturnSuccess else {
-            displayLink = nil
-            throw FrameGenerationError.overlayCreationFailed
-        }
+    private let displayLink: CAMetalDisplayLink
+    private let updateHandler: UpdateHandler
+    private let runLoop: RunLoop
+    private var isStarted = false
+
+    init(metalLayer: CAMetalLayer, updateHandler: @escaping UpdateHandler) throws {
+        self.displayLink = CAMetalDisplayLink(metalLayer: metalLayer)
+        self.updateHandler = updateHandler
+        self.runLoop = .main
+        super.init()
+        displayLink.delegate = self
+        displayLink.preferredFrameLatency = 1
+        displayLink.preferredFrameRateRange = CAFrameRateRange(
+            minimum: 30,
+            maximum: 240,
+            preferred: 120
+        )
+        displayLink.isPaused = true
     }
 
     func start() {
-        guard let displayLink else { return }
-        CVDisplayLinkStart(displayLink)
+        guard !isStarted else { return }
+        isStarted = true
+        displayLink.add(to: runLoop, forMode: .common)
+        displayLink.isPaused = false
     }
 
     func stop() {
-        guard let displayLink, CVDisplayLinkIsRunning(displayLink) else { return }
-        CVDisplayLinkStop(displayLink)
+        guard isStarted else {
+            displayLink.isPaused = true
+            return
+        }
+        displayLink.isPaused = true
+        displayLink.remove(from: runLoop, forMode: .common)
+        isStarted = false
     }
 
     deinit {
-        stop()
+        displayLink.isPaused = true
+        displayLink.remove(from: runLoop, forMode: .common)
+        displayLink.invalidate()
     }
 
-    private static let outputCallback: CVDisplayLinkOutputCallback = { _, _, _, _, _, userInfo in
-        guard let userInfo else { return kCVReturnSuccess }
-        let controller = Unmanaged<FrameGenerationTimingController>.fromOpaque(userInfo).takeUnretainedValue()
-        controller.queue.async(execute: controller.tickHandler)
-        return kCVReturnSuccess
+    func metalDisplayLink(
+        _ link: CAMetalDisplayLink,
+        needsUpdate update: CAMetalDisplayLink.Update
+    ) {
+        updateHandler(
+            update.drawable,
+            update.targetTimestamp,
+            update.targetPresentationTimestamp
+        )
     }
 }

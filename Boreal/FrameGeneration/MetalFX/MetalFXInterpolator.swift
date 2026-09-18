@@ -1,13 +1,32 @@
 @preconcurrency import Metal
 @preconcurrency import MetalFX
 
+struct ExternalCaptureMetalFXParameters: Sendable {
+    let nearPlane: Float
+    let farPlane: Float
+    let fieldOfView: Float
+    let depthReversed: Bool
+
+    static let fallback = ExternalCaptureMetalFXParameters(
+        nearPlane: 0.1,
+        farPlane: 1_000,
+        fieldOfView: 90,
+        depthReversed: false
+    )
+}
+
 nonisolated final class MetalFXInterpolator: @unchecked Sendable {
     let width: Int
     let height: Int
     let outputTextureUsage: MTLTextureUsage
     private let interpolator: MTLFXFrameInterpolator
 
-    init(device: MTLDevice, width: Int, height: Int) throws {
+    init(
+        device: MTLDevice,
+        width: Int,
+        height: Int,
+        parameters: ExternalCaptureMetalFXParameters = .fallback
+    ) throws {
         guard #available(macOS 26.0, *), MTLFXFrameInterpolatorDescriptor.supportsDevice(device) else {
             throw FrameGenerationError.unsupportedHardware
         }
@@ -32,12 +51,18 @@ nonisolated final class MetalFXInterpolator: @unchecked Sendable {
 
         interpolator.motionVectorScaleX = 1
         interpolator.motionVectorScaleY = 1
-        interpolator.nearPlane = 0.1
-        interpolator.farPlane = 1_000
-        interpolator.fieldOfView = 90
+        interpolator.nearPlane = parameters.nearPlane
+        interpolator.farPlane = parameters.farPlane
+        interpolator.fieldOfView = parameters.fieldOfView
         interpolator.aspectRatio = Float(width) / Float(max(1, height))
-        interpolator.isDepthReversed = false
-        interpolator.shouldResetHistory = false
+        interpolator.isDepthReversed = parameters.depthReversed
+        interpolator.jitterOffsetX = 0
+        interpolator.jitterOffsetY = 0
+        // Boreal receives the final composited game image and does not supply
+        // a separate uiTexture. Keep this explicit instead of relying on the
+        // MetalFX default; there is no UI texture to decompose or recompose.
+        interpolator.isUITextureComposited = false
+        interpolator.shouldResetHistory = true
     }
 
     func encode(
@@ -47,6 +72,7 @@ nonisolated final class MetalFXInterpolator: @unchecked Sendable {
         depth: MTLTexture,
         output: MTLTexture,
         deltaTime: Float,
+        resetHistory: Bool,
         commandBuffer: MTLCommandBuffer
     ) {
         interpolator.prevColorTexture = previous
@@ -54,7 +80,11 @@ nonisolated final class MetalFXInterpolator: @unchecked Sendable {
         interpolator.motionTexture = motion
         interpolator.depthTexture = depth
         interpolator.outputTexture = output
-        interpolator.deltaTime = max(1.0 / 240.0, min(deltaTime, 1.0 / 15.0))
+        // The pipeline rejects timestamp discontinuities before this method.
+        // Only protect against a zero/negative floating-point value here; do
+        // not turn a real long interval into a falsely continuous frame pair.
+        interpolator.deltaTime = max(Float.leastNonzeroMagnitude, deltaTime)
+        interpolator.shouldResetHistory = resetHistory
         interpolator.encode(commandBuffer: commandBuffer)
     }
 }

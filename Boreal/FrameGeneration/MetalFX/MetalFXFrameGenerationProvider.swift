@@ -37,6 +37,13 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
             throw FrameGenerationError.metalDeviceUnavailable
         }
 
+        if MotionVectorDiagnostic.isEnabled {
+            let logger = logger
+            Task.detached {
+                await MotionVectorDiagnostic.runIfEnabled(logger: logger)
+            }
+        }
+
         logger.info("Starting MetalFX provider; game PID: \(gamePID, privacy: .public); device: \(device.name, privacy: .public)")
         let resolved = try await GameWindowResolver.resolve(gamePID: gamePID)
         logger.info("Resolved game window PID: \(resolved.processID, privacy: .public); resolution: \(resolved.pixelWidth, privacy: .public)x\(resolved.pixelHeight, privacy: .public)")
@@ -75,28 +82,33 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
                 width: resolved.pixelWidth,
                 height: resolved.pixelHeight
             )
-            let timingController: FrameGenerationTimingController?
-            if configuration.verticalSyncEnabled {
-                let controller = try FrameGenerationTimingController(
-                    displayID: resolved.displayID,
-                    tickHandler: { [weak pipeline] in
-                        guard let pipeline else { return }
-                        Task { await pipeline.presentNext() }
-                    }
-                )
-                controller.start()
-                timingController = controller
-            } else {
-                timingController = nil
+            guard await pipeline.waitForFirstFrame() else {
+                throw FrameGenerationError.captureFailed("Timed out waiting for the first captured frame.")
             }
+
+            let controller = try FrameGenerationTimingController(
+                metalLayer: overlay.metalLayer,
+                updateHandler: { [weak pipeline] drawable, targetTimestamp, targetPresentationTimestamp in
+                    guard let pipeline else { return }
+                    Task {
+                        await pipeline.presentNext(
+                            drawable: drawable,
+                            targetTimestamp: targetTimestamp,
+                            targetPresentationTimestamp: targetPresentationTimestamp
+                        )
+                    }
+                }
+            )
             overlay.show()
+            controller.start()
 
             self.capture = capture
             self.pipeline = pipeline
             self.overlay = overlay
-            self.timingController = timingController
+            self.timingController = controller
             self.gamePID = gamePID
             self.resolvedWindow = resolved
+            overlay.setStatisticsVisible(configuration.showStatistics)
             startGeometryTracking()
             startStatisticsTracking(pipeline: pipeline)
             logger.info("MetalFX provider running; capture resolution: \(resolved.pixelWidth, privacy: .public)x\(resolved.pixelHeight, privacy: .public)")
@@ -158,6 +170,23 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
             pixelHeight: resolved.pixelHeight
         )
 
+        let windowChanged = previous.windowID != resolved.windowID || previous.processID != resolved.processID
+        if windowChanged {
+            do {
+                await pipeline.resetTemporalState(reason: .windowChanged)
+                await capture.stop()
+                try await capture.start(
+                    window: resolved.window,
+                    width: resolved.pixelWidth,
+                    height: resolved.pixelHeight
+                )
+                logger.info("Frame Generation capture restarted for a new game window")
+            } catch {
+                handleRuntimeError(error)
+            }
+            return
+        }
+
         guard previous.pixelWidth != resolved.pixelWidth || previous.pixelHeight != resolved.pixelHeight else { return }
         do {
             try await capture.updateDimensions(width: resolved.pixelWidth, height: resolved.pixelHeight)
@@ -176,6 +205,7 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
                 guard !Task.isCancelled else { return }
                 let statistics = await pipeline.statistics()
                 self?.latestStatistics = statistics
+                self?.overlay?.updateStatistics(statistics)
             }
         }
     }

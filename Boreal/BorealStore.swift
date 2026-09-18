@@ -105,6 +105,7 @@ final class BorealStore {
     private let services: BorealServices
     private let modManager: ModManager
     private let gtaModManager: GTASAModManager
+    private let gtaDefinitiveEditionModManager: GTASADefinitiveEditionModManager
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
     /// Developer-mode diagnostics: the last immutable plan prepared for each
@@ -181,6 +182,7 @@ final class BorealStore {
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
         self.modManager = ModManager(applicationSupportURL: supportRoot)
         self.gtaModManager = GTASAModManager(applicationSupportURL: supportRoot)
+        self.gtaDefinitiveEditionModManager = GTASADefinitiveEditionModManager(applicationSupportURL: supportRoot)
         self.gameDiscoveryCache = GameDiscoveryCacheStore.load(
             at: supportRoot.appending(path: "Discovery/game-discovery.json")
         )
@@ -1969,6 +1971,12 @@ final class BorealStore {
         modGameContext(for: game) != nil
     }
 
+    /// Keeps the Mods entry point visible when Boreal can identify the game,
+    /// even if its verified mod runtime is not available for that edition.
+    func shouldShowModsTab(for game: StoreLibraryGame) -> Bool {
+        supportsMods(for: game) || GTASAModLoaderAdapter.isDefinitiveEdition(game: game)
+    }
+
     func modGameRoot(for game: StoreLibraryGame) -> URL? {
         modGameContext(for: game)?.gameRoot
     }
@@ -2000,7 +2008,7 @@ final class BorealStore {
         Task { @MainActor [weak self] in
             do {
                 let state = try await Task.detached(priority: .utility) {
-                    try manager.load(gameID: gameID, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile)
+                    try manager.load(gameID: gameID, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile, profileID: nil)
                 }.value
                 self?.modStates[gameID] = state
                 self?.refreshModHealth(for: game, state: state, context: context)
@@ -2265,6 +2273,10 @@ final class BorealStore {
                 .flatMap { SkyrimModAdapter.pluginsFile(in: URL(fileURLWithPath: $0, isDirectory: true)) }
             return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile, adapter: .skyrimSpecialEdition)
         }
+        if GTASADefinitiveEditionAdapter.supports(game: game),
+           let gameRoot = GTASADefinitiveEditionAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreasDefinitiveEdition)
+        }
         if GTASAModLoaderAdapter.supports(game: game),
            let gameRoot = GTASAModLoaderAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
             return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreas)
@@ -2278,11 +2290,16 @@ final class BorealStore {
     }
 
     private func modManager(for game: StoreLibraryGame) -> any GameModManaging {
-        GTASAModLoaderAdapter.supports(game: game) ? gtaModManager : modManager
+        if GTASADefinitiveEditionAdapter.supports(game: game) { return gtaDefinitiveEditionModManager }
+        return GTASAModLoaderAdapter.supports(game: game) ? gtaModManager : modManager
     }
 
     private func modManager(for adapter: ModGameAdapter) -> any GameModManaging {
-        adapter == .gtaSanAndreas ? gtaModManager : modManager
+        switch adapter {
+        case .gtaSanAndreas: gtaModManager
+        case .gtaSanAndreasDefinitiveEdition: gtaDefinitiveEditionModManager
+        case .skyrimSpecialEdition: modManager
+        }
     }
 
     private func modLoaderLaunchArguments(for application: WindowsApplication, gameRoot: URL?) -> [String] {
