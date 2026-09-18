@@ -15,6 +15,7 @@ struct ModsView: View {
     @State private var installPreview: ModInstallPreview?
     @State private var showsNewProfile = false
     @State private var newProfileName = ""
+    @State private var modToRemove: InstalledMod?
 
     private var state: ModGameState? { store.modState(for: game) }
 
@@ -23,24 +24,33 @@ struct ModsView: View {
             header
             if let state {
                 profileControls(state)
+                if state.adapter == .gtaSanAndreas, let runtime = state.runtime {
+                    gtaRuntime(runtime)
+                }
                 deploymentHealth(state)
                 summary(state)
-                Picker("Mod content", selection: $tab) {
-                    Text("Mods").tag(Tab.mods)
-                    Text("Plugins").tag(Tab.plugins)
+                if state.adapter == .skyrimSpecialEdition {
+                    Picker("Mod content", selection: $tab) {
+                        Text("Mods").tag(Tab.mods)
+                        Text("Plugins").tag(Tab.plugins)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 360)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
 
                 if state.pendingChanges {
                     pendingChanges
                 }
 
-                switch tab {
-                case .mods:
+                if state.adapter == .gtaSanAndreas {
                     modsList(state)
-                case .plugins:
-                    pluginsList(state)
+                } else {
+                    switch tab {
+                    case .mods:
+                        modsList(state)
+                    case .plugins:
+                        pluginsList(state)
+                    }
                 }
             } else if store.isModOperationActive(for: game) {
                 ProgressView("Preparing mod library…")
@@ -49,7 +59,7 @@ struct ModsView: View {
                 ContentUnavailableView(
                     "Mods unavailable",
                     systemImage: "shippingbox",
-                    description: Text("The installed Skyrim folder is not available right now.")
+                    description: Text("The installed game folder is not available right now.")
                 )
                 .frame(maxWidth: .infinity, minHeight: 240)
             }
@@ -95,14 +105,32 @@ struct ModsView: View {
         } message: {
             Text("The new profile reuses the existing mod library and starts with the current staged selection.")
         }
+        .alert("Remove mod?", isPresented: Binding(
+            get: { modToRemove != nil },
+            set: { if !$0 { modToRemove = nil } }
+        )) {
+            Button("Remove", role: .destructive) {
+                if let modToRemove {
+                    store.removeMod(modToRemove.id, for: game)
+                }
+                modToRemove = nil
+            }
+            Button("Cancel", role: .cancel) {
+                modToRemove = nil
+            }
+        } message: {
+            Text("\(modToRemove?.name ?? "This mod") will be removed from the Boreal library. Already deployed files remain until you deploy the updated profile.")
+        }
     }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Mods")
+                Text(game.name)
                     .font(.title2.weight(.semibold))
-                Text("Stage files outside Skyrim, review conflicts, then deploy one controlled profile.")
+                Text(GTASAModLoaderAdapter.supports(game: game)
+                    ? "Manage GTA San Andreas mods through a controlled Mod Loader profile."
+                    : "Stage files outside the game, review conflicts, then deploy one controlled profile.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -113,6 +141,63 @@ struct ModsView: View {
             .buttonStyle(.borderedProminent)
             .disabled(store.isModOperationActive(for: game))
         }
+    }
+
+    private func gtaRuntime(_ runtime: ModRuntimeState) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: runtime.isReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(runtime.isReady ? .green : .orange)
+                Text("Modding Runtime")
+                    .font(.headline)
+                Spacer()
+                Button("Repair Modding Runtime", systemImage: "wrench.and.screwdriver") {
+                    store.repairModdingRuntime(for: game)
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isModOperationActive(for: game))
+            }
+            HStack(spacing: 14) {
+                runtimeItem("ASI Loader", installed: runtime.asiLoaderInstalled)
+                runtimeItem("GTA SA Mod Loader", installed: runtime.modLoaderInstalled)
+                runtimeItem("CLEO", installed: runtime.cleoInstalled)
+                Spacer()
+            }
+            Text(runtime.compatibility.displayName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(runtime.isReady ? .green : .orange)
+            if let executableHash = runtime.executableHash {
+                Text("Executable SHA-256: \(executableHash.prefix(12))…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            if runtime.executableVersion == nil, runtime.executablePath != nil {
+                Text("The executable version is not verified. Mod Loader compatibility is primarily documented for GTA SA 1.0 US/EU.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if runtime.executablePath == nil {
+                Text("Boreal could not locate gta_sa.exe in the installed game folder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !runtime.asiLoaderInstalled || !runtime.modLoaderInstalled {
+                Text("Repair prepares Boreal-owned folders, but does not invent or download missing ASI Loader/Mod Loader binaries.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(13)
+        .background((runtime.isReady ? Color.green : Color.orange).opacity(0.09), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke((runtime.isReady ? Color.green : Color.orange).opacity(0.22))
+        }
+    }
+
+    private func runtimeItem(_ title: String, installed: Bool) -> some View {
+        Label(title, systemImage: installed ? "checkmark.circle.fill" : "circle")
+            .font(.caption)
+            .foregroundStyle(installed ? .green : .secondary)
     }
 
     private func profileControls(_ state: ModGameState) -> some View {
@@ -158,7 +243,12 @@ struct ModsView: View {
                     HStack(spacing: 16) {
                         healthItem("\(health.deployedModCount) mods deployed", symbol: "shippingbox")
                         healthItem("\(health.managedFileCount) managed files", symbol: "doc.on.doc")
-                        healthItem("Plugins \(health.pluginsSynchronized ? "synchronized" : "out of sync")", symbol: "list.number")
+                        healthItem(
+                            state.adapter == .gtaSanAndreas
+                                ? "Mod Loader profile synchronized"
+                                : "Plugins \(health.pluginsSynchronized ? "synchronized" : "out of sync")",
+                            symbol: state.adapter == .gtaSanAndreas ? "slider.horizontal.3" : "list.number"
+                        )
                         healthItem("Vanilla \(health.vanillaFilesProtected ? "protected" : "at risk")", symbol: "lock.shield")
                     }
                     if !health.externalChanges.isEmpty {
@@ -185,7 +275,7 @@ struct ModsView: View {
                         Spacer()
                         if health.needsAttention {
                             Button("Review Problems") {
-                                tab = .plugins
+                                tab = state.adapter == .gtaSanAndreas ? .mods : .plugins
                             }
                             .buttonStyle(.bordered)
                         }
@@ -212,6 +302,10 @@ struct ModsView: View {
             ModSummaryCard(title: "Installed", value: "\(state.mods.count)", symbol: "shippingbox")
             ModSummaryCard(title: "Active", value: "\(state.activeModCount)", symbol: "checkmark.circle")
             ModSummaryCard(title: "Conflicts", value: "\(state.conflictCount)", symbol: "exclamationmark.triangle", tint: state.conflictCount == 0 ? .green : .orange)
+            if state.adapter == .gtaSanAndreas {
+                let size = state.mods.reduce(Int64(0)) { total, mod in total + mod.files.reduce(0) { $0 + $1.size } }
+                ModSummaryCard(title: "Staged size", value: ByteCountFormatter.string(fromByteCount: size, countStyle: .file), symbol: "externaldrive")
+            }
             Spacer()
         }
     }
@@ -220,7 +314,7 @@ struct ModsView: View {
         HStack(spacing: 10) {
             Image(systemName: "circle.dotted")
                 .foregroundStyle(.orange)
-            Text("Changes are staged and have not been copied into Skyrim yet.")
+            Text("Changes are staged and have not been copied into the game yet.")
                 .font(.callout)
             Spacer()
             Button("Deploy Changes", systemImage: "arrow.down.app") {
@@ -251,6 +345,9 @@ struct ModsView: View {
                                 mod: mod,
                                 conflictCount: state.conflicts.filter { $0.modIDs.contains(mod.id) }.count,
                                 isBusy: store.isModOperationActive(for: game),
+                                adapter: state.adapter,
+                                onOpenFiles: { store.openModFiles(mod.id, for: game) },
+                                onRemove: { modToRemove = mod },
                                 enabled: Binding(
                                     get: { store.modState(for: game)?.mods.first(where: { $0.id == mod.id })?.enabled ?? mod.enabled },
                                     set: { store.setModEnabled($0, modID: mod.id, for: game) }
@@ -349,14 +446,14 @@ struct ModsView: View {
     private func conflictRow(_ conflict: ModConflict, state: ModGameState) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(conflict.kind == .directReplacement ? .red : conflict.kind == .mergeable ? .blue : .orange)
             VStack(alignment: .leading, spacing: 3) {
                 Text(conflict.relativePath)
                     .font(.body.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
                 let winner = state.mods.first(where: { $0.id == conflict.winnerModID })?.name ?? "Unknown mod"
-                Text("Winner: \(winner) · \(conflict.overriddenModIDs.count) overridden")
+                Text("\(conflict.kind.displayName) · Winner: \(winner) · \(conflict.overriddenModIDs.count) overridden")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -395,6 +492,9 @@ private struct ModRow: View {
     let mod: InstalledMod
     let conflictCount: Int
     let isBusy: Bool
+    let adapter: ModGameAdapter
+    let onOpenFiles: () -> Void
+    let onRemove: () -> Void
     @Binding var enabled: Bool
 
     var body: some View {
@@ -402,9 +502,17 @@ private struct ModRow: View {
             Toggle("", isOn: $enabled)
                 .labelsHidden()
                 .disabled(isBusy)
+            Text("\(mod.priority + 1)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 26, alignment: .trailing)
             VStack(alignment: .leading, spacing: 3) {
                 Text(mod.name).font(.body.weight(.medium))
                 HStack(spacing: 8) {
+                    if adapter == .gtaSanAndreas {
+                        Text(mod.contentType.displayName)
+                        Text(mod.deployStrategy.displayName)
+                    }
                     Text("\(mod.files.count) files")
                     if !mod.plugins.isEmpty { Text("\(mod.plugins.count) plugins") }
                 }
@@ -423,6 +531,15 @@ private struct ModRow: View {
                 .help("Drag to change file priority")
         }
         .padding(.vertical, 3)
+        .contextMenu {
+            Button("Open Files", systemImage: "folder") {
+                onOpenFiles()
+            }
+            Divider()
+            Button("Remove", systemImage: "trash", role: .destructive) {
+                onRemove()
+            }
+        }
     }
 }
 
@@ -478,17 +595,32 @@ private struct ModInstallPreviewSheet: View {
 
             GroupBox("Detected structure") {
                 VStack(alignment: .leading, spacing: 11) {
-                    Label("Skyrim Data mod", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                    Label("\(preview.adapter.displayName) · \(preview.contentType.displayName)", systemImage: preview.canInstallAutomatically ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(preview.canInstallAutomatically ? .green : .orange)
                     previewRow("Files", value: "\(preview.fileCount)")
                     previewRow("Plugins", value: "\(preview.pluginCount)")
+                    previewRow("Deployment", value: preview.deployStrategy.displayName)
                     previewRow("Archive", value: preview.format.rawValue.uppercased())
                     previewRow("Installation root", value: "/\(preview.detectedRoot)")
+                    if preview.totalSize > 0 {
+                        previewRow("Size", value: ByteCountFormatter.string(fromByteCount: preview.totalSize, countStyle: .file))
+                    }
                 }
                 .padding(.vertical, 5)
             }
 
-            Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into Skyrim until you choose Deploy Changes.")
+            if !preview.requirements.isEmpty {
+                Label("Requires: \(preview.requirements.joined(separator: ", "))", systemImage: "link")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(preview.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+
+            Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -498,6 +630,7 @@ private struct ModInstallPreviewSheet: View {
                 Spacer()
                 Button("Install", action: onInstall)
                     .buttonStyle(.borderedProminent)
+                    .disabled(!preview.canInstallAutomatically)
             }
         }
         .padding(24)

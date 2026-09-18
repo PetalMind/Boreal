@@ -249,6 +249,7 @@ struct WineCompatibilityConfigurator: View {
             graphicsSection
             upscalingSection
             displaySection
+            frameGenerationSection
             overlaySection
             controllerSection
             advancedSection
@@ -389,6 +390,75 @@ struct WineCompatibilityConfigurator: View {
                         .buttonStyle(.bordered)
                     }
                 }
+            }
+        }
+    }
+
+    private var frameGenerationSection: some View {
+        let capabilities = FrameGenerationCoordinator.shared.capabilities(for: profile.frameGeneration.backend)
+        return CompatibilitySettingsSection(
+            title: "Frame generation",
+            subtitle: "Capture the game window and generate one intermediate frame between two real frames.",
+            symbol: "sparkles.rectangle.stack",
+            tint: .purple
+        ) {
+            CompatibilityToggleRow(
+                title: "Frame generation",
+                detail: "Runs in a separate click-through overlay and does not modify the game's Wine renderer.",
+                isOn: $profile.frameGeneration.enabled,
+                disabled: profile.frameGeneration.backend == .off || !capabilities.isSupported
+            )
+            CompatibilityPickerRow(
+                title: "Technology",
+                detail: "Only capabilities available in this build are listed."
+            ) {
+                Picker("Technology", selection: $profile.frameGeneration.backend) {
+                    ForEach(FrameGenerationBackend.allCases) { backend in
+                        Text(backend.displayName).tag(backend)
+                    }
+                }
+                .labelsHidden()
+            }
+            CompatibilityPickerRow(
+                title: "Target frame rate",
+                detail: "Automatic follows the active display and capture cadence."
+            ) {
+                Picker("Target frame rate", selection: $profile.frameGeneration.targetFPS) {
+                    Text("Automatic").tag(Optional<Int>.none)
+                }
+                .labelsHidden()
+                .disabled(!profile.frameGeneration.enabled)
+            }
+            CompatibilityToggleRow(
+                title: "Low latency",
+                detail: "Prefer the newest captured frame when the GPU queue is busy.",
+                isOn: $profile.frameGeneration.lowLatencyModeEnabled,
+                disabled: !profile.frameGeneration.enabled
+            )
+            CompatibilityToggleRow(
+                title: "Vertical sync",
+                detail: "Pace presentation using the display link for the selected display.",
+                isOn: $profile.frameGeneration.verticalSyncEnabled,
+                disabled: !profile.frameGeneration.enabled
+            )
+            CompatibilityToggleRow(
+                title: "Performance statistics",
+                detail: "Show input, generated, and output frame rates while the game is running.",
+                isOn: $profile.frameGeneration.showStatistics,
+                disabled: !profile.frameGeneration.enabled
+            )
+            if profile.frameGeneration.backend == .metalFX && !capabilities.isSupported {
+                CompatibilityCallout(
+                    text: capabilities.reason ?? String(localized: "MetalFX frame generation is unavailable on this Mac."),
+                    symbol: "exclamationmark.triangle.fill",
+                    tint: .orange
+                )
+            } else if profile.frameGeneration.enabled && !profile.overlayCompatibleFullscreen {
+                CompatibilityCallout(
+                    text: String(localized: "For the independent overlay to stay aligned, Borderless / Virtual desktop launch is recommended."),
+                    symbol: "rectangle.on.rectangle",
+                    tint: .blue
+                )
             }
         }
     }

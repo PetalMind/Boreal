@@ -42,6 +42,7 @@ struct StoreGameDetailView: View {
     @State private var activityDayCount = 7
     @State private var selectedActivityDate: Date?
     @State private var showsActivityInfo = false
+    @State private var showsAllActivitySessions = false
     @State private var selectedTab: DetailTab = .overview
     @State private var showsFullDescription = false
     @State private var compatibilityApplication: WindowsApplication?
@@ -1593,7 +1594,10 @@ struct StoreGameDetailView: View {
     }
 
     private func activityHistory(_ sessions: [GamePlaySession]) -> some View {
-        activityCard(.Library.sessionHistory, symbol: "list.bullet.rectangle", sessionCount: sessions.count) {
+        let sortedSessions = sessions.sorted { $0.startedAt > $1.startedAt }
+        let visibleSessions = showsAllActivitySessions ? sortedSessions : Array(sortedSessions.prefix(5))
+
+        return activityCard(.Library.sessionHistory, symbol: "list.bullet.rectangle", sessionCount: sessions.count) {
             if sessions.isEmpty {
                 Text(.Library.noSessionsDescription)
                     .font(.callout).foregroundStyle(.secondary).padding(.vertical, 18)
@@ -1607,7 +1611,7 @@ struct StoreGameDetailView: View {
                             Text(.Library.duration).frame(maxWidth: .infinity, alignment: .leading)
                             Text(.Library.status).frame(maxWidth: .infinity, alignment: .leading)
                         }.font(.caption2).foregroundStyle(.secondary)
-                        ForEach(sessions.sorted { $0.startedAt > $1.startedAt }) { session in
+                        ForEach(visibleSessions) { session in
                             Divider().gridCellUnsizedAxes(.horizontal)
                             GridRow {
                                 HStack(spacing: 9) {
@@ -1627,6 +1631,22 @@ struct StoreGameDetailView: View {
                     }.frame(width: max(560, activityWidth - 28), alignment: .leading)
                 }
                 .scrollIndicators(.automatic)
+
+                if sessions.count > 5 {
+                    HStack {
+                        Spacer()
+                        Button(
+                            showsAllActivitySessions ? .Library.showRecentSessions : .Library.showAllSessions,
+                            systemImage: showsAllActivitySessions ? "chevron.up" : "chevron.down"
+                        ) {
+                            withAnimation(.snappy) {
+                                showsAllActivitySessions.toggle()
+                            }
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.borderless)
+                    }
+                }
             }
         }
     }
@@ -1977,6 +1997,15 @@ struct StoreGameDetailView: View {
                             .buttonStyle(BorealSecondaryActionButtonStyle())
                     }
                 }
+            }
+            if let application = linkedApplication,
+               !application.isInstallerOnly,
+               store.compatibilityProfile(for: application).frameGeneration.enabled
+            {
+                FrameGenerationStatusView(
+                    applicationID: application.id,
+                    showsStatistics: store.compatibilityProfile(for: application).frameGeneration.showStatistics
+                )
             }
             detailCard(.Library.actionsTitle, symbol: "ellipsis") {
                 if store.installedLocation(for: currentGame) != nil {

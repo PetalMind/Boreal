@@ -106,32 +106,46 @@ struct CloudSaveCard: View {
     }
 
     @ViewBuilder private var cloudSaveContent: some View {
-        switch store.gogConnectionState {
-        case .checking:
-            progressView("Checking GOG account…")
-        case .supportNotInstalled:
-            accountRequiredView(
-                title: "GOG support is not ready",
-                message: "Prepare GOG support before connecting the account used for Cloud Saves.",
-                actionTitle: "Prepare GOG support",
-                action: { store.prepareGOGSupport() }
-            )
-        case .preparingSupport:
-            progressView("Preparing GOG support…")
-        case .authenticating:
-            progressView("Connecting GOG account…")
-        case .disconnected:
-            accountRequiredView(
-                title: "Connect your GOG account",
-                message: "Synchronize this game's saves with GOG Cloud between Boreal and your other devices.",
-                actionTitle: "Connect GOG account",
-                action: { beginGOGLogin() }
-            )
-        case .failed(let reason):
-            accountFailureView(reason: reason)
-        case .connected:
-            connectedCloudSaveContent
+        VStack(alignment: .leading, spacing: 16) {
+            if linkedApplication != nil {
+                automaticSyncSection
+            }
+
+            switch store.gogConnectionState {
+            case .checking:
+                progressView("Checking GOG account…")
+            case .supportNotInstalled:
+                accountRequiredView(
+                    title: "GOG support is not ready",
+                    message: "Prepare GOG support before connecting the account used for Cloud Saves.",
+                    actionTitle: "Prepare GOG support",
+                    action: { store.prepareGOGSupport() }
+                )
+            case .preparingSupport:
+                progressView("Preparing GOG support…")
+            case .authenticating:
+                progressView("Connecting GOG account…")
+            case .disconnected:
+                accountRequiredView(
+                    title: "Connect your GOG account",
+                    message: "Synchronize this game's saves with GOG Cloud between Boreal and your other devices.",
+                    actionTitle: "Connect GOG account",
+                    action: { beginGOGLogin() }
+                )
+            case .failed(let reason):
+                accountFailureView(reason: reason)
+            case .connected:
+                connectedCloudSaveContent
+            }
         }
+    }
+
+    private var automaticSyncSection: some View {
+        Toggle("Automatic sync before launch and after exit", isOn: Binding(
+            get: { automaticSync },
+            set: setAutomaticSync
+        ))
+        .toggleStyle(.switch)
     }
 
     @ViewBuilder private var connectedCloudSaveContent: some View {
@@ -161,12 +175,6 @@ struct CloudSaveCard: View {
         VStack(alignment: .leading, spacing: 18) {
             summarySection
             saveLocationSection
-
-            Toggle("Automatic sync before launch and after exit", isOn: Binding(
-                get: { automaticSync },
-                set: setAutomaticSync
-            ))
-            .toggleStyle(.switch)
 
             if status.state == .conflict {
                 conflictView
@@ -526,6 +534,7 @@ struct CloudSaveCard: View {
     }
 
     private func setAutomaticSync(_ newValue: Bool) {
+        let previousValue = automaticSync
         automaticSync = newValue
         Task {
             do {
@@ -533,6 +542,7 @@ struct CloudSaveCard: View {
                     try await store.setAutomaticCloudSaveSync(newValue, for: linkedApplication.id)
                 }
             } catch {
+                automaticSync = previousValue
                 message = error.localizedDescription
             }
         }

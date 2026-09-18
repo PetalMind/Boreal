@@ -3734,6 +3734,42 @@
         }
       }
     },
+    "showAllSessions" : {
+      "comment" : "Action that expands the activity session history.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show all sessions"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż wszystkie sesje"
+          }
+        }
+      }
+    },
+    "showRecentSessions" : {
+      "comment" : "Action that collapses the activity session history to recent sessions.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show recent sessions"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż ostatnie sesje"
+          }
+        }
+      }
+    },
     "showSourceItems" : {
       "comment" : "Tooltip for showing items from a library source.",
       "extractionState" : "manual",

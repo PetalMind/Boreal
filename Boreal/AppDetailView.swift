@@ -112,6 +112,15 @@ struct AppDetailView: View {
 
                 if app.status == .needsAttention { attentionCard }
 
+                if !app.isInstallerOnly,
+                   store.compatibilityProfile(for: app).frameGeneration.enabled
+                {
+                    FrameGenerationStatusView(
+                        applicationID: app.id,
+                        showsStatistics: store.compatibilityProfile(for: app).frameGeneration.showStatistics
+                    )
+                }
+
                 Divider()
 
                 Grid(alignment: .leading, horizontalSpacing: 48, verticalSpacing: 24) {

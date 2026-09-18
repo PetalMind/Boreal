@@ -17,6 +17,93 @@ nonisolated enum ModArchiveFormat: String, Codable, CaseIterable, Sendable {
     }
 }
 
+nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashable {
+    case skyrimSpecialEdition
+    case gtaSanAndreas
+
+    var displayName: String {
+        switch self {
+        case .skyrimSpecialEdition: "Skyrim Special Edition"
+        case .gtaSanAndreas: "GTA San Andreas"
+        }
+    }
+}
+
+nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashable {
+    case modLoader
+    case asiPlugin
+    case cleo
+    case coreComponent
+    case rootOverlay
+    case config
+    case manual
+    case unknown
+
+    var displayName: String {
+        switch self {
+        case .modLoader: "Mod Loader"
+        case .asiPlugin: "ASI Plugin"
+        case .cleo: "CLEO Script"
+        case .coreComponent: "Core Component"
+        case .rootOverlay: "Root Overlay"
+        case .config: "Configuration"
+        case .manual: "Manual Installer"
+        case .unknown: "Unknown"
+        }
+    }
+}
+
+nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Hashable {
+    case modLoader
+    case rootOverlay
+    case scripts
+    case cleo
+    case manual
+
+    var displayName: String {
+        switch self {
+        case .modLoader: "Mod Loader"
+        case .rootOverlay: "Game root"
+        case .scripts: "Scripts"
+        case .cleo: "CLEO"
+        case .manual: "Manual"
+        }
+    }
+}
+
+nonisolated enum ModRuntimeCompatibility: String, Codable, CaseIterable, Sendable, Hashable {
+    case ready
+    case missingComponents
+    case unknownExecutableVersion
+    case unsupportedExecutable
+
+    var displayName: String {
+        switch self {
+        case .ready: "Ready for modding"
+        case .missingComponents: "Runtime components missing"
+        case .unknownExecutableVersion: "Executable version not verified"
+        case .unsupportedExecutable: "Unsupported executable"
+        }
+    }
+}
+
+nonisolated struct ModRuntimeState: Codable, Hashable, Sendable {
+    let adapter: ModGameAdapter
+    let executablePath: String?
+    let executableVersion: String?
+    let executableHash: String?
+    let asiLoaderInstalled: Bool
+    let modLoaderInstalled: Bool
+    let cleoInstalled: Bool
+    let compatibility: ModRuntimeCompatibility
+
+    var isReady: Bool { compatibility == .ready }
+
+    var installedComponentCount: Int {
+        [asiLoaderInstalled, modLoaderInstalled, cleoInstalled].filter { $0 }.count
+    }
+}
+
 nonisolated enum BethesdaPluginType: String, Codable, CaseIterable, Sendable {
     case esm
     case esp
@@ -159,6 +246,10 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
     var installedAt: Date
     var files: [ModFile]
     var plugins: [BethesdaPlugin]
+    var contentType: ModContentType
+    var deployStrategy: ModDeployStrategy
+    var requirements: [String]
+    var warnings: [String]
 
     init(
         id: UUID = UUID(),
@@ -170,7 +261,11 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
         stagingRelativePath: String,
         installedAt: Date = .now,
         files: [ModFile],
-        plugins: [BethesdaPlugin]
+        plugins: [BethesdaPlugin],
+        contentType: ModContentType = .unknown,
+        deployStrategy: ModDeployStrategy = .modLoader,
+        requirements: [String] = [],
+        warnings: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -182,6 +277,47 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
         self.installedAt = installedAt
         self.files = files
         self.plugins = plugins
+        self.contentType = contentType
+        self.deployStrategy = deployStrategy
+        self.requirements = requirements
+        self.warnings = warnings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, version, enabled, priority, archiveRelativePath, stagingRelativePath
+        case installedAt, files, plugins, contentType, deployStrategy, requirements, warnings
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decodeIfPresent(String.self, forKey: .version)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        priority = try container.decode(Int.self, forKey: .priority)
+        archiveRelativePath = try container.decodeIfPresent(String.self, forKey: .archiveRelativePath)
+        stagingRelativePath = try container.decode(String.self, forKey: .stagingRelativePath)
+        installedAt = try container.decode(Date.self, forKey: .installedAt)
+        files = try container.decode([ModFile].self, forKey: .files)
+        plugins = try container.decode([BethesdaPlugin].self, forKey: .plugins)
+        contentType = try container.decodeIfPresent(ModContentType.self, forKey: .contentType) ?? .unknown
+        deployStrategy = try container.decodeIfPresent(ModDeployStrategy.self, forKey: .deployStrategy) ?? .modLoader
+        requirements = try container.decodeIfPresent([String].self, forKey: .requirements) ?? []
+        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+    }
+}
+
+nonisolated enum ModConflictKind: String, Codable, CaseIterable, Sendable, Hashable {
+    case directReplacement
+    case potentialRuntime
+    case mergeable
+
+    var displayName: String {
+        switch self {
+        case .directReplacement: "Direct replacement"
+        case .potentialRuntime: "Potential runtime conflict"
+        case .mergeable: "Mergeable data"
+        }
     }
 }
 
@@ -189,6 +325,14 @@ nonisolated struct ModConflict: Hashable, Sendable, Identifiable {
     let relativePath: String
     let modIDs: [UUID]
     let winnerModID: UUID
+    let kind: ModConflictKind
+
+    init(relativePath: String, modIDs: [UUID], winnerModID: UUID, kind: ModConflictKind = .directReplacement) {
+        self.relativePath = relativePath
+        self.modIDs = modIDs
+        self.winnerModID = winnerModID
+        self.kind = kind
+    }
 
     var id: String { relativePath }
     var overriddenModIDs: [UUID] { modIDs.filter { $0 != winnerModID } }
@@ -302,6 +446,8 @@ nonisolated struct ModGameState: Hashable, Sendable {
     var mods: [InstalledMod]
     var plugins: [BethesdaPlugin]
     var deployment: ModDeploymentManifest
+    var adapter: ModGameAdapter = .skyrimSpecialEdition
+    var runtime: ModRuntimeState? = nil
 
     var conflicts: [ModConflict] {
         ModConflictResolver.conflicts(in: mods)
@@ -324,6 +470,13 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
     let detectedRoot: String
     let fileCount: Int
     let pluginCount: Int
+    let adapter: ModGameAdapter
+    let contentType: ModContentType
+    let deployStrategy: ModDeployStrategy
+    let requirements: [String]
+    let warnings: [String]
+    let canInstallAutomatically: Bool
+    let totalSize: Int64
 
     init(
         id: UUID = UUID(),
@@ -333,7 +486,14 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
         format: ModArchiveFormat,
         detectedRoot: String,
         fileCount: Int,
-        pluginCount: Int
+        pluginCount: Int,
+        adapter: ModGameAdapter = .skyrimSpecialEdition,
+        contentType: ModContentType = .unknown,
+        deployStrategy: ModDeployStrategy = .modLoader,
+        requirements: [String] = [],
+        warnings: [String] = [],
+        canInstallAutomatically: Bool = true,
+        totalSize: Int64 = 0
     ) {
         self.id = id
         self.gameID = gameID
@@ -343,6 +503,13 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
         self.detectedRoot = detectedRoot
         self.fileCount = fileCount
         self.pluginCount = pluginCount
+        self.adapter = adapter
+        self.contentType = contentType
+        self.deployStrategy = deployStrategy
+        self.requirements = requirements
+        self.warnings = warnings
+        self.canInstallAutomatically = canInstallAutomatically
+        self.totalSize = totalSize
     }
 }
 
@@ -574,9 +741,21 @@ nonisolated enum ModConflictResolver {
             return ModConflict(
                 relativePath: ordered.last?.file.relativePath ?? key,
                 modIDs: ordered.map { $0.mod.id },
-                winnerModID: winner.mod.id
+                winnerModID: winner.mod.id,
+                kind: conflictKind(for: ordered.last?.file.relativePath ?? key)
             )
         }.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+    }
+
+    private static func conflictKind(for path: String) -> ModConflictKind {
+        let lowercased = path.lowercased()
+        if [".asi", ".dll", ".exe"].contains(where: { lowercased.hasSuffix($0) }) {
+            return .potentialRuntime
+        }
+        if [".dat", ".ide", ".ipl", ".cfg"].contains(where: { lowercased.hasSuffix($0) }) {
+            return .mergeable
+        }
+        return .directReplacement
     }
 }
 
@@ -718,7 +897,9 @@ nonisolated struct ModManager: Sendable {
             profileName: profile?.name ?? (resolvedProfileID == "default" ? "Default" : resolvedProfileID),
             mods: mods,
             plugins: plugins,
-            deployment: resolvedDeployment
+            deployment: resolvedDeployment,
+            adapter: .skyrimSpecialEdition,
+            runtime: nil
         )
     }
 
@@ -1045,6 +1226,35 @@ nonisolated struct ModManager: Sendable {
         created.profileID = profileID
         created.profileName = trimmed
         return created
+    }
+
+    func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
+        guard let mod = state.mods.first(where: { $0.id == modID }) else { return state }
+        let gameDirectory = gameURL(for: state.gameID)
+        let fileManager = FileManager.default
+        if let archive = mod.archiveRelativePath {
+            let archiveURL = append(archive, to: gameDirectory)
+            if fileManager.fileExists(atPath: archiveURL.path) { try fileManager.removeItem(at: archiveURL) }
+        }
+        let stagingURL = append(mod.stagingRelativePath, to: gameDirectory)
+        if fileManager.fileExists(atPath: stagingURL.path) { try fileManager.removeItem(at: stagingURL) }
+        var next = state
+        next.mods.removeAll { $0.id == modID }
+        next.plugins.removeAll { $0.modID == modID }
+        try saveProfile(
+            gameID: state.gameID,
+            profileID: state.profileID,
+            profileName: state.profileName,
+            mods: next.mods,
+            plugins: next.plugins,
+            gameDirectory: gameDirectory
+        )
+        return next
+    }
+
+    func stagedModURL(gameID: UUID, modID: UUID) -> URL? {
+        let directory = gameURL(for: gameID).appending(path: "Staging/\(modID.uuidString)", directoryHint: .isDirectory)
+        return FileManager.default.fileExists(atPath: directory.path) ? directory : nil
     }
 
     func activateProfile(_ profileID: String, for gameID: UUID) throws {

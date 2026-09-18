@@ -104,6 +104,7 @@ final class BorealStore {
     private let usesLayeredStorage: Bool
     private let services: BorealServices
     private let modManager: ModManager
+    private let gtaModManager: GTASAModManager
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
     /// Developer-mode diagnostics: the last immutable plan prepared for each
@@ -179,6 +180,7 @@ final class BorealStore {
         self.usesLayeredStorage = storageURL == nil
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
         self.modManager = ModManager(applicationSupportURL: supportRoot)
+        self.gtaModManager = GTASAModManager(applicationSupportURL: supportRoot)
         self.gameDiscoveryCache = GameDiscoveryCacheStore.load(
             at: supportRoot.appending(path: "Discovery/game-discovery.json")
         )
@@ -823,6 +825,7 @@ final class BorealStore {
         let plan = lastLaunchPlans[applicationID]
         let diagnosis = lastLaunchDiagnoses[applicationID]
         let configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
+        let hostFrameGenerationConfiguration = compatibilityProfile(for: application).frameGeneration
         let temporalInspector = await temporalUpscalingInspector(for: applicationID)
         let optiScalerConfiguration: Any
         if let temporalInspector {
@@ -952,6 +955,14 @@ final class BorealStore {
         payload["temporalInjectionSafety"] = temporalInspector?.temporalPlan.injectionSafety.rawValue ?? NSNull()
         payload["temporalProxyStrategy"] = temporalInspector?.temporalPlan.proxyStrategy.displayName ?? NSNull()
         payload["frameGeneration"] = temporalInspector?.game.frameGeneration.support.rawValue ?? NSNull()
+        payload["hostFrameGenerationConfiguration"] = [
+            "enabled": hostFrameGenerationConfiguration.enabled,
+            "backend": hostFrameGenerationConfiguration.backend.rawValue,
+            "targetFPS": hostFrameGenerationConfiguration.targetFPS ?? NSNull(),
+            "verticalSyncEnabled": hostFrameGenerationConfiguration.verticalSyncEnabled,
+            "lowLatencyModeEnabled": hostFrameGenerationConfiguration.lowLatencyModeEnabled,
+            "showStatistics": hostFrameGenerationConfiguration.showStatistics
+        ] as [String: Any]
         payload["ngxDebugIndicator"] = ngxDebugIndicator
         payload["temporalConfigurationFingerprint"] = plan?.configurationFingerprint ?? NSNull()
         payload["traceID"] = plan?.traceID.description ?? NSNull()
@@ -1955,7 +1966,7 @@ final class BorealStore {
     // MARK: - Mods
 
     func supportsMods(for game: StoreLibraryGame) -> Bool {
-        SkyrimModAdapter.supports(game: game) && modGameContext(for: game) != nil
+        modGameContext(for: game) != nil
     }
 
     func modGameRoot(for game: StoreLibraryGame) -> URL? {
@@ -1967,7 +1978,7 @@ final class BorealStore {
     }
 
     func modProfiles(for game: StoreLibraryGame) -> [ModProfileDescriptor] {
-        modManager.profiles(for: game.id)
+        modManager(for: game).profiles(for: game.id)
     }
 
     func modDeploymentHealth(for game: StoreLibraryGame) -> ModDeploymentHealth? {
@@ -1979,14 +1990,13 @@ final class BorealStore {
     }
 
     func refreshMods(for game: StoreLibraryGame) {
-        guard SkyrimModAdapter.supports(game: game),
-              let context = modGameContext(for: game) else {
+        guard let context = modGameContext(for: game) else {
             modStates[game.id] = nil
             modHealth[game.id] = nil
             return
         }
         let gameID = game.id
-        let manager = modManager
+        let manager = modManager(for: game)
         Task { @MainActor [weak self] in
             do {
                 let state = try await Task.detached(priority: .utility) {
@@ -2001,12 +2011,11 @@ final class BorealStore {
     }
 
     func inspectModArchive(_ archive: URL, for game: StoreLibraryGame) async -> ModInstallPreview? {
-        guard SkyrimModAdapter.supports(game: game) else {
+        guard let manager = modManagerIfSupported(for: game) else {
             present(ModManagerError.unsupportedGame(game.name), title: "Mod manager unavailable", stage: "Checking the selected game")
             return nil
         }
         do {
-            let manager = modManager
             return try await Task.detached(priority: .userInitiated) {
                 try manager.inspect(archive: archive, gameID: game.id)
             }.value
@@ -2017,7 +2026,7 @@ final class BorealStore {
     }
 
     func discardModInstallPreview(_ preview: ModInstallPreview) {
-        modManager.discardPreview(preview)
+        modManager(for: preview.adapter).discardPreview(preview)
     }
 
     func installMod(_ preview: ModInstallPreview, for game: StoreLibraryGame) {
@@ -2026,7 +2035,7 @@ final class BorealStore {
               let profileID = modStates[game.id]?.profileID,
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
-        let manager = modManager
+        let manager = modManager(for: game)
         Task { @MainActor [weak self] in
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
@@ -2045,6 +2054,32 @@ final class BorealStore {
         guard var state = modStates[game.id], let index = state.mods.firstIndex(where: { $0.id == modID }) else { return }
         state.mods[index].enabled = enabled
         persistModState(state, for: game)
+    }
+
+    func removeMod(_ modID: UUID, for game: StoreLibraryGame) {
+        guard let state = modStates[game.id],
+              let context = modGameContext(for: game),
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let manager = modManager(for: game)
+        let gameID = game.id
+        Task { @MainActor [weak self] in
+            defer { self?.modOperationGameIDs.remove(gameID) }
+            do {
+                let next = try await Task.detached(priority: .userInitiated) {
+                    try manager.removeMod(modID, from: state)
+                }.value
+                self?.modStates[gameID] = next
+                self?.refreshModHealth(for: game, state: next, context: context)
+            } catch {
+                self?.present(error, title: "Mod couldn’t be removed", stage: "Removing the staged mod package")
+            }
+        }
+    }
+
+    func openModFiles(_ modID: UUID, for game: StoreLibraryGame) {
+        guard let manager = modManagerIfSupported(for: game),
+              let url = manager.stagedModURL(gameID: game.id, modID: modID) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func moveMod(from offsets: IndexSet, to destination: Int, for game: StoreLibraryGame) {
@@ -2076,7 +2111,7 @@ final class BorealStore {
               let context = modGameContext(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
-        let manager = modManager
+        let manager = modManager(for: game)
         Task { @MainActor [weak self] in
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
@@ -2095,7 +2130,7 @@ final class BorealStore {
         guard let context = modGameContext(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
-        let manager = modManager
+        let manager = modManager(for: game)
         Task { @MainActor [weak self] in
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
@@ -2116,7 +2151,7 @@ final class BorealStore {
               let context = modGameContext(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
-        let manager = modManager
+        let manager = modManager(for: game)
         Task { @MainActor [weak self] in
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
@@ -2144,7 +2179,7 @@ final class BorealStore {
             return value
         }
         do {
-            try modManager.saveProfile(
+            try modManager(for: game).saveProfile(
                 gameID: game.id,
                 profileID: normalized.profileID,
                 profileName: normalized.profileName,
@@ -2161,7 +2196,7 @@ final class BorealStore {
     }
 
     private func refreshModHealth(for game: StoreLibraryGame, state: ModGameState, context: ModGameContext) {
-        let manager = modManager
+        let manager = modManager(for: context.adapter)
         let gameID = game.id
         let fingerprint = ModProfileFingerprint.make(mods: state.mods, plugins: state.plugins)
         Task { @MainActor [weak self] in
@@ -2195,20 +2230,72 @@ final class BorealStore {
         return remaining
     }
 
+    func repairModdingRuntime(for game: StoreLibraryGame) {
+        guard let context = modGameContext(for: game),
+              context.adapter == .gtaSanAndreas,
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let manager = modManager(for: context.adapter)
+        let gameID = game.id
+        Task { @MainActor [weak self] in
+            defer { self?.modOperationGameIDs.remove(gameID) }
+            do {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try manager.repairRuntime(gameRoot: context.gameRoot)
+                }.value
+                self?.refreshMods(for: game)
+            } catch {
+                self?.present(error, title: "Modding runtime couldn’t be repaired", stage: "Preparing GTA San Andreas modding folders")
+            }
+        }
+    }
+
     private struct ModGameContext: Sendable {
         let gameRoot: URL
         let pluginsFile: URL?
+        let adapter: ModGameAdapter
     }
 
     private func modGameContext(for game: StoreLibraryGame) -> ModGameContext? {
-        guard SkyrimModAdapter.supports(game: game) else { return nil }
         let installationRoot = installedLocation(for: game)
         let executable = linkedApplication(for: game).map { URL(fileURLWithPath: $0.executablePath) }
-        guard let gameRoot = SkyrimModAdapter.gameRoot(installationRoot: installationRoot, executable: executable) else { return nil }
-        let pluginsFile = linkedApplication(for: game)
-            .flatMap { environment(id: $0.environmentID)?.prefixPath }
-            .flatMap { SkyrimModAdapter.pluginsFile(in: URL(fileURLWithPath: $0, isDirectory: true)) }
-        return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile)
+        if SkyrimModAdapter.supports(game: game),
+           let gameRoot = SkyrimModAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
+            let pluginsFile = linkedApplication(for: game)
+                .flatMap { environment(id: $0.environmentID)?.prefixPath }
+                .flatMap { SkyrimModAdapter.pluginsFile(in: URL(fileURLWithPath: $0, isDirectory: true)) }
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile, adapter: .skyrimSpecialEdition)
+        }
+        if GTASAModLoaderAdapter.supports(game: game),
+           let gameRoot = GTASAModLoaderAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreas)
+        }
+        return nil
+    }
+
+    private func modManagerIfSupported(for game: StoreLibraryGame) -> (any GameModManaging)? {
+        guard modGameContext(for: game) != nil else { return nil }
+        return modManager(for: game)
+    }
+
+    private func modManager(for game: StoreLibraryGame) -> any GameModManaging {
+        GTASAModLoaderAdapter.supports(game: game) ? gtaModManager : modManager
+    }
+
+    private func modManager(for adapter: ModGameAdapter) -> any GameModManaging {
+        adapter == .gtaSanAndreas ? gtaModManager : modManager
+    }
+
+    private func modLoaderLaunchArguments(for application: WindowsApplication, gameRoot: URL?) -> [String] {
+        let candidate = storeGames.first { game in
+            game.provider == application.storeProvider
+                && game.externalID == application.storeExternalID
+        } ?? {
+            guard let provider = application.storeProvider,
+                  let externalID = application.storeExternalID else { return nil }
+            return StoreLibraryGame(provider: provider, externalID: externalID, name: application.name)
+        }()
+        guard let candidate, GTASAModLoaderAdapter.supports(game: candidate) else { return [] }
+        return gtaModManager.launchArguments(for: gameRoot)
     }
 
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
@@ -6276,6 +6363,7 @@ final class BorealStore {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
             requestedStops.insert(id)
+            await FrameGenerationCoordinator.shared.stop(applicationID: id)
             var stopError: Error?
             if applications[index].usesSharedSteamGameSession {
                 if let environment = activeEnvironments[id],
@@ -6609,6 +6697,7 @@ final class BorealStore {
                     gameDirectory: gameDirectory
                 )
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
+                configuredPlan.arguments.append(contentsOf: modLoaderLaunchArguments(for: applications[index], gameRoot: gameDirectory))
                 configuredPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
                 configuredPlan.overlayDisplayID = profile.overlayDisplayID
                 configuredPlan = GameGraphicsProfiles.applying(
@@ -6661,6 +6750,10 @@ final class BorealStore {
                     )
                 )
                 configuredPlan.arguments.append(contentsOf: profile.parsedLaunchArguments)
+                configuredPlan.arguments.append(contentsOf: modLoaderLaunchArguments(
+                    for: applications[index],
+                    gameRoot: executable.deletingLastPathComponent()
+                ))
                 configuredPlan.overlayCompatibleFullscreen = profile.overlayCompatibleFullscreen
                 configuredPlan.overlayDisplayID = profile.overlayDisplayID
                 configuredPlan = GameGraphicsProfiles.applying(
@@ -6717,6 +6810,11 @@ final class BorealStore {
             activeRuntimes[id] = runtime
             save()
             startPerformanceProcessTracking(session: session, environment: managed, runtime: runtime, appID: id)
+            startFrameGeneration(
+                appID: id,
+                session: session,
+                profile: profile
+            )
             monitorLauncher(session: session, appID: id)
             monitorEnvironmentSession(environment: managed, runtime: runtime, appID: id)
         } catch {
@@ -7019,6 +7117,7 @@ final class BorealStore {
                     activeSessions[appID] = recoveredSession
                     performanceLogURLs[appID] = recoveredSession.stderrLog
                     startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
+                    startFrameGeneration(appID: appID, session: recoveredSession, profile: compatibilityProfile(for: app))
                 }
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 executionStates[appID] = .running
@@ -7042,6 +7141,7 @@ final class BorealStore {
                 activeSessions[appID] = recoveredSession
                 performanceLogURLs[appID] = recoveredSession.stderrLog
                 startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
+                startFrameGeneration(appID: appID, session: recoveredSession, profile: compatibilityProfile(for: app))
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 executionStates[appID] = .running
@@ -7072,6 +7172,7 @@ final class BorealStore {
 
     private func markEnvironmentEnded(appID: UUID, environmentSessionEnded: Bool = true) {
         guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+        FrameGenerationCoordinator.shared.requestStop(applicationID: appID)
         let shouldUploadCloudSaves = applications[index].storeProvider == .gog && !applications[index].isInstallerOnly
         let expectedProcessName = activeSessions[appID]?.processExecutableName
         let gameProcessWasObserved = observedGameProcesses.remove(appID) != nil
@@ -7119,6 +7220,19 @@ final class BorealStore {
                 await self.toggleRunningAsync(appID)
             }
         }
+    }
+
+    private func startFrameGeneration(
+        appID: UUID,
+        session: WindowsProcessSession,
+        profile: WineCompatibilityProfile
+    ) {
+        guard let application = application(id: appID), !application.isInstallerOnly else { return }
+        FrameGenerationCoordinator.shared.start(
+            applicationID: appID,
+            gamePID: session.launcherPID,
+            configuration: profile.frameGeneration
+        )
     }
 
     private func scheduleCloudSaveUpload(appID: UUID) {
