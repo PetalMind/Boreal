@@ -1,21 +1,20 @@
-# Police Pursuit Radar DE — wersja 1.2 stabilizacja HUD/blipów
+# Police Pursuit Radar DE — wersja 1.3 stabilizacja HUD/blipów
 
 Mod dla **Grand Theft Auto: San Andreas – The Definitive Edition** uruchamianej
 jako `sa_unreal` przez CLEO Redux x64.
 
-Wersja 1.2 zawiera własną warstwę HUD rysowaną natywnym `DRAW_RECT`,
-ograniczony cykl życia standardowych blipów oraz rozdzielone odświeżanie
-istniejących jednostek od wyszukiwania nowych. HUD `DRAW_RECT` jest obecnie
-wyłączony domyślnie, ponieważ w tej wersji powodował blokadę renderera UE4
-podczas ładowania. Standardowe blipy CLEO pozostają bezpiecznym uzupełnieniem
-minimapy.
+Wersja 1.3 zawiera rozdzielony tracker, `RadarModel` z interpolacją oraz
+ograniczony prostokątny renderer HUD-u. Własny HUD pozostaje wyłączony
+domyślnie, ponieważ poprzednia wersja rasteryzująca elipsy i stożki przez
+`DRAW_RECT` powodowała blokadę renderera UE4 podczas ładowania. Standardowe
+blipy CLEO pozostają bezpiecznym uzupełnieniem minimapy.
 
 ## Funkcje
 
 - wykrywanie pobliskich policjantów oraz ich aktualnych pojazdów;
-- własny radar HUD z półprzezroczystym tłem, pierścieniami i markerem gracza;
+- własny radar HUD z prostokątnym tłem i markerem gracza;
 - markery pieszych, samochodów, motocykli, łodzi i helikopterów;
-- kierunek ruchu/patrzenia jednostki przez chevron oraz stożek widzenia;
+- dane kierunku ruchu/patrzenia i stożka przygotowane w `RadarModel`;
 - półprzezroczysty obszar `SEARCH` wokół zamrożonego
   `lastKnownPlayerPosition`;
 - stany `PURSUIT → SEARCH → ESCAPED`;
@@ -26,9 +25,9 @@ minimapy.
   kierunku, aby nie wyczerpywać puli blipów gry;
 - brak zmian wanted levelu, AI, spawnów, misji i zachowania policji.
 
-Nie ma ctOS, Jam Com ani nowych spawnów policji. Renderer jest celowo
-oparty na `DRAW_RECT`, ponieważ nie korzysta z ImGui ani prywatnego renderera
-radaru UE4.
+Nie ma ctOS, Jam Com ani nowych spawnów policji. Renderer korzysta wyłącznie
+z publicznych operacji CLEO i nie odwołuje się do prywatnego renderera radaru
+UE4. Pełne ikony i stożki wymagają potwierdzonego atlasu sprite’ów.
 
 ## Wymagania
 
@@ -65,19 +64,23 @@ chmod +x install.sh
 
 ## Jak działa renderer
 
-Pozycje świata są przeliczane do konfigurowalnego, znormalizowanego układu HUD:
+Szczegółowa analiza przepływu danych, geometrii, kosztu `DRAW_RECT` i przyczyny
+domyślnego wyłączenia HUD-u znajduje się w
+[HUD-ARCHITECTURE.md](HUD-ARCHITECTURE.md).
+
+Pozycje świata są przeliczane do konfigurowalnego, znormalizowanego modelu HUD:
 
 1. pozycja jednostki jest obracana względem headingu gracza, jeśli
    `rotate_with_player=1`;
 2. odległość jest skalowana przez `range_m`;
-3. punkty są ograniczane do elipsy radaru;
-4. wypełnienia są rasteryzowane poziomymi prostokątami `DRAW_RECT`.
+3. punkty są ograniczane do prostokątnego obszaru radaru;
+4. jednostki są interpolowane między skanami 450 ms;
+5. renderer wykonuje najwyżej 14 logicznych prostokątów w trybie `REDUCED`.
 
-W ten sposób renderer może narysować obszar poszukiwań i stożki jako
-półprzezroczyste trójkąty/ellipse, mimo że natywny primitive udostępniony
-skryptom jest tylko prostokątem. Stożki są skierowane zgodnie z headingiem
-policjanta, a kolorem rozróżniają kontakt aktywny od jednostki, która nie widzi
-gracza.
+W ten sposób renderer może pokazać podstawowe elementy i zachować dane kierunku
+w `RadarModel`, mimo że natywny primitive udostępniony skryptom jest tylko
+prostokątem. Dane stożka są liczone zgodnie z headingiem policjanta i gotowe do
+użycia przez przyszły stabilny renderer sprite’owy.
 
 ## Mechanika pościgu
 
@@ -110,15 +113,15 @@ Sekcja `[hud]` pozwala zmienić:
   `cone_border_alpha_percent` — stożki policji.
 
 `max_units` ogranicza liczbę jednostek rysowanych przez HUD, a `draw_budget`
-ustala maksymalną liczbę wywołań `DRAW_RECT` na jedną klatkę. Przekroczenie
-budżetu obcina tylko dalsze elementy tej klatki i nie wyłącza całej gry.
+ustala limit logicznych wywołań `DRAW_RECT` na jedną klatkę. Wartość jest
+ograniczana do 8–24; przekroczenie budżetu obcina dalsze elementy tej klatki.
 
-`hud.enabled=1` włącza eksperymentalny renderer `DRAW_RECT`, ale w dostarczonej
-konfiguracji pozostaje wyłączony do czasu zastąpienia go bezpieczniejszym
-rendererem sprite'owym. Jeśli zostanie ręcznie włączony, ma limit 6 jednostek,
-około 15 FPS, domyślnie 96 wywołań na klatkę (maksymalnie 120) i automatyczną
-pauzę po błędzie. Po wykryciu gameplayu skrypt odczekuje 5 sekund, aby nie
-wykonywać odczytów świata podczas kończenia ładowania.
+`hud.enabled=1` włącza nowy prostokątny renderer, ale w dostarczonej
+konfiguracji pozostaje wyłączony do czasu potwierdzenia runtime w konkretnej
+instalacji. Ma limit 6 jednostek, logiczny budżet 8–24, pomiar czasu klatki,
+degradację `REDUCED → MINIMAL → NATIVE_ONLY → OFF` i automatyczną pauzę po
+błędzie. Po wykryciu gameplayu skrypt odczekuje 5 sekund, aby nie wykonywać
+odczytów świata podczas kończenia ładowania.
 `blips.show_native_blips=1` włącza standardowe blipy CLEO na oryginalnej
 minimapie. `max_native_blips` ogranicza liczbę blipów śledzących, a
 `max_direction_blips`, `direction_update_distance_m` i
@@ -134,7 +137,8 @@ przeładowuje konfigurację bez restartu gry.
   więc próbkowane rotującymi pierścieniami. Wyszukiwanie nowych jednostek jest
   wykonywane rzadziej niż odświeżanie już znanych, aby nie obciążać puli ruchu
   ulicznego i AI.
-- `DRAW_RECT` jest prostym primitive 2D. Renderer daje wypełnione obszary i
-  stożki, ale nie używa tekstur ani prawdziwego wektorowego clippingu UE4.
+- `DRAW_RECT` jest prostym primitive 2D. Aktualny fallback pokazuje podstawowe
+  markery; pełne stożki i obrotowe ikony pozostają zależne od stabilnego atlasu
+  sprite’ów.
 - Repozytorium nie zawiera instalacji gry, więc nie deklaruje zweryfikowanego
   runtime smoke testu.

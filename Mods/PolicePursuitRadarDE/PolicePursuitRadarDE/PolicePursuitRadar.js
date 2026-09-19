@@ -1,11 +1,12 @@
 /// <reference path="./.config/sa.d.ts" />
 
-// Police Pursuit Radar DE, version 1.2 stabilized HUD/blips.
+// Police Pursuit Radar DE, version 1.3 model-based HUD/blips.
 // Runtime: CLEO Redux x64 + IniFiles64.
 //
-// The HUD is rendered from normalized screen-space primitives. DRAW_RECT is
-// used as the raster primitive for the radar, clipped search area, cones and
-// markers; native blips remain an optional compatibility fallback.
+// Tracking and presentation are deliberately separated. The tracker owns all
+// GTA handles/native reads; the HUD receives only a finite RadarModel made of
+// normalized screen-space values. Native blips remain the compatibility
+// fallback when the custom renderer is disabled or degraded.
 
 if (HOST !== "sa_unreal") {
   exit("Police Pursuit Radar supports only GTA San Andreas: The Definitive Edition.");
@@ -16,8 +17,18 @@ const player = new Player(PLAYER_ID);
 const CONFIG_PATH = "./PolicePursuitRadar.ini";
 const CONFIG_VERSION = 1;
 const VK_RELOAD = 122; // F11
-const HUD_FRAME_INTERVAL_MS = 66;
+// A safe renderer can be called every game frame. The old 15 FPS throttle was
+// masking the cost of a rasterized renderer instead of fixing its cost.
+const HUD_FRAME_INTERVAL_MS = 0;
 const GAMEPLAY_SETTLE_MS = 5000;
+const HUD_RENDER_HARD_BUDGET_MS = 4;
+const HUD_PERF_SAMPLE_LIMIT = 30;
+
+const HUD_LEVEL_FULL = "FULL";
+const HUD_LEVEL_REDUCED = "REDUCED";
+const HUD_LEVEL_MINIMAL = "MINIMAL";
+const HUD_LEVEL_NATIVE_ONLY = "NATIVE_ONLY";
+const HUD_LEVEL_OFF = "OFF";
 
 const STATE_IDLE = "IDLE";
 const STATE_PURSUIT = "PURSUIT";
@@ -63,9 +74,9 @@ const DEFAULTS = {
   wantedZeroGraceMs: 800,
   // Keep the game's original minimap useful together with the bounded HUD.
   showNativeBlips: true,
-  // The renderer has a strict per-frame budget and a unit limit.
-  // The DRAW_RECT renderer remains opt-in until it is replaced with a
-  // sprite-based implementation; the native tracker must not block loading.
+  // The custom renderer has a strict per-frame budget and a unit limit. It
+  // remains opt-in after the previous DRAW_RECT crash; native tracking must
+  // never block game loading.
   hudEnabled: false,
   hudRangeM: 180,
   hudSizePx: 166,
@@ -82,7 +93,9 @@ const DEFAULTS = {
   coneFillAlpha: 14,
   coneBorderAlpha: 82,
   hudMaxUnits: 6,
-  hudDrawBudget: 96,
+  // The rectangular fallback is intentionally capped to a small number of
+  // logical primitives. Existing INI values above this are clamped on load.
+  hudDrawBudget: 24,
   debug: false,
   reloadHotkeyEnabled: true,
 };
@@ -107,6 +120,14 @@ let hudPermanentlyDisabled = false;
 let hudFrameDrawCalls = 0;
 let hudBudgetExceeded = false;
 let lastHudBudgetLogAt = 0;
+let hudRenderLevel = HUD_LEVEL_REDUCED;
+let hudRenderSamples = [];
+let hudRenderAverageMs = 0;
+let hudRenderP95Ms = 0;
+let hudRenderMaxMs = 0;
+let radarModel = null;
+let radarModelState = null;
+const radarUnitTransitions = new Map();
 let nextUnitKey = 1;
 let scanPhase = 0;
 const nativeFailureCounts = new Map();
@@ -120,7 +141,7 @@ let unitBlips = [];
 let searchBlip = null;
 let searchBlipPosition = null;
 
-log("Police Pursuit Radar DE 1.2 stabilized HUD/blips loaded. Host: " + HOST);
+log("Police Pursuit Radar DE 1.3 model-based HUD/blips loaded. Host: " + HOST);
 loadConfig();
 
 while (true) {
@@ -161,13 +182,17 @@ while (true) {
   }
 
   if (config.enabled) {
-    const playerPosition = getCoordinates(actor, false);
-    wantedLevel = readWantedLevel(now);
-    if (playerPosition && now - lastScanAt >= config.scanIntervalMs) {
-      units = scanPolice(actor, playerPosition, wantedLevel);
-      updatePursuitState(playerPosition, units, wantedLevel, now);
-      syncBlips(units);
-      lastScanAt = now;
+    if (now - lastScanAt >= config.scanIntervalMs) {
+      const playerPosition = getCoordinates(actor, false);
+      if (playerPosition) {
+        wantedLevel = readWantedLevel(now);
+        const playerHeading = readPlayerHeading(actor);
+        units = scanPolice(actor, playerPosition, wantedLevel, now);
+        updatePursuitState(playerPosition, units, wantedLevel, now);
+        updateRadarModel(playerPosition, playerHeading, units, now);
+        syncBlips(units);
+        lastScanAt = now;
+      }
     }
   } else {
     resetRuntimeState();
@@ -180,14 +205,15 @@ while (true) {
     now >= hudFaultedUntil &&
     now - lastHudFrameAt >= HUD_FRAME_INTERVAL_MS
   ) {
-    const playerPosition = getCoordinates(actor, false);
-    if (playerPosition) {
+    if (radarModel) {
       try {
-        drawHudRadar(actor, playerPosition, units, now);
+        radarModel = buildRadarModel(now);
+        drawHudRadar(radarModel, now);
         hudErrorCount = 0;
       } catch (error) {
         hudErrorCount += 1;
         hudFaultedUntil = now + 5000;
+        degradeHudRenderer("exception");
         if (hudErrorCount >= 3) hudPermanentlyDisabled = true;
         log(
           "Police Pursuit Radar HUD renderer error #" +
@@ -227,11 +253,11 @@ function readWantedLevel(now) {
   return 0;
 }
 
-function scanPolice(actor, playerPosition, stars) {
+function scanPolice(actor, playerPosition, stars, now) {
   if (stars <= 0) return [];
 
   const results = [];
-  const discoverNewUnits = Date.now() - lastDiscoveryScanAt >= config.discoveryIntervalMs;
+  const discoverNewUnits = now - lastDiscoveryScanAt >= config.discoveryIntervalMs;
 
   // Re-check previously found units first. This prevents the single-result
   // sphere native from making an attached blip flicker between scans and lets
@@ -250,7 +276,7 @@ function scanPolice(actor, playerPosition, stars) {
   if (discoverNewUnits) {
     const samples = samplePoints(playerPosition, config.maxDistanceM, scanPhase);
     scanPhase = (scanPhase + 1) % 32;
-    lastDiscoveryScanAt = Date.now();
+    lastDiscoveryScanAt = now;
     for (const sample of samples) {
       const value = safeNative(
         "GET_RANDOM_CHAR_IN_SPHERE_NO_BRAIN",
@@ -483,8 +509,6 @@ function getHudGeometry() {
       y: clamp(config.hudYPercent / 100, 0.55, 0.96),
     },
     radius: {
-      // DRAW_RECT uses normalized screen coordinates. These defaults match
-      // the usual 16:9 lower-left radar placement and remain editable in INI.
       x: clamp(size / 1920, 0.045, 0.16),
       y: clamp(size / 1080, 0.06, 0.24),
     },
@@ -492,102 +516,131 @@ function getHudGeometry() {
   };
 }
 
-function drawHudRadar(actor, playerPosition, currentUnits, now) {
-  hudFrameDrawCalls = 0;
-  hudBudgetExceeded = false;
+function readPlayerHeading(actor) {
+  return finiteNumber(safeNative("GET_CHAR_HEADING", actor), 0);
+}
+
+function updateRadarModel(playerPosition, playerHeading, currentUnits, now) {
   const geometry = getHudGeometry();
-  const playerHeading = finiteNumber(safeNative("GET_CHAR_HEADING", actor), 0);
   const visibleUnits = prioritizeUnits(currentUnits)
     .filter((unit) => isTypeEnabled(unit.type))
     .slice(0, config.hudMaxUnits);
-  const clipRadius = {
-    x: geometry.radius.x * 0.965,
-    y: geometry.radius.y * 0.965,
-  };
-
-  drawFilledEllipse(
-    geometry.center,
-    geometry.radius,
-    0.015,
-    0.035,
-    0.055,
-    alphaValue(config.hudBackgroundAlpha)
-  );
-  drawCircle(
-    geometry.center,
-    geometry.radius,
-    0.18,
-    0.55,
-    0.78,
-    alphaValue(config.hudRingAlpha),
-    2.0
-  );
-  drawCircle(
-    geometry.center,
-    { x: geometry.radius.x * 0.66, y: geometry.radius.y * 0.66 },
-    0.12,
-    0.35,
-    0.50,
-    0.34,
-    1.0
-  );
-
-  if (state === STATE_SEARCHING && lastKnownPlayerPosition) {
-    drawSearchArea(geometry, playerPosition, playerHeading, clipRadius);
-  }
+  const visibleKeys = new Set();
 
   for (const unit of visibleUnits) {
-    drawPoliceCone(geometry, playerPosition, playerHeading, unit, clipRadius);
-  }
-
-  for (const unit of visibleUnits) {
+    const key = unit.key || "police-model-" + nextUnitKey++;
     const point = radarPoint(unit.position, playerPosition, playerHeading, geometry);
     if (!point) continue;
-    drawUnitMarker(point, unit, geometry, playerPosition, playerHeading);
+
+    const target = {
+      x: point.x,
+      y: point.y,
+      rotation: relativeHeading(unit.heading, playerHeading),
+      icon: unit.type,
+      state: unit.contact ? "CONTACT" : "TRACKED",
+      alpha: point.offRadar ? 0.42 : 0.96,
+      offRadar: point.offRadar,
+      // These values are part of the presentation contract. The reduced
+      // rectangle renderer does not draw a cone, but a future sprite renderer
+      // can use them without touching tracking or GTA handles.
+      coneRotation: relativeHeading(unit.heading, playerHeading),
+      coneScale: clamp(config.coneLengthM / geometry.rangeM, 0.1, 1),
+    };
+    const transition = radarUnitTransitions.get(key);
+    const previous = transition
+      ? interpolateRadarUnit(transition, now)
+      : target;
+    radarUnitTransitions.set(key, {
+      previous,
+      target,
+      updatedAt: now,
+      durationMs: Math.max(100, config.scanIntervalMs),
+    });
+    visibleKeys.add(key);
   }
 
-  if (state === STATE_SEARCHING && lastKnownPlayerPosition) {
-    const lastKnown = radarPoint(lastKnownPlayerPosition, playerPosition, playerHeading, geometry);
-    if (lastKnown) {
-      drawDiamond(
-        lastKnown.x,
-        lastKnown.y,
-        geometry.radius.y * 0.075,
-        1.0,
-        0.62,
-        0.12,
-        0.95,
-        1.8
-      );
+  for (const [key, transition] of radarUnitTransitions) {
+    if (!visibleKeys.has(key) && now - transition.updatedAt > config.scanIntervalMs * 3) {
+      radarUnitTransitions.delete(key);
     }
   }
 
-  drawPlayerArrow(geometry.center, playerHeading, geometry);
-  if (
-    hudBudgetExceeded &&
-    now - lastHudBudgetLogAt >= 5000
-  ) {
-    lastHudBudgetLogAt = now;
-    log(
-      "Police Pursuit Radar HUD draw budget reached: calls=" +
-        hudFrameDrawCalls +
-        " budget=" +
-        config.hudDrawBudget +
-        " units=" +
-        visibleUnits.length
-    );
-  }
+  const search = state === STATE_SEARCHING && lastKnownPlayerPosition
+    ? createSearchPresentation(lastKnownPlayerPosition, playerPosition, playerHeading, geometry)
+    : null;
+  const lastKnown = search ? { x: search.x, y: search.y, alpha: 0.95 } : null;
+
+  radarModelState = {
+    timestamp: now,
+    geometry,
+    player: {
+      x: geometry.center.x,
+      y: geometry.center.y,
+      rotation: config.hudRotateWithPlayer ? 0 : finiteNumber(playerHeading, 0),
+    },
+    unitKeys: Array.from(visibleKeys),
+    search,
+    lastKnown,
+    status: state,
+  };
+  radarModel = buildRadarModel(now);
 }
 
-function prioritizeUnits(currentUnits) {
-  return currentUnits.slice().sort(comparePoliceUnits);
+function buildRadarModel(now) {
+  if (!radarModelState) return null;
+  return {
+    timestamp: now,
+    geometry: radarModelState.geometry,
+    player: radarModelState.player,
+    units: radarModelState.unitKeys
+      .map((key) => {
+        const transition = radarUnitTransitions.get(key);
+        return transition ? interpolateRadarUnit(transition, now) : null;
+      })
+      .filter(Boolean),
+    search: radarModelState.search,
+    lastKnown: radarModelState.lastKnown,
+    status: radarModelState.status,
+  };
+}
+
+function interpolateRadarUnit(transition, now) {
+  const duration = Math.max(1, transition.durationMs);
+  const progress = clamp((now - transition.updatedAt) / duration, 0, 1);
+  const from = transition.previous || transition.target;
+  const to = transition.target;
+  return {
+    x: lerp(from.x, to.x, progress),
+    y: lerp(from.y, to.y, progress),
+    rotation: interpolateAngle(from.rotation, to.rotation, progress),
+    icon: to.icon,
+    state: to.state,
+    alpha: lerp(from.alpha, to.alpha, progress),
+    offRadar: progress < 0.5 ? from.offRadar : to.offRadar,
+    coneRotation: interpolateAngle(from.coneRotation, to.coneRotation, progress),
+    coneScale: lerp(from.coneScale, to.coneScale, progress),
+  };
+}
+
+function createSearchPresentation(position, playerPosition, playerHeading, geometry) {
+  const point = radarPoint(position, playerPosition, playerHeading, geometry);
+  if (!point) return null;
+  const radius = getSearchRadius(wantedLevel);
+  return {
+    x: point.x,
+    y: point.y,
+    width: clamp((radius / geometry.rangeM) * geometry.radius.x * 2, 0.012, geometry.radius.x * 1.8),
+    height: clamp((radius / geometry.rangeM) * geometry.radius.y * 2, 0.016, geometry.radius.y * 1.8),
+    alpha: alphaValue(config.searchFillAlpha),
+    borderAlpha: alphaValue(config.searchBorderAlpha),
+  };
 }
 
 function radarPoint(position, playerPosition, playerHeading, geometry) {
-  let dx = position.x - playerPosition.x;
-  let dy = position.y - playerPosition.y;
+  let dx = finiteNumber(position.x, 0) - finiteNumber(playerPosition.x, 0);
+  let dy = finiteNumber(position.y, 0) - finiteNumber(playerPosition.y, 0);
   if (config.hudRotateWithPlayer) {
-    const angle = (playerHeading * Math.PI) / 180;
+    const angle = (finiteNumber(playerHeading, 0) * Math.PI) / 180;
     const forwardX = Math.sin(angle);
     const forwardY = Math.cos(angle);
     const rightX = Math.cos(angle);
@@ -600,367 +653,201 @@ function radarPoint(position, playerPosition, playerHeading, geometry) {
 
   const offsetX = (dx / geometry.rangeM) * geometry.radius.x;
   const offsetY = -(dy / geometry.rangeM) * geometry.radius.y;
-  const normalizedDistance = Math.sqrt(
-    (offsetX * offsetX) / (geometry.radius.x * geometry.radius.x) +
-      (offsetY * offsetY) / (geometry.radius.y * geometry.radius.y)
-  );
-  if (normalizedDistance <= 0.92) {
+  const limitX = geometry.radius.x * 0.92;
+  const limitY = geometry.radius.y * 0.92;
+  const outsideX = Math.abs(offsetX) > limitX;
+  const outsideY = Math.abs(offsetY) > limitY;
+  if (!outsideX && !outsideY) {
     return {
       x: geometry.center.x + offsetX,
       y: geometry.center.y + offsetY,
       offRadar: false,
     };
   }
-  if (!config.hudShowOffRadar || normalizedDistance <= 0.001) return null;
-  const scale = 0.92 / normalizedDistance;
+  if (!config.hudShowOffRadar) return null;
+  const scale = Math.max(Math.abs(offsetX) / limitX, Math.abs(offsetY) / limitY, 0.0001);
   return {
-    x: geometry.center.x + offsetX * scale,
-    y: geometry.center.y + offsetY * scale,
+    x: geometry.center.x + offsetX / scale,
+    y: geometry.center.y + offsetY / scale,
     offRadar: true,
   };
 }
 
-function drawSearchArea(geometry, playerPosition, playerHeading, clipRadius) {
-  const center = radarPoint(lastKnownPlayerPosition, playerPosition, playerHeading, geometry);
-  if (!center) return;
-
-  const searchRadius = getSearchRadius(wantedLevel);
-  const radius = {
-    x: (searchRadius / geometry.rangeM) * geometry.radius.x,
-    y: (searchRadius / geometry.rangeM) * geometry.radius.y,
-  };
-  drawFilledClippedEllipse(
-    center,
-    radius,
-    geometry.center,
-    clipRadius,
-    1.0,
-    0.46,
-    0.08,
-    alphaValue(config.searchFillAlpha)
-  );
-  drawClippedEllipseBorder(
-    center,
-    radius,
-    geometry.center,
-    clipRadius,
-    1.0,
-    0.62,
-    0.12,
-    alphaValue(config.searchBorderAlpha),
-    1.8
+function relativeHeading(unitHeading, playerHeading) {
+  return normalizeAngle(
+    config.hudRotateWithPlayer
+      ? finiteNumber(unitHeading, 0) - finiteNumber(playerHeading, 0)
+      : finiteNumber(unitHeading, 0)
   );
 }
 
-function drawPoliceCone(geometry, playerPosition, playerHeading, unit, clipRadius) {
-  const origin = radarPoint(unit.position, playerPosition, playerHeading, geometry);
-  if (!origin || origin.offRadar) return;
-
-  const headingPosition = getWorldHeadingPosition(
-    unit.position,
-    unit.heading,
-    clamp(config.coneLengthM, 20, 180)
-  );
-  const endpoint = radarPoint(headingPosition, playerPosition, playerHeading, geometry);
-  if (!endpoint) return;
-
-  const direction = {
-    x: endpoint.x - origin.x,
-    y: endpoint.y - origin.y,
-  };
-  const directionLength = Math.sqrt(direction.x * direction.x + direction.y * direction.y);
-  if (directionLength < 0.0001) return;
-  direction.x /= directionLength;
-  direction.y /= directionLength;
-
-  const normal = { x: -direction.y, y: direction.x };
-  const halfAngle = (clamp(config.coneFovDeg, 20, 140) * Math.PI) / 360;
-  const coneWidth = directionLength * Math.tan(halfAngle);
-  const left = {
-    x: endpoint.x + normal.x * coneWidth,
-    y: endpoint.y + normal.y * coneWidth,
-  };
-  const right = {
-    x: endpoint.x - normal.x * coneWidth,
-    y: endpoint.y - normal.y * coneWidth,
-  };
-  const color = unit.contact
-    ? { r: 1.0, g: 0.12, b: 0.08 }
-    : { r: 0.22, g: 0.64, b: 1.0 };
-
-  drawFilledClippedTriangle(
-    origin,
-    left,
-    right,
-    geometry.center,
-    clipRadius,
-    color.r,
-    color.g,
-    color.b,
-    alphaValue(config.coneFillAlpha)
-  );
-  drawLine(
-    origin.x,
-    origin.y,
-    left.x,
-    left.y,
-    color.r,
-    color.g,
-    color.b,
-    alphaValue(config.coneBorderAlpha),
-    1.2
-  );
-  drawLine(
-    origin.x,
-    origin.y,
-    right.x,
-    right.y,
-    color.r,
-    color.g,
-    color.b,
-    alphaValue(config.coneBorderAlpha),
-    1.2
-  );
+function normalizeAngle(value) {
+  let result = finiteNumber(value, 0) % 360;
+  if (result < -180) result += 360;
+  if (result > 180) result -= 360;
+  return result;
 }
 
-function getWorldHeadingPosition(position, heading, distance) {
-  const angle = (finiteNumber(heading, 0) * Math.PI) / 180;
-  return {
-    x: position.x + Math.sin(angle) * distance,
-    y: position.y + Math.cos(angle) * distance,
-    z: position.z,
-  };
+function interpolateAngle(from, to, progress) {
+  return normalizeAngle(normalizeAngle(from) + normalizeAngle(to - from) * progress);
 }
 
-function drawUnitMarker(point, unit, geometry, playerPosition, playerHeading) {
-  const color = unit.contact
-    ? { r: 1.0, g: 0.16, b: 0.10 }
-    : unit.type === "helicopter"
-      ? { r: 0.42, g: 1.0, b: 0.76 }
-      : unit.type === "boat"
-        ? { r: 0.24, g: 0.72, b: 1.0 }
-        : unit.type === "bike"
-          ? { r: 0.88, g: 0.42, b: 1.0 }
-          : { r: 0.30, g: 0.72, b: 1.0 };
-  const alpha = point.offRadar ? 0.42 : 0.96;
-  const markerRadius = {
-    x: geometry.radius.x * 0.060,
-    y: geometry.radius.y * 0.060,
-  };
-
-  if (unit.type === "foot") {
-    drawCircle(point, markerRadius, color.r, color.g, color.b, alpha, 1.8);
-    drawLine(point.x - markerRadius.x, point.y, point.x + markerRadius.x, point.y, color.r, color.g, color.b, alpha, 1.4);
-    return;
-  }
-  if (unit.type === "helicopter") {
-    drawCircle(point, { x: markerRadius.x * 1.45, y: markerRadius.y * 1.45 }, color.r, color.g, color.b, alpha, 1.8);
-    drawLine(point.x - markerRadius.x * 0.65, point.y, point.x + markerRadius.x * 0.65, point.y, color.r, color.g, color.b, alpha, 1.5);
-    drawLine(point.x, point.y - markerRadius.y * 0.65, point.x, point.y + markerRadius.y * 0.65, color.r, color.g, color.b, alpha, 1.5);
-    return;
-  }
-  if (unit.type === "boat") {
-    drawDiamond(point.x, point.y, markerRadius.y * 1.45, color.r, color.g, color.b, alpha, 1.8);
-    return;
-  }
-
-  const direction = radarDirection(unit, playerPosition, playerHeading, geometry);
-  drawChevron(point.x, point.y, direction, color.r, color.g, color.b, alpha, markerRadius.y * 1.7);
+function lerp(from, to, progress) {
+  return finiteNumber(from, 0) + (finiteNumber(to, 0) - finiteNumber(from, 0)) * progress;
 }
 
-function radarDirection(unit, playerPosition, playerHeading, geometry) {
-  const origin = radarPoint(unit.position, playerPosition, playerHeading, geometry);
-  const endpoint = radarPoint(
-    getWorldHeadingPosition(unit.position, unit.heading, 8),
-    playerPosition,
-    playerHeading,
-    geometry
-  );
-  if (!origin || !endpoint) return { x: 0, y: -1 };
-  const direction = { x: endpoint.x - origin.x, y: endpoint.y - origin.y };
-  const length = Math.sqrt(direction.x * direction.x + direction.y * direction.y);
-  return length > 0.0001 ? { x: direction.x / length, y: direction.y / length } : { x: 0, y: -1 };
-}
+function drawHudRadar(model, now) {
+  hudFrameDrawCalls = 0;
+  hudBudgetExceeded = false;
+  const startedAt = readHudClock();
 
-function drawPlayerArrow(center, playerHeading, geometry) {
-  const angle = config.hudRotateWithPlayer ? 0 : (playerHeading * Math.PI) / 180;
-  const forward = { x: Math.sin(angle), y: -Math.cos(angle) };
-  const right = { x: Math.cos(angle), y: Math.sin(angle) };
-  const tip = {
-    x: center.x + forward.x * geometry.radius.x * 0.16,
-    y: center.y + forward.y * geometry.radius.y * 0.16,
-  };
-  const left = {
-    x: center.x - forward.x * geometry.radius.x * 0.09 - right.x * geometry.radius.x * 0.08,
-    y: center.y - forward.y * geometry.radius.y * 0.09 - right.y * geometry.radius.y * 0.08,
-  };
-  const other = {
-    x: center.x - forward.x * geometry.radius.x * 0.09 + right.x * geometry.radius.x * 0.08,
-    y: center.y - forward.y * geometry.radius.y * 0.09 + right.y * geometry.radius.y * 0.08,
-  };
-  drawLine(tip.x, tip.y, left.x, left.y, 0.86, 0.96, 1.0, 1.0, 2.0);
-  drawLine(tip.x, tip.y, other.x, other.y, 0.86, 0.96, 1.0, 1.0, 2.0);
-  drawLine(left.x, left.y, other.x, other.y, 0.86, 0.96, 1.0, 1.0, 1.6);
-}
-
-function drawChevron(x, y, direction, r, g, b, a, size) {
-  const forward = direction || { x: 0, y: -1 };
-  const right = { x: -forward.y, y: forward.x };
-  const tip = { x: x + forward.x * size * 0.9, y: y + forward.y * size };
-  const left = {
-    x: x - forward.x * size * 0.6 - right.x * size * 0.6,
-    y: y - forward.y * size * 0.6 - right.y * size * 0.6,
-  };
-  const other = {
-    x: x - forward.x * size * 0.6 + right.x * size * 0.6,
-    y: y - forward.y * size * 0.6 + right.y * size * 0.6,
-  };
-  drawLine(tip.x, tip.y, left.x, left.y, r, g, b, a, 2.0);
-  drawLine(tip.x, tip.y, other.x, other.y, r, g, b, a, 2.0);
-  drawLine(left.x, left.y, other.x, other.y, r, g, b, a, 1.4);
-}
-
-function drawDiamond(x, y, size, r, g, b, a, thickness) {
-  drawLine(x, y - size, x + size * 0.9, y, r, g, b, a, thickness);
-  drawLine(x + size * 0.9, y, x, y + size, r, g, b, a, thickness);
-  drawLine(x, y + size, x - size * 0.9, y, r, g, b, a, thickness);
-  drawLine(x - size * 0.9, y, x, y - size, r, g, b, a, thickness);
-}
-
-function drawFilledEllipse(center, radius, r, g, b, a) {
-  const steps = 18;
-  const rowHeight = Math.max(0.001, (radius.y * 2) / steps);
-  for (let index = -steps; index <= steps; index += 1) {
-    const normalized = index / steps;
-    const half = Math.sqrt(Math.max(0, 1 - normalized * normalized));
-    drawRect(center.x, center.y + normalized * radius.y, radius.x * 2 * half, rowHeight, r, g, b, a);
-  }
-}
-
-function drawFilledClippedEllipse(center, radius, clipCenter, clipRadius, r, g, b, a) {
-  const steps = 24;
-  const rowHeight = Math.max(0.001, (radius.y * 2) / steps);
-  for (let index = -steps; index <= steps; index += 1) {
-    const normalized = index / steps;
-    const y = center.y + normalized * radius.y;
-    const searchHalf = radius.x * Math.sqrt(Math.max(0, 1 - normalized * normalized));
-    const clipHalf = ellipseHalfWidthAtY(y, clipCenter, clipRadius);
-    if (clipHalf === null) continue;
-    const left = Math.max(0, center.x - searchHalf, clipCenter.x - clipHalf);
-    const right = Math.min(1, center.x + searchHalf, clipCenter.x + clipHalf);
-    if (right > left) drawRect((left + right) / 2, y, right - left, rowHeight, r, g, b, a);
-  }
-}
-
-function drawClippedEllipseBorder(center, radius, clipCenter, clipRadius, r, g, b, a, thickness) {
-  let previous = null;
-  const segments = 32;
-  for (let index = 0; index <= segments; index += 1) {
-    const angle = (Math.PI * 2 * index) / segments;
-    const point = {
-      x: center.x + Math.cos(angle) * radius.x,
-      y: center.y + Math.sin(angle) * radius.y,
-    };
-    if (previous && isInsideEllipse(previous, clipCenter, clipRadius) && isInsideEllipse(point, clipCenter, clipRadius)) {
-      drawLine(previous.x, previous.y, point.x, point.y, r, g, b, a, thickness);
+  try {
+    if (hudRenderLevel !== HUD_LEVEL_NATIVE_ONLY && hudRenderLevel !== HUD_LEVEL_OFF) {
+      renderRectangularRadar(model, hudRenderLevel);
     }
-    previous = point;
-  }
-}
-
-function drawFilledClippedTriangle(a, b, c, clipCenter, clipRadius, r, g, bl, alpha) {
-  const points = [a, b, c];
-  const minY = Math.max(0, Math.min(a.y, b.y, c.y));
-  const maxY = Math.min(1, Math.max(a.y, b.y, c.y));
-  const rows = 18;
-  if (maxY <= minY) return;
-  const rowHeight = (maxY - minY) / rows;
-
-  for (let row = 0; row < rows; row += 1) {
-    const y = minY + rowHeight * (row + 0.5);
-    const intersections = [];
-    for (let index = 0; index < 3; index += 1) {
-      const first = points[index];
-      const second = points[(index + 1) % 3];
-      if (Math.abs(second.y - first.y) < 0.00001) continue;
-      const minimum = Math.min(first.y, second.y);
-      const maximum = Math.max(first.y, second.y);
-      if (y < minimum || y >= maximum) continue;
-      const t = (y - first.y) / (second.y - first.y);
-      intersections.push(first.x + (second.x - first.x) * t);
+  } finally {
+    const elapsed = Math.max(0, readHudClock() - startedAt);
+    recordHudRenderTime(elapsed);
+    if (elapsed > HUD_RENDER_HARD_BUDGET_MS) {
+      degradeHudRenderer("render time " + elapsed.toFixed(2) + " ms");
     }
-    if (intersections.length < 2) continue;
-    const left = Math.max(0, Math.min(intersections[0], intersections[1]));
-    const right = Math.min(1, Math.max(intersections[0], intersections[1]));
-    const clipHalf = ellipseHalfWidthAtY(y, clipCenter, clipRadius);
-    if (clipHalf === null) continue;
-    const clippedLeft = Math.max(left, clipCenter.x - clipHalf);
-    const clippedRight = Math.min(right, clipCenter.x + clipHalf);
-    if (clippedRight > clippedLeft) {
-      drawRect((clippedLeft + clippedRight) / 2, y, clippedRight - clippedLeft, rowHeight, r, g, bl, alpha);
+    if (hudBudgetExceeded && now - lastHudBudgetLogAt >= 5000) {
+      lastHudBudgetLogAt = now;
+      log(
+        "Police Pursuit Radar HUD logical draw budget reached: calls=" +
+          hudFrameDrawCalls +
+          " budget=" +
+          config.hudDrawBudget +
+          " units=" +
+          model.units.length
+      );
     }
   }
 }
 
-function ellipseHalfWidthAtY(y, center, radius) {
-  if (radius.x <= 0 || radius.y <= 0) return null;
-  const normalizedY = (y - center.y) / radius.y;
-  if (Math.abs(normalizedY) > 1) return null;
-  return radius.x * Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY));
-}
+function renderRectangularRadar(model, level) {
+  const geometry = model.geometry;
+  const left = geometry.center.x - geometry.radius.x;
+  const top = geometry.center.y - geometry.radius.y;
+  const width = geometry.radius.x * 2;
+  const height = geometry.radius.y * 2;
 
-function isInsideEllipse(point, center, radius) {
-  const dx = (point.x - center.x) / radius.x;
-  const dy = (point.y - center.y) / radius.y;
-  return dx * dx + dy * dy <= 1.001;
-}
+  // One background primitive replaces the previous 37-row ellipse.
+  drawHudRect(
+    geometry.center.x,
+    geometry.center.y,
+    width,
+    height,
+    0.015,
+    0.035,
+    0.055,
+    alphaValue(config.hudBackgroundAlpha)
+  );
 
-function drawCircle(center, radius, r, g, b, a, thickness) {
-  let previous = null;
-  const segments = 24;
-  for (let index = 0; index <= segments; index += 1) {
-    const angle = (Math.PI * 2 * index) / segments;
-    const point = {
-      x: center.x + Math.cos(angle) * radius.x,
-      y: center.y + Math.sin(angle) * radius.y,
-    };
-    if (previous) drawLine(previous.x, previous.y, point.x, point.y, r, g, b, a, thickness);
-    previous = point;
+  if (level !== HUD_LEVEL_MINIMAL) {
+    drawHudRect(geometry.center.x, top, width, 0.0025, 0.18, 0.55, 0.78, alphaValue(config.hudRingAlpha));
+    drawHudRect(geometry.center.x, top + height, width, 0.0025, 0.18, 0.55, 0.78, alphaValue(config.hudRingAlpha));
+    drawHudRect(left, geometry.center.y, 0.0025, height, 0.18, 0.55, 0.78, alphaValue(config.hudRingAlpha));
+    drawHudRect(left + width, geometry.center.y, 0.0025, height, 0.18, 0.55, 0.78, alphaValue(config.hudRingAlpha));
   }
-}
 
-function drawLine(x1, y1, x2, y2, r, g, b, a, thickness) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const length = Math.sqrt(dx * dx + dy * dy);
-  const steps = Math.max(1, Math.ceil(length / 0.010));
-  for (let index = 0; index <= steps; index += 1) {
-    const t = index / steps;
-    drawRect(
-      x1 + dx * t,
-      y1 + dy * t,
-      Math.max(0.0015, thickness / 1920),
-      Math.max(0.0025, thickness / 1080),
-      r,
-      g,
-      b,
-      a
+  if (level !== HUD_LEVEL_MINIMAL && model.search) {
+    drawHudRect(
+      model.search.x,
+      model.search.y,
+      model.search.width,
+      model.search.height,
+      1.0,
+      0.46,
+      0.08,
+      model.search.alpha
     );
   }
+
+  if (level !== HUD_LEVEL_MINIMAL && model.lastKnown) {
+    drawHudRect(model.lastKnown.x, model.lastKnown.y, 0.008, 0.008, 1.0, 0.62, 0.12, model.lastKnown.alpha);
+  }
+
+  const maximumUnits = level === HUD_LEVEL_MINIMAL ? 3 : config.hudMaxUnits;
+  for (const unit of model.units.slice(0, maximumUnits)) {
+    drawRadarUnitMarker(unit, geometry);
+  }
+
+  // The player marker is intentionally one primitive. Direction is retained
+  // in model.player.rotation for the future sprite renderer.
+  drawHudRect(
+    model.player.x,
+    model.player.y,
+    geometry.radius.x * 0.10,
+    geometry.radius.y * 0.10,
+    0.86,
+    0.96,
+    1.0,
+    1.0
+  );
+}
+
+function drawRadarUnitMarker(unit, geometry) {
+  const color = radarUnitColor(unit);
+  const base = unit.offRadar ? 0.70 : 1.0;
+  const sizeX = geometry.radius.x * (unit.icon === "helicopter" ? 0.090 : 0.065);
+  const sizeY = geometry.radius.y * (unit.icon === "helicopter" ? 0.075 : 0.055);
+  drawHudRect(unit.x, unit.y, sizeX, sizeY, color.r, color.g, color.b, base * unit.alpha);
+}
+
+function radarUnitColor(unit) {
+  if (unit.state === "CONTACT") return { r: 1.0, g: 0.16, b: 0.10 };
+  if (unit.icon === "helicopter") return { r: 0.42, g: 1.0, b: 0.76 };
+  if (unit.icon === "boat") return { r: 0.24, g: 0.72, b: 1.0 };
+  if (unit.icon === "bike") return { r: 0.88, g: 0.42, b: 1.0 };
+  return { r: 0.30, g: 0.72, b: 1.0 };
+}
+
+function readHudClock() {
+  if (typeof performance !== "undefined" && performance && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function recordHudRenderTime(elapsed) {
+  hudRenderSamples.push(elapsed);
+  if (hudRenderSamples.length > HUD_PERF_SAMPLE_LIMIT) hudRenderSamples.shift();
+  const ordered = hudRenderSamples.slice().sort((left, right) => left - right);
+  hudRenderAverageMs = ordered.reduce((sum, value) => sum + value, 0) / ordered.length;
+  hudRenderP95Ms = ordered[Math.max(0, Math.ceil(ordered.length * 0.95) - 1)];
+  hudRenderMaxMs = ordered[ordered.length - 1];
+}
+
+function degradeHudRenderer(reason) {
+  const previous = hudRenderLevel;
+  if (hudRenderLevel === HUD_LEVEL_FULL) hudRenderLevel = HUD_LEVEL_REDUCED;
+  else if (hudRenderLevel === HUD_LEVEL_REDUCED) hudRenderLevel = HUD_LEVEL_MINIMAL;
+  else if (hudRenderLevel === HUD_LEVEL_MINIMAL) hudRenderLevel = HUD_LEVEL_NATIVE_ONLY;
+  else if (hudRenderLevel === HUD_LEVEL_NATIVE_ONLY) hudRenderLevel = HUD_LEVEL_OFF;
+  if (previous !== hudRenderLevel) {
+    log("Police Pursuit Radar HUD degraded: " + previous + " -> " + hudRenderLevel + " (" + reason + ").");
+  }
+  if (hudRenderLevel === HUD_LEVEL_OFF) hudPermanentlyDisabled = true;
+}
+
+function prioritizeUnits(currentUnits) {
+  return currentUnits.slice().sort(comparePoliceUnits);
 }
 
 function alphaValue(percent) {
   return clamp(finiteNumber(percent, 0), 0, 100) / 100;
 }
 
-function drawRect(x, y, width, height, r, g, b, a) {
+function drawHudRect(x, y, width, height, r, g, b, a) {
   if (hudFrameDrawCalls >= config.hudDrawBudget) {
     hudBudgetExceeded = true;
     return;
   }
   hudFrameDrawCalls += 1;
-  // Let the frame-level guard catch renderer failures. Swallowing this
-  // exception here would make the automatic HUD pause impossible.
+  // Keep the native call behind one bounded primitive. The old renderer used
+  // this path for hundreds of raster rectangles per frame; this renderer has
+  // a fixed upper bound of 14 logical rectangles in REDUCED mode.
   native(
     "DRAW_RECT",
     clamp(finiteNumber(x, 0), 0, 1),
@@ -1277,12 +1164,13 @@ function loadConfig() {
     config.coneFillAlpha = clamp(updateConfigValue("hud", "cone_fill_alpha_percent", DEFAULTS.coneFillAlpha), 0, 100);
     config.coneBorderAlpha = clamp(updateConfigValue("hud", "cone_border_alpha_percent", DEFAULTS.coneBorderAlpha), 0, 100);
     config.hudMaxUnits = clamp(updateConfigValue("hud", "max_units", DEFAULTS.hudMaxUnits), 2, 6);
-    config.hudDrawBudget = clamp(updateConfigValue("hud", "draw_budget", DEFAULTS.hudDrawBudget), 32, 120);
+    config.hudDrawBudget = clamp(updateConfigValue("hud", "draw_budget", DEFAULTS.hudDrawBudget), 8, 24);
     config.debug = updateConfigValue("visual", "debug", DEFAULTS.debug ? 1 : 0) !== 0;
     config.reloadHotkeyEnabled = updateConfigValue("input", "reload_hotkey_enabled", DEFAULTS.reloadHotkeyEnabled ? 1 : 0) !== 0;
     hudFaultedUntil = 0;
     hudErrorCount = 0;
     hudPermanentlyDisabled = false;
+    resetHudPresentationState();
     log("Police Pursuit Radar configuration loaded.");
   } catch (_) {
     log("Police Pursuit Radar: config load failed; using defaults.");
@@ -1302,6 +1190,21 @@ function resetRuntimeState() {
   lastScanAt = 0;
   lastDiscoveryScanAt = 0;
   scanPhase = 0;
+  resetHudPresentationState();
+}
+
+function resetHudPresentationState() {
+  radarModel = null;
+  radarModelState = null;
+  radarUnitTransitions.clear();
+  hudRenderLevel = HUD_LEVEL_REDUCED;
+  hudRenderSamples = [];
+  hudRenderAverageMs = 0;
+  hudRenderP95Ms = 0;
+  hudRenderMaxMs = 0;
+  hudFrameDrawCalls = 0;
+  hudBudgetExceeded = false;
+  lastHudBudgetLogAt = 0;
 }
 
 function logStateChange() {

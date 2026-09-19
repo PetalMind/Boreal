@@ -87,6 +87,22 @@ nonisolated enum DragonAgeOriginsAdapter {
         }
         guard let driveC else { return nil }
 
+        return userDataRoot(forPrefix: driveC, fileManager: fileManager)
+    }
+
+    /// Resolves DAO's Windows Documents directory from Boreal's managed Wine
+    /// prefix. The game installation can live outside the prefix (for example
+    /// on a separate GOG volume), so the game root is not a reliable source
+    /// for this path.
+    static func userDataRoot(
+        forPrefix prefixURL: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let normalizedPrefix = prefixURL.standardizedFileURL
+        let driveC = normalizedPrefix.lastPathComponent.caseInsensitiveCompare("drive_c") == .orderedSame
+            ? normalizedPrefix
+            : normalizedPrefix.appending(path: "drive_c", directoryHint: .isDirectory)
+
         let usersRoot = driveC.appending(path: "users", directoryHint: .isDirectory)
         let users = (try? fileManager.contentsOfDirectory(
             at: usersRoot,
@@ -120,6 +136,10 @@ nonisolated enum DragonAgeOriginsAdapter {
 
     static func addInsFile(in gameRoot: URL, fileManager: FileManager = .default) -> URL? {
         userDataRoot(for: gameRoot, fileManager: fileManager)?.appending(path: "Settings/AddIns.xml")
+    }
+
+    static func addInsFile(inPrefix prefixURL: URL, fileManager: FileManager = .default) -> URL? {
+        userDataRoot(forPrefix: prefixURL, fileManager: fileManager)?.appending(path: "Settings/AddIns.xml")
     }
 
     static func append(_ relativePath: String, to root: URL) -> URL {
@@ -341,8 +361,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         gameRoot: URL?,
         pluginsFile: URL?
     ) throws -> ModGameState {
-        guard let gameRoot,
-              let userDataRoot = DragonAgeOriginsAdapter.userDataRoot(for: gameRoot) else {
+        guard let userDataRoot = userDataRoot(gameRoot: gameRoot, pluginsFile: pluginsFile) else {
             throw ModManagerError.dragonAgeDocumentsUnavailable
         }
         let fileManager = FileManager.default
@@ -353,7 +372,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         try validateManagedFiles(old.files, userDataRoot: userDataRoot)
         try preflightExternalChanges(old.files, userDataRoot: userDataRoot)
 
-        let addInsURL = pluginsFile ?? DragonAgeOriginsAdapter.addInsFile(in: gameRoot)
+        let addInsURL = pluginsFile ?? gameRoot.flatMap { DragonAgeOriginsAdapter.addInsFile(in: $0) }
         let activeAddIns = try activeAddInItems(for: state.mods, gameDirectory: gameDirectory)
         if !activeAddIns.isEmpty && addInsURL == nil {
             throw ModManagerError.dragonAgeDocumentsUnavailable
@@ -612,8 +631,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
     ) -> ModDeploymentHealth {
         let fileManager = FileManager.default
         var externalChanges: [String] = []
-        if let gameRoot,
-           let userDataRoot = DragonAgeOriginsAdapter.userDataRoot(for: gameRoot) {
+        if let userDataRoot = userDataRoot(gameRoot: gameRoot, pluginsFile: pluginsFile) {
             for entry in state.deployment.files.values {
                 let destination = append(entry.path, to: userDataRoot)
                 guard fileManager.fileExists(atPath: destination.path),
@@ -665,6 +683,20 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
 }
 
 private extension DragonAgeOriginsModManager {
+    func userDataRoot(gameRoot: URL?, pluginsFile: URL?) -> URL? {
+        if let pluginsFile {
+            let normalized = pluginsFile.standardizedFileURL
+            let settings = normalized.deletingLastPathComponent()
+            let userData = settings.deletingLastPathComponent()
+            if normalized.lastPathComponent.caseInsensitiveCompare("AddIns.xml") == .orderedSame,
+               settings.lastPathComponent.caseInsensitiveCompare("Settings") == .orderedSame,
+               userData.lastPathComponent.caseInsensitiveCompare("Dragon Age") == .orderedSame {
+                return userData
+            }
+        }
+        return gameRoot.flatMap { DragonAgeOriginsAdapter.userDataRoot(for: $0) }
+    }
+
     func append(_ relativePath: String, to root: URL) -> URL {
         DragonAgeOriginsAdapter.append(relativePath, to: root)
     }

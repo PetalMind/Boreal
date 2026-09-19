@@ -41,24 +41,31 @@ const DEFAULTS = {
   collisionUpdateMs: 33,
   reloadHotkeyEnabled: true,
   toggleHotkeyEnabled: true,
-  positionStiffness: 72,
-  positionDamping: 20,
   verticalTracking: 0.72,
   airborneVerticalTracking: 0.28,
-  targetStiffness: 88,
-  targetDamping: 22,
-  collisionStiffness: 190,
-  collisionDamping: 28,
+  positionFrequencyHz: 4.5,
+  positionDampingRatio: 1.0,
+  targetFrequencyHz: 5.2,
+  targetDampingRatio: 1.0,
+  collisionFrequencyHz: 7.0,
+  collisionDampingRatio: 1.0,
   driftVelocityInfluence: 0.60,
+  driftMinSpeedKmh: 18,
   reverseMinSpeedKmh: 3,
   reverseEnterHoldMs: 280,
   reverseExitHoldMs: 420,
   reverseExitSpeedKmh: 4,
   accelerationFilterAlpha: 0.12,
-  airborneEnterVerticalSpeed: 1.5,
-  airborneExitVerticalSpeed: 3.0,
+  airborneEnterVerticalSpeed: 9 / 3.6,
+  airborneExitVerticalSpeed: 4 / 3.6,
+  landingMinAirborneMs: 180,
   landingDurationMs: 220,
   shoulderSwapCooldownMs: 450,
+  shoulderSwapClearanceAdvantage: 0.60,
+  collisionSafetyMargin: 0.20,
+  collisionMinimumScore: 4,
+  collisionEmergencyDistance: 1.45,
+  velocityDirectionThresholdMps: 0.35,
   // Distances are stored in metres here and as centimetres in the INI file.
   walkDistance: 3.5,
   walkHeight: 1.5,
@@ -110,6 +117,8 @@ let lastFrameAt = Date.now();
 let manualFreeUntil = 0;
 let manualRecenterUntil = 0;
 let manualCameraDirection = null;
+let manualControlActive = false;
+let manualPitchOffset = 0;
 let anchorTransition = null;
 let shoulderSide = 1;
 let lastShoulderSwapAt = 0;
@@ -117,6 +126,9 @@ let reverseState = false;
 let reverseCandidateSince = 0;
 let forwardCandidateSince = 0;
 let landingUntil = 0;
+let airborneSince = 0;
+let interactionState = "onFoot";
+let interactionStateStartedAt = 0;
 let collisionCache = null;
 let fovSpringValue = null;
 let fovSpringVelocity = 0;
@@ -124,6 +136,7 @@ let lastToggleDown = false;
 let lastReloadDown = false;
 let lastStateName = null;
 let fovCapabilityLogged = false;
+let cameraSessionDisabled = false;
 
 loadConfig();
 log("Adaptive Third-Person Camera loaded. F9 toggles the camera; F11 reloads the INI.");
@@ -132,8 +145,14 @@ while (true) {
   wait(0);
 
   const now = Date.now();
-  const dt = clamp((now - lastFrameAt) / 1000, 0.008, 0.05);
+  const rawDt = Math.max(0, (now - lastFrameAt) / 1000);
+  const dt = clamp(rawDt, 0.001, 0.05);
   lastFrameAt = now;
+  if (rawDt > 0.08) {
+    springPositionVelocity = scaleVector(springPositionVelocity, 0.10);
+    springTargetVelocity = scaleVector(springTargetVelocity, 0.10);
+    fovSpringVelocity *= 0.10;
+  }
   handleHotkeys();
 
   if (!config.enabled || !player.isPlaying() || cameraTransitionIsActive()) {
@@ -163,7 +182,7 @@ while (true) {
     );
   }
 
-  if (isHardTeleport(lastActorSample, sample)) {
+  if (isHardTeleport(lastActorSample, sample, rawDt)) {
     releaseCamera();
     lastActorSample = sample;
     log("Adaptive Third-Person Camera safety reset after a large anchor displacement.");
@@ -172,18 +191,19 @@ while (true) {
 
   const manualInput = readManualCameraInput();
   if (config.manualOverride && manualInput.magnitude >= config.manualOverrideThreshold) {
-    beginManualOverride(sample, now);
-    lastActorSample = sample;
-    continue;
+    beginManualOverride(sample, manualInput, now);
   }
 
-  if (now < manualFreeUntil) {
+  if (cameraSessionDisabled) {
     releaseCamera();
     lastActorSample = sample;
     continue;
   }
 
-  applyCameraDirector(sample, dt, now, getAutoFollowWeight(sample, now));
+  const autoFollowWeight = now < manualFreeUntil
+    ? 0
+    : getAutoFollowWeight(sample, now);
+  applyCameraDirector(sample, dt, now, autoFollowWeight);
   lastActorSample = sample;
 }
 
@@ -192,6 +212,7 @@ function handleHotkeys() {
     const reloadDown = isKeyPressed(VK_RELOAD);
     if (reloadDown && !lastReloadDown) {
       loadConfig();
+      cameraSessionDisabled = false;
       releaseCamera();
       log("Adaptive Third-Person Camera configuration reloaded.");
     }
@@ -203,6 +224,7 @@ function handleHotkeys() {
     if (toggleDown && !lastToggleDown) {
       config.enabled = !config.enabled;
       if (!config.enabled) releaseCamera();
+      else cameraSessionDisabled = false;
       log("Adaptive Third-Person Camera: " + (config.enabled ? "enabled" : "disabled"));
     }
     lastToggleDown = toggleDown;
@@ -218,14 +240,10 @@ function cameraAnchorChanged(previous, current) {
 }
 
 function beginAnchorTransition(sample, now) {
-  const camera = getCameraState();
-  const fallbackTarget = addVector(
-    sample.position,
-    addVector(scaleVector(sample.forward, 1.0), { x: 0, y: 0, z: 1.0 })
-  );
   anchorTransition = {
-    fromPosition: camera?.position || springPosition || sample.position,
-    fromTarget: camera?.pointAt || springTarget || fallbackTarget,
+    fromAnchorPosition: lastActorSample?.position || sample.position,
+    fromAnchorForward: lastActorSample?.forward || sample.forward,
+    fromProfile: lastActorSample ? buildProfile(lastActorSample) : null,
     startedAt: now,
     duration: config.anchorTransitionMs,
   };
@@ -233,44 +251,57 @@ function beginAnchorTransition(sample, now) {
   springTargetVelocity = scaleVector(springTargetVelocity, 0.25);
 }
 
-function getAnchorTransitionTargets(position, target, now) {
-  if (!anchorTransition) return { position, target };
-
+function getAnchorTransitionState(now) {
+  if (!anchorTransition) return null;
   const elapsed = now - anchorTransition.startedAt;
   const amount = smoothstep(
     0,
     Math.max(1, anchorTransition.duration),
     elapsed
   );
-  const result = {
-    position: lerpVector(anchorTransition.fromPosition, position, amount),
-    target: lerpVector(anchorTransition.fromTarget, target, amount),
-  };
-  if (amount >= 1) anchorTransition = null;
-  return result;
+  return { ...anchorTransition, amount };
 }
 
-function beginManualOverride(sample, now) {
-  const camera = getCameraState();
-  if (camera?.forward) {
-    const horizontal = { x: camera.forward.x, y: camera.forward.y, z: 0 };
-    if (vectorLength(horizontal) > 0.1) {
-      manualCameraDirection = normalizeVector(horizontal);
+function beginManualOverride(sample, input, now) {
+  if (!manualControlActive) {
+    const camera = getCameraState();
+    if (camera?.forward) {
+      const horizontal = { x: camera.forward.x, y: camera.forward.y, z: 0 };
+      if (vectorLength(horizontal) > 0.1) {
+        manualCameraDirection = normalizeVector(horizontal);
+      }
     }
+    manualCameraDirection = manualCameraDirection || sample.forward;
+    manualPitchOffset = 0;
+    manualControlActive = true;
   }
+
+  const yawDelta = input.stickMagnitude > input.mouseMagnitude
+    ? input.stickX * 0.055
+    : input.mouseX * 0.004;
+  const pitchDelta = input.stickMagnitude > input.mouseMagnitude
+    ? input.stickY * 0.040
+    : input.mouseY * 0.0025;
+  manualCameraDirection = rotateHorizontal(manualCameraDirection, yawDelta);
+  manualPitchOffset = clamp(manualPitchOffset - pitchDelta, -0.45, 0.45);
   manualFreeUntil = now + config.manualFreeMs;
   manualRecenterUntil = manualFreeUntil + getRecenterDelay(sample);
-  releaseCamera();
 }
 
 function getAutoFollowWeight(sample, now) {
   if (!manualCameraDirection) return 1;
   if (now <= manualRecenterUntil) return 0;
-  return smoothstep(
+  const weight = smoothstep(
     0,
     Math.max(1, config.manualBlendMs),
     now - manualRecenterUntil
   );
+  if (weight >= 1) {
+    manualCameraDirection = null;
+    manualControlActive = false;
+    manualPitchOffset = 0;
+  }
+  return weight;
 }
 
 function getRecenterDelay(sample) {
@@ -290,27 +321,50 @@ function getRecenterDelay(sample) {
   );
 }
 
-function isHardTeleport(previous, current) {
+function isHardTeleport(previous, current, elapsedSeconds) {
+  const expectedMotion =
+    Math.max(previous?.speedMps || 0, current?.speedMps || 0) *
+    clamp(elapsedSeconds, 0, 0.5) *
+    2;
   return !!previous &&
     !!current &&
-    distanceBetween(previous.position, current.position) > 24;
+    distanceBetween(previous.position, current.position) > 24 + expectedMotion;
 }
 
-function deriveAirState(vehicle, kind, verticalSpeed, uprightValue, previous, now) {
+function deriveAirState(vehicle, kind, verticalSpeed, previous, now) {
   if (!vehicle || !["car", "motorbike", "bicycle"].includes(kind)) {
+    airborneSince = 0;
     landingUntil = 0;
     return "grounded";
   }
 
-  const wasAirborne = previous?.airState === "airborne";
-  const isLanding = wasAirborne && verticalSpeed < -config.airborneExitVerticalSpeed;
-  if (isLanding) landingUntil = now + config.landingDurationMs;
+  const wasAirborne = previous?.airState === "airborne" || previous?.airState === "landing";
+  const previousVerticalSpeed = previous?.velocity?.z || 0;
+  const enterThreshold = config.airborneEnterVerticalSpeed;
+  const exitThreshold = config.airborneExitVerticalSpeed;
+
+  if (!wasAirborne) {
+    if (Math.abs(verticalSpeed) >= enterThreshold) {
+      if (!previous || !airborneSince) airborneSince = now;
+      return "airborne";
+    }
+    airborneSince = 0;
+    return "grounded";
+  }
+
+  if (!airborneSince) airborneSince = previous?.timestamp || now;
+  const airborneLongEnough = now - airborneSince >= config.landingMinAirborneMs;
+  const landingSignal =
+    airborneLongEnough &&
+    previousVerticalSpeed < -exitThreshold &&
+    verticalSpeed > previousVerticalSpeed + exitThreshold * 0.35 &&
+    verticalSpeed > -exitThreshold;
+  if (landingSignal) landingUntil = now + config.landingDurationMs;
   if (now < landingUntil) return "landing";
 
-  const tilted = uprightValue < 0.55;
-  const movingVertically = Math.abs(verticalSpeed) >= config.airborneEnterVerticalSpeed;
-  const remainsAirborne = wasAirborne && verticalSpeed > -config.airborneExitVerticalSpeed;
-  return tilted || movingVertically || remainsAirborne ? "airborne" : "grounded";
+  if (Math.abs(verticalSpeed) >= exitThreshold) return "airborne";
+  airborneSince = 0;
+  return "grounded";
 }
 
 function updateReverseState(sample, now) {
@@ -346,25 +400,30 @@ function updateReverseState(sample, now) {
   return reverseState;
 }
 
-function calculateSlipAngle(forward, velocityDirection, signedSpeedMps) {
-  if (!velocityDirection || signedSpeedMps <= 0.1) return 0;
+function calculateSlipAngle(forward, velocityDirection, speedMps) {
+  if (!velocityDirection || speedMps <= 0.1) return 0;
   const cross = Math.abs(cross2D(forward, velocityDirection));
   const dot = clamp(dotProduct(forward, velocityDirection), -1, 1);
   return Math.abs((Math.atan2(cross, dot) * 180) / Math.PI);
 }
 
-function driftVelocityWeight(slipAngleDegrees) {
-  if (config.driftVelocityInfluence <= 0) return 0;
+function driftVelocityWeight(slipAngleDegrees, speedKmh = Infinity) {
+  if (config.driftVelocityInfluence <= 0 || speedKmh < config.driftMinSpeedKmh) return 0;
   return smoothstep(5, 30, slipAngleDegrees) * config.driftVelocityInfluence;
 }
 
 function updateFovSpring(target, dt) {
   if (fovSpringValue === null) fovSpringValue = desiredFovFallback();
-  const stiffness = 28;
-  const damping = 10;
-  const acceleration = (target - fovSpringValue) * stiffness - fovSpringVelocity * damping;
-  fovSpringVelocity += acceleration * dt;
-  fovSpringValue += fovSpringVelocity * dt;
+  const result = dampedScalarStep(
+    fovSpringValue,
+    target,
+    fovSpringVelocity,
+    2.4,
+    1.0,
+    dt
+  );
+  fovSpringValue = result.value;
+  fovSpringVelocity = result.velocity;
 }
 
 function desiredFovFallback() {
@@ -394,7 +453,7 @@ function readActorSample(actor, now) {
       !!lastActorSample.vehicle === !!vehicle
     ? lastActorSample
     : null;
-  const elapsed = previous ? clamp((now - previous.timestamp) / 1000, 0.008, 0.05) : 0;
+  const elapsed = previous ? clamp((now - previous.timestamp) / 1000, 0.001, 0.05) : 0;
   const velocity = previous && elapsed > 0
     ? scaleVector(subtractVector(position, previous.position), 1 / elapsed)
     : { x: 0, y: 0, z: 0 };
@@ -406,9 +465,13 @@ function readActorSample(actor, now) {
   const speedMps = previous
     ? derivedSpeedMps > 0.08 ? derivedSpeedMps : clamp(reportedSpeed, 0, 90)
     : 0;
-  const velocityDirection = derivedSpeedMps > 0.12
+  const measuredVelocityDirection = derivedSpeedMps > config.velocityDirectionThresholdMps
     ? normalizeVector(horizontalVelocity)
     : null;
+  const stableVelocityDirection =
+    measuredVelocityDirection ||
+    previous?.stableVelocityDirection ||
+    forward;
   const signedSpeedMps = dotProduct(horizontalVelocity, forward);
   const rawAccelerationMps2 = previous && elapsed > 0
     ? clamp((speedMps - previous.speedMps) / elapsed, -20, 20)
@@ -427,7 +490,6 @@ function readActorSample(actor, now) {
     vehicle,
     kind,
     velocity.z,
-    uprightValue,
     previous,
     now
   );
@@ -438,22 +500,20 @@ function readActorSample(actor, now) {
     kind,
     sittingInVehicle,
     inAnyVehicle,
-    interactionState: getVehicleInteractionState(
-      sittingInVehicle,
-      inAnyVehicle,
-      lastActorSample
-    ),
+    interactionState: resolveInteractionState(sittingInVehicle, inAnyVehicle, now),
     position,
     heading,
     forward,
     velocity,
-    velocityDirection,
+    velocityDirection: measuredVelocityDirection,
+    stableVelocityDirection,
     speedMps,
     speedKmh: speedMps * 3.6,
     signedSpeedMps,
     rawAccelerationMps2,
     filteredAccelerationMps2,
-    slipAngleDegrees: calculateSlipAngle(forward, velocityDirection, signedSpeedMps),
+    slipAngleDegrees: calculateSlipAngle(forward, measuredVelocityDirection, derivedSpeedMps),
+    orientationInstability: clamp((1 - uprightValue) / 0.45, 0, 1),
     steering: steeringAmount({
       vehicle,
       kind,
@@ -472,9 +532,31 @@ function readActorSample(actor, now) {
 }
 
 function applyCameraDirector(sample, dt, now, autoFollowWeight) {
-  const profile = buildProfile(sample);
-  let geometry = buildCameraGeometry(sample, profile, autoFollowWeight);
+  const transition = getAnchorTransitionState(now);
+  let profile = buildProfile(sample);
+  if (transition?.fromProfile) {
+    profile = interpolateProfiles(transition.fromProfile, profile, transition.amount);
+  }
+  profile.modifiers = {
+    ...(profile.modifiers || {}),
+    manual: clamp(1 - autoFollowWeight, 0, 1),
+  };
+  profile.stateName = composeProfileState(profile.baseName, profile.modifiers);
+
+  let geometry = buildCameraGeometry(sample, profile, autoFollowWeight, transition);
   let collision = resolveCameraCollision(geometry.target, geometry.desiredPosition, now);
+
+  if (collision.emergency) {
+    profile = applyCollisionEmergencyModifier(profile);
+    geometry = buildCameraGeometry(sample, profile, autoFollowWeight, transition);
+    collision = resolveCameraCollision(
+      geometry.target,
+      geometry.desiredPosition,
+      now,
+      true,
+      false
+    );
+  }
 
   if (
     sample.aiming &&
@@ -485,7 +567,7 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
     const currentClearance = distanceBetween(geometry.target, collision.position);
     shoulderSide *= -1;
     lastShoulderSwapAt = now;
-    const alternateGeometry = buildCameraGeometry(sample, profile, autoFollowWeight);
+    const alternateGeometry = buildCameraGeometry(sample, profile, autoFollowWeight, transition);
     const alternateCollision = resolveCameraCollision(
       alternateGeometry.target,
       alternateGeometry.desiredPosition,
@@ -496,10 +578,7 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
       alternateGeometry.target,
       alternateCollision.position
     );
-    if (
-      alternateCollision.collided &&
-      alternateClearance <= currentClearance + 0.05
-    ) {
+    if (alternateClearance <= currentClearance + config.shoulderSwapClearanceAdvantage) {
       shoulderSide = originalShoulderSide;
     } else {
       geometry = alternateGeometry;
@@ -507,40 +586,36 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
     }
   }
 
-  const transitionTargets = getAnchorTransitionTargets(
-    collision.position,
-    geometry.target,
-    now
-  );
-  initializeSpringIfNeeded(transitionTargets.position, transitionTargets.target);
+  initializeSpringIfNeeded(collision.position, geometry.target);
 
   // Hard teleports/cutscene transitions should not drag the camera through
   // half the map while the spring catches up.
   if (
-    distanceBetween(springPosition, transitionTargets.position) > 24 ||
-    distanceBetween(springTarget, transitionTargets.target) > 24
+    distanceBetween(springPosition, collision.position) > 24 ||
+    distanceBetween(springTarget, geometry.target) > 24
   ) {
-    springPosition = transitionTargets.position;
+    springPosition = collision.position;
     springPositionVelocity = { x: 0, y: 0, z: 0 };
-    springTarget = transitionTargets.target;
+    springTarget = geometry.target;
     springTargetVelocity = { x: 0, y: 0, z: 0 };
   }
 
   const verticalTracking = sample.vehicle
-    ? profile.verticalTracking ?? (
-        sample.airState === "airborne"
-          ? config.airborneVerticalTracking
-          : sample.airState === "landing"
-            ? Math.max(config.airborneVerticalTracking, 0.5)
-            : config.verticalTracking
-      )
+    ? profile.verticalTracking ?? config.verticalTracking
     : 0.86;
+  const transitionSpringBoost = transition && transition.amount < 1 ? 1.25 : 1;
+  const positionFrequency =
+    (collision.collided ? config.collisionFrequencyHz : config.positionFrequencyHz) *
+    transitionSpringBoost;
+  const positionDampingRatio = collision.collided
+    ? config.collisionDampingRatio
+    : config.positionDampingRatio;
   const positionResult = springStep(
     springPosition,
-    transitionTargets.position,
+    collision.position,
     springPositionVelocity,
-    collision.collided ? config.collisionStiffness : config.positionStiffness,
-    collision.collided ? config.collisionDamping : config.positionDamping,
+    positionFrequency,
+    positionDampingRatio,
     verticalTracking,
     dt
   );
@@ -549,26 +624,17 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
 
   const targetResult = springStep(
     springTarget,
-    transitionTargets.target,
+    geometry.target,
     springTargetVelocity,
-    config.targetStiffness,
-    config.targetDamping,
+    config.targetFrequencyHz * transitionSpringBoost,
+    config.targetDampingRatio,
     sample.vehicle ? verticalTracking : 0.90,
     dt
   );
   springTarget = targetResult.position;
   springTargetVelocity = targetResult.velocity;
 
-  safeNative(
-    "SET_FIXED_CAMERA_POSITION",
-    springPosition.x,
-    springPosition.y,
-    springPosition.z,
-    0,
-    0,
-    0
-  );
-  safeNative("POINT_CAMERA_AT_POINT", springTarget.x, springTarget.y, springTarget.z, 0);
+  if (!setScriptCameraPose(springPosition, springTarget)) return;
 
   updateFovSpring(profile.fov, dt);
 
@@ -596,19 +662,28 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
         fovSpringValue.toFixed(1) +
         " collision=" +
         collision.collided +
+        " clearanceScore=" +
+        (collision.clearanceScore ?? 7).toFixed(1) +
         " interaction=" +
         sample.interactionState
     );
   }
   cameraApplied = true;
+  if (transition && transition.amount >= 1) anchorTransition = null;
 }
 
-function buildCameraGeometry(sample, profileValue, autoFollowWeight) {
-  const direction = getCameraDirection(sample, profileValue, autoFollowWeight);
+function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition = null) {
+  const anchorPosition = transition
+    ? lerpVector(transition.fromAnchorPosition, sample.position, transition.amount)
+    : sample.position;
+  const anchorForward = transition
+    ? normalizeVector(lerpVector(transition.fromAnchorForward, sample.forward, transition.amount))
+    : sample.forward;
+  const direction = getCameraDirection(sample, profileValue, autoFollowWeight, anchorForward);
   const right = { x: direction.y, y: -direction.x, z: 0 };
-  const base = { x: sample.position.x, y: sample.position.y, z: sample.position.z };
+  const base = { x: anchorPosition.x, y: anchorPosition.y, z: anchorPosition.z };
   const speedFactor = clamp(sample.speedKmh / 120, 0, 1);
-  const travelDirection = sample.velocityDirection || direction;
+  const travelDirection = sample.stableVelocityDirection || direction;
   const accelerationFactor = clamp(sample.filteredAccelerationMps2 / 8, -1, 1);
   const targetLead = addVector(
     scaleVector(direction, profileValue.lookAhead),
@@ -619,15 +694,18 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight) {
           right,
           profileValue.steeringLookAhead * profileValue.steering * speedFactor
         ),
-        scaleVector(sample.forward, profileValue.accelerationLead * accelerationFactor)
+        scaleVector(anchorForward, profileValue.accelerationLead * accelerationFactor)
       )
     )
   );
   const shoulder = profileValue.shoulderOffset *
     (sample.aiming ? shoulderSide : 1);
+  const manualPitchLead = manualControlActive && autoFollowWeight < 1
+    ? { x: 0, y: 0, z: manualPitchOffset * profileValue.distance }
+    : { x: 0, y: 0, z: 0 };
   const target = addVector(
     { x: base.x, y: base.y, z: base.z + profileValue.targetHeight },
-    targetLead
+    addVector(targetLead, manualPitchLead)
   );
   const desiredPosition = addVector(
     { x: base.x, y: base.y, z: base.z + profileValue.height },
@@ -643,9 +721,10 @@ function buildProfile(sample) {
   if (!sample.vehicle) return buildOnFootProfile(sample);
 
   const speed = clamp(sample.speedKmh, 0, 220);
+  let result;
   if (sample.kind === "motorbike") {
     const highSpeed = clamp(speed / 140, 0, 1);
-    const result = profile(
+    result = profile(
       "Motorbike",
       lerp(config.motorbikeDistance, 5.0, highSpeed),
       lerp(config.motorbikeHeight, 1.7, highSpeed),
@@ -657,49 +736,62 @@ function buildProfile(sample) {
     );
     result.velocityLead = 0.5 + highSpeed * 0.9;
     result.accelerationLead = 0.25;
-    return result;
-  }
-  if (sample.kind === "bicycle") {
-    const result = profile("Bicycle", config.bicycleDistance, config.bicycleHeight, config.bicycleFov, 1.1, 0.2, 0.25, 0);
+  } else if (sample.kind === "bicycle") {
+    result = profile("Bicycle", config.bicycleDistance, config.bicycleHeight, config.bicycleFov, 1.1, 0.2, 0.25, 0);
     result.velocityLead = 0.45;
     result.accelerationLead = 0.18;
-    return result;
-  }
-  if (sample.kind === "boat") {
-    const result = profile("Boat", config.boatDistance, config.boatHeight, config.boatFov, 2.0 + speed / 70, 0.0, 0.9, 0);
+  } else if (sample.kind === "boat") {
+    result = profile("Boat", config.boatDistance, config.boatHeight, config.boatFov, 2.0 + speed / 70, 0.0, 0.9, 0);
     result.velocityLead = 0.8;
     result.accelerationLead = 0.25;
-    return result;
-  }
-  if (sample.kind === "helicopter") {
-    const result = profile("Helicopter", config.helicopterDistance, config.helicopterHeight, config.helicopterFov, 3.0 + speed / 55, 0.0, 0.75, 0);
+  } else if (sample.kind === "helicopter") {
+    result = profile("Helicopter", config.helicopterDistance, config.helicopterHeight, config.helicopterFov, 3.0 + speed / 55, 0.0, 0.75, 0);
     result.velocityLead = 1.0;
     result.accelerationLead = 0.3;
-    return result;
-  }
-  if (sample.kind === "aircraft") {
-    const result = profile("Aircraft", config.aircraftDistance, config.aircraftHeight, config.aircraftFov, 4.0 + speed / 45, 0.0, 0.65, 0);
+  } else if (sample.kind === "aircraft") {
+    result = profile("Aircraft", config.aircraftDistance, config.aircraftHeight, config.aircraftFov, 4.0 + speed / 45, 0.0, 0.65, 0);
     result.velocityLead = 1.4;
     result.accelerationLead = 0.45;
-    return result;
+  } else {
+    result = buildCarProfile(speed, sample.filteredAccelerationMps2);
+    result.steering = sample.steering;
   }
 
-  const car = buildCarProfile(speed, sample.reverseActive, sample.filteredAccelerationMps2);
-  car.steering = sample.steering;
-  if (!sample.reverseActive && speed > 20 && driftAmount(sample) > 0.35) {
-    car.stateName = "VehicleDrift";
+  return applyProfileModifiers(result, sample);
+}
+
+function applyProfileModifiers(baseProfile, sample) {
+  const result = { ...baseProfile, modifiers: { ...(baseProfile.modifiers || {}) } };
+  const drift = sample.vehicle ? driftAmount(sample) : 0;
+  const airborne = sample.airState === "airborne" ? 1 : 0;
+  const landing = sample.airState === "landing" ? 1 : 0;
+  const reverse = sample.reverseActive ? 1 : 0;
+
+  if (drift > 0) {
+    result.velocityLead += drift * 0.20;
+    result.lookAhead += drift * 0.15;
   }
-  if (sample.reverseActive) car.stateName = "VehicleReverse";
-  if (sample.airState === "airborne") {
-    car.stateName = "VehicleAirborne";
-    car.verticalTracking = config.airborneVerticalTracking;
-    car.lookAhead *= 0.75;
-  } else if (sample.airState === "landing") {
-    car.stateName = "VehicleLanding";
-    car.verticalTracking = Math.max(config.airborneVerticalTracking, 0.5);
-    car.height -= 0.04;
+  if (airborne) {
+    result.verticalTracking = config.airborneVerticalTracking;
+    result.lookAhead *= 0.75;
   }
-  return car;
+  if (landing) {
+    result.verticalTracking = Math.max(config.airborneVerticalTracking, 0.5);
+    result.height -= 0.04;
+  }
+  if (sample.vehicle && sample.orientationInstability > 0) {
+    result.verticalTracking = (result.verticalTracking ?? config.verticalTracking) *
+      lerp(1, 0.68, sample.orientationInstability);
+  }
+
+  result.modifiers.drift = drift;
+  result.modifiers.airborne = airborne;
+  result.modifiers.landing = landing;
+  result.modifiers.reverse = reverse;
+  result.modifiers.orientation = sample.orientationInstability || 0;
+  result.baseName = result.baseName || result.stateName;
+  result.stateName = composeProfileState(result.baseName, result.modifiers);
+  return result;
 }
 
 function buildOnFootProfile(sample) {
@@ -718,7 +810,8 @@ function buildOnFootProfile(sample) {
       profile("OnFootJog", config.jogDistance, config.jogHeight, config.jogFov, 1.0, 0.18, 0.72, 0, 1.28),
       amount
     );
-    result.stateName = amount > 0.55 ? "OnFootJog" : "OnFootWalk";
+    result.baseName = amount > 0.55 ? "OnFootJog" : "OnFootWalk";
+    result.stateName = result.baseName;
     return result;
   }
 
@@ -728,46 +821,23 @@ function buildOnFootProfile(sample) {
     profile("OnFootSprint", config.sprintDistance, config.sprintHeight, config.sprintFov, 1.8, 0.12, 0.68, 0, 1.20),
     amount
   );
-  result.stateName = amount > 0.35 ? "OnFootSprint" : "OnFootJog";
+  result.baseName = amount > 0.35 ? "OnFootSprint" : "OnFootJog";
+  result.stateName = result.baseName;
   return result;
 }
 
-function buildCarProfile(speedKmh, reverse, accelerationMps2) {
+function buildCarProfile(speedKmh, accelerationMps2) {
   const speed = clamp(speedKmh, 0, 200);
-  let distance;
-  let height;
-  let fov;
-  if (speed < 50) {
-    const amount = speed / 50;
-    distance = lerp(config.carSlowDistance, 6.8, amount);
-    height = lerp(config.carSlowHeight, 2.2, amount);
-    fov = lerp(config.carSlowFov, 72, amount);
-  } else if (speed < 100) {
-    const amount = (speed - 50) / 50;
-    distance = lerp(6.8, config.carNormalDistance, amount);
-    height = lerp(2.2, config.carNormalHeight, amount);
-    fov = lerp(72, config.carNormalFov, amount);
-  } else if (speed < 150) {
-    const amount = (speed - 100) / 50;
-    distance = lerp(config.carNormalDistance, config.carFastDistance, amount);
-    height = lerp(config.carNormalHeight, config.carFastHeight, amount);
-    fov = lerp(config.carNormalFov, config.carFastFov, amount);
-  } else {
-    const amount = clamp((speed - 150) / 50, 0, 1);
-    distance = lerp(config.carFastDistance, 9.5, amount);
-    height = lerp(config.carFastHeight, 2.45, amount);
-    fov = lerp(config.carFastFov, 80, amount);
-  }
-  const result = profile(
-    reverse ? "VehicleReverse" : speed < 35 ? "VehicleSlow" : speed < 105 ? "VehicleNormal" : "VehicleFast",
-    distance,
-    height,
-    fov,
-    2.0 + clamp(speed / 200, 0, 1) * 3.0,
-    0,
-    1.8,
-    0
-  );
+  const slow = profile("CarSlow", config.carSlowDistance, config.carSlowHeight, config.carSlowFov, 2.0, 0, 1.8, 0);
+  const normal = profile("CarNormal", config.carNormalDistance, config.carNormalHeight, config.carNormalFov, 3.0, 0, 1.8, 0);
+  const fast = profile("CarFast", config.carFastDistance, config.carFastHeight, config.carFastFov, 4.0, 0, 1.8, 0);
+  const fastEnd = profile("CarFast", 9.5, 2.45, 80, 5.0, 0, 1.8, 0);
+  let result = speed < 75
+    ? interpolateProfiles(slow, normal, smoothstep(25, 75, speed))
+    : interpolateProfiles(normal, fast, smoothstep(75, 140, speed));
+  result = interpolateProfiles(result, fastEnd, smoothstep(140, 200, speed));
+  result.baseName = "Car";
+  result.stateName = "Car";
   result.velocityLead = 0.7 + clamp(speed / 120, 0, 1) * 1.1;
   result.accelerationLead = 0.35;
   if (accelerationMps2 > 2) {
@@ -791,6 +861,8 @@ function profile(
 ) {
   return {
     stateName,
+    baseName: stateName,
+    modifiers: {},
     distance,
     height,
     targetHeight: targetHeight ?? (height > 3 ? height * 0.30 : height > 2 ? 0.85 : 0.95),
@@ -798,28 +870,28 @@ function profile(
     lookAhead,
     velocityLead: 0,
     accelerationLead: 0,
-    verticalTracking: null,
+    verticalTracking: stateName.startsWith("OnFoot") ? 0.86 : config.verticalTracking,
     shoulderOffset,
     steeringLookAhead,
     steering,
   };
 }
 
-function getCameraDirection(sample, profileValue, autoFollowWeight) {
-  let autoDirection = sample.forward;
-  if (sample.velocityDirection && sample.speedMps > 0.35) {
+function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverride = sample.forward) {
+  let autoDirection = forwardOverride;
+  if (sample.stableVelocityDirection && sample.speedMps > config.velocityDirectionThresholdMps) {
     if (!sample.vehicle) {
-      autoDirection = sample.velocityDirection;
+      autoDirection = sample.stableVelocityDirection;
     } else if (sample.reverseActive) {
       // In reverse the camera sits in front of the car and follows its actual
       // travel direction, rather than snapping through the vehicle heading.
-      autoDirection = sample.velocityDirection;
+      autoDirection = sample.stableVelocityDirection;
     } else {
-      const velocityInfluence = driftVelocityWeight(sample.slipAngleDegrees);
+      const velocityInfluence = driftVelocityWeight(sample.slipAngleDegrees, sample.speedKmh);
       autoDirection = normalizeVector(
         addVector(
-          scaleVector(sample.forward, 1 - velocityInfluence),
-          scaleVector(sample.velocityDirection, velocityInfluence)
+          scaleVector(forwardOverride, 1 - velocityInfluence),
+          scaleVector(sample.stableVelocityDirection, velocityInfluence)
         )
       );
     }
@@ -828,7 +900,7 @@ function getCameraDirection(sample, profileValue, autoFollowWeight) {
     if (idleDirection) autoDirection = idleDirection;
   }
 
-  if (profileValue.stateName === "OnFootAim") {
+  if (profileValue.baseName === "OnFootAim" || profileValue.stateName === "OnFootAim") {
     const aimDirection = getAimCameraDirection(sample.position);
     if (aimDirection) autoDirection = aimDirection;
   }
@@ -842,12 +914,13 @@ function getCameraDirection(sample, profileValue, autoFollowWeight) {
 }
 
 function driftAmount(sample) {
-  return driftVelocityWeight(sample.slipAngleDegrees) / Math.max(0.001, config.driftVelocityInfluence);
+  return driftVelocityWeight(sample.slipAngleDegrees, sample.speedKmh) /
+    Math.max(0.001, config.driftVelocityInfluence);
 }
 
 function steeringAmount(sample) {
   if (!sample.vehicle || !lastActorSample || lastActorSample.kind !== sample.kind) return 0;
-  const elapsed = clamp((sample.timestamp - lastActorSample.timestamp) / 1000, 0.008, 0.05);
+  const elapsed = clamp((sample.timestamp - lastActorSample.timestamp) / 1000, 0.001, 0.05);
   const delta = normalizeHeadingDelta(sample.heading - lastActorSample.heading);
   const speedFactor = clamp(sample.speedKmh / 75, 0, 1);
   return clamp((delta / elapsed / 110) * speedFactor, -1, 1);
@@ -874,9 +947,15 @@ function getAimCameraDirection(anchor) {
   return vectorLength(forward) > 0.5 ? normalizeVector(forward) : getIdleCameraDirection(anchor);
 }
 
-function resolveCameraCollision(target, desiredPosition, now, forceRefresh = false) {
+function resolveCameraCollision(
+  target,
+  desiredPosition,
+  now,
+  forceRefresh = false,
+  allowEmergency = true
+) {
   if (!config.collisionEnabled) {
-    return { position: desiredPosition, collided: false };
+    return { position: desiredPosition, collided: false, clearanceScore: 7 };
   }
 
   if (
@@ -890,28 +969,54 @@ function resolveCameraCollision(target, desiredPosition, now, forceRefresh = fal
   }
 
   if (isLineOfSightClear(target, desiredPosition)) {
-    const result = { position: desiredPosition, collided: false };
+    const result = { position: desiredPosition, collided: false, clearanceScore: 7 };
     collisionCache = { timestamp: now, target, desiredPosition, result };
     return result;
   }
 
-  let lastClear = null;
-  for (let index = 1; index <= 8; index += 1) {
+  const direction = normalizeVector(subtractVector(desiredPosition, target));
+  const desiredDistance = distanceBetween(target, desiredPosition);
+  let selectedCandidate = null;
+  let selectedScore = -1;
+  let bestCandidate = null;
+  let bestScore = -1;
+  for (let index = 8; index >= 1; index -= 1) {
     const amount = index / 8;
-    const candidate = lerpVector(target, desiredPosition, amount);
-    if (!isCameraProbeClear(target, candidate)) break;
-    lastClear = candidate;
+    const candidateDistance = Math.max(
+      0.35,
+      desiredDistance * amount - config.collisionSafetyMargin
+    );
+    const candidate = addVector(target, scaleVector(direction, candidateDistance));
+    const score = getCameraProbeScore(target, candidate);
+    if (score > bestScore) {
+      bestCandidate = candidate;
+      bestScore = score;
+    }
+    if (!selectedCandidate && score >= config.collisionMinimumScore) {
+      selectedCandidate = candidate;
+      selectedScore = score;
+    }
   }
 
+  const emergencyDistance = Math.max(
+    0.8,
+    Math.min(config.collisionEmergencyDistance, desiredDistance - config.collisionSafetyMargin)
+  );
+  const emergencyPosition = addVector(
+    target,
+    scaleVector(direction, emergencyDistance)
+  );
   const result = {
-    position: lastClear || lerpVector(target, desiredPosition, 0.08),
+    position: selectedCandidate || bestCandidate || emergencyPosition,
     collided: true,
+    clearanceScore: selectedCandidate ? selectedScore : bestScore,
+    emergency: !selectedCandidate && allowEmergency,
   };
   collisionCache = { timestamp: now, target, desiredPosition, result };
   return result;
 }
 
-function isCameraProbeClear(target, cameraPosition) {
+function getCameraProbeScore(target, cameraPosition) {
   const direction = normalizeVector(subtractVector(cameraPosition, target));
   const right = { x: direction.y, y: -direction.x, z: 0 };
   const radius = config.collisionProbeRadius;
@@ -923,9 +1028,10 @@ function isCameraProbeClear(target, cameraPosition) {
     { x: 0, y: 0, z: -radius * 0.65 },
   ];
 
-  return offsets.every((offset) =>
+  const clear = offsets.map((offset) =>
     isLineOfSightClear(target, addVector(cameraPosition, offset))
   );
+  return (clear[0] ? 3 : 0) + clear.slice(1).filter(Boolean).length;
 }
 
 function isLineOfSightClear(from, to) {
@@ -960,8 +1066,53 @@ function initializeSpringIfNeeded(desiredPosition, desiredTarget) {
   safeNative("CAMERA_RESET_NEW_SCRIPTABLES");
 }
 
+function setScriptCameraPose(position, target) {
+  try {
+    native(
+      "SET_FIXED_CAMERA_POSITION",
+      position.x,
+      position.y,
+      position.z,
+      0,
+      0,
+      0
+    );
+    native("POINT_CAMERA_AT_POINT", target.x, target.y, target.z, 0);
+    return true;
+  } catch (_) {
+    cameraSessionDisabled = true;
+    cameraApplied = true;
+    log(
+      "Adaptive Third-Person Camera: required camera native failed; disabling the current camera session."
+    );
+    releaseCamera();
+    return false;
+  }
+}
+
+function applyCollisionEmergencyModifier(profileValue) {
+  const result = {
+    ...profileValue,
+    modifiers: { ...(profileValue.modifiers || {}), collisionEmergency: 1 },
+    distance: Math.min(profileValue.distance, config.collisionEmergencyDistance),
+    height: Math.min(profileValue.height, 1.25),
+    shoulderOffset: 0,
+    lookAhead: 0,
+    velocityLead: 0,
+    accelerationLead: 0,
+    steeringLookAhead: 0,
+  };
+  result.stateName = composeProfileState(result.baseName, result.modifiers);
+  return result;
+}
+
 function releaseCamera() {
   anchorTransition = null;
+  manualCameraDirection = null;
+  manualControlActive = false;
+  manualPitchOffset = 0;
+  manualFreeUntil = 0;
+  manualRecenterUntil = 0;
   collisionCache = null;
   fovSpringValue = null;
   fovSpringVelocity = 0;
@@ -977,17 +1128,81 @@ function releaseCamera() {
   lastStateName = null;
 }
 
-function springStep(current, target, velocity, stiffness, damping, verticalTracking, dt) {
-  const verticalStiffness = stiffness * clamp(verticalTracking, 0.18, 1);
-  const verticalDamping = damping * lerp(1.25, 1.0, clamp(verticalTracking, 0, 1));
-  const acceleration = {
-    x: (target.x - current.x) * stiffness - velocity.x * damping,
-    y: (target.y - current.y) * stiffness - velocity.y * damping,
-    z: (target.z - current.z) * verticalStiffness - velocity.z * verticalDamping,
+function springStep(current, target, velocity, frequencyHz, dampingRatio, verticalTracking, dt) {
+  const tracking = clamp(verticalTracking, 0.18, 1);
+  const effectiveTarget = {
+    x: target.x,
+    y: target.y,
+    z: lerp(current.z, target.z, tracking),
   };
-  const nextVelocity = addVector(velocity, scaleVector(acceleration, dt));
-  const nextPosition = addVector(current, scaleVector(nextVelocity, dt));
-  return { position: nextPosition, velocity: nextVelocity };
+  const x = dampedScalarStep(
+    current.x,
+    effectiveTarget.x,
+    velocity.x,
+    frequencyHz,
+    dampingRatio,
+    dt
+  );
+  const y = dampedScalarStep(
+    current.y,
+    effectiveTarget.y,
+    velocity.y,
+    frequencyHz,
+    dampingRatio,
+    dt
+  );
+  const z = dampedScalarStep(
+    current.z,
+    effectiveTarget.z,
+    velocity.z,
+    frequencyHz,
+    dampingRatio,
+    dt
+  );
+  return {
+    position: { x: x.value, y: y.value, z: z.value },
+    velocity: { x: x.velocity, y: y.velocity, z: z.velocity },
+  };
+}
+
+function dampedScalarStep(current, target, velocity, frequencyHz, dampingRatio, dt) {
+  const step = clamp(dt, 0.001, 0.05);
+  const omega = Math.max(0.1, frequencyHz) * Math.PI * 2;
+  const ratio = Math.max(0.05, dampingRatio);
+  const displacement = current - target;
+
+  if (Math.abs(ratio - 1) < 0.001) {
+    const decay = Math.exp(-omega * step);
+    const temp = (velocity + omega * displacement) * step;
+    const nextDisplacement = (displacement + temp) * decay;
+    const nextVelocity = (velocity - omega * temp) * decay;
+    return { value: target + nextDisplacement, velocity: nextVelocity };
+  }
+
+  if (ratio < 1) {
+    const dampedOmega = omega * Math.sqrt(1 - ratio * ratio);
+    const decay = Math.exp(-ratio * omega * step);
+    const sine = Math.sin(dampedOmega * step);
+    const cosine = Math.cos(dampedOmega * step);
+    const coefficient = (velocity + ratio * omega * displacement) / dampedOmega;
+    const nextDisplacement = decay * (displacement * cosine + coefficient * sine);
+    const nextVelocity = decay * (
+      velocity * cosine -
+      (ratio * omega * coefficient + displacement * dampedOmega) * sine
+    );
+    return { value: target + nextDisplacement, velocity: nextVelocity };
+  }
+
+  const root = Math.sqrt(ratio * ratio - 1);
+  const rootOne = -omega * (ratio - root);
+  const rootTwo = -omega * (ratio + root);
+  const coefficientOne = (velocity - rootTwo * displacement) / (rootOne - rootTwo);
+  const coefficientTwo = displacement - coefficientOne;
+  const decayOne = Math.exp(rootOne * step);
+  const decayTwo = Math.exp(rootTwo * step);
+  const nextDisplacement = coefficientOne * decayOne + coefficientTwo * decayTwo;
+  const nextVelocity = coefficientOne * rootOne * decayOne + coefficientTwo * rootTwo * decayTwo;
+  return { value: target + nextDisplacement, velocity: nextVelocity };
 }
 
 function readAnyVehicleState(actor) {
@@ -997,10 +1212,26 @@ function readAnyVehicleState(actor) {
     !!safeNative("IS_CHAR_IN_ANY_PLANE", actor);
 }
 
-function getVehicleInteractionState(sittingInVehicle, inAnyVehicle, previous) {
-  if (sittingInVehicle) return "driving";
-  if (!inAnyVehicle) return "onFoot";
-  return previous?.sittingInVehicle ? "exiting" : "entering";
+function resolveInteractionState(sittingInVehicle, inAnyVehicle, now) {
+  let nextState = interactionState;
+  if (sittingInVehicle) {
+    nextState = "driving";
+  } else if (!inAnyVehicle) {
+    nextState = "onFoot";
+  } else if (interactionState === "driving") {
+    // The meaning of this interaction is latched at the first frame in
+    // which the ped stops sitting. It cannot turn into "entering" merely
+    // because the native remains true for the rest of the door animation.
+    nextState = "exiting";
+  } else if (interactionState === "onFoot") {
+    nextState = "entering";
+  }
+
+  if (nextState !== interactionState) {
+    interactionState = nextState;
+    interactionStateStartedAt = now;
+  }
+  return interactionState;
 }
 
 function getPlayerVehicle(actor, sittingNative = null) {
@@ -1059,6 +1290,12 @@ function readManualCameraInput() {
   const stickX = finiteNumber(sticks.rightStickX, 0);
   const stickY = finiteNumber(sticks.rightStickY, 0);
   return {
+    mouseX,
+    mouseY,
+    stickX,
+    stickY,
+    mouseMagnitude: Math.sqrt(mouseX * mouseX + mouseY * mouseY),
+    stickMagnitude: Math.sqrt(stickX * stickX + stickY * stickY),
     magnitude: Math.max(
       Math.sqrt(mouseX * mouseX + mouseY * mouseY),
       Math.sqrt(stickX * stickX + stickY * stickY)
@@ -1101,24 +1338,31 @@ function loadConfig() {
     config.collisionEnabled = readConfigBool("camera", "collision_enabled", config.collisionEnabled);
     config.collisionProbeRadius = clamp(readConfigInt("camera", "collision_probe_radius_cm", config.collisionProbeRadius * 100), 8, 45) / 100;
     config.collisionUpdateMs = clamp(readConfigInt("camera", "collision_update_ms", config.collisionUpdateMs), 20, 80);
-    config.positionStiffness = clamp(readConfigInt("camera", "position_stiffness", config.positionStiffness), 20, 220);
-    config.positionDamping = clamp(readConfigInt("camera", "position_damping", config.positionDamping), 5, 60);
+    config.collisionSafetyMargin = clamp(readConfigInt("camera", "collision_safety_margin_cm", config.collisionSafetyMargin * 100), 8, 40) / 100;
+    config.collisionMinimumScore = clamp(readConfigInt("camera", "collision_min_score_x10", config.collisionMinimumScore * 10), 30, 70) / 10;
+    config.collisionEmergencyDistance = clamp(readConfigInt("camera", "collision_emergency_distance_cm", config.collisionEmergencyDistance * 100), 100, 220) / 100;
+    config.positionFrequencyHz = clamp(readConfigInt("camera", "position_frequency_hz_x100", config.positionFrequencyHz * 100), 250, 900) / 100;
+    config.positionDampingRatio = clamp(readConfigInt("camera", "position_damping_ratio_percent", config.positionDampingRatio * 100), 70, 180) / 100;
     config.verticalTracking = clamp(readConfigInt("camera", "vertical_tracking_percent", config.verticalTracking * 100), 20, 100) / 100;
     config.airborneVerticalTracking = clamp(readConfigInt("camera", "airborne_vertical_tracking_percent", config.airborneVerticalTracking * 100), 15, 100) / 100;
-    config.targetStiffness = clamp(readConfigInt("camera", "target_stiffness", config.targetStiffness), 20, 240);
-    config.targetDamping = clamp(readConfigInt("camera", "target_damping", config.targetDamping), 5, 70);
-    config.collisionStiffness = clamp(readConfigInt("camera", "collision_stiffness", config.collisionStiffness), 40, 360);
-    config.collisionDamping = clamp(readConfigInt("camera", "collision_damping", config.collisionDamping), 8, 90);
+    config.targetFrequencyHz = clamp(readConfigInt("camera", "target_frequency_hz_x100", config.targetFrequencyHz * 100), 250, 1000) / 100;
+    config.targetDampingRatio = clamp(readConfigInt("camera", "target_damping_ratio_percent", config.targetDampingRatio * 100), 70, 180) / 100;
+    config.collisionFrequencyHz = clamp(readConfigInt("camera", "collision_frequency_hz_x100", config.collisionFrequencyHz * 100), 350, 1200) / 100;
+    config.collisionDampingRatio = clamp(readConfigInt("camera", "collision_damping_ratio_percent", config.collisionDampingRatio * 100), 70, 180) / 100;
     config.driftVelocityInfluence = clamp(readConfigInt("vehicle", "drift_velocity_influence_percent", config.driftVelocityInfluence * 100), 0, 100) / 100;
+    config.driftMinSpeedKmh = clamp(readConfigInt("vehicle", "drift_min_speed_kmh", config.driftMinSpeedKmh), 5, 40);
+    config.velocityDirectionThresholdMps = clamp(readConfigInt("vehicle", "velocity_direction_threshold_cms", config.velocityDirectionThresholdMps * 100), 5, 100) / 100;
     config.reverseMinSpeedKmh = clamp(readConfigInt("vehicle", "reverse_min_speed_kmh", config.reverseMinSpeedKmh), 1, 20);
     config.reverseEnterHoldMs = clamp(readConfigInt("vehicle", "reverse_enter_hold_ms", config.reverseEnterHoldMs), 120, 800);
     config.reverseExitHoldMs = clamp(readConfigInt("vehicle", "reverse_exit_hold_ms", config.reverseExitHoldMs), 180, 1000);
     config.reverseExitSpeedKmh = clamp(readConfigInt("vehicle", "reverse_exit_speed_kmh", config.reverseExitSpeedKmh), 1, 20);
     config.accelerationFilterAlpha = clamp(readConfigInt("vehicle", "acceleration_filter_percent", config.accelerationFilterAlpha * 100), 4, 40) / 100;
-    config.airborneEnterVerticalSpeed = clamp(readConfigInt("vehicle", "airborne_enter_speed_kmh", config.airborneEnterVerticalSpeed * 3.6), 3, 20) / 3.6;
-    config.airborneExitVerticalSpeed = clamp(readConfigInt("vehicle", "airborne_exit_speed_kmh", config.airborneExitVerticalSpeed * 3.6), 4, 25) / 3.6;
+    config.airborneEnterVerticalSpeed = clamp(readConfigInt("vehicle", "airborne_enter_vertical_kmh", config.airborneEnterVerticalSpeed * 3.6), 5, 25) / 3.6;
+    config.airborneExitVerticalSpeed = clamp(readConfigInt("vehicle", "airborne_exit_vertical_kmh", config.airborneExitVerticalSpeed * 3.6), 2, 15) / 3.6;
+    config.landingMinAirborneMs = clamp(readConfigInt("vehicle", "landing_min_airborne_ms", config.landingMinAirborneMs), 100, 800);
     config.landingDurationMs = clamp(readConfigInt("vehicle", "landing_duration_ms", config.landingDurationMs), 80, 500);
     config.shoulderSwapCooldownMs = clamp(readConfigInt("aim", "shoulder_swap_cooldown_ms", config.shoulderSwapCooldownMs), 250, 1200);
+    config.shoulderSwapClearanceAdvantage = clamp(readConfigInt("aim", "shoulder_swap_clearance_advantage_cm", config.shoulderSwapClearanceAdvantage * 100), 20, 150) / 100;
     readDistanceAndHeightConfig();
     config.reloadHotkeyEnabled = readConfigBool("input", "reload_hotkey_enabled", config.reloadHotkeyEnabled);
     config.toggleHotkeyEnabled = readConfigBool("input", "toggle_hotkey_enabled", config.toggleHotkeyEnabled);
@@ -1242,6 +1486,16 @@ function normalizeVector(vector) {
   return scaleVector(vector, 1 / length);
 }
 
+function rotateHorizontal(vector, radians) {
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  return normalizeVector({
+    x: vector.x * cosine - vector.y * sine,
+    y: vector.x * sine + vector.y * cosine,
+    z: 0,
+  });
+}
+
 function vectorLength(vector) {
   return Math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
 }
@@ -1260,10 +1514,38 @@ function lerp(from, to, amount) {
 
 function interpolateProfiles(left, right, amount) {
   const result = { ...left };
-  for (const key of ["distance", "height", "targetHeight", "fov", "lookAhead", "shoulderOffset", "steeringLookAhead", "steering"]) {
+  for (const key of [
+    "distance",
+    "height",
+    "targetHeight",
+    "fov",
+    "lookAhead",
+    "velocityLead",
+    "accelerationLead",
+    "shoulderOffset",
+    "steeringLookAhead",
+    "steering",
+  ]) {
     result[key] = lerp(left[key], right[key], amount);
   }
+  result.verticalTracking = left.verticalTracking === null || right.verticalTracking === null
+    ? (amount < 0.5 ? left.verticalTracking : right.verticalTracking)
+    : lerp(left.verticalTracking, right.verticalTracking, amount);
+  result.baseName = right.baseName || right.stateName || left.baseName || left.stateName;
+  result.modifiers = { ...(right.modifiers || {}) };
+  result.stateName = right.stateName || result.baseName;
   return result;
+}
+
+function composeProfileState(baseName, modifiers = {}) {
+  const labels = [baseName || "Camera"];
+  if ((modifiers.drift || 0) > 0.05) labels.push("Drift");
+  if ((modifiers.reverse || 0) > 0.5) labels.push("Reverse");
+  if ((modifiers.airborne || 0) > 0.5) labels.push("Airborne");
+  if ((modifiers.landing || 0) > 0.5) labels.push("Landing");
+  if ((modifiers.manual || 0) > 0.05) labels.push("Manual");
+  if ((modifiers.collisionEmergency || 0) > 0.5) labels.push("CollisionEmergency");
+  return labels.join("+");
 }
 
 function clamp(value, minimum, maximum) {

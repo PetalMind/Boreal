@@ -1,5 +1,8 @@
 # Adaptive Third-Person Camera DE
 
+Pełna dokumentacja techniczna znajduje się w
+[DOCUMENTATION.md](DOCUMENTATION.md).
+
 Contextual third-person camera for **Grand Theft Auto: San Andreas – The
 Definitive Edition**. It follows movement intent and vehicle travel instead of
 using one fixed camera distance for every situation.
@@ -15,21 +18,23 @@ using one fixed camera distance for every situation.
 - Separate presets for cars, motorcycles, bicycles, boats, helicopters and
   aircraft.
 - Camera Director handoff between vehicle, on-foot and other anchors. Ordinary
-  changes use a configurable 320 ms world-space transition and preserve a
-  damped portion of the previous spring velocity.
+  changes use a configurable 320 ms anchor/profile transition and preserve a
+  damped portion of the previous spring velocity before feeding one camera
+  spring.
 - `IS_CHAR_SITTING_IN_ANY_CAR` and `IS_CHAR_IN_ANY_CAR` are interpreted as
-  separate states: driving, entering, exiting and on foot.
-- Manual camera input has priority. The normal game camera is free for 1.2 s,
-  then the adaptive camera blends back instead of taking control immediately.
-  Recenter delay scales from about 2.0 s at low speed to 0.8 s at high speed.
+  separate, latched states: driving, entering, exiting and on foot.
+- Manual camera input has priority without restoring the standard camera. The
+  adaptive camera follows the user's yaw/pitch for 1.2 s, then blends back
+  instead of taking control immediately. Recenter delay scales from about
+  2.0 s at low speed to 0.8 s at high speed.
 - Motion analysis includes filtered acceleration, slip angle, velocity
   prediction, speed-scaled steering look-ahead, reverse hysteresis and an
   airborne/landing state for ground vehicles.
 - Horizontal and vertical spring response are separated. Cars follow bumps and
   jumps more conservatively on the Z axis, keeping the horizon stable.
-- Camera collision uses a cached 30 Hz center probe and a five-point probe
-  envelope near obstacles. Inward correction is faster than the return after
-  the path becomes clear.
+- Camera collision uses a cached 30 Hz center probe and a weighted five-point
+  clearance score near obstacles, with a safety margin and emergency profile.
+  Inward correction is faster than the return after the path becomes clear.
 - Aim camera shoulder swap is attempted when the current shoulder is blocked,
   with a cooldown to avoid oscillation.
 - Configuration reload with `F11` and a global enable/disable toggle with
@@ -90,9 +95,9 @@ when replacing the script, and never overwrites an existing user INI.
 
 - `F9`: enable/disable the adaptive camera.
 - `F11`: reload `AdaptiveThirdPersonCamera.ini`.
-- Move the mouse or right stick strongly: return control to the normal game
-  camera. The adaptive camera waits, respects a speed-dependent recenter delay
-  and blends back over `manual_blend_ms`.
+- Move the mouse or right stick strongly: take manual control of the adaptive
+  camera. It waits, respects a speed-dependent recenter delay and blends back
+  over `manual_blend_ms`.
 
 Distances and heights are stored in centimetres in the INI. The state machine
 uses the following starting values:
@@ -109,11 +114,13 @@ uses the following starting values:
 | Motorbike | 5.6 m → 5.0 m | 1.9 m → 1.7 m | 75° → 78° |
 | Aircraft | 15 m | 5 m | 79° |
 
-`position_stiffness` and `position_damping` control horizontal spring response.
-`vertical_tracking_percent` limits how strongly vehicle height changes reach the
-camera; `airborne_vertical_tracking_percent` applies while jumping. The
-collision cache uses `collision_update_ms` and the probe envelope uses
-`collision_probe_radius_cm`. Higher `drift_velocity_influence_percent` makes
+`position_frequency_hz_x100` and `position_damping_ratio_percent` control the
+stable horizontal spring response. `vertical_tracking_percent` limits how
+strongly vehicle height changes reach the camera;
+`airborne_vertical_tracking_percent` applies while jumping. The collision cache
+uses `collision_update_ms`, the probe envelope uses
+`collision_probe_radius_cm`, and `collision_min_score_x10` controls the
+weighted clearance threshold. Higher `drift_velocity_influence_percent` makes
 the camera follow actual velocity more strongly during a slide. Reverse enter
 and exit holds prevent rapid front/back toggling while parking.
 

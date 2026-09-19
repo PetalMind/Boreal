@@ -2277,9 +2277,13 @@ final class BorealStore {
         }
         if DragonAgeOriginsAdapter.supports(game: game),
            let gameRoot = DragonAgeOriginsAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
+            let managedPrefixAddIns = linkedApplication(for: game)
+                .flatMap { environment(id: $0.environmentID)?.prefixPath }
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+                .flatMap { DragonAgeOriginsAdapter.addInsFile(inPrefix: $0) }
             return ModGameContext(
                 gameRoot: gameRoot,
-                pluginsFile: DragonAgeOriginsAdapter.addInsFile(in: gameRoot),
+                pluginsFile: managedPrefixAddIns ?? DragonAgeOriginsAdapter.addInsFile(in: gameRoot),
                 adapter: .dragonAgeOrigins
             )
         }
