@@ -1,7 +1,7 @@
 /// <reference path="./.config/sa.d.ts" />
 
 // Police Pursuit Radar for GTA San Andreas: The Definitive Edition.
-// Runtime: CLEO Redux x64 + ImGuiReduxWin64 + IniFiles64.
+// Runtime: CLEO Redux x64 + IniFiles64.
 //
 // The DE scripting API does not expose the classic CWanted pursuit pool or
 // the native radar renderer. This script therefore uses supported native
@@ -12,16 +12,11 @@ if (HOST !== "sa_unreal") {
   exit("Police Pursuit Radar supports only GTA San Andreas: The Definitive Edition.");
 }
 
-if (typeof ImGui === "undefined") {
-  exit("Police Pursuit Radar requires ImGuiReduxWin64.cleo.");
-}
-
 const PLAYER_ID = 0;
 const player = new Player(PLAYER_ID);
 const CONFIG_PATH = "./PolicePursuitRadar.ini";
 const CONFIG_VERSION = 1;
 const VK_RELOAD = 122; // F11
-const IMGUI_COLOR_MAX = 255;
 
 const STATE_IDLE = "IDLE";
 const STATE_PURSUIT = "PURSUIT";
@@ -70,7 +65,6 @@ let lastKnownPosition = null;
 let lastContactAt = 0;
 let escapedUntil = 0;
 let lastLoggedState = null;
-let warnedDrawFailure = false;
 
 log("Police Pursuit Radar DE loaded. Host: " + HOST);
 loadConfig();
@@ -102,13 +96,10 @@ while (true) {
     resetRuntimeState();
   }
 
-  ImGui.BeginFrame("POLICE_PURSUIT_RADAR_DE");
-  ImGui.SetCursorVisible(false);
   if (playing && config.enabled) {
     const playerPosition = getCoordinates(actor, false);
     if (playerPosition) drawRadar(actor, playerPosition, units, now);
   }
-  ImGui.EndFrame();
 }
 
 function getPlayerActor() {
@@ -299,52 +290,46 @@ function getSearchRadius(stars) {
 }
 
 function drawRadar(actor, playerPosition, currentUnits, now) {
-  const display = safeDisplaySize();
-  const drawList = safeDrawList();
-  if (!display || !drawList) return;
-
   const size = clamp(config.radarSizePx, 110, 240);
   const center = {
-    x: clamp(display.width * config.radarX, size * 0.65, display.width - size * 0.65),
-    y: clamp(display.height * config.radarY, size * 0.65, display.height - size * 0.65),
+    x: clamp(config.radarX, 0.08, 0.92),
+    y: clamp(config.radarY, 0.08, 0.92),
   };
-  const radiusPx = size * 0.5;
+  // Native HUD coordinates are normalized independently on both axes. Keep
+  // the radar approximately square on widescreen displays.
+  const radius = {
+    x: clamp(size / 1920, 0.045, 0.14),
+    y: clamp(size / 1080, 0.06, 0.22),
+  };
   const rangeM = Math.max(60, config.radarRangeM);
   const heading = finiteNumber(safeNative("GET_CHAR_HEADING", actor), 0);
 
-  drawFilledCircle(drawList, center, radiusPx, 0.015, 0.035, 0.055, 0.48);
-  drawCircle(drawList, center, radiusPx, 0.18, 0.55, 0.78, 0.86, 2.0);
-  drawCircle(drawList, center, radiusPx * 0.66, 0.12, 0.35, 0.50, 0.32, 1.0);
-  drawLine(drawList, center.x - radiusPx, center.y, center.x + radiusPx, center.y, 0.18, 0.55, 0.78, 0.22, 1.0);
-  drawLine(drawList, center.x, center.y - radiusPx, center.x, center.y + radiusPx, 0.18, 0.55, 0.78, 0.22, 1.0);
+  drawFilledCircle(center, radius, 0.015, 0.035, 0.055, 0.48);
+  drawCircle(center, radius, 0.18, 0.55, 0.78, 0.86, 2.0);
+  drawCircle(center, { x: radius.x * 0.66, y: radius.y * 0.66 }, 0.12, 0.35, 0.50, 0.32, 1.0);
+  drawLine(center.x - radius.x, center.y, center.x + radius.x, center.y, 0.18, 0.55, 0.78, 0.22, 1.0);
+  drawLine(center.x, center.y - radius.y, center.x, center.y + radius.y, 0.18, 0.55, 0.78, 0.22, 1.0);
 
   if (state === STATE_SEARCHING || state === STATE_LOSING_CONTACT) {
-    drawSearchArea(drawList, center, playerPosition, heading, rangeM, radiusPx);
+    drawSearchArea(center, playerPosition, heading, rangeM, radius);
   }
 
   for (const unit of currentUnits) {
     if (!isTypeEnabled(unit.type)) continue;
-    const point = radarPoint(unit.position, playerPosition, heading, rangeM, center, radiusPx);
+    const point = radarPoint(unit.position, playerPosition, heading, rangeM, center, radius);
     if (!point) continue;
-    drawUnitMarker(drawList, point, unit, radiusPx, now);
+    drawUnitMarker(point, unit, radius, now);
   }
 
   if (lastKnownPosition && (state === STATE_SEARCHING || state === STATE_LOSING_CONTACT)) {
-    const lastKnown = radarPoint(lastKnownPosition, playerPosition, heading, rangeM, center, radiusPx);
-    if (lastKnown) drawDiamond(drawList, lastKnown.x, lastKnown.y, 7, 1.0, 0.62, 0.12, 0.95, 1.8);
+    const lastKnown = radarPoint(lastKnownPosition, playerPosition, heading, rangeM, center, radius);
+    if (lastKnown) drawDiamond(lastKnown.x, lastKnown.y, radius.y * 0.08, 1.0, 0.62, 0.12, 0.95, 1.8);
   }
 
-  drawPlayerArrow(drawList, center, heading);
-  if (config.showStatus) {
-    const status = state + "  *" + wantedLevel + "  " + currentUnits.length;
-    drawText(drawList, center.x - radiusPx, center.y + radiusPx + 8, 0.80, 0.91, 0.98, 0.92, status);
-    if (state === STATE_SEARCHING && lastKnownPosition) {
-      drawText(drawList, center.x - radiusPx, center.y + radiusPx + 24, 1.0, 0.66, 0.20, 0.86, "LAST KNOWN POSITION");
-    }
-  }
+  drawPlayerArrow(center, heading, radius);
 }
 
-function drawSearchArea(drawList, center, playerPosition, heading, rangeM, radiusPx) {
+function drawSearchArea(center, playerPosition, heading, rangeM, radius) {
   if (!lastKnownPosition) return;
   const searchRadius = getSearchRadius(wantedLevel);
   const points = [];
@@ -354,17 +339,17 @@ function drawSearchArea(drawList, center, playerPosition, heading, rangeM, radiu
       x: lastKnownPosition.x + Math.cos(angle) * searchRadius,
       y: lastKnownPosition.y + Math.sin(angle) * searchRadius,
       z: lastKnownPosition.z,
-    }, playerPosition, heading, rangeM, center, radiusPx));
+    }, playerPosition, heading, rangeM, center, radius));
   }
   for (let index = 1; index < points.length; index += 1) {
     const left = points[index - 1];
     const right = points[index];
     if (!left || !right) continue;
-    drawLine(drawList, left.x, left.y, right.x, right.y, 1.0, 0.55, 0.12, 0.82, 1.7);
+    drawLine(left.x, left.y, right.x, right.y, 1.0, 0.55, 0.12, 0.82, 1.7);
   }
 }
 
-function radarPoint(position, playerPosition, heading, rangeM, center, radiusPx) {
+function radarPoint(position, playerPosition, heading, rangeM, center, radius) {
   let dx = position.x - playerPosition.x;
   let dy = position.y - playerPosition.y;
   if (config.rotateWithPlayer) {
@@ -379,35 +364,39 @@ function radarPoint(position, playerPosition, heading, rangeM, center, radiusPx)
     dy = localY;
   }
 
-  const px = center.x + (dx / rangeM) * radiusPx;
-  const py = center.y - (dy / rangeM) * radiusPx;
-  const deltaX = px - center.x;
-  const deltaY = py - center.y;
-  const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-  const limit = radiusPx - 8;
-  if (distance <= limit) return { x: px, y: py, offRadar: false };
-  if (!config.showOffRadar || distance <= 0.001) return null;
-  return { x: center.x + (deltaX / distance) * limit, y: center.y + (deltaY / distance) * limit, offRadar: true };
+  const offsetX = (dx / rangeM) * radius.x;
+  const offsetY = -(dy / rangeM) * radius.y;
+  const normalizedDistance = Math.sqrt(
+    (offsetX * offsetX) / (radius.x * radius.x)
+      + (offsetY * offsetY) / (radius.y * radius.y)
+  );
+  if (normalizedDistance <= 0.92) {
+    return { x: center.x + offsetX, y: center.y + offsetY, offRadar: false };
+  }
+  if (!config.showOffRadar || normalizedDistance <= 0.001) return null;
+  const scale = 0.92 / normalizedDistance;
+  return { x: center.x + offsetX * scale, y: center.y + offsetY * scale, offRadar: true };
 }
 
-function drawUnitMarker(drawList, point, unit, radarRadius, now) {
+function drawUnitMarker(point, unit, radarRadius, now) {
   const pulse = 0.88 + Math.sin(now / 170) * 0.12;
   const color = markerColor(unit);
   const alpha = point.offRadar ? 0.38 : pulse;
+  const markerRadius = { x: radarRadius.x * 0.055, y: radarRadius.y * 0.055 };
   if (unit.type === "foot") {
-    drawCircle(drawList, point, 5, color.r, color.g, color.b, alpha, 1.8);
-    drawLine(drawList, point.x - 3, point.y, point.x + 3, point.y, color.r, color.g, color.b, alpha, 1.4);
+    drawCircle(point, markerRadius, color.r, color.g, color.b, alpha, 1.8);
+    drawLine(point.x - markerRadius.x, point.y, point.x + markerRadius.x, point.y, color.r, color.g, color.b, alpha, 1.4);
   } else if (unit.type === "helicopter") {
-    drawCircle(drawList, point, 7, color.r, color.g, color.b, alpha, 1.8);
-    drawLine(drawList, point.x - 2, point.y, point.x + 2, point.y, color.r, color.g, color.b, alpha, 1.5);
-    drawLine(drawList, point.x, point.y - 2, point.x, point.y + 2, color.r, color.g, color.b, alpha, 1.5);
+    drawCircle(point, { x: markerRadius.x * 1.4, y: markerRadius.y * 1.4 }, color.r, color.g, color.b, alpha, 1.8);
+    drawLine(point.x - markerRadius.x * 0.6, point.y, point.x + markerRadius.x * 0.6, point.y, color.r, color.g, color.b, alpha, 1.5);
+    drawLine(point.x, point.y - markerRadius.y * 0.6, point.x, point.y + markerRadius.y * 0.6, color.r, color.g, color.b, alpha, 1.5);
   } else if (unit.type === "boat") {
-    drawDiamond(drawList, point.x, point.y, 7, color.r, color.g, color.b, alpha, 1.8);
+    drawDiamond(point.x, point.y, markerRadius.y * 1.4, color.r, color.g, color.b, alpha, 1.8);
   } else {
-    drawChevron(drawList, point.x, point.y, unit.heading, color.r, color.g, color.b, alpha, unit.type === "bike" ? 6 : 8);
+    drawChevron(point.x, point.y, unit.heading, color.r, color.g, color.b, alpha, markerRadius.y * (unit.type === "bike" ? 1.2 : 1.6));
   }
   if (config.debug && !unit.contact) {
-    drawLine(drawList, point.x - 4, point.y - 4, point.x + 4, point.y + 4, 1.0, 0.15, 0.12, 0.8, 1.0);
+    drawLine(point.x - markerRadius.x, point.y - markerRadius.y, point.x + markerRadius.x, point.y + markerRadius.y, 1.0, 0.15, 0.12, 0.8, 1.0);
   }
 }
 
@@ -421,50 +410,52 @@ function markerColor(unit) {
   return { r: 0.30, g: 0.72, b: 1.0 };
 }
 
-function drawPlayerArrow(drawList, center, heading) {
+function drawPlayerArrow(center, heading, radarRadius) {
   const angle = config.rotateWithPlayer ? 0 : (-heading * Math.PI) / 180;
   const forward = { x: Math.sin(angle), y: -Math.cos(angle) };
   const right = { x: Math.cos(angle), y: Math.sin(angle) };
-  const tip = { x: center.x + forward.x * 10, y: center.y + forward.y * 10 };
-  const left = { x: center.x - forward.x * 6 - right.x * 5, y: center.y - forward.y * 6 - right.y * 5 };
-  const other = { x: center.x - forward.x * 6 + right.x * 5, y: center.y - forward.y * 6 + right.y * 5 };
-  drawLine(drawList, tip.x, tip.y, left.x, left.y, 0.86, 0.96, 1.0, 1.0, 2.0);
-  drawLine(drawList, tip.x, tip.y, other.x, other.y, 0.86, 0.96, 1.0, 1.0, 2.0);
-  drawLine(drawList, left.x, left.y, other.x, other.y, 0.86, 0.96, 1.0, 1.0, 1.6);
+  const tip = { x: center.x + forward.x * radarRadius.x * 0.16, y: center.y + forward.y * radarRadius.y * 0.16 };
+  const left = { x: center.x - forward.x * radarRadius.x * 0.09 - right.x * radarRadius.x * 0.08, y: center.y - forward.y * radarRadius.y * 0.09 - right.y * radarRadius.y * 0.08 };
+  const other = { x: center.x - forward.x * radarRadius.x * 0.09 + right.x * radarRadius.x * 0.08, y: center.y - forward.y * radarRadius.y * 0.09 + right.y * radarRadius.y * 0.08 };
+  drawLine(tip.x, tip.y, left.x, left.y, 0.86, 0.96, 1.0, 1.0, 2.0);
+  drawLine(tip.x, tip.y, other.x, other.y, 0.86, 0.96, 1.0, 1.0, 2.0);
+  drawLine(left.x, left.y, other.x, other.y, 0.86, 0.96, 1.0, 1.0, 1.6);
 }
 
-function drawChevron(drawList, x, y, heading, r, g, b, a, size) {
+function drawChevron(x, y, heading, r, g, b, a, size) {
   const angle = ((config.rotateWithPlayer ? 0 : -heading) * Math.PI) / 180;
   const forward = { x: Math.sin(angle), y: -Math.cos(angle) };
   const right = { x: Math.cos(angle), y: Math.sin(angle) };
-  const tip = { x: x + forward.x * size, y: y + forward.y * size };
-  const left = { x: x - forward.x * size * 0.65 - right.x * size * 0.65, y: y - forward.y * size * 0.65 - right.y * size * 0.65 };
-  const other = { x: x - forward.x * size * 0.65 + right.x * size * 0.65, y: y - forward.y * size * 0.65 + right.y * size * 0.65 };
-  drawLine(drawList, tip.x, tip.y, left.x, left.y, r, g, b, a, 2.0);
-  drawLine(drawList, tip.x, tip.y, other.x, other.y, r, g, b, a, 2.0);
-  drawLine(drawList, left.x, left.y, other.x, other.y, r, g, b, a, 1.4);
+  const tip = { x: x + forward.x * size * 0.9, y: y + forward.y * size };
+  const left = { x: x - forward.x * size * 0.6 - right.x * size * 0.6, y: y - forward.y * size * 0.6 - right.y * size * 0.6 };
+  const other = { x: x - forward.x * size * 0.6 + right.x * size * 0.6, y: y - forward.y * size * 0.6 + right.y * size * 0.6 };
+  drawLine(tip.x, tip.y, left.x, left.y, r, g, b, a, 2.0);
+  drawLine(tip.x, tip.y, other.x, other.y, r, g, b, a, 2.0);
+  drawLine(left.x, left.y, other.x, other.y, r, g, b, a, 1.4);
 }
 
-function drawDiamond(drawList, x, y, size, r, g, b, a, thickness) {
-  drawLine(drawList, x, y - size, x + size, y, r, g, b, a, thickness);
-  drawLine(drawList, x + size, y, x, y + size, r, g, b, a, thickness);
-  drawLine(drawList, x, y + size, x - size, y, r, g, b, a, thickness);
-  drawLine(drawList, x - size, y, x, y - size, r, g, b, a, thickness);
+function drawDiamond(x, y, size, r, g, b, a, thickness) {
+  drawLine(x, y - size, x + size * 0.9, y, r, g, b, a, thickness);
+  drawLine(x + size * 0.9, y, x, y + size, r, g, b, a, thickness);
+  drawLine(x, y + size, x - size * 0.9, y, r, g, b, a, thickness);
+  drawLine(x - size * 0.9, y, x, y - size, r, g, b, a, thickness);
 }
 
-function drawFilledCircle(drawList, center, radius, r, g, b, a) {
-  for (let offset = -radius; offset <= radius; offset += 3) {
-    const half = Math.sqrt(Math.max(0, radius * radius - offset * offset));
-    drawLine(drawList, center.x - half, center.y + offset, center.x + half, center.y + offset, r, g, b, a, 3.0);
+function drawFilledCircle(center, radius, r, g, b, a) {
+  const steps = 16;
+  for (let index = -steps; index <= steps; index += 1) {
+    const normalized = index / steps;
+    const half = Math.sqrt(Math.max(0, 1 - normalized * normalized));
+    drawRect(center.x, center.y + normalized * radius.y, radius.x * 2 * half, radius.y / steps, r, g, b, a);
   }
 }
 
-function drawCircle(drawList, center, radius, r, g, b, a, thickness) {
+function drawCircle(center, radius, r, g, b, a, thickness) {
   let previous = null;
-  for (let index = 0; index <= 48; index += 1) {
-    const angle = (Math.PI * 2 * index) / 48;
-    const point = { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
-    if (previous) drawLine(drawList, previous.x, previous.y, point.x, point.y, r, g, b, a, thickness);
+  for (let index = 0; index <= 24; index += 1) {
+    const angle = (Math.PI * 2 * index) / 24;
+    const point = { x: center.x + Math.cos(angle) * radius.x, y: center.y + Math.sin(angle) * radius.y };
+    if (previous) drawLine(previous.x, previous.y, point.x, point.y, r, g, b, a, thickness);
     previous = point;
   }
 }
@@ -478,65 +469,37 @@ function isTypeEnabled(type) {
   return true;
 }
 
-function safeDrawList() {
+function drawLine(x1, y1, x2, y2, r, g, b, a, thickness) {
   try {
-    return ImGui.GetForegroundDrawList();
-  } catch (_) {
-    if (!warnedDrawFailure) {
-      log("Police Pursuit Radar: ImGui foreground draw list is unavailable.");
-      warnedDrawFailure = true;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const steps = Math.max(1, Math.ceil(length / 0.006));
+    for (let index = 0; index <= steps; index += 1) {
+      const t = index / steps;
+      drawRect(x1 + dx * t, y1 + dy * t, Math.max(0.002, thickness / 1920), Math.max(0.003, thickness / 1080), r, g, b, a);
     }
-    return null;
-  }
+  } catch (_) {}
 }
 
-function safeDisplaySize() {
+function drawRect(x, y, width, height, r, g, b, a) {
   try {
-    const size = ImGui.GetDisplaySize();
-    if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) return null;
-    return size;
-  } catch (_) {
-    return null;
-  }
-}
-
-function drawLine(drawList, x1, y1, x2, y2, r, g, b, a, thickness) {
-  try {
-    ImGui.AddLine(
-      drawList,
-      x1,
-      y1,
-      x2,
-      y2,
-      imguiColor(r),
-      imguiColor(g),
-      imguiColor(b),
-      imguiColor(a),
-      thickness
+    native(
+      "DRAW_RECT",
+      clamp(finiteNumber(x, 0), 0, 1),
+      clamp(finiteNumber(y, 0), 0, 1),
+      Math.max(0.001, finiteNumber(width, 0.001)),
+      Math.max(0.001, finiteNumber(height, 0.001)),
+      nativeColor(r),
+      nativeColor(g),
+      nativeColor(b),
+      nativeColor(a)
     );
   } catch (_) {}
 }
 
-function drawText(drawList, x, y, r, g, b, a, text) {
-  try {
-    ImGui.AddText(
-      drawList,
-      x,
-      y,
-      imguiColor(r),
-      imguiColor(g),
-      imguiColor(b),
-      imguiColor(a),
-      text
-    );
-  } catch (_) {}
-}
-
-// ImGuiRedux draw-list commands use 0..255 channels. The radar's visual
-// primitives intentionally use normalized 0..1 values, so convert them at
-// this single boundary before crossing into the plugin API.
-function imguiColor(value) {
-  return Math.round(clamp(finiteNumber(value, 0), 0, 1) * IMGUI_COLOR_MAX);
+function nativeColor(value) {
+  return Math.round(clamp(finiteNumber(value, 0), 0, 1) * 255);
 }
 
 function updateConfigValue(section, key, fallback) {

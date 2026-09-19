@@ -25,8 +25,21 @@ wersji DE. Nie jest to plugin `.asi` dla klasycznego GTA SA 1.0 US.
 - GTA San Andreas: The Definitive Edition PC;
 - CLEO Redux 1.5.0 lub nowszy x64;
 - Ultimate ASI Loader x64 jako `version.dll`;
-- `ImGuiReduxWin64.cleo`;
 - `IniFiles64.cleo`.
+
+Radar nie wymaga `ImGuiReduxWin64.cleo`. Renderowanie korzysta z natywnej
+komendy `DRAW_RECT`, ponieważ oficjalny instalator CLEO Redux wyłącza
+ImGuiRedux dla GTA San Andreas: The Definitive Edition.
+
+W katalogu gry powinien być aktywny tylko jeden proxy Ultimate ASI Loader:
+`version.dll`. Jeżeli instalator wykryje drugą kopię UAL jako `dinput8.dll`,
+przeniesie ją do pliku `dinput8.dll.disabled-duplicate-ual-*` zamiast usuwać,
+żeby CLEO Redux nie było uruchamiane przez dwa konkurujące punkty wejścia.
+
+Przy uruchomieniu przez Wine/Boreal dla `SanAndreas.exe` musi być ustawiony
+natywny override `version=n,b`. Boreal ustawia go automatycznie tylko dla tego
+wykonywalnego, dzięki czemu Wine ładuje UAL i CLEO Redux zamiast wbudowanego
+`version.dll`.
 
 CLEO Redux rozpoznaje ten host jako `sa_unreal` i używa definicji
 `sa_unreal.json`. Oficjalna dokumentacja CLEO Redux opisuje obsługę DE,
@@ -67,7 +80,8 @@ CLEO Redux:
 2. próbuje znaleźć najbliższe postacie w próbkowanych punktach wokół gracza;
 3. filtruje postacie typu policjant i rozpoznaje ich aktualny pojazd;
 4. sprawdza LOS oraz to, czy policjant widzi gracza;
-5. rysuje własny radar przez `ImGuiRedux` w miejscu HUD radaru.
+5. rysuje własny radar przez natywną komendę HUD `DRAW_RECT` w miejscu HUD
+   radaru.
 
 Oznacza to, że radar jest oparty o rzeczywiście dostępne dane DE, ale nie
 udaje dostępu do wewnętrznego pursuit poolu z klasycznej wersji gry.
@@ -92,7 +106,9 @@ F11 przeładowuje plik bez ponownego uruchamiania gry.
 - Skrypt nie zmienia wanted levelu, AI, spawnów ani misji.
 - Próbkowanie świata jest ograniczone, aby nie wykonywać ciężkiego skanu co
   klatkę. Jednostki mogą pojawić się na radarze z niewielkim opóźnieniem.
-- Własna warstwa radaru wymaga `ImGuiReduxWin64.cleo`; bez niego skrypt kończy
-  się kontrolowanym komunikatem w `cleo_redux.log`.
+- Skrypt jest ładowany jako zwykły skrypt CLEO Redux przy rozpoczęciu nowej
+  gry lub wczytaniu zapisu. Samo wejście do menu głównego nie uruchamia jego
+  pętli rozgrywki; wpis `Police Pursuit Radar DE loaded` można sprawdzić w
+  `cleo_redux.log` po wczytaniu zapisu.
 - Zachowanie końcowe zależy od wersji CLEO Redux, aktualizacji gry DE i
   zainstalowanych komponentów ASI.

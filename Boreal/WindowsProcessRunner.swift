@@ -165,6 +165,19 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
         }
+        // GTA San Andreas: The Definitive Edition loads CLEO Redux through
+        // the native Ultimate ASI Loader version.dll proxy. Wine's builtin
+        // version implementation otherwise wins the DLL search and the game
+        // starts without loading cleo_redux64.asi. Keep this override scoped
+        // to the DE executable; other Windows games must retain their own
+        // DLL resolution.
+        if plan.executable.lastPathComponent.caseInsensitiveCompare("SanAndreas.exe") == .orderedSame {
+            let existing = processEnvironment["WINEDLLOVERRIDES"]?.split(separator: ";").map(String.init) ?? []
+            let preserved = existing.filter {
+                $0.split(separator: "=", maxSplits: 1).first?.caseInsensitiveCompare("version") != .orderedSame
+            }
+            processEnvironment["WINEDLLOVERRIDES"] = (preserved + ["version=n,b"]).joined(separator: ";")
+        }
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
             let configuration = environment.rootURL.appending(path: "Darksiders2-dxvk.conf")

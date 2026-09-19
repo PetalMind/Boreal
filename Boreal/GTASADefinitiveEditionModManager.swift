@@ -140,7 +140,9 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 adapter: adapter,
                 contentType: useCleo ? .cleo : .unrealPak,
                 deployStrategy: useCleo ? .cleo : .unrealPaks,
-                requirements: useCleo ? ["CLEO Redux x64"] : [],
+                requirements: useCleo
+                    ? ["CLEO Redux x64", "Ultimate ASI Loader x64 as version.dll", "IniFiles64.cleo"]
+                    : [],
                 warnings: warnings,
                 canInstallAutomatically: true,
                 totalSize: selectedFiles.reduce(Int64(0)) {
@@ -315,7 +317,10 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
         let old = (try? read(ModDeploymentManifest.self, at: deploymentURL)) ?? .empty(gameID: state.gameID)
         let resolved = try resolvedFiles(for: state.mods)
         try validateManagedFiles(old.files, gameRoot: gameRoot)
-        try preflightExternalChanges(old.files, gameRoot: gameRoot)
+        let desiredHashes = resolved.values.reduce(into: [String: String]()) { result, resolvedFile in
+            result[resolvedFile.destination.lowercased()] = resolvedFile.file.sha256
+        }
+        try preflightExternalChanges(old.files, desiredHashes: desiredHashes, gameRoot: gameRoot)
 
         let transactionURL = gameDirectory.appending(path: ".transactions/\(UUID().uuidString)", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: transactionURL, withIntermediateDirectories: true)
@@ -616,11 +621,21 @@ private extension GTASADefinitiveEditionModManager {
         }
     }
 
-    func preflightExternalChanges(_ files: [String: ModDeploymentFile], gameRoot: URL) throws {
+    func preflightExternalChanges(
+        _ files: [String: ModDeploymentFile],
+        desiredHashes: [String: String],
+        gameRoot: URL
+    ) throws {
         for entry in files.values {
             let destination = append(entry.path, to: gameRoot)
             guard FileManager.default.fileExists(atPath: destination.path) else { continue }
-            guard try RuntimeSecurity.sha256(of: destination) == entry.sha256 else {
+            let currentHash = try RuntimeSecurity.sha256(of: destination)
+            guard currentHash == entry.sha256 else {
+                // A previous manual repair or an external installer may have
+                // already placed the exact file selected by the current
+                // profile. It is safe to reconcile that state during this
+                // deployment; arbitrary third-party changes remain blocked.
+                if desiredHashes[entry.path.lowercased()] == currentHash { continue }
                 throw ModManagerError.externalFileChanged(entry.path)
             }
         }

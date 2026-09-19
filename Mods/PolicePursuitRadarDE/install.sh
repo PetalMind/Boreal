@@ -23,13 +23,22 @@ if [[ ! -f "$win64_root/version.dll" ]]; then
   exit 69
 fi
 
-if [[ ! -f "$win64_root/cleo_redux64.asi" ]]; then
-  print -u2 "CLEO Redux x64 is not installed in $win64_root"
-  exit 69
+# CLEO Redux for the 64-bit Definitive Edition is loaded through the
+# version.dll proxy selected by the official installer. A second Ultimate
+# ASI Loader proxy under dinput8.dll can race the same ASI directory and stop
+# CLEO from initializing. Keep a recoverable copy, then leave version.dll as
+# the only active UAL entry point.
+duplicate_loader="$win64_root/dinput8.dll"
+if [[ -f "$duplicate_loader" ]] \
+  && command -v strings >/dev/null 2>&1 \
+  && strings "$duplicate_loader" | grep -q "IsUltimateASILoader"; then
+  duplicate_backup="$duplicate_loader.disabled-duplicate-ual-$(date +%Y%m%d-%H%M%S)"
+  mv "$duplicate_loader" "$duplicate_backup"
+  print "Duplicate Ultimate ASI Loader disabled; backup kept at $duplicate_backup"
 fi
 
-if [[ ! -f "$cleo_root/CLEO_PLUGINS/ImGuiReduxWin64.cleo" ]]; then
-  print -u2 "ImGuiReduxWin64.cleo is not installed in $cleo_root/CLEO_PLUGINS"
+if [[ ! -f "$win64_root/cleo_redux64.asi" ]]; then
+  print -u2 "CLEO Redux x64 is not installed in $win64_root"
   exit 69
 fi
 
