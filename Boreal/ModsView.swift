@@ -1060,7 +1060,13 @@ private struct ModInstallPreviewSheet: View {
                 .foregroundStyle(.blue)
             }
 
-            Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")
+            Group {
+                if preview.isUpdate {
+                    Text("Boreal will replace the staged files and automatically deploy the updated mod to the game.")
+                } else {
+                    Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")
+                }
+            }
                 .font(.callout)
                 .foregroundStyle(.secondary)
 

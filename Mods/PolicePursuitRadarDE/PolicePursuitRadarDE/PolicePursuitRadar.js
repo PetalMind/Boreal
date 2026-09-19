@@ -1,6 +1,6 @@
 /// <reference path="./.config/sa.d.ts" />
 
-// Police Pursuit Radar DE, version 1.3 model-based HUD/blips.
+// Police Pursuit Radar DE, version 1.4 entity-lifecycle rewrite.
 // Runtime: CLEO Redux x64 + IniFiles64.
 //
 // Tracking and presentation are deliberately separated. The tracker owns all
@@ -17,18 +17,36 @@ const player = new Player(PLAYER_ID);
 const CONFIG_PATH = "./PolicePursuitRadar.ini";
 const CONFIG_VERSION = 1;
 const VK_RELOAD = 122; // F11
+// This CLEO implementation drew a second HUD surface and its first world scan
+// crashes SA:DE 1.0.113.21181. The official minimap is an Unreal BP_Radar_Base
+// asset and cannot be reshaped by SCM HUD commands. Keep this legacy script
+// inert; the replacement must be a version-matched Unreal .pak override.
+const LEGACY_CLEO_IMPLEMENTATION_ENABLED = false;
 // A safe renderer can be called every game frame. The old 15 FPS throttle was
 // masking the cost of a rasterized renderer instead of fixing its cost.
 const HUD_FRAME_INTERVAL_MS = 0;
 const GAMEPLAY_SETTLE_MS = 5000;
 const HUD_RENDER_HARD_BUDGET_MS = 4;
 const HUD_PERF_SAMPLE_LIMIT = 30;
+// SCM HUD commands use the original virtual screen rather than normalized
+// coordinates. Keep the presentation model normalized and convert only at
+// the CLEO boundary, like other working SA:DE HUD/menu scripts do.
+const HUD_VIRTUAL_WIDTH = 640;
+const HUD_VIRTUAL_HEIGHT = 448;
+const CUSTOM_HUD_RENDERER_AVAILABLE = true;
 
 const HUD_LEVEL_FULL = "FULL";
 const HUD_LEVEL_REDUCED = "REDUCED";
 const HUD_LEVEL_MINIMAL = "MINIMAL";
 const HUD_LEVEL_NATIVE_ONLY = "NATIVE_ONLY";
 const HUD_LEVEL_OFF = "OFF";
+
+const CONTACT_MEMORY_MS = 350;
+const UNIT_EVICTION_TTL_MS = 2500;
+const POLICE_CONTACT_FOV_DEG = 120;
+const LIFECYCLE_VISIBLE = "visible";
+const LIFECYCLE_MEMORY = "memory";
+const LIFECYCLE_LOST = "lost";
 
 const STATE_IDLE = "IDLE";
 const STATE_PURSUIT = "PURSUIT";
@@ -74,10 +92,8 @@ const DEFAULTS = {
   wantedZeroGraceMs: 800,
   // Keep the game's original minimap useful together with the bounded HUD.
   showNativeBlips: true,
-  // The custom renderer has a strict per-frame budget and a unit limit. It
-  // remains opt-in after the previous DRAW_RECT crash; native tracking must
-  // never block game loading.
-  hudEnabled: false,
+  // The custom renderer has a strict per-frame budget and a unit limit.
+  hudEnabled: true,
   hudRangeM: 180,
   hudSizePx: 166,
   hudXPercent: 10,
@@ -134,6 +150,9 @@ const nativeFailureCounts = new Map();
 let lastNativeFailureLogAt = 0;
 let gameplaySessionActive = false;
 let gameplayDetectedAt = 0;
+let discoveredTotal = 0;
+let evictedTotal = 0;
+let lastRegistryLogAt = 0;
 
 // Each scan keeps a logical key on the unit record. The key is independent of
 // the JavaScript wrapper returned by a native query.
@@ -141,7 +160,10 @@ let unitBlips = [];
 let searchBlip = null;
 let searchBlipPosition = null;
 
-log("Police Pursuit Radar DE 1.3 model-based HUD/blips loaded. Host: " + HOST);
+log("Police Pursuit Radar DE 1.4 entity-lifecycle rewrite loaded. Host: " + HOST);
+if (!LEGACY_CLEO_IMPLEMENTATION_ENABLED) {
+  exit("Police Pursuit Radar DE legacy CLEO implementation disabled; install the Unreal radar asset package instead.");
+}
 loadConfig();
 
 while (true) {
@@ -254,22 +276,32 @@ function readWantedLevel(now) {
 }
 
 function scanPolice(actor, playerPosition, stars, now) {
-  if (stars <= 0) return [];
+  if (stars <= 0) {
+    releaseTrackedUnits(units);
+    return [];
+  }
 
+  const previousUnits = units;
   const results = [];
   const discoverNewUnits = now - lastDiscoveryScanAt >= config.discoveryIntervalMs;
 
   // Re-check previously found units first. This prevents the single-result
   // sphere native from making an attached blip flicker between scans and lets
   // each active unit keep its stable logical key.
-  for (const previous of units) {
-    const refreshed = inspectPolice(previous.char, actor, playerPosition, stars);
+  for (const previous of previousUnits) {
+    const refreshed = inspectPolice(previous.char, actor, playerPosition, stars, now);
     if (refreshed) {
-      refreshed.key = previous.key;
-      refreshed.missedScans = 0;
-      addUnit(results, refreshed, previous.key);
+      if (isObservationConsistent(previous, refreshed)) {
+        const merged = mergeUnitObservation(previous, refreshed, now);
+        if (!shouldEvictUnit(merged, now)) addUnit(results, merged, previous.key);
+      } else {
+        // A recycled handle is a new entity. Do not carry its key, contact or
+        // blips into the new observation; final-unit cleanup releases the old
+        // record after this scan.
+        addUnit(results, refreshed);
+      }
     } else {
-      addUnit(results, retainUnitForOneScan(previous, playerPosition), previous.key);
+      addUnit(results, retainUnitForOneScan(previous, playerPosition, now), previous.key);
     }
   }
 
@@ -278,38 +310,52 @@ function scanPolice(actor, playerPosition, stars, now) {
     scanPhase = (scanPhase + 1) % 32;
     lastDiscoveryScanAt = now;
     for (const sample of samples) {
+      // NO_SAVE is intentional: discovery observes the population without
+      // putting ambient peds into script/mission ownership.
       const value = safeNative(
-        "GET_RANDOM_CHAR_IN_SPHERE_NO_BRAIN",
+        "GET_RANDOM_CHAR_IN_AREA_OFFSET_NO_SAVE",
         sample.x,
         sample.y,
         sample.z,
+        sample.radius,
+        sample.radius,
         sample.radius
       );
       const police = toHandle(value, Char);
-      if (police) addUnit(results, inspectPolice(police, actor, playerPosition, stars));
+      if (police) addUnit(results, inspectPolice(police, actor, playerPosition, stars, now));
     }
   }
 
-  return results
+  const finalUnits = results
     .filter(Boolean)
     .sort(comparePoliceUnits)
     .slice(0, config.maxTrackedUnits);
+  const finalKeys = new Set(finalUnits.map((unit) => unit.key));
+  for (const previous of previousUnits) {
+    if (previous.key && !finalKeys.has(previous.key)) releaseTrackedEntity(previous);
+  }
+  return finalUnits;
 }
 
-function retainUnitForOneScan(previous, playerPosition) {
+function retainUnitForOneScan(previous, playerPosition, now) {
   if (!previous || previous.missedScans >= 1) return null;
-  if (safeNative("IS_CHAR_DEAD", previous.char)) return null;
+  if (!isCharValid(previous.char)) return null;
 
   const pedPosition = getCoordinates(previous.char, false);
   if (!pedPosition || distanceBetween(pedPosition, playerPosition) > config.maxDistanceM) {
     return null;
   }
 
-  return {
+  const retained = mergeUnitObservation(previous, {
     ...previous,
+    position: pedPosition,
+    distance: distanceBetween(pedPosition, playerPosition),
     contact: false,
+    seenNow: false,
+    spotted: false,
     missedScans: 1,
-  };
+  }, now);
+  return shouldEvictUnit(retained, now) ? null : retained;
 }
 
 function samplePoints(center, maxDistance, phase) {
@@ -336,8 +382,8 @@ function samplePoints(center, maxDistance, phase) {
   return result;
 }
 
-function inspectPolice(char, actor, playerPosition, stars) {
-  if (!char || safeNative("IS_CHAR_DEAD", char)) return null;
+function inspectPolice(char, actor, playerPosition, stars, now) {
+  if (!isCharValid(char)) return null;
   const pedType = finiteNumber(safeNative("GET_PED_TYPE", char), -1);
   const pedModel = finiteNumber(safeNative("GET_CHAR_MODEL", char), -1);
   if (pedType !== PED_POLICE && !POLICE_PED_MODELS.has(pedModel)) return null;
@@ -380,10 +426,11 @@ function inspectPolice(char, actor, playerPosition, stars) {
     true
   );
   const spotted = !!safeNative("HAS_CHAR_SPOTTED_CHAR", char, actor);
-  const contact = lineOfSight && spotted;
   const heading = car
     ? finiteNumber(safeNative("GET_CAR_HEADING", car), 0)
     : finiteNumber(safeNative("GET_CHAR_HEADING", char), 0);
+  const inFieldOfView = isTargetInHeadingFov(position, heading, playerPosition, POLICE_CONTACT_FOV_DEG);
+  const seenNow = lineOfSight && inFieldOfView && spotted;
 
   return {
     char,
@@ -396,9 +443,72 @@ function inspectPolice(char, actor, playerPosition, stars) {
     distance,
     lineOfSight,
     spotted,
-    contact,
+    seenNow,
+    contact: seenNow,
+    lifecycle: seenNow ? LIFECYCLE_VISIBLE : LIFECYCLE_LOST,
+    lastSeenAt: seenNow ? now : 0,
+    lastValidAt: now,
+    firstSeenAt: now,
+    missedScans: 0,
     stars,
   };
+}
+
+function mergeUnitObservation(previous, observation, now) {
+  if (!observation) return null;
+  const seenNow = !!observation.seenNow;
+  const lastSeenAt = seenNow ? now : finiteNumber(previous && previous.lastSeenAt, 0);
+  const sinceLastSeen = lastSeenAt > 0 ? now - lastSeenAt : Number.POSITIVE_INFINITY;
+  const lifecycle = seenNow
+    ? LIFECYCLE_VISIBLE
+    : sinceLastSeen <= CONTACT_MEMORY_MS
+      ? LIFECYCLE_MEMORY
+      : LIFECYCLE_LOST;
+  return {
+    ...observation,
+    key: previous && previous.key ? previous.key : observation.key,
+    firstSeenAt: previous && previous.firstSeenAt ? previous.firstSeenAt : now,
+    lastValidAt: now,
+    lastSeenAt,
+    seenNow,
+    contact: seenNow,
+    lifecycle,
+    missedScans: observation.missedScans || 0,
+  };
+}
+
+function isObservationConsistent(previous, current) {
+  if (!previous || !current) return false;
+  if (previous.pedModel !== current.pedModel) return false;
+  if (previous.carModel >= 0 && current.carModel >= 0 && previous.carModel !== current.carModel) {
+    return false;
+  }
+  return distanceBetween(previous.position, current.position) <= Math.max(80, config.maxDistanceM * 0.5);
+}
+
+function shouldEvictUnit(unit, now) {
+  if (!unit || unit.lifecycle !== LIFECYCLE_LOST) return false;
+  const anchor = unit.lastSeenAt || unit.firstSeenAt || now;
+  return now - anchor > UNIT_EVICTION_TTL_MS;
+}
+
+function isCharValid(char) {
+  if (!char) return false;
+  const exists = safeNative("DOES_CHAR_EXIST", char);
+  if (exists === false) return false;
+  return !safeNative("IS_CHAR_DEAD", char);
+}
+
+function isTargetInHeadingFov(origin, heading, target, fovDegrees) {
+  const dx = target.x - origin.x;
+  const dy = target.y - origin.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  if (distance < 0.001) return true;
+  const angle = (finiteNumber(heading, 0) * Math.PI) / 180;
+  const forwardX = Math.sin(angle);
+  const forwardY = Math.cos(angle);
+  const dot = (dx * forwardX + dy * forwardY) / distance;
+  return dot >= Math.cos((clamp(fovDegrees, 30, 180) * Math.PI) / 360);
 }
 
 function classifyVehicle(model) {
@@ -416,6 +526,7 @@ function addUnit(list, unit, preferredKey) {
   const duplicate = list.find((existing) => samePoliceUnit(existing, unit));
   if (!duplicate) {
     unit.key = unit.key || "police-" + nextUnitKey++;
+    if (!preferredKey) discoveredTotal += 1;
     list.push(unit);
     return;
   }
@@ -438,7 +549,7 @@ function comparePoliceUnits(left, right) {
 
 function samePoliceUnit(left, right) {
   if (!left || !right) return false;
-  if (left.char === right.char) return true;
+  if (left.char === right.char) return left.pedModel === right.pedModel;
   if (left.car && right.car && sameCarEntity(left, right)) return true;
 
   const samePed = left.type === right.type && left.pedModel === right.pedModel;
@@ -472,7 +583,7 @@ function updatePursuitState(playerPosition, currentUnits, stars, now) {
     escapedUntil = 0;
   }
 
-  const hasContact = currentUnits.some((unit) => unit.contact);
+  const hasContact = currentUnits.some((unit) => unit.seenNow);
   if (hasContact) {
     state = STATE_PURSUIT;
     lastKnownPlayerPosition = { ...playerPosition };
@@ -845,15 +956,14 @@ function drawHudRect(x, y, width, height, r, g, b, a) {
     return;
   }
   hudFrameDrawCalls += 1;
-  // Keep the native call behind one bounded primitive. The old renderer used
-  // this path for hundreds of raster rectangles per frame; this renderer has
-  // a fixed upper bound of 14 logical rectangles in REDUCED mode.
-  native(
-    "DRAW_RECT",
-    clamp(finiteNumber(x, 0), 0, 1),
-    clamp(finiteNumber(y, 0), 0, 1),
-    Math.max(0.001, finiteNumber(width, 0.001)),
-    Math.max(0.001, finiteNumber(height, 0.001)),
+  // Hud.DrawRect expects the game's 640x448 virtual screen. Passing the
+  // normalized 0..1 model directly produced sub-pixel geometry and was the
+  // material difference from stable CLEO Redux HUD implementations.
+  Hud.DrawRect(
+    clamp(finiteNumber(x, 0), 0, 1) * HUD_VIRTUAL_WIDTH,
+    clamp(finiteNumber(y, 0), 0, 1) * HUD_VIRTUAL_HEIGHT,
+    Math.max(1, finiteNumber(width, 0.001) * HUD_VIRTUAL_WIDTH),
+    Math.max(1, finiteNumber(height, 0.001) * HUD_VIRTUAL_HEIGHT),
     nativeColor(r),
     nativeColor(g),
     nativeColor(b),
@@ -866,13 +976,16 @@ function nativeColor(value) {
 }
 
 function syncBlips(currentUnits) {
+  const now = Date.now();
   if (!config.showNativeBlips || wantedLevel <= 0 || state === STATE_ESCAPED) {
     clearBlips();
+    logRegistryStats(currentUnits, now);
     return;
   }
 
   const nativeUnits = prioritizeUnits(currentUnits)
     .filter((unit) => isTypeEnabled(unit.type))
+    .filter((unit) => isContactBlipEligible(unit, now))
     .slice(0, config.maxNativeBlips);
   const activeKeys = new Set();
   for (let index = 0; index < nativeUnits.length; index += 1) {
@@ -929,6 +1042,17 @@ function syncBlips(currentUnits) {
   }
 
   syncSearchBlip();
+  logRegistryStats(currentUnits, now);
+}
+
+function isContactBlipEligible(unit, now) {
+  if (!unit) return false;
+  if (unit.seenNow) return true;
+  return (
+    unit.lifecycle === LIFECYCLE_MEMORY &&
+    unit.lastSeenAt > 0 &&
+    now - unit.lastSeenAt <= CONTACT_MEMORY_MS
+  );
 }
 
 function addTrackingBlip(unit) {
@@ -956,7 +1080,9 @@ function sameTrackedTarget(record, unit) {
 
 function styleTrackingBlip(blip, unit) {
   if (!blip) return;
-  const color = unit.contact || state === STATE_PURSUIT ? BLIP_COLOR_RED : BLIP_COLOR_BLUE;
+  const color = unit.seenNow || unit.lifecycle === LIFECYCLE_MEMORY
+    ? BLIP_COLOR_RED
+    : BLIP_COLOR_BLUE;
   safeNative("CHANGE_BLIP_COLOUR", blip, color);
   safeNative("CHANGE_BLIP_DISPLAY", blip, BLIP_DISPLAY_BOTH);
   safeNative("CHANGE_BLIP_SCALE", blip, 1);
@@ -1083,6 +1209,51 @@ function clearBlips() {
   searchBlipPosition = null;
 }
 
+function releaseTrackedEntity(unit) {
+  if (!unit) return;
+  // Discovery uses *_NO_SAVE and therefore never takes script ownership of
+  // ambient peds or vehicles. Calling MARK_* here can release an entity owned
+  // by the game while another system is still using it. Dropping our wrapper
+  // and its blips is the complete cleanup for a read-only observation.
+  evictedTotal += 1;
+}
+
+function releaseTrackedUnits(trackedUnits) {
+  for (const unit of trackedUnits || []) releaseTrackedEntity(unit);
+}
+
+function logRegistryStats(currentUnits, now) {
+  if (!config.debug || now - lastRegistryLogAt < 10000) return;
+  lastRegistryLogAt = now;
+  const visible = currentUnits.filter((unit) => unit.lifecycle === LIFECYCLE_VISIBLE).length;
+  const memory = currentUnits.filter((unit) => unit.lifecycle === LIFECYCLE_MEMORY).length;
+  const lost = currentUnits.filter((unit) => unit.lifecycle === LIFECYCLE_LOST).length;
+  log(
+    "Police Pursuit Radar registry: registry=" +
+      currentUnits.length +
+      " visible=" +
+      visible +
+      " memory=" +
+      memory +
+      " lost=" +
+      lost +
+      " nativeBlips=" +
+      unitBlips.length +
+      " directionBlips=" +
+      unitBlips.filter((record) => !!record.directionBlip).length +
+      " discoveredTotal=" +
+      discoveredTotal +
+      " evictedTotal=" +
+      evictedTotal +
+      " wanted=" +
+      wantedLevel +
+      " contact=" +
+      currentUnits.some((unit) => unit.seenNow) +
+      " state=" +
+      state
+  );
+}
+
 function removeBlip(blip) {
   if (!blip) return;
   safeNative("REMOVE_BLIP", blip);
@@ -1148,7 +1319,8 @@ function loadConfig() {
     config.maxNativeBlips = clamp(updateConfigValue("blips", "max_native_blips", DEFAULTS.maxNativeBlips), 4, 12);
     config.maxDirectionBlips = clamp(updateConfigValue("blips", "max_direction_blips", DEFAULTS.maxDirectionBlips), 0, 4);
     config.showNativeBlips = updateConfigValue("blips", "show_native_blips", DEFAULTS.showNativeBlips ? 1 : 0) !== 0;
-    config.hudEnabled = updateConfigValue("hud", "enabled", DEFAULTS.hudEnabled ? 1 : 0) !== 0;
+    const requestedHudEnabled = updateConfigValue("hud", "enabled", DEFAULTS.hudEnabled ? 1 : 0) !== 0;
+    config.hudEnabled = CUSTOM_HUD_RENDERER_AVAILABLE && requestedHudEnabled;
     config.hudRangeM = clamp(updateConfigValue("hud", "range_m", DEFAULTS.hudRangeM), 60, 500);
     config.hudSizePx = clamp(updateConfigValue("hud", "size_px", DEFAULTS.hudSizePx), 110, 260);
     config.hudXPercent = clamp(updateConfigValue("hud", "screen_x_percent", DEFAULTS.hudXPercent), 4, 45);
@@ -1179,6 +1351,7 @@ function loadConfig() {
 
 function resetRuntimeState() {
   clearBlips();
+  releaseTrackedUnits(units);
   units = [];
   wantedLevel = 0;
   lastRawWantedLevel = 0;
@@ -1190,6 +1363,9 @@ function resetRuntimeState() {
   lastScanAt = 0;
   lastDiscoveryScanAt = 0;
   scanPhase = 0;
+  discoveredTotal = 0;
+  evictedTotal = 0;
+  lastRegistryLogAt = 0;
   resetHudPresentationState();
 }
 

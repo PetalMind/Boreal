@@ -2050,12 +2050,32 @@ final class BorealStore {
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
                 let state = try await Task.detached(priority: .userInitiated) {
-                    try manager.install(preview: preview, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile, profileID: profileID)
+                    let installed = try manager.install(
+                        preview: preview,
+                        gameRoot: context.gameRoot,
+                        pluginsFile: context.pluginsFile,
+                        profileID: profileID
+                    )
+                    if preview.isUpdate {
+                        return try manager.deploy(
+                            state: installed,
+                            gameRoot: context.gameRoot,
+                            pluginsFile: context.pluginsFile
+                        )
+                    }
+                    return installed
                 }.value
                 self?.modStates[gameID] = state
                 self?.refreshModHealth(for: game, state: state, context: context)
             } catch {
-                self?.present(error, title: "Mod couldn’t be installed", stage: "Staging the mod archive")
+                self?.present(
+                    error,
+                    title: preview.isUpdate ? "Mod couldn’t be updated" : "Mod couldn’t be installed",
+                    stage: preview.isUpdate ? "Updating and deploying the mod archive" : "Staging the mod archive"
+                )
+                if preview.isUpdate {
+                    self?.refreshMods(for: game)
+                }
             }
         }
     }

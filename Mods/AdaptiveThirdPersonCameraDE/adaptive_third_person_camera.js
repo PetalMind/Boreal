@@ -17,9 +17,11 @@ const CONFIG_PATH = "./AdaptiveThirdPersonCamera.ini";
 const CONFIG_VERSION = 1;
 const VK_TOGGLE = 120; // F9.
 const VK_RELOAD = 122; // F11.
+const KEY_V = 0x56;
 const RIGHT_MOUSE_BUTTON = 2;
 const PAD_ID = 0;
-const AIM_BUTTON = 5;
+const AIM_BUTTON = 6; // GTA action: Aim (controller LT/L2).
+const CONTROLLER_VIEW_BUTTON = 13; // Physical Select/Back fallback.
 
 const VEHICLE_MODELS = {
   motorcycles: new Set([448, 461, 462, 463, 468, 471, 521, 522, 523, 581]),
@@ -30,27 +32,31 @@ const DEFAULTS = {
   enabled: true,
   manualOverride: true,
   manualOverrideThreshold: 24,
-  manualFreeMs: 1200,
-  manualBlendMs: 800,
-  recenterLowSpeedMs: 2000,
-  recenterNormalSpeedMs: 1300,
-  recenterHighSpeedMs: 800,
+  manualFreeMs: 1100,
+  manualBlendMs: 650,
+  recenterLowSpeedMs: 1800,
+  recenterNormalSpeedMs: 1100,
+  recenterHighSpeedMs: 650,
   anchorTransitionMs: 320,
   collisionEnabled: true,
   collisionProbeRadius: 0.22,
   collisionUpdateMs: 33,
   reloadHotkeyEnabled: true,
   toggleHotkeyEnabled: true,
-  verticalTracking: 0.72,
-  airborneVerticalTracking: 0.28,
+  verticalTracking: 0.58,
+  airborneVerticalTracking: 0.23,
   positionFrequencyHz: 4.5,
   positionDampingRatio: 1.0,
   targetFrequencyHz: 5.2,
   targetDampingRatio: 1.0,
   collisionFrequencyHz: 7.0,
   collisionDampingRatio: 1.0,
-  driftVelocityInfluence: 0.60,
-  driftMinSpeedKmh: 18,
+  driftVelocityInfluence: 0.42,
+  driftMinSpeedKmh: 22,
+  driftDistance: 0.65,
+  vehicleYawDelayMs: 120,
+  vehicleYawFollowStrength: 0.70,
+  maxSteeringYawBiasDegrees: 7,
   reverseMinSpeedKmh: 3,
   reverseEnterHoldMs: 280,
   reverseExitHoldMs: 420,
@@ -60,33 +66,31 @@ const DEFAULTS = {
   airborneExitVerticalSpeed: 4 / 3.6,
   landingMinAirborneMs: 180,
   landingDurationMs: 220,
-  shoulderSwapCooldownMs: 450,
-  shoulderSwapClearanceAdvantage: 0.60,
   collisionSafetyMargin: 0.20,
-  collisionMinimumScore: 4,
   collisionEmergencyDistance: 1.45,
   velocityDirectionThresholdMps: 0.35,
   // Distances are stored in metres here and as centimetres in the INI file.
-  walkDistance: 3.5,
-  walkHeight: 1.5,
-  walkFov: 66,
-  jogDistance: 4.0,
-  jogHeight: 1.5,
-  jogFov: 70,
-  sprintDistance: 4.6,
-  sprintHeight: 1.4,
-  sprintFov: 74,
-  aimDistance: 2.7,
-  aimHeight: 1.45,
-  aimFov: 58,
-  carSlowDistance: 6.2,
-  carSlowHeight: 2.2,
-  carSlowFov: 71,
-  carNormalDistance: 7.2,
-  carNormalHeight: 2.25,
-  carNormalFov: 75,
-  carFastDistance: 8.8,
-  carFastHeight: 2.4,
+  idleDistance: 3.65,
+  idleHeight: 1.65,
+  idleFov: 72,
+  walkDistance: 3.8,
+  walkHeight: 1.62,
+  walkFov: 73,
+  jogDistance: 4.15,
+  jogHeight: 1.58,
+  jogFov: 75,
+  sprintDistance: 4.55,
+  sprintHeight: 1.52,
+  sprintFov: 77,
+  aimFov: 59,
+  carSlowDistance: 5.25,
+  carSlowHeight: 1.85,
+  carSlowFov: 74,
+  carNormalDistance: 5.65,
+  carNormalHeight: 1.95,
+  carNormalFov: 76,
+  carFastDistance: 6.1,
+  carFastHeight: 2.05,
   carFastFov: 79,
   motorbikeDistance: 5.6,
   motorbikeHeight: 1.9,
@@ -120,8 +124,7 @@ let manualCameraDirection = null;
 let manualControlActive = false;
 let manualPitchOffset = 0;
 let anchorTransition = null;
-let shoulderSide = 1;
-let lastShoulderSwapAt = 0;
+let vehicleFollowDirection = null;
 let reverseState = false;
 let reverseCandidateSince = 0;
 let forwardCandidateSince = 0;
@@ -134,8 +137,16 @@ let fovSpringValue = null;
 let fovSpringVelocity = 0;
 let lastToggleDown = false;
 let lastReloadDown = false;
+let lastVehicleCameraDown = false;
+let lastNativeVehicleCameraMode = null;
+let lastVehicleLayoutChangeAt = 0;
+let vehicleCameraLayout = 1;
+let aimBlend = 0;
+let aimCameraActive = false;
+let fovCapability = null;
+let fovProbe = null;
+let lastAppliedFovTarget = null;
 let lastStateName = null;
-let fovCapabilityLogged = false;
 let cameraSessionDisabled = false;
 
 loadConfig();
@@ -166,6 +177,15 @@ while (true) {
   if (!sample) {
     releaseCamera();
     lastActorSample = null;
+    continue;
+  }
+
+  handleVehicleCameraLayout(sample, now);
+  updateAimCameraState(sample, dt);
+
+  if (!sample.vehicle && (sample.aiming || aimBlend > 0 || aimCameraActive)) {
+    applyNativeAimCamera();
+    lastActorSample = sample;
     continue;
   }
 
@@ -229,6 +249,157 @@ function handleHotkeys() {
     }
     lastToggleDown = toggleDown;
   }
+}
+
+function handleVehicleCameraLayout(sample, now) {
+  if (!sample.vehicle) {
+    lastNativeVehicleCameraMode = null;
+    lastVehicleCameraDown = false;
+    return;
+  }
+
+  const nativeMode = getPlayerInCarCameraMode();
+  const nativeModeChanged = Number.isFinite(nativeMode) &&
+    Number.isFinite(lastNativeVehicleCameraMode) &&
+    nativeMode !== lastNativeVehicleCameraMode;
+  if (Number.isFinite(nativeMode)) lastNativeVehicleCameraMode = nativeMode;
+
+  // The native mode is the semantic Change Camera signal and therefore also
+  // respects controller bindings. V remains a keyboard-only fallback for
+  // runtimes where a fixed script camera prevents the native mode changing.
+  const cameraDown = isVehicleCameraControlActive();
+  const fallbackPressed = cameraDown && !lastVehicleCameraDown;
+  const nativeChangeIsNew = nativeModeChanged && now - lastVehicleLayoutChangeAt > 350;
+  if (nativeChangeIsNew || fallbackPressed) {
+    vehicleCameraLayout = (vehicleCameraLayout + 1) % 3;
+    lastVehicleLayoutChangeAt = now;
+    const layoutNames = ["Close", "Standard", "Wide"];
+    log(
+      "Adaptive Third-Person Camera vehicle layout=" +
+        layoutNames[vehicleCameraLayout] +
+        (nativeChangeIsNew ? " (native camera mode)" : " (V fallback)")
+    );
+  }
+  lastVehicleCameraDown = cameraDown;
+}
+
+function updateAimCameraState(sample, dt) {
+  const aimingOnFoot = !sample.vehicle && sample.aiming;
+  const durationSeconds = (aimingOnFoot ? 180 : 230) / 1000;
+  aimBlend = clamp(
+    aimBlend + (aimingOnFoot ? 1 : -1) * dt / durationSeconds,
+    0,
+    1
+  );
+
+  if (aimingOnFoot && !aimCameraActive) {
+    releaseScriptCameraForAim();
+    aimCameraActive = true;
+  } else if (!aimingOnFoot && aimCameraActive && aimBlend <= 0) {
+    applyRequestedFov(getOnFootFov(sample), 230, Date.now());
+    aimCameraActive = false;
+  }
+}
+
+function releaseScriptCameraForAim() {
+  if (!cameraApplied) return;
+  safeNative("CAMERA_RESET_NEW_SCRIPTABLES");
+  safeNative("RESTORE_CAMERA");
+  cameraApplied = false;
+  springPosition = null;
+  springTarget = null;
+  springPositionVelocity = { x: 0, y: 0, z: 0 };
+  springTargetVelocity = { x: 0, y: 0, z: 0 };
+  collisionCache = null;
+  fovProbe = null;
+}
+
+function applyNativeAimCamera() {
+  applyRequestedFov(config.aimFov, 180, Date.now());
+}
+
+function getOnFootFov(sample) {
+  const speed = sample?.speedMps || 0;
+  if (speed < 0.65) return config.walkFov;
+  if (speed < 2.0) return config.jogFov;
+  return config.sprintFov;
+}
+
+function applyRequestedFov(targetFov, durationMs, now) {
+  if (fovCapability === false) return;
+
+  if (fovProbe) {
+    if (now - fovProbe.startedAt < 220) return;
+    const measured = getCameraFov();
+    fovCapability = Number.isFinite(measured) &&
+      Math.abs(measured - fovProbe.baseline) >= 1;
+    log(
+      "Adaptive Third-Person Camera: FOV lerp capability=" +
+        (fovCapability ? "available" : "unavailable")
+    );
+    fovProbe = null;
+    lastAppliedFovTarget = null;
+    if (!fovCapability) return;
+  }
+
+  if (fovCapability === null) {
+    const baseline = getCameraFov();
+    if (!Number.isFinite(baseline)) {
+      fovCapability = false;
+      log("Adaptive Third-Person Camera: FOV readback unavailable; FOV disabled for this session.");
+      return;
+    }
+    const probeTarget = baseline > 50 ? baseline - 5 : baseline + 5;
+    if (!setLerpFov(baseline, probeTarget, 150)) {
+      fovCapability = false;
+      log("Adaptive Third-Person Camera: FOV lerp binding unavailable; FOV disabled for this session.");
+      return;
+    }
+    fovProbe = { baseline, target: probeTarget, startedAt: now };
+    return;
+  }
+
+  if (lastAppliedFovTarget !== null && Math.abs(lastAppliedFovTarget - targetFov) < 0.35) {
+    return;
+  }
+  const currentFov = getCameraFov();
+  if (!Number.isFinite(currentFov)) return;
+  if (setLerpFov(currentFov, targetFov, durationMs)) {
+    lastAppliedFovTarget = targetFov;
+  }
+}
+
+function getCameraFov() {
+  try {
+    if (typeof Camera !== "undefined" && typeof Camera.GetFov === "function") {
+      return finiteNumber(Camera.GetFov(), NaN);
+    }
+  } catch (_) {}
+  return finiteNumber(safeNative("GET_CAMERA_FOV"), NaN);
+}
+
+function setLerpFov(from, to, durationMs) {
+  try {
+    if (typeof Camera !== "undefined" && typeof Camera.SetLerpFov === "function") {
+      Camera.SetLerpFov(from, to, durationMs, true);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    native("CAMERA_SET_LERP_FOV", from, to, durationMs, true);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function getPlayerInCarCameraMode() {
+  try {
+    if (typeof Camera !== "undefined" && typeof Camera.GetPlayerInCarMode === "function") {
+      return finiteNumber(Camera.GetPlayerInCarMode(), NaN);
+    }
+  } catch (_) {}
+  return finiteNumber(safeNative("GET_PLAYER_IN_CAR_CAMERA_MODE"), NaN);
 }
 
 function cameraAnchorChanged(previous, current) {
@@ -433,10 +604,10 @@ function desiredFovFallback() {
 function readActorSample(actor, now) {
   if (!actor || safeNative("IS_CHAR_DEAD", actor)) return null;
 
-  const sittingNative = safeNative("IS_CHAR_SITTING_IN_ANY_CAR", actor);
-  const sittingInVehicle = sittingNative === true || sittingNative === 1;
-  const inAnyVehicle = readAnyVehicleState(actor);
-  const vehicle = getPlayerVehicle(actor, sittingNative);
+  const vehicleState = readPlayerVehicleState(actor);
+  const sittingInVehicle = vehicleState.occupiesVehicle;
+  const inAnyVehicle = vehicleState.interactingWithVehicle;
+  const vehicle = getPlayerVehicle(actor, vehicleState);
   if (sittingInVehicle && !vehicle) return null;
 
   const entity = vehicle || actor;
@@ -453,19 +624,21 @@ function readActorSample(actor, now) {
       !!lastActorSample.vehicle === !!vehicle
     ? lastActorSample
     : null;
-  const elapsed = previous ? clamp((now - previous.timestamp) / 1000, 0.001, 0.05) : 0;
-  const velocity = previous && elapsed > 0
+  const elapsed = previous ? clamp((now - previous.timestamp) / 1000, 0.001, 0.25) : 0;
+  const positionVelocity = previous && elapsed > 0
     ? scaleVector(subtractVector(position, previous.position), 1 / elapsed)
     : { x: 0, y: 0, z: 0 };
+  const nativeVelocity = readNativeVelocity(entity, !!vehicle);
+  const velocity = nativeVelocity || positionVelocity;
   const horizontalVelocity = { x: velocity.x, y: velocity.y, z: 0 };
-  const derivedSpeedMps = vectorLength(horizontalVelocity);
+  const vectorSpeedMps = vectorLength(horizontalVelocity);
   const reportedSpeed = vehicle
     ? finiteNumber(safeNative("GET_CAR_SPEED", vehicle), 0)
     : finiteNumber(safeNative("GET_CHAR_SPEED", actor), 0);
-  const speedMps = previous
-    ? derivedSpeedMps > 0.08 ? derivedSpeedMps : clamp(reportedSpeed, 0, 90)
-    : 0;
-  const measuredVelocityDirection = derivedSpeedMps > config.velocityDirectionThresholdMps
+  const speedMps = vectorSpeedMps > 0.08
+    ? vectorSpeedMps
+    : clamp(reportedSpeed, 0, 90);
+  const measuredVelocityDirection = vectorSpeedMps > config.velocityDirectionThresholdMps
     ? normalizeVector(horizontalVelocity)
     : null;
   const stableVelocityDirection =
@@ -476,11 +649,15 @@ function readActorSample(actor, now) {
   const rawAccelerationMps2 = previous && elapsed > 0
     ? clamp((speedMps - previous.speedMps) / elapsed, -20, 20)
     : 0;
+  const accelerationAlpha = frameRateIndependentAlpha(
+    config.accelerationFilterAlpha,
+    elapsed || 1 / 60
+  );
   const filteredAccelerationMps2 = previous
     ? lerp(
         previous.filteredAccelerationMps2 || 0,
         rawAccelerationMps2,
-        config.accelerationFilterAlpha
+        accelerationAlpha
       )
     : 0;
   const uprightValue = vehicle
@@ -507,12 +684,13 @@ function readActorSample(actor, now) {
     velocity,
     velocityDirection: measuredVelocityDirection,
     stableVelocityDirection,
+    velocitySource: nativeVelocity ? "native" : "positionDelta",
     speedMps,
     speedKmh: speedMps * 3.6,
     signedSpeedMps,
     rawAccelerationMps2,
     filteredAccelerationMps2,
-    slipAngleDegrees: calculateSlipAngle(forward, measuredVelocityDirection, derivedSpeedMps),
+    slipAngleDegrees: calculateSlipAngle(forward, measuredVelocityDirection, vectorSpeedMps),
     orientationInstability: clamp((1 - uprightValue) / 0.45, 0, 1),
     steering: steeringAmount({
       vehicle,
@@ -544,7 +722,14 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
   profile.stateName = composeProfileState(profile.baseName, profile.modifiers);
 
   let geometry = buildCameraGeometry(sample, profile, autoFollowWeight, transition);
-  let collision = resolveCameraCollision(geometry.target, geometry.desiredPosition, now);
+  let collision = resolveCameraCollision(
+    geometry.target,
+    geometry.desiredPosition,
+    now,
+    false,
+    true,
+    sample.vehicle
+  );
 
   if (collision.emergency) {
     profile = applyCollisionEmergencyModifier(profile);
@@ -554,36 +739,9 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
       geometry.desiredPosition,
       now,
       true,
-      false
+      false,
+      sample.vehicle
     );
-  }
-
-  if (
-    sample.aiming &&
-    collision.collided &&
-    now - lastShoulderSwapAt >= config.shoulderSwapCooldownMs
-  ) {
-    const originalShoulderSide = shoulderSide;
-    const currentClearance = distanceBetween(geometry.target, collision.position);
-    shoulderSide *= -1;
-    lastShoulderSwapAt = now;
-    const alternateGeometry = buildCameraGeometry(sample, profile, autoFollowWeight, transition);
-    const alternateCollision = resolveCameraCollision(
-      alternateGeometry.target,
-      alternateGeometry.desiredPosition,
-      now,
-      true
-    );
-    const alternateClearance = distanceBetween(
-      alternateGeometry.target,
-      alternateCollision.position
-    );
-    if (alternateClearance <= currentClearance + config.shoulderSwapClearanceAdvantage) {
-      shoulderSide = originalShoulderSide;
-    } else {
-      geometry = alternateGeometry;
-      collision = alternateCollision;
-    }
   }
 
   initializeSpringIfNeeded(collision.position, geometry.target);
@@ -637,15 +795,7 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
   if (!setScriptCameraPose(springPosition, springTarget)) return;
 
   updateFovSpring(profile.fov, dt);
-
-  if (!fovCapabilityLogged) {
-    fovCapabilityLogged = true;
-    log(
-      "Adaptive Third-Person Camera: profile FOV requested " +
-        profile.fov.toFixed(0) +
-        " degrees; SA:DE exposes GET_CAMERA_FOV but no supported SET_CAMERA_FOV native, so FOV is not altered."
-    );
-  }
+  applyRequestedFov(fovSpringValue, 180, now);
 
   if (profile.stateName !== lastStateName) {
     lastStateName = profile.stateName;
@@ -660,6 +810,8 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
         profile.fov.toFixed(0) +
         " fovSpring=" +
         fovSpringValue.toFixed(1) +
+        " velocitySource=" +
+        sample.velocitySource +
         " collision=" +
         collision.collided +
         " clearanceScore=" +
@@ -698,8 +850,7 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition 
       )
     )
   );
-  const shoulder = profileValue.shoulderOffset *
-    (sample.aiming ? shoulderSide : 1);
+  const shoulder = profileValue.shoulderOffset;
   const manualPitchLead = manualControlActive && autoFollowWeight < 1
     ? { x: 0, y: 0, z: manualPitchOffset * profileValue.distance }
     : { x: 0, y: 0, z: 0 };
@@ -761,15 +912,21 @@ function buildProfile(sample) {
 }
 
 function applyProfileModifiers(baseProfile, sample) {
-  const result = { ...baseProfile, modifiers: { ...(baseProfile.modifiers || {}) } };
+  let result = { ...baseProfile, modifiers: { ...(baseProfile.modifiers || {}) } };
   const drift = sample.vehicle ? driftAmount(sample) : 0;
   const airborne = sample.airState === "airborne" ? 1 : 0;
   const landing = sample.airState === "landing" ? 1 : 0;
   const reverse = sample.reverseActive ? 1 : 0;
 
   if (drift > 0) {
+    result.distance += drift * config.driftDistance;
+    result.height += drift * 0.18;
     result.velocityLead += drift * 0.20;
     result.lookAhead += drift * 0.15;
+  }
+
+  if (sample.vehicle) {
+    result = applyVehicleCameraLayout(result);
   }
   if (airborne) {
     result.verticalTracking = config.airborneVerticalTracking;
@@ -794,51 +951,66 @@ function applyProfileModifiers(baseProfile, sample) {
   return result;
 }
 
-function buildOnFootProfile(sample) {
-  if (sample.aiming) {
-    return profile("OnFootAim", config.aimDistance, config.aimHeight, config.aimFov, 0.65, 0.55, 0.55, 0, 1.25);
-  }
+function applyVehicleCameraLayout(profileValue) {
+  const layouts = [
+    { name: "Close", distance: 0.82, height: -0.15, targetHeight: 0 },
+    { name: "Standard", distance: 1.00, height: 0, targetHeight: 0 },
+    { name: "Wide", distance: 1.18, height: 0.30, targetHeight: 0 },
+  ];
+  const layout = layouts[vehicleCameraLayout] || layouts[1];
+  const result = {
+    ...profileValue,
+    modifiers: { ...(profileValue.modifiers || {}), layout: vehicleCameraLayout },
+    distance: profileValue.distance * layout.distance,
+    height: profileValue.height + layout.height,
+    targetHeight: profileValue.targetHeight + layout.targetHeight,
+  };
+  result.baseName = profileValue.baseName || profileValue.stateName;
+  result.stateName = result.baseName + layout.name;
+  return result;
+}
 
+function buildOnFootProfile(sample) {
   const speed = sample.speedMps;
+  let movementProfile;
   if (speed < 0.65) {
-    return profile("OnFootIdle", config.walkDistance, config.walkHeight, config.walkFov, 0.2, 0.18, 0.75, 0, 1.25);
-  }
-  if (speed < 2.0) {
+    movementProfile = profile("OnFootIdle", config.idleDistance, config.idleHeight, config.idleFov, 0.20, 0.08, 0, 0, 1.25);
+  } else if (speed < 2.0) {
     const amount = clamp((speed - 0.65) / 1.35, 0, 1);
-    const result = interpolateProfiles(
-      profile("OnFootWalk", config.walkDistance, config.walkHeight, config.walkFov, 0.5, 0.20, 0.75, 0, 1.28),
-      profile("OnFootJog", config.jogDistance, config.jogHeight, config.jogFov, 1.0, 0.18, 0.72, 0, 1.28),
+    movementProfile = interpolateProfiles(
+      profile("OnFootWalk", config.walkDistance, config.walkHeight, config.walkFov, 0.35, 0.10, 0, 0, 1.24),
+      profile("OnFootJog", config.jogDistance, config.jogHeight, config.jogFov, 0.60, 0.10, 0, 0, 1.22),
       amount
     );
-    result.baseName = amount > 0.55 ? "OnFootJog" : "OnFootWalk";
-    result.stateName = result.baseName;
-    return result;
+    movementProfile.baseName = amount > 0.55 ? "OnFootJog" : "OnFootWalk";
+    movementProfile.stateName = movementProfile.baseName;
+  } else {
+    const amount = clamp((speed - 2.0) / 2.0, 0, 1);
+    movementProfile = interpolateProfiles(
+      profile("OnFootJog", config.jogDistance, config.jogHeight, config.jogFov, 0.60, 0.10, 0, 0, 1.22),
+      profile("OnFootSprint", config.sprintDistance, config.sprintHeight, config.sprintFov, 0.95, 0.06, 0, 0, 1.18),
+      amount
+    );
+    movementProfile.baseName = amount > 0.35 ? "OnFootSprint" : "OnFootJog";
+    movementProfile.stateName = movementProfile.baseName;
   }
 
-  const amount = clamp((speed - 2.0) / 2.0, 0, 1);
-  const result = interpolateProfiles(
-    profile("OnFootJog", config.jogDistance, config.jogHeight, config.jogFov, 1.0, 0.18, 0.72, 0, 1.28),
-    profile("OnFootSprint", config.sprintDistance, config.sprintHeight, config.sprintFov, 1.8, 0.12, 0.68, 0, 1.20),
-    amount
-  );
-  result.baseName = amount > 0.35 ? "OnFootSprint" : "OnFootJog";
-  result.stateName = result.baseName;
-  return result;
+  return movementProfile;
 }
 
 function buildCarProfile(speedKmh, accelerationMps2) {
   const speed = clamp(speedKmh, 0, 200);
-  const slow = profile("CarSlow", config.carSlowDistance, config.carSlowHeight, config.carSlowFov, 2.0, 0, 1.8, 0);
-  const normal = profile("CarNormal", config.carNormalDistance, config.carNormalHeight, config.carNormalFov, 3.0, 0, 1.8, 0);
-  const fast = profile("CarFast", config.carFastDistance, config.carFastHeight, config.carFastFov, 4.0, 0, 1.8, 0);
-  const fastEnd = profile("CarFast", 9.5, 2.45, 80, 5.0, 0, 1.8, 0);
+  const slow = profile("CarSlow", config.carSlowDistance, config.carSlowHeight, config.carSlowFov, 0.70, 0, 0, 0, 0.75);
+  const normal = profile("CarNormal", config.carNormalDistance, config.carNormalHeight, config.carNormalFov, 1.25, 0, 0, 0, 0.78);
+  const fast = profile("CarFast", config.carFastDistance, config.carFastHeight, config.carFastFov, 1.80, 0, 0, 0, 0.82);
+  const fastEnd = profile("CarFast", 6.45, 2.12, 81, 2.30, 0, 0, 0, 0.85);
   let result = speed < 75
     ? interpolateProfiles(slow, normal, smoothstep(25, 75, speed))
     : interpolateProfiles(normal, fast, smoothstep(75, 140, speed));
   result = interpolateProfiles(result, fastEnd, smoothstep(140, 200, speed));
   result.baseName = "Car";
   result.stateName = "Car";
-  result.velocityLead = 0.7 + clamp(speed / 120, 0, 1) * 1.1;
+  result.velocityLead = 0.45 + clamp(speed / 140, 0, 1) * 0.75;
   result.accelerationLead = 0.35;
   if (accelerationMps2 > 2) {
     const boost = clamp((accelerationMps2 - 2) / 8, 0, 1);
@@ -900,9 +1072,27 @@ function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverr
     if (idleDirection) autoDirection = idleDirection;
   }
 
-  if (profileValue.baseName === "OnFootAim" || profileValue.stateName === "OnFootAim") {
-    const aimDirection = getAimCameraDirection(sample.position);
-    if (aimDirection) autoDirection = aimDirection;
+  if (sample.vehicle && !sample.reverseActive) {
+    if (!vehicleFollowDirection) {
+      vehicleFollowDirection = autoDirection;
+    } else {
+      const elapsed = lastActorSample
+        ? clamp((sample.timestamp - lastActorSample.timestamp) / 1000, 0.001, 0.05)
+        : 1 / 60;
+      const followTimeConstant = config.vehicleYawDelayMs /
+        Math.max(0.1, config.vehicleYawFollowStrength) /
+        1000;
+      const followAlpha = 1 - Math.exp(-elapsed / followTimeConstant);
+      vehicleFollowDirection = normalizeVector(
+        lerpVector(vehicleFollowDirection, autoDirection, followAlpha)
+      );
+    }
+    autoDirection = rotateHorizontal(
+      vehicleFollowDirection,
+      (sample.steering * config.maxSteeringYawBiasDegrees * Math.PI) / 180
+    );
+  } else if (!sample.vehicle || sample.reverseActive) {
+    vehicleFollowDirection = null;
   }
 
   if (manualCameraDirection && autoFollowWeight < 1) {
@@ -940,19 +1130,13 @@ function getIdleCameraDirection(anchor) {
   return vectorLength(fromCamera) > 0.5 ? normalizeVector(fromCamera) : null;
 }
 
-function getAimCameraDirection(anchor) {
-  const camera = getCameraState();
-  if (!camera) return null;
-  const forward = { x: camera.forward.x, y: camera.forward.y, z: 0 };
-  return vectorLength(forward) > 0.5 ? normalizeVector(forward) : getIdleCameraDirection(anchor);
-}
-
 function resolveCameraCollision(
   target,
   desiredPosition,
   now,
   forceRefresh = false,
-  allowEmergency = true
+  allowEmergency = true,
+  ownVehicle = null
 ) {
   if (!config.collisionEnabled) {
     return { position: desiredPosition, collided: false, clearanceScore: 7 };
@@ -968,7 +1152,7 @@ function resolveCameraCollision(
     return collisionCache.result;
   }
 
-  if (isLineOfSightClear(target, desiredPosition)) {
+  if (isCameraPathClear(target, desiredPosition, ownVehicle)) {
     const result = { position: desiredPosition, collided: false, clearanceScore: 7 };
     collisionCache = { timestamp: now, target, desiredPosition, result };
     return result;
@@ -976,26 +1160,36 @@ function resolveCameraCollision(
 
   const direction = normalizeVector(subtractVector(desiredPosition, target));
   const desiredDistance = distanceBetween(target, desiredPosition);
-  let selectedCandidate = null;
-  let selectedScore = -1;
-  let bestCandidate = null;
-  let bestScore = -1;
-  for (let index = 8; index >= 1; index -= 1) {
-    const amount = index / 8;
-    const candidateDistance = Math.max(
-      0.35,
-      desiredDistance * amount - config.collisionSafetyMargin
-    );
-    const candidate = addVector(target, scaleVector(direction, candidateDistance));
-    const score = getCameraProbeScore(target, candidate);
-    if (score > bestScore) {
-      bestCandidate = candidate;
-      bestScore = score;
+  let clearDistance = 0.35;
+  let blockedDistance = desiredDistance;
+
+  // Find the furthest clear center ray first. Envelope probes are only run for
+  // the resulting candidate instead of for every possible distance.
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    const testDistance = (clearDistance + blockedDistance) * 0.5;
+    const candidate = addVector(target, scaleVector(direction, testDistance));
+    if (isCameraPathClear(target, candidate, ownVehicle)) {
+      clearDistance = testDistance;
+    } else {
+      blockedDistance = testDistance;
     }
-    if (!selectedCandidate && score >= config.collisionMinimumScore) {
-      selectedCandidate = candidate;
-      selectedScore = score;
-    }
+  }
+
+  let selectedCandidate = addVector(
+    target,
+    scaleVector(
+      direction,
+      Math.max(0.35, clearDistance - config.collisionSafetyMargin)
+    )
+  );
+  let clearance = getCameraProbeClearance(target, selectedCandidate, ownVehicle);
+
+  // Center, top and bottom are hard requirements. Side probes only request a
+  // shoulder reduction; they no longer force the whole camera toward CJ.
+  for (let iteration = 0; iteration < 3 && !clearance.accepted; iteration += 1) {
+    clearDistance = Math.max(0.35, clearDistance * 0.78);
+    selectedCandidate = addVector(target, scaleVector(direction, clearDistance));
+    clearance = getCameraProbeClearance(target, selectedCandidate, ownVehicle);
   }
 
   const emergencyDistance = Math.max(
@@ -1007,16 +1201,17 @@ function resolveCameraCollision(
     scaleVector(direction, emergencyDistance)
   );
   const result = {
-    position: selectedCandidate || bestCandidate || emergencyPosition,
+    position: clearance.accepted ? selectedCandidate : emergencyPosition,
     collided: true,
-    clearanceScore: selectedCandidate ? selectedScore : bestScore,
-    emergency: !selectedCandidate && allowEmergency,
+    clearanceScore: clearance.score,
+    shoulderObstructed: clearance.center && (!clearance.left || !clearance.right),
+    emergency: !clearance.accepted && allowEmergency,
   };
   collisionCache = { timestamp: now, target, desiredPosition, result };
   return result;
 }
 
-function getCameraProbeScore(target, cameraPosition) {
+function getCameraProbeClearance(target, cameraPosition, ownVehicle = null) {
   const direction = normalizeVector(subtractVector(cameraPosition, target));
   const right = { x: direction.y, y: -direction.x, z: 0 };
   const radius = config.collisionProbeRadius;
@@ -1029,12 +1224,29 @@ function getCameraProbeScore(target, cameraPosition) {
   ];
 
   const clear = offsets.map((offset) =>
-    isLineOfSightClear(target, addVector(cameraPosition, offset))
+    isCameraPathClear(target, addVector(cameraPosition, offset), ownVehicle)
   );
-  return (clear[0] ? 3 : 0) + clear.slice(1).filter(Boolean).length;
+  return {
+    center: clear[0],
+    right: clear[1],
+    left: clear[2],
+    top: clear[3],
+    bottom: clear[4],
+    accepted: clear[0] && clear[3] && clear[4],
+    score: (clear[0] ? 3 : 0) + clear.slice(1).filter(Boolean).length,
+  };
 }
 
-function isLineOfSightClear(from, to) {
+function isCameraPathClear(from, to, ownVehicle = null) {
+  if (!ownVehicle) return isLineOfSightClear(from, to, false);
+  // SA:DE LOS cannot exclude one specific car. A dynamic ray with cars=true
+  // can still hit the player's vehicle after starting outside approximate
+  // model bounds, collapsing every layout to the same emergency distance.
+  // Keep vehicle cameras on the verified static-world pass.
+  return isLineOfSightClear(from, to, true);
+}
+
+function isLineOfSightClear(from, to, ignoreVehicles = false) {
   const result = safeNative(
     "IS_LINE_OF_SIGHT_CLEAR",
     from.x,
@@ -1044,7 +1256,7 @@ function isLineOfSightClear(from, to) {
     to.y,
     to.z,
     true,
-    true,
+    !ignoreVehicles,
     false,
     true,
     true
@@ -1116,7 +1328,9 @@ function releaseCamera() {
   collisionCache = null;
   fovSpringValue = null;
   fovSpringVelocity = 0;
-  if (cameraApplied) {
+  fovProbe = null;
+  vehicleFollowDirection = null;
+  if (cameraApplied || aimCameraActive || fovProbe) {
     safeNative("CAMERA_RESET_NEW_SCRIPTABLES");
     safeNative("RESTORE_CAMERA");
   }
@@ -1126,14 +1340,18 @@ function releaseCamera() {
   springPositionVelocity = { x: 0, y: 0, z: 0 };
   springTargetVelocity = { x: 0, y: 0, z: 0 };
   lastStateName = null;
+  aimBlend = 0;
+  aimCameraActive = false;
+  lastAppliedFovTarget = null;
 }
 
 function springStep(current, target, velocity, frequencyHz, dampingRatio, verticalTracking, dt) {
   const tracking = clamp(verticalTracking, 0.18, 1);
+  const verticalAlpha = frameRateIndependentAlpha(tracking, dt);
   const effectiveTarget = {
     x: target.x,
     y: target.y,
-    z: lerp(current.z, target.z, tracking),
+    z: lerp(current.z, target.z, verticalAlpha),
   };
   const x = dampedScalarStep(
     current.x,
@@ -1234,26 +1452,33 @@ function resolveInteractionState(sittingInVehicle, inAnyVehicle, now) {
   return interactionState;
 }
 
-function getPlayerVehicle(actor, sittingNative = null) {
+function readPlayerVehicleState(actor) {
+  const onFootNative = safeNative("IS_CHAR_ON_FOOT", actor);
+  const onFoot = onFootNative === true || onFootNative === 1;
+  const sittingNative = safeNative("IS_CHAR_SITTING_IN_ANY_CAR", actor);
+  const sitting = sittingNative === true || sittingNative === 1;
+  const interactingWithVehicle = readAnyVehicleState(actor);
+
+  // IS_CHAR_IN_ANY_CAR may keep returning true after the ped has left because
+  // it describes the vehicle the ped is using, not strictly a occupied seat.
+  // Conversely, IS_CHAR_SITTING_IN_ANY_CAR is unreliable on some CLEO Redux
+  // SA:DE builds. IS_CHAR_ON_FOOT is therefore the authoritative exit signal.
+  const occupiesVehicle = !onFoot && (sitting || interactingWithVehicle);
+  return {
+    onFoot,
+    sittingNative,
+    interactingWithVehicle,
+    occupiesVehicle,
+  };
+}
+
+function getPlayerVehicle(actor, vehicleState = null) {
   // IS_CHAR_IN_ANY_CAR also stays true while the player is opening or
   // closing a door.  That is useful for vehicle scripts, but it is wrong for
   // camera ownership: during the exit animation the camera must stop using
   // the vehicle as its anchor as soon as the ped is no longer seated.
-  const sitting = sittingNative === null
-    ? safeNative("IS_CHAR_SITTING_IN_ANY_CAR", actor)
-    : sittingNative;
-  if (sitting === false || sitting === 0) return null;
-
-  // Keep a conservative compatibility fallback for a runtime that does not
-  // expose the sitting-state native. The official SA:DE definition does.
-  if (sitting === null) {
-    const inVehicle =
-      !!safeNative("IS_CHAR_IN_ANY_CAR", actor) ||
-      !!safeNative("IS_CHAR_IN_ANY_BOAT", actor) ||
-      !!safeNative("IS_CHAR_IN_ANY_HELI", actor) ||
-      !!safeNative("IS_CHAR_IN_ANY_PLANE", actor);
-    if (!inVehicle) return null;
-  }
+  const state = vehicleState || readPlayerVehicleState(actor);
+  if (!state.occupiesVehicle) return null;
 
   return toHandle(safeNative("STORE_CAR_CHAR_IS_IN_NO_SAVE", actor), Car);
 }
@@ -1274,6 +1499,23 @@ function getCoordinates(entity, vehicle) {
   return isVector(value) ? value : null;
 }
 
+function readNativeVelocity(entity, vehicle) {
+  try {
+    const value = vehicle && typeof Car !== "undefined" && typeof Car.GetSpeedVector === "function"
+      ? Car.GetSpeedVector(entity)
+      : !vehicle && typeof Char !== "undefined" && typeof Char.GetVelocity === "function"
+        ? Char.GetVelocity(entity)
+        : null;
+    if (isVector(value)) return value;
+  } catch (_) {}
+
+  const value = safeNative(
+    vehicle ? "GET_CAR_SPEED_VECTOR" : "GET_CHAR_VELOCITY",
+    entity
+  );
+  return isVector(value) ? value : null;
+}
+
 function getCameraState() {
   const position = safeNative("GET_ACTIVE_CAMERA_COORDINATES");
   const pointAt = safeNative("GET_ACTIVE_CAMERA_POINT_AT");
@@ -1283,10 +1525,14 @@ function getCameraState() {
 }
 
 function readManualCameraInput() {
-  const mouse = safeNative("GET_PC_MOUSE_MOVEMENT") || {};
-  const sticks = safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {};
+  const usingJoypad = isPcUsingJoypad();
+  const mouse = usingJoypad ? {} : safeNative("GET_PC_MOUSE_MOVEMENT") || {};
+  const sticks = usingJoypad
+    ? safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {}
+    : {};
   const mouseX = finiteNumber(mouse.deltaX, 0);
-  const mouseY = finiteNumber(mouse.deltaY, 0);
+  const inversion = isMouseUsingVerticalInversion() ? -1 : 1;
+  const mouseY = finiteNumber(mouse.deltaY, 0) * inversion;
   const stickX = finiteNumber(sticks.rightStickX, 0);
   const stickY = finiteNumber(sticks.rightStickY, 0);
   return {
@@ -1303,9 +1549,28 @@ function readManualCameraInput() {
   };
 }
 
+function isPcUsingJoypad() {
+  try {
+    if (typeof Game !== "undefined" && typeof Game.IsPcUsingJoypad === "function") {
+      return !!Game.IsPcUsingJoypad();
+    }
+  } catch (_) {}
+  return !!safeNative("IS_PC_USING_JOYPAD");
+}
+
+function isMouseUsingVerticalInversion() {
+  try {
+    return typeof Mouse !== "undefined" &&
+      typeof Mouse.IsUsingVerticalInversion === "function" &&
+      !!Mouse.IsUsingVerticalInversion();
+  } catch (_) {
+    return false;
+  }
+}
+
 function isAimHeld() {
-  return !!safeNative("IS_KEY_PRESSED", RIGHT_MOUSE_BUTTON) ||
-    !!safeNative("IS_BUTTON_PRESSED", PAD_ID, AIM_BUTTON);
+  return isKeyPressed(RIGHT_MOUSE_BUTTON) ||
+    isButtonPressed(PAD_ID, AIM_BUTTON);
 }
 
 function cameraTransitionIsActive() {
@@ -1339,7 +1604,6 @@ function loadConfig() {
     config.collisionProbeRadius = clamp(readConfigInt("camera", "collision_probe_radius_cm", config.collisionProbeRadius * 100), 8, 45) / 100;
     config.collisionUpdateMs = clamp(readConfigInt("camera", "collision_update_ms", config.collisionUpdateMs), 20, 80);
     config.collisionSafetyMargin = clamp(readConfigInt("camera", "collision_safety_margin_cm", config.collisionSafetyMargin * 100), 8, 40) / 100;
-    config.collisionMinimumScore = clamp(readConfigInt("camera", "collision_min_score_x10", config.collisionMinimumScore * 10), 30, 70) / 10;
     config.collisionEmergencyDistance = clamp(readConfigInt("camera", "collision_emergency_distance_cm", config.collisionEmergencyDistance * 100), 100, 220) / 100;
     config.positionFrequencyHz = clamp(readConfigInt("camera", "position_frequency_hz_x100", config.positionFrequencyHz * 100), 250, 900) / 100;
     config.positionDampingRatio = clamp(readConfigInt("camera", "position_damping_ratio_percent", config.positionDampingRatio * 100), 70, 180) / 100;
@@ -1351,6 +1615,10 @@ function loadConfig() {
     config.collisionDampingRatio = clamp(readConfigInt("camera", "collision_damping_ratio_percent", config.collisionDampingRatio * 100), 70, 180) / 100;
     config.driftVelocityInfluence = clamp(readConfigInt("vehicle", "drift_velocity_influence_percent", config.driftVelocityInfluence * 100), 0, 100) / 100;
     config.driftMinSpeedKmh = clamp(readConfigInt("vehicle", "drift_min_speed_kmh", config.driftMinSpeedKmh), 5, 40);
+    config.driftDistance = clamp(readConfigInt("vehicle", "drift_distance_cm", config.driftDistance * 100), 0, 400) / 100;
+    config.vehicleYawDelayMs = clamp(readConfigInt("vehicle", "yaw_follow_delay_ms", config.vehicleYawDelayMs), 40, 300);
+    config.vehicleYawFollowStrength = clamp(readConfigInt("vehicle", "yaw_follow_strength_percent", config.vehicleYawFollowStrength * 100), 20, 100) / 100;
+    config.maxSteeringYawBiasDegrees = clamp(readConfigInt("vehicle", "max_steering_yaw_bias_deg", config.maxSteeringYawBiasDegrees), 0, 15);
     config.velocityDirectionThresholdMps = clamp(readConfigInt("vehicle", "velocity_direction_threshold_cms", config.velocityDirectionThresholdMps * 100), 5, 100) / 100;
     config.reverseMinSpeedKmh = clamp(readConfigInt("vehicle", "reverse_min_speed_kmh", config.reverseMinSpeedKmh), 1, 20);
     config.reverseEnterHoldMs = clamp(readConfigInt("vehicle", "reverse_enter_hold_ms", config.reverseEnterHoldMs), 120, 800);
@@ -1361,8 +1629,6 @@ function loadConfig() {
     config.airborneExitVerticalSpeed = clamp(readConfigInt("vehicle", "airborne_exit_vertical_kmh", config.airborneExitVerticalSpeed * 3.6), 2, 15) / 3.6;
     config.landingMinAirborneMs = clamp(readConfigInt("vehicle", "landing_min_airborne_ms", config.landingMinAirborneMs), 100, 800);
     config.landingDurationMs = clamp(readConfigInt("vehicle", "landing_duration_ms", config.landingDurationMs), 80, 500);
-    config.shoulderSwapCooldownMs = clamp(readConfigInt("aim", "shoulder_swap_cooldown_ms", config.shoulderSwapCooldownMs), 250, 1200);
-    config.shoulderSwapClearanceAdvantage = clamp(readConfigInt("aim", "shoulder_swap_clearance_advantage_cm", config.shoulderSwapClearanceAdvantage * 100), 20, 150) / 100;
     readDistanceAndHeightConfig();
     config.reloadHotkeyEnabled = readConfigBool("input", "reload_hotkey_enabled", config.reloadHotkeyEnabled);
     config.toggleHotkeyEnabled = readConfigBool("input", "toggle_hotkey_enabled", config.toggleHotkeyEnabled);
@@ -1373,6 +1639,9 @@ function loadConfig() {
 }
 
 function readDistanceAndHeightConfig() {
+  config.idleDistance = readConfigInt("on_foot", "idle_distance_cm", config.idleDistance * 100) / 100;
+  config.idleHeight = readConfigInt("on_foot", "idle_height_cm", config.idleHeight * 100) / 100;
+  config.idleFov = clamp(readConfigInt("on_foot", "idle_fov_deg", config.idleFov), 40, 90);
   config.walkDistance = readConfigInt("on_foot", "walk_distance_cm", config.walkDistance * 100) / 100;
   config.walkHeight = readConfigInt("on_foot", "walk_height_cm", config.walkHeight * 100) / 100;
   config.walkFov = clamp(readConfigInt("on_foot", "walk_fov_deg", config.walkFov), 40, 90);
@@ -1382,16 +1651,23 @@ function readDistanceAndHeightConfig() {
   config.sprintDistance = readConfigInt("on_foot", "sprint_distance_cm", config.sprintDistance * 100) / 100;
   config.sprintHeight = readConfigInt("on_foot", "sprint_height_cm", config.sprintHeight * 100) / 100;
   config.sprintFov = clamp(readConfigInt("on_foot", "sprint_fov_deg", config.sprintFov), 40, 90);
-  config.aimDistance = readConfigInt("aim", "distance_cm", config.aimDistance * 100) / 100;
-  config.aimHeight = readConfigInt("aim", "height_cm", config.aimHeight * 100) / 100;
   config.aimFov = clamp(readConfigInt("aim", "fov_deg", config.aimFov), 40, 90);
-  config.carSlowDistance = readConfigInt("car", "slow_distance_cm", config.carSlowDistance * 100) / 100;
+  config.carSlowDistance = Math.max(
+    DEFAULTS.carSlowDistance,
+    readConfigInt("car", "slow_distance_cm", config.carSlowDistance * 100) / 100
+  );
   config.carSlowHeight = readConfigInt("car", "slow_height_cm", config.carSlowHeight * 100) / 100;
   config.carSlowFov = clamp(readConfigInt("car", "slow_fov_deg", config.carSlowFov), 40, 90);
-  config.carNormalDistance = readConfigInt("car", "normal_distance_cm", config.carNormalDistance * 100) / 100;
+  config.carNormalDistance = Math.max(
+    DEFAULTS.carNormalDistance,
+    readConfigInt("car", "normal_distance_cm", config.carNormalDistance * 100) / 100
+  );
   config.carNormalHeight = readConfigInt("car", "normal_height_cm", config.carNormalHeight * 100) / 100;
   config.carNormalFov = clamp(readConfigInt("car", "normal_fov_deg", config.carNormalFov), 40, 90);
-  config.carFastDistance = readConfigInt("car", "fast_distance_cm", config.carFastDistance * 100) / 100;
+  config.carFastDistance = Math.max(
+    DEFAULTS.carFastDistance,
+    readConfigInt("car", "fast_distance_cm", config.carFastDistance * 100) / 100
+  );
   config.carFastHeight = readConfigInt("car", "fast_height_cm", config.carFastHeight * 100) / 100;
   config.carFastFov = clamp(readConfigInt("car", "fast_fov_deg", config.carFastFov), 40, 90);
   config.motorbikeDistance = readConfigInt("motorbike", "distance_cm", config.motorbikeDistance * 100) / 100;
@@ -1443,7 +1719,37 @@ function safeNative(name, ...args) {
 }
 
 function isKeyPressed(keyCode) {
+  try {
+    if (typeof Pad !== "undefined" && typeof Pad.IsKeyPressed === "function") {
+      return !!Pad.IsKeyPressed(keyCode);
+    }
+  } catch (_) {}
   return !!safeNative("IS_KEY_PRESSED", keyCode);
+}
+
+function isVehicleCameraControlActive() {
+  let keyDown = false;
+  let keyPressed = false;
+  try {
+    if (typeof Pad !== "undefined") {
+      if (typeof Pad.IsKeyDown === "function") keyDown = !!Pad.IsKeyDown(KEY_V);
+      if (typeof Pad.IsKeyPressed === "function") keyPressed = !!Pad.IsKeyPressed(KEY_V);
+    }
+  } catch (_) {}
+  return keyDown ||
+    keyPressed ||
+    !!safeNative("IS_KEY_DOWN", KEY_V) ||
+    !!safeNative("IS_KEY_PRESSED", KEY_V) ||
+    isButtonPressed(PAD_ID, CONTROLLER_VIEW_BUTTON);
+}
+
+function isButtonPressed(padId, buttonId) {
+  try {
+    if (typeof Pad !== "undefined" && typeof Pad.IsButtonPressed === "function") {
+      return !!Pad.IsButtonPressed(padId, buttonId);
+    }
+  } catch (_) {}
+  return !!safeNative("IS_BUTTON_PRESSED", padId, buttonId);
 }
 
 function headingVector(degrees) {
@@ -1510,6 +1816,12 @@ function distanceBetween(left, right) {
 
 function lerp(from, to, amount) {
   return from + (to - from) * amount;
+}
+
+function frameRateIndependentAlpha(alphaAt60Fps, dt) {
+  const alpha = clamp(alphaAt60Fps, 0, 1);
+  if (alpha >= 1) return 1;
+  return 1 - Math.pow(1 - alpha, clamp(dt, 0.001, 0.25) * 60);
 }
 
 function interpolateProfiles(left, right, amount) {

@@ -1,6 +1,6 @@
 /// <reference path="./.config/sa.d.ts" />
 
-// Police Pursuit Radar DE, version 1.3 model-based HUD/blips.
+// Police Pursuit Radar DE, version 1.4 entity-lifecycle rewrite.
 // Runtime: CLEO Redux x64 + IniFiles64.
 //
 // Tracking and presentation are deliberately separated. The tracker owns all
@@ -17,16 +17,23 @@ const player = new Player(PLAYER_ID);
 const CONFIG_PATH = "./PolicePursuitRadar.ini";
 const CONFIG_VERSION = 1;
 const VK_RELOAD = 122; // F11
+// This CLEO implementation drew a second HUD surface and its first world scan
+// crashes SA:DE 1.0.113.21181. The official minimap is an Unreal BP_Radar_Base
+// asset and cannot be reshaped by SCM HUD commands. Keep this legacy script
+// inert; the replacement must be a version-matched Unreal .pak override.
+const LEGACY_CLEO_IMPLEMENTATION_ENABLED = false;
 // A safe renderer can be called every game frame. The old 15 FPS throttle was
 // masking the cost of a rasterized renderer instead of fixing its cost.
 const HUD_FRAME_INTERVAL_MS = 0;
 const GAMEPLAY_SETTLE_MS = 5000;
 const HUD_RENDER_HARD_BUDGET_MS = 4;
 const HUD_PERF_SAMPLE_LIMIT = 30;
-// GTA SA:DE still crashes when this host reaches DRAW_RECT, even after the
-// renderer was reduced to a fixed 14 logical primitives. Keep custom HUD
-// rendering hard-disabled until a verified sprite-only path is available.
-const CUSTOM_HUD_RENDERER_AVAILABLE = false;
+// SCM HUD commands use the original virtual screen rather than normalized
+// coordinates. Keep the presentation model normalized and convert only at
+// the CLEO boundary, like other working SA:DE HUD/menu scripts do.
+const HUD_VIRTUAL_WIDTH = 640;
+const HUD_VIRTUAL_HEIGHT = 448;
+const CUSTOM_HUD_RENDERER_AVAILABLE = true;
 
 const HUD_LEVEL_FULL = "FULL";
 const HUD_LEVEL_REDUCED = "REDUCED";
@@ -85,10 +92,8 @@ const DEFAULTS = {
   wantedZeroGraceMs: 800,
   // Keep the game's original minimap useful together with the bounded HUD.
   showNativeBlips: true,
-  // The custom renderer has a strict per-frame budget and a unit limit. It
-  // remains opt-in after the previous DRAW_RECT crash; native tracking must
-  // never block game loading.
-  hudEnabled: false,
+  // The custom renderer has a strict per-frame budget and a unit limit.
+  hudEnabled: true,
   hudRangeM: 180,
   hudSizePx: 166,
   hudXPercent: 10,
@@ -155,7 +160,10 @@ let unitBlips = [];
 let searchBlip = null;
 let searchBlipPosition = null;
 
-log("Police Pursuit Radar DE 1.3 model-based HUD/blips loaded. Host: " + HOST);
+log("Police Pursuit Radar DE 1.4 entity-lifecycle rewrite loaded. Host: " + HOST);
+if (!LEGACY_CLEO_IMPLEMENTATION_ENABLED) {
+  exit("Police Pursuit Radar DE legacy CLEO implementation disabled; install the Unreal radar asset package instead.");
+}
 loadConfig();
 
 while (true) {
@@ -283,7 +291,15 @@ function scanPolice(actor, playerPosition, stars, now) {
   for (const previous of previousUnits) {
     const refreshed = inspectPolice(previous.char, actor, playerPosition, stars, now);
     if (refreshed) {
-      addUnit(results, mergeUnitObservation(previous, refreshed, now), previous.key);
+      if (isObservationConsistent(previous, refreshed)) {
+        const merged = mergeUnitObservation(previous, refreshed, now);
+        if (!shouldEvictUnit(merged, now)) addUnit(results, merged, previous.key);
+      } else {
+        // A recycled handle is a new entity. Do not carry its key, contact or
+        // blips into the new observation; final-unit cleanup releases the old
+        // record after this scan.
+        addUnit(results, refreshed);
+      }
     } else {
       addUnit(results, retainUnitForOneScan(previous, playerPosition, now), previous.key);
     }
@@ -330,7 +346,7 @@ function retainUnitForOneScan(previous, playerPosition, now) {
     return null;
   }
 
-  return mergeUnitObservation(previous, {
+  const retained = mergeUnitObservation(previous, {
     ...previous,
     position: pedPosition,
     distance: distanceBetween(pedPosition, playerPosition),
@@ -339,6 +355,7 @@ function retainUnitForOneScan(previous, playerPosition, now) {
     spotted: false,
     missedScans: 1,
   }, now);
+  return shouldEvictUnit(retained, now) ? null : retained;
 }
 
 function samplePoints(center, maxDistance, phase) {
@@ -460,6 +477,21 @@ function mergeUnitObservation(previous, observation, now) {
   };
 }
 
+function isObservationConsistent(previous, current) {
+  if (!previous || !current) return false;
+  if (previous.pedModel !== current.pedModel) return false;
+  if (previous.carModel >= 0 && current.carModel >= 0 && previous.carModel !== current.carModel) {
+    return false;
+  }
+  return distanceBetween(previous.position, current.position) <= Math.max(80, config.maxDistanceM * 0.5);
+}
+
+function shouldEvictUnit(unit, now) {
+  if (!unit || unit.lifecycle !== LIFECYCLE_LOST) return false;
+  const anchor = unit.lastSeenAt || unit.firstSeenAt || now;
+  return now - anchor > UNIT_EVICTION_TTL_MS;
+}
+
 function isCharValid(char) {
   if (!char) return false;
   const exists = safeNative("DOES_CHAR_EXIST", char);
@@ -517,7 +549,7 @@ function comparePoliceUnits(left, right) {
 
 function samePoliceUnit(left, right) {
   if (!left || !right) return false;
-  if (left.char === right.char) return true;
+  if (left.char === right.char) return left.pedModel === right.pedModel;
   if (left.car && right.car && sameCarEntity(left, right)) return true;
 
   const samePed = left.type === right.type && left.pedModel === right.pedModel;
@@ -924,15 +956,14 @@ function drawHudRect(x, y, width, height, r, g, b, a) {
     return;
   }
   hudFrameDrawCalls += 1;
-  // Keep the native call behind one bounded primitive. The old renderer used
-  // this path for hundreds of raster rectangles per frame; this renderer has
-  // a fixed upper bound of 14 logical rectangles in REDUCED mode.
-  native(
-    "DRAW_RECT",
-    clamp(finiteNumber(x, 0), 0, 1),
-    clamp(finiteNumber(y, 0), 0, 1),
-    Math.max(0.001, finiteNumber(width, 0.001)),
-    Math.max(0.001, finiteNumber(height, 0.001)),
+  // Hud.DrawRect expects the game's 640x448 virtual screen. Passing the
+  // normalized 0..1 model directly produced sub-pixel geometry and was the
+  // material difference from stable CLEO Redux HUD implementations.
+  Hud.DrawRect(
+    clamp(finiteNumber(x, 0), 0, 1) * HUD_VIRTUAL_WIDTH,
+    clamp(finiteNumber(y, 0), 0, 1) * HUD_VIRTUAL_HEIGHT,
+    Math.max(1, finiteNumber(width, 0.001) * HUD_VIRTUAL_WIDTH),
+    Math.max(1, finiteNumber(height, 0.001) * HUD_VIRTUAL_HEIGHT),
     nativeColor(r),
     nativeColor(g),
     nativeColor(b),
@@ -1180,8 +1211,10 @@ function clearBlips() {
 
 function releaseTrackedEntity(unit) {
   if (!unit) return;
-  if (unit.char) safeNative("MARK_CHAR_AS_NO_LONGER_NEEDED", unit.char);
-  if (unit.car) safeNative("MARK_CAR_AS_NO_LONGER_NEEDED", unit.car);
+  // Discovery uses *_NO_SAVE and therefore never takes script ownership of
+  // ambient peds or vehicles. Calling MARK_* here can release an entity owned
+  // by the game while another system is still using it. Dropping our wrapper
+  // and its blips is the complete cleanup for a read-only observation.
   evictedTotal += 1;
 }
 
@@ -1288,9 +1321,6 @@ function loadConfig() {
     config.showNativeBlips = updateConfigValue("blips", "show_native_blips", DEFAULTS.showNativeBlips ? 1 : 0) !== 0;
     const requestedHudEnabled = updateConfigValue("hud", "enabled", DEFAULTS.hudEnabled ? 1 : 0) !== 0;
     config.hudEnabled = CUSTOM_HUD_RENDERER_AVAILABLE && requestedHudEnabled;
-    if (requestedHudEnabled && !CUSTOM_HUD_RENDERER_AVAILABLE) {
-      log("Police Pursuit Radar HUD disabled: DRAW_RECT is unsafe in this SA:DE runtime; using native blips only.");
-    }
     config.hudRangeM = clamp(updateConfigValue("hud", "range_m", DEFAULTS.hudRangeM), 60, 500);
     config.hudSizePx = clamp(updateConfigValue("hud", "size_px", DEFAULTS.hudSizePx), 110, 260);
     config.hudXPercent = clamp(updateConfigValue("hud", "screen_x_percent", DEFAULTS.hudXPercent), 4, 45);

@@ -13,50 +13,52 @@ using one fixed camera distance for every situation.
 - Smooth spring movement for both camera position and look target.
 - Look-ahead that grows with sprint/car speed, placing the player lower in the
   frame and showing more of the road ahead.
-- Vehicle distance that grows with speed: slow car, normal car and fast car
-  profiles use the ranges described in the design note.
+- WD2-oriented on-foot and vehicle presets: speed adds FOV/look-ahead before it
+  adds substantial distance, keeping CJ and the car large in frame.
 - Separate presets for cars, motorcycles, bicycles, boats, helicopters and
   aircraft.
 - Camera Director handoff between vehicle, on-foot and other anchors. Ordinary
   changes use a configurable 320 ms anchor/profile transition and preserve a
   damped portion of the previous spring velocity before feeding one camera
   spring.
-- `IS_CHAR_SITTING_IN_ANY_CAR` and `IS_CHAR_IN_ANY_CAR` are interpreted as
-  separate, latched states: driving, entering, exiting and on foot.
+- `IS_CHAR_ON_FOOT`, `IS_CHAR_SITTING_IN_ANY_CAR` and `IS_CHAR_IN_ANY_CAR` are
+  interpreted as separate signals for the latched driving, entering, exiting
+  and on-foot states. The on-foot signal has priority so a stale vehicle-use
+  result cannot keep the camera attached after an exit.
 - Manual camera input has priority without restoring the standard camera. The
-  adaptive camera follows the user's yaw/pitch for 1.2 s, then blends back
+  adaptive camera follows the user's yaw/pitch for 1.1 s, then blends back
   instead of taking control immediately. Recenter delay scales from about
-  2.0 s at low speed to 0.8 s at high speed.
-- Motion analysis includes filtered acceleration, slip angle, velocity
-  prediction, speed-scaled steering look-ahead, reverse hysteresis and an
-  airborne/landing state for ground vehicles.
+  1.8 s at low speed to 0.65 s at high speed.
+- Motion analysis uses `Car.GetSpeedVector` / `Char.GetVelocity` first, with
+  position delta only as a fallback. It includes dt-aware acceleration,
+  slip angle, velocity prediction, reverse hysteresis and airborne/landing.
 - Horizontal and vertical spring response are separated. Cars follow bumps and
   jumps more conservatively on the Z axis, keeping the horizon stable.
-- Camera collision uses a cached 30 Hz center probe and a weighted five-point
-  clearance score near obstacles, with a safety margin and emergency profile.
-  Inward correction is faster than the return after the path becomes clear.
-- Aim camera shoulder swap is attempted when the current shoulder is blocked,
-  with a cooldown to avoid oscillation.
+- Camera collision uses a cached 30 Hz result, a six-step center-ray search and
+  one five-point envelope check. Center/top/bottom are hard requirements;
+  side probes are soft. Vehicle cameras check static world geometry while
+  excluding cars, because SA:DE LOS cannot exclude only the player's vehicle.
 - Configuration reload with `F11` and a global enable/disable toggle with
   `F9`.
 
 ## Important SA:DE capability boundary
 
-The official `sa_unreal` command definition exposes `GET_CAMERA_FOV`, but does
-not expose a supported `SET_CAMERA_FOV` native. The INI therefore keeps the
-requested FOV targets as profile data and logs the active target for diagnosis,
-but the script does not claim to change the game's FOV. It also does not use a
-classic GTA SA memory address, because that address is not a verified contract
-for the 64-bit Unreal executable.
+The official `sa_unreal` command definition exposes `Camera.GetFov` and
+`Camera.SetLerpFov`. The script probes that pair once per session by requesting
+a small 5-degree change and reading the value back. Profile FOV is applied only
+after successful readback; otherwise FOV changes stay disabled for the session.
+No classic GTA SA memory address is used.
 
 The camera position and target are real scriptable camera operations using
 `SET_FIXED_CAMERA_POSITION` and `POINT_CAMERA_AT_POINT`. The collision path is
 real LOS data, not a visual approximation.
 
-Vehicle ownership is based on the seated state (`IS_CHAR_SITTING_IN_ANY_CAR`),
-not only on the broader `IS_CHAR_IN_ANY_CAR` condition. The latter also remains
-true while a character is opening or closing a vehicle door, which would keep
-the camera anchored to the vehicle during the exit transition.
+Vehicle ownership is cleared whenever `IS_CHAR_ON_FOOT` becomes true. While
+the ped is not on foot, the seated state (`IS_CHAR_SITTING_IN_ANY_CAR`) and the
+broader `IS_CHAR_IN_ANY_CAR` family provide compatible driving/transition
+signals. This ordering matters because the broader condition can remain true
+while a character is opening or closing a door, and the seated condition is
+not reliable in every CLEO Redux SA:DE build.
 
 The full `CAMERA_RESET_NEW_SCRIPTABLES` → `RESTORE_CAMERA` path remains a
 safety fallback for cutscenes, fades, death, missing entities and large
@@ -95,6 +97,11 @@ when replacing the script, and never overwrites an existing user INI.
 
 - `F9`: enable/disable the adaptive camera.
 - `F11`: reload `AdaptiveThirdPersonCamera.ini`.
+- The in-game `Change Camera` action (`V` by default) while in a vehicle:
+  cycle the Close, Standard and Wide layouts. The script observes the native
+  in-car mode so remapped/controller input works; physical `V` is only a
+  keyboard fallback if the fixed camera blocks that native state change. The
+  controller Select/Back button is also accepted as a physical fallback.
 - Move the mouse or right stick strongly: take manual control of the adaptive
   camera. It waits, respects a speed-dependent recenter delay and blends back
   over `manual_blend_ms`.
@@ -104,13 +111,14 @@ uses the following starting values:
 
 | State | Distance | Height | FOV target |
 | --- | ---: | ---: | ---: |
-| Walk | 3.5 m | 1.5 m | 66° |
-| Jog | 4.0 m | 1.5 m | 70° |
-| Sprint | 4.6 m | 1.4 m | 74° |
-| Aim | 2.7 m | 1.45 m | 58° |
-| Car slow | 6.2 m | 2.2 m | 71° |
-| Car normal | 7.2 m | 2.25 m | 75° |
-| Car fast | 8.8 m | 2.4 m | 79° |
+| Idle | 3.65 m | 1.65 m | 72° |
+| Walk | 3.8 m | 1.62 m | 73° |
+| Jog | 4.15 m | 1.58 m | 75° |
+| Sprint | 4.55 m | 1.52 m | 77° |
+| Aim | native camera | native | 59° |
+| Car slow | 5.25 m | 1.85 m | 74° |
+| Car normal | 5.65 m | 1.95 m | 76° |
+| Car fast | 6.1 m → 6.45 m | 2.05 m → 2.12 m | 79° → 81° |
 | Motorbike | 5.6 m → 5.0 m | 1.9 m → 1.7 m | 75° → 78° |
 | Aircraft | 15 m | 5 m | 79° |
 
@@ -119,10 +127,11 @@ stable horizontal spring response. `vertical_tracking_percent` limits how
 strongly vehicle height changes reach the camera;
 `airborne_vertical_tracking_percent` applies while jumping. The collision cache
 uses `collision_update_ms`, the probe envelope uses
-`collision_probe_radius_cm`, and `collision_min_score_x10` controls the
-weighted clearance threshold. Higher `drift_velocity_influence_percent` makes
-the camera follow actual velocity more strongly during a slide. Reverse enter
-and exit holds prevent rapid front/back toggling while parking.
+`collision_probe_radius_cm`. Higher `drift_velocity_influence_percent` makes
+the camera follow actual velocity more strongly during a slide, while
+`drift_distance_cm` controls its additional drift distance. Reverse enter and
+exit holds prevent rapid front/back toggling while parking. Vehicle yaw uses a
+120 ms follow delay, 70% follow strength and a maximum 7-degree steering bias.
 
 ## Safety and scope
 
@@ -131,7 +140,14 @@ vehicle handling, weapons, missions, save data, multiplayer state or anti-cheat
 behavior. When the script is disabled, the camera is explicitly restored with
 the public camera reset natives.
 
+While the player aims on foot, the mod releases its fixed XYZ camera and leaves
+position, pitch and targeting fully under GTA's native aiming camera. It does
+not call `Camera.SetPositionUnfixed`: runtime verification in SA:DE showed that
+repeated calls can force the aim upward and block manual pitch. Aim FOV uses
+only the capability-probed lerped FOV command. The adaptive camera resumes
+after a 230 ms handoff when aiming ends.
+
 The repository does not contain a GTA SA:DE runtime, so an in-game camera
-smoke test is not claimed here. The FOV profile still has a spring for
-diagnostics, but the official SA:DE command set exposes no supported
-`SET_CAMERA_FOV`; the game FOV is therefore not changed by this script.
+smoke test is not claimed here. FOV application is capability-gated: the mod
+uses `Camera.SetLerpFov`/`CAMERA_SET_LERP_FOV` when available and otherwise
+keeps the profile target for diagnostics without claiming a visual FOV change.

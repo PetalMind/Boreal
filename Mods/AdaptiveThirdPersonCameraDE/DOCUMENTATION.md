@@ -60,16 +60,23 @@ wykonywany jest bezpieczny powrót do kamery gry.
 Kotwica określa obiekt, względem którego wyliczana jest pozycja kamery:
 
 ```text
-IS_CHAR_SITTING_IN_ANY_CAR = true  -> kotwicą jest pojazd
-IS_CHAR_SITTING_IN_ANY_CAR = false -> kotwicą jest postać
+IS_CHAR_ON_FOOT = true             -> kotwicą jest postać
+IS_CHAR_ON_FOOT = false oraz
+sygnał siedzenia/interakcji         -> kotwicą jest pojazd
 ```
 
 Mod rozdziela dwa rodzaje informacji:
 
 | Native | Znaczenie |
 | --- | --- |
+| `IS_CHAR_ON_FOOT` | Autorytatywny sygnał, że postać zakończyła wysiadanie i kamera musi przejść na postać. |
 | `IS_CHAR_SITTING_IN_ANY_CAR` | Faktyczne siedzenie w pojeździe i możliwość użycia pojazdu jako kotwicy. |
 | `IS_CHAR_IN_ANY_CAR` oraz odpowiedniki łodzi, helikoptera i samolotu | Trwająca interakcja z pojazdem, np. otwieranie albo zamykanie drzwi. |
+
+`IS_CHAR_IN_ANY_CAR` nie jest samodzielnie używany do utrzymywania kotwicy.
+W części wersji CLEO Redux także wynik `IS_CHAR_SITTING_IN_ANY_CAR` nie jest
+wiarygodny, dlatego `IS_CHAR_ON_FOOT` ma pierwszeństwo i odcina uchwyt pojazdu
+natychmiast po faktycznym zakończeniu wysiadania.
 
 Stany logiczne:
 
@@ -121,7 +128,9 @@ liczona z różnicy pozycji, a przy zbyt małej różnicy może korzystać z
 `GET_CAR_SPEED` albo `GET_CHAR_SPEED`.
 
 ```text
-velocity = (positionNow - positionPrevious) / deltaTime
+vehicle velocity = Car.GetSpeedVector()
+on-foot velocity = Char.GetVelocity()
+fallback velocity = (positionNow - positionPrevious) / deltaTime
 signedSpeed = dot(horizontalVelocity, vehicleForward)
 ```
 
@@ -139,14 +148,37 @@ slipAngle = atan2(abs(cross(forward, stableVelocityDirection)),
 
 Kierunek prędkości jest zapamiętywany przy małej wartości velocity, aby
 normalizacja zera nie powodowała losowego obrotu kamery. Wpływ poślizgu jest
-wyłączony poniżej minimalnej prędkości, domyślnie 18 km/h, a następnie rośnie
+wyłączony poniżej minimalnej prędkości, domyślnie 22 km/h, a następnie rośnie
 funkcją `smoothstep` od około 5 do 30 stopni. Maksymalny wpływ kontroluje:
 
 ```ini
-drift_velocity_influence_percent=60
-drift_min_speed_kmh=18
+drift_velocity_influence_percent=42
+drift_min_speed_kmh=22
+drift_distance_cm=65
 velocity_direction_threshold_cms=35
+yaw_follow_delay_ms=120
+yaw_follow_strength_percent=70
+max_steering_yaw_bias_deg=7
 ```
+
+Siła driftu zwiększa też dystans kamery, maksymalnie o wartość
+`drift_distance_cm`. Mod obserwuje `Camera.GetPlayerInCarMode()`, więc zmiana
+natywnego trybu kamery przełącza układy `Close`, `Standard` i `Wide` niezależnie
+od przypisania klawiatury lub pada. Fizyczne `V` jest wyłącznie fallbackiem,
+gdy fixed camera blokuje zmianę natywnego trybu. Fizyczny przycisk kontrolera
+`Select/Back` (button ID 13) jest dodatkowym fallbackiem; nie jest traktowany
+jako semantyczna akcja z remapem.
+
+Podczas celowania pieszo mod zwalnia `SET_FIXED_CAMERA_POSITION` i pozostawia
+grze pełną kontrolę nad pozycją, pitch i natywną kamerą celowania. Nie wywołuje
+`Camera.SetPositionUnfixed`, ponieważ weryfikacja w SA:DE wykazała, że cykliczne
+wywołanie tej komendy może wymusić celowanie w górę i zablokować sterowanie
+pionowe. Po zakończeniu celowania handoff do kamery moda trwa 230 ms.
+
+Profil aim żąda FOV 59°, czyli około 8–16° mniej od profili pieszych. Mod
+stosuje go dopiero po runtime probe: odczyt FOV, zmiana o 5° przez
+`Camera.SetLerpFov`, a po 220 ms ponowny odczyt. Brak potwierdzonej zmiany
+wyłącza FOV na całą sesję.
 
 ### 5.2. Przyspieszenie i look-ahead
 
@@ -155,7 +187,8 @@ chwilowy skok fizyki nie powodował nagłego kopnięcia kamery:
 
 ```text
 rawAcceleration = clamp((speedNow - speedPrevious) / deltaTime, -20, 20)
-filteredAcceleration = lerp(previousFiltered, rawAcceleration, alpha)
+alphaDt = 1 - (1 - alpha60) ^ (deltaTime * 60)
+filteredAcceleration = lerp(previousFiltered, rawAcceleration, alphaDt)
 ```
 
 Target jest sumą pozycji bazowej, wysokości targetu, kierunku kamery, faktycznej
@@ -210,7 +243,7 @@ Parametry:
 airborne_enter_vertical_kmh=9
 airborne_exit_vertical_kmh=4
 landing_min_airborne_ms=180
-airborne_vertical_tracking_percent=28
+airborne_vertical_tracking_percent=23
 landing_duration_ms=220
 ```
 
@@ -235,39 +268,34 @@ docelowy FOV oraz wpływ ruchu. Profile samochodu są mieszane funkcją
 
 | Profil | Dystans | Wysokość | Target |
 | --- | ---: | ---: | --- |
-| Idle | 3,5 m | 1,5 m | górna część sylwetki |
-| Walk | 3,5 m | 1,5 m | 1,28 m |
-| Jog | 4,0 m | 1,5 m | 1,28 m |
-| Sprint | 4,6 m | 1,4 m | 1,20 m |
-| Aim | 2,7 m | 1,45 m | 1,25 m |
-| Car slow | 6,2 m | 2,2 m | profil pojazdu |
-| Car normal | 7,2 m | 2,25 m | profil pojazdu |
-| Car fast | 8,8 m | 2,4 m | profil pojazdu |
+| Idle | 3,65 m | 1,65 m | 1,25 m |
+| Walk | 3,8 m | 1,62 m | 1,24 m |
+| Jog | 4,15 m | 1,58 m | 1,22 m |
+| Sprint | 4,55 m | 1,52 m | 1,18 m |
+| Aim | kamera natywna | natywna | celowanie gry |
+| Car slow | 5,25 m | 1,85 m | 0,75 m |
+| Car normal | 5,65 m | 1,95 m | 0,78 m |
+| Car fast | 6,1 -> 6,45 m | 2,05 -> 2,12 m | 0,82 -> 0,85 m |
 | Motorbike | 5,6 m -> 5,0 m | 1,9 m -> 1,7 m | zależny od prędkości |
 | Aircraft | 15 m | 5 m | profil powietrzny |
 
 Subtelny shoulder bias pieszo wynosi około:
 
 ```text
-idle   0,18 m
-walk   0,20 m
-jog    0,18 m
-sprint 0,12 m
-aim    0,55 m
+idle   0,08 m
+walk   0,10 m
+jog    0,10 m
+sprint 0,06 m
 ```
 
-Podczas celowania mod może zmienić ramię, jeżeli aktualny punkt kamery jest
-zasłonięty. Alternatywne ramię musi mieć clearance większy od bieżącego o
-domyślne 60 cm, a cooldown dodatkowo zapobiega oscylacji między stronami:
-
-```ini
-shoulder_swap_cooldown_ms=450
-shoulder_swap_clearance_advantage_cm=60
-```
+Aim nie korzysta z shoulder bias profilu ani nie modyfikuje pozycji natywnej
+kamery celowania.
 
 ## 9. Ręczne sterowanie i delayed recenter
 
-Mod odczytuje ruch myszy oraz prawego analoga. Po przekroczeniu:
+Mod wybiera jedno źródło przez `Game.IsPcUsingJoypad()`: ruch myszy albo prawy
+analog, nigdy oba naraz. Dla myszy respektuje też
+`Mouse.IsUsingVerticalInversion()`. Po przekroczeniu:
 
 ```ini
 manual_override_threshold=24
@@ -297,11 +325,11 @@ AUTO FOLLOW
 Domyślne wartości:
 
 ```ini
-manual_free_ms=1200
-manual_blend_ms=800
-recenter_low_speed_ms=2000
-recenter_normal_speed_ms=1300
-recenter_high_speed_ms=800
+manual_free_ms=1100
+manual_blend_ms=650
+recenter_low_speed_ms=1800
+recenter_normal_speed_ms=1100
+recenter_high_speed_ms=650
 ```
 
 Kierunek kamery w chwili ręcznego sterowania jest zapamiętywany. Powrót
@@ -320,7 +348,9 @@ collision_update_ms=33
 ```
 
 Gdy centralny LOS jest wolny, używany jest desired position. Gdy centralny
-promień jest zablokowany, kandydaci są sprawdzani pięcioma punktami:
+promień jest zablokowany, sześć iteracji wyszukiwania znajduje najdalszy
+dystans z wolnym środkiem. Dopiero ten kandydat jest sprawdzany pięcioma
+punktami:
 
 ```text
              góra
@@ -338,10 +368,15 @@ Rozmiar obwiedni:
 collision_probe_radius_cm=22
 ```
 
-Kamera szuka najdalszego kandydata, dla którego wszystkie probe'y mają czysty
-LOS. W aktualnej wersji nie ma binarnego warunku `all clear`: promień centralny
-ma wagę 3, a lewy, prawy, górny i dolny po 1. Kandydat jest wystarczająco
-bezpieczny od wyniku 4/7, a kamera wybiera najdalszego takiego kandydata.
+Środek, góra i dół są warunkami twardymi. Lewy i prawy probe są miękkie i nie
+powodują niepotrzebnego skracania dystansu. Jeśli obwiednia pionowa jest
+zablokowana, dystans jest jeszcze maksymalnie trzy razy redukowany.
+
+Dla pojazdu LOS sprawdza statyczny świat z `cars=false`. SA:DE nie pozwala
+wykluczyć tylko samochodu gracza, a próba rozpoczęcia drugiego promienia poza
+przybliżoną obwiednią nadal trafiała we własne auto i sprowadzała wszystkie
+układy do identycznego dystansu awaryjnego. Priorytetem jest poprawny dystans
+Close/Standard/Wide; inne pojazdy nie są więc przeszkodami dla tego LOS.
 
 Przy korekcie do geometrii odejmowany jest margines bezpieczeństwa, domyślnie
 20 cm. Gdy żaden kandydat nie osiąga minimalnego wyniku, używany jest osobny
@@ -351,7 +386,6 @@ niebezpiecznego offsetu do ciasnego interioru.
 
 ```ini
 collision_safety_margin_cm=20
-collision_min_score_x10=40
 collision_emergency_distance_cm=145
 ```
 
@@ -383,7 +417,8 @@ Oś X/Y używa pełnego celu. Oś Z jest ograniczana przez
 
 ```text
 XY target = target XY
-Z target  = lerp(current Z, target Z, verticalTracking)
+alphaZ = 1 - (1 - verticalTracking60) ^ (deltaTime * 60)
+Z target = lerp(current Z, target Z, alphaZ)
 ```
 
 Delta time jest ograniczany do 1–50 ms. Po dłuższym hitchu prędkości sprężyn
@@ -393,23 +428,23 @@ numerycznej eksplozji.
 Domyślnie:
 
 ```ini
-vertical_tracking_percent=72
-airborne_vertical_tracking_percent=28
+vertical_tracking_percent=58
+airborne_vertical_tracking_percent=23
 ```
 
 Kamera reaguje więc na pion, ale stabilniej niż sam pojazd.
 
 ## 12. FOV i ograniczenia API
 
-Profile posiadają wartości FOV oraz wewnętrzny spring diagnostyczny. Skrypt
-może odczytać bieżący FOV przez `GET_CAMERA_FOV`, ale oficjalna definicja
-`sa_unreal` nie udostępnia potwierdzonego `SET_CAMERA_FOV`.
+Profile posiadają wartości FOV oraz wewnętrzny spring. Oficjalna definicja
+`sa_unreal` udostępnia `Camera.GetFov` i `Camera.SetLerpFov`.
 
 Dlatego:
 
-- FOV target jest przechowywany w profilu,
-- FOV spring jest liczony i logowany,
-- rzeczywisty FOV gry nie jest zmieniany,
+- przy pierwszym żądaniu mod zapisuje FOV i zleca zmianę o 5° w 150 ms,
+- po 220 ms odczytuje FOV ponownie,
+- dopiero potwierdzony readback włącza FOV profili na resztę sesji,
+- brak zmiany lub brak bindingu wyłącza kolejne próby w tej sesji,
 - skrypt nie korzysta z niezweryfikowanego adresu pamięci z klasycznej wersji
   GTA SA.
 
@@ -453,11 +488,11 @@ F11 — ponowne wczytanie AdaptiveThirdPersonCamera.ini
 Odległości i wysokości są przechowywane w centymetrach, np.:
 
 ```ini
-walk_distance_cm=350
-walk_height_cm=150
+walk_distance_cm=380
+walk_height_cm=162
 ```
 
-oznacza to 3,5 m i 1,5 m.
+oznacza to 3,8 m i 1,62 m.
 
 Najważniejsze grupy konfiguracji:
 
@@ -466,7 +501,7 @@ Najważniejsze grupy konfiguracji:
 | `[camera]` | handoff, manual override, recenter, sprężyny i kolizja |
 | `[vehicle]` | drift, reverse, filtr przyspieszenia i airborne |
 | `[on_foot]` | dystans, wysokość i target FOV pieszo |
-| `[aim]` | kamera celowania i shoulder swap |
+| `[aim]` | natywna kamera celowania i FOV |
 | `[car]` | slow, normal i fast car |
 | `[motorbike]`, `[bicycle]` | profile jednośladów |
 | `[boat]`, `[helicopter]`, `[aircraft]` | profile pojazdów wodnych i powietrznych |
@@ -500,7 +535,7 @@ FOV spring, wynik kolizji i stan interakcji z pojazdem.
 | `applyCameraDirector` | główne sterowanie kamerą |
 | `buildProfile` | profil bazowy i modyfikatory ruchu |
 | `buildCameraGeometry` | target, look-ahead i desired position |
-| `resolveCameraCollision` | cache, clearance score, safety margin i emergency profile |
+| `resolveCameraCollision` | cache, wyszukiwanie centralnego dystansu, obwiednia i emergency profile |
 | `springStep` | stabilna sprężyna analityczna XY/Z |
 | `beginManualOverride` | przekazanie kontroli graczowi |
 | `updateReverseState` | hysteresis cofania |
@@ -511,11 +546,10 @@ FOV spring, wynik kolizji i stan interakcji z pojazdem.
 
 - Repozytorium nie zawiera uruchomionej instancji GTA SA:DE, więc dokumentacja
   nie deklaruje testu wizualnego w grze.
-- Rzeczywisty FOV gry nie jest zmieniany z powodu braku publicznego
-  `SET_CAMERA_FOV` dla `sa_unreal`.
-- `safeNative` izoluje pojedyncze wywołania opcjonalnych native'ów. Jeżeli
-  środowisko nie udostępni opcjonalnego native'a, skrypt używa wartości
-  awaryjnej. Dwa natywy renderujące kamerę mają osobną ścieżkę wymaganych
-  błędów i wyłączają bieżącą sesję.
+- FOV jest zmieniany wyłącznie po udanym runtime probe z readbackiem; bez niego
+  pozostaje wyłączony przez resztę sesji.
+- `safeNative` przechwytuje błędy bindingu JavaScript, ale nie jest traktowany
+  jako ochrona przed crashem kodu natywnego. Fallbacki `native()` ograniczają
+  się do komend potwierdzonych w oficjalnym `sa_unreal`.
 - Mod korzysta z publicznej kamery skryptowalnej i nie używa klasycznych,
   niezweryfikowanych adresów pamięci GTA SA.

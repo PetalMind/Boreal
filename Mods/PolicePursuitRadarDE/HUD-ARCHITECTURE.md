@@ -1,5 +1,12 @@
 # HUD Police Pursuit Radar DE — wdrożona architektura
 
+> **Status: wycofana.** Ta architektura tworzyła dodatkową warstwę HUD i nie
+> modyfikowała oficjalnej minimapy. W SA:DE 1.0.113.21181 pierwszy skan świata
+> po pięciosekundowym opóźnieniu kończy proces gry bez obsłużonego błędu CLEO.
+> `LEGACY_CLEO_IMPLEMENTATION_ENABLED=false` zatrzymuje skrypt przed wejściem
+> w pętlę. Docelowa prostokątna minimapa musi nadpisywać Unrealowy
+> `BP_Radar_Base` w paczce `.pak` dopasowanej do tego builda gry.
+
 Dokument opisuje aktualny sposób przygotowania i prezentowania HUD-u w
 `PolicePursuitRadar.js` po przebudowie zgodnej z analizą stabilności. Kluczowa
 zmiana polega na rozdzieleniu odczytów GTA, modelu prezentacyjnego i samego
@@ -7,24 +14,19 @@ renderera.
 
 ## Stan bezpieczeństwa
 
-W dostarczonej konfiguracji własny HUD pozostaje wyłączony:
+W dostarczonej konfiguracji własny HUD jest włączony:
 
 ```ini
 [hud]
-enabled=0
+enabled=1
 draw_budget=24
 ```
 
-To jest świadoma konfiguracja bezpieczna. Wcześniejszy renderer wykonywał
-setki logicznych fragmentów przez `DRAW_RECT`; log CLEO potwierdził dojście do
-96 wywołań nawet przy `units=0`, po czym gra zatrzymywała się lub crashowała.
-Sam licznik wywołań nie był więc wystarczającą ochroną.
-
-W kodzie pozostał nowy prostokątny renderer jako etap architektoniczny, ale jest
-teraz twardo zablokowany: `CUSTOM_HUD_RENDERER_AVAILABLE = false`. Powodem jest
-potwierdzenie, że także ograniczony renderer `DRAW_RECT` powoduje `Fatal error`
-w tej konkretnej instalacji. Native blipy są jedynym aktywnym trybem
-prezentacji do czasu wdrożenia i potwierdzenia ścieżki sprite-only.
+Wcześniejszy renderer wykonywał setki fragmentów i przekazywał znormalizowane
+współrzędne `0…1` bezpośrednio do `DRAW_RECT`. CLEO/SCM oczekuje tu wirtualnej
+przestrzeni `640×448`, stosowanej też przez działające mody HUD i menu dla
+SA:DE. Renderer zachowuje model znormalizowany, ale na granicy API przelicza
+pozycję i rozmiar, po czym wywołuje statyczne `Hud.DrawRect`.
 
 ## Przepływ danych
 
@@ -38,9 +40,9 @@ UnitRegistry: jednostki z wrapperami GTA
 RadarModel: tylko skończone dane prezentacyjne
         │  pozycje normalized screen-space + interpolacja
         ▼
-rectangular renderer: stała liczba DRAW_RECT
+rectangular renderer: stała liczba Hud.DrawRect w przestrzeni 640×448
         │
-        └── błąd/przekroczenie czasu → degradacja → native blipy / OFF
+        └── błąd lub przekroczenie budżetu → degradacja do native blipów
 ```
 
 Pętla nadal używa `wait(0)`, ale nie wykonuje już odczytu pozycji gracza dla
@@ -67,6 +69,45 @@ Warstwa trackera zachowuje poprzednie ograniczenia:
 Wrappery `char` i `car` pozostają wyłącznie w trackerze, ponieważ są potrzebne
 do kolejnych zapytań i obsługi natywnych blipów. Nie są kopiowane do modelu
 HUD-u.
+
+### Lifecycle jednostki i read-only discovery
+
+Discovery używa `GET_RANDOM_CHAR_IN_AREA_OFFSET_NO_SAVE`, a pojazd policjanta
+jest pobierany przez `STORE_CAR_CHAR_IS_IN_NO_SAVE`. Radar obserwuje świat, ale
+nie powinien przejmować ownershipu nad ambient pedami i pojazdami.
+
+Każdy rekord ma rozdzielone pojęcia:
+
+```text
+tracked  — rekord istnieje w UnitRegistry
+seenNow  — ten tick potwierdził kontakt wzrokowy
+lastSeenAt — ostatni tick z potwierdzonym kontaktem
+lifecycle — visible / memory / lost
+```
+
+Kontakt jest zerowany przy każdym odczycie i wymaga jednocześnie odległości,
+FOV, LOS oraz bieżącego wyniku `HAS_CHAR_SPOTTED_CHAR`. Utrata odczytu może
+zachować rekord tylko przez jeden skan, ale nie zachowuje kontaktu jako
+aktywnego.
+
+Przejścia lifecycle wyglądają tak:
+
+```text
+VISIBLE
+  │ utrata kontaktu
+  ▼
+MEMORY 350 ms
+  │
+  ▼
+LOST
+  │ brak poprawnego rekordu / TTL
+  ▼
+EVICT + cleanup
+```
+
+Blip encji jest tworzony wyłącznie dla `visible` albo krótkiego `memory`.
+Po przejściu do `lost` exact blip i blip kierunku są usuwane; podczas
+`SEARCH` pozostaje tylko `lastKnown` i obszar poszukiwań.
 
 ## RadarModel
 
@@ -180,10 +221,8 @@ Degradacja przebiega następująco:
 FULL → REDUCED → MINIMAL → NATIVE_ONLY → OFF
 ```
 
-Fallback jest obecnie wymuszony do `NATIVE_ONLY`, ponieważ nie ma
-potwierdzonej ścieżki sprite’owej, a `DRAW_RECT` powoduje `Fatal error`.
-Wyjątek renderera nadal powoduje pauzę na 5 sekund; `NATIVE_ONLY` nie wykonuje
-żadnych własnych wywołań rysujących.
+Wyjątek renderera powoduje pauzę na 5 sekund i stopniową degradację.
+`NATIVE_ONLY` nie wykonuje żadnych własnych wywołań rysujących.
 
 ## Co zostało usunięte z poprzedniej implementacji
 
@@ -203,12 +242,10 @@ Sprawdzenia lokalne dla wdrożonej zmiany:
 - składnia JavaScript przechodzi `node --check`;
 - repozytorium nie zawiera już wywołań starych funkcji rasteryzujących;
 - `git diff --check` nie zgłasza błędów białych znaków;
-- konfiguracja dostarczana z modem ma `hud.enabled=0` i `draw_budget=24`;
-- kod ignoruje wymuszenie `hud.enabled=1`, dopóki renderer nie otrzyma
-  potwierdzonej ścieżki sprite-only.
+- konfiguracja dostarczana z modem ma `hud.enabled=1` i `draw_budget=24`;
+- renderer wywołuje `Hud.DrawRect` z wartościami w przestrzeni `640×448`;
+- encje znalezione przez `*_NO_SAVE` nie są zwalniane przez `MARK_*`, ponieważ
+  skrypt nie przejmuje ich ownershipu.
 
-Nie deklaruję testu runtime z włączonym HUD-em jako zaliczonego, ponieważ
-poprzedni crash występował w konkretnej instalacji GTA, a automatyczny test
-nie może wiarygodnie potwierdzić bezpieczeństwa natywu `DRAW_RECT`. Właśnie
-dlatego aktywna instalacja pozostaje w trybie native-only, a renderer
-`DRAW_RECT` jest zablokowany również w kodzie, niezależnie od INI.
+Repozytorium nie zawiera uruchomionej instancji gry, więc lokalna weryfikacja
+nie potwierdza zachowania renderera wewnątrz UE4.

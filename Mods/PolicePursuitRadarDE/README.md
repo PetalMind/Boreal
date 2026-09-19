@@ -1,13 +1,19 @@
-# Police Pursuit Radar DE — wersja 1.3 stabilizacja HUD/blipów
+# Police Pursuit Radar DE — wersja 1.4 lifecycle jednostek
+
+> **Wycofana implementacja CLEO.** Zrzut z SA:DE 1.0.113.21181 potwierdził,
+> że skrypt rysuje drugi obiekt obok oficjalnej minimapy, a log runtime kończy
+> się przy pierwszym skanie świata pięć sekund po wykryciu gameplayu. Skrypt
+> jest obecnie twardo nieaktywny. Oficjalna minimapa jest implementowana przez
+> asset Unreal `BP_Radar_Base`; jej prostokątny kształt wymaga zgodnego z
+> wersją gry nadpisania `.pak`, a nie `Hud.DrawRect` w CLEO.
 
 Mod dla **Grand Theft Auto: San Andreas – The Definitive Edition** uruchamianej
 jako `sa_unreal` przez CLEO Redux x64.
 
-Wersja 1.3 zawiera rozdzielony tracker, `RadarModel` z interpolacją oraz
-ograniczony prostokątny renderer HUD-u. Własny HUD pozostaje wyłączony
-domyślnie, ponieważ poprzednia wersja rasteryzująca elipsy i stożki przez
-`DRAW_RECT` powodowała blokadę renderera UE4 podczas ładowania. Standardowe
-blipy CLEO pozostają bezpiecznym uzupełnieniem minimapy.
+Wersja 1.4 zawiera rozdzielony tracker, lifecycle jednostek, `RadarModel` z interpolacją oraz
+ograniczony prostokątny renderer HUD-u. Renderer korzysta z właściwej dla
+CLEO/SCM wirtualnej przestrzeni ekranu `640×448`; standardowe blipy CLEO
+pozostają bezpiecznym uzupełnieniem minimapy i trybem degradacji.
 
 ## Funkcje
 
@@ -20,6 +26,9 @@ blipy CLEO pozostają bezpiecznym uzupełnieniem minimapy.
 - stany `PURSUIT → SEARCH → ESCAPED`;
 - sprawdzanie LOS przez `IS_LINE_OF_SIGHT_CLEAR` oraz kontaktu przez
   `HAS_CHAR_SPOTTED_CHAR`;
+- non-owning discovery przez `GET_RANDOM_CHAR_IN_AREA_OFFSET_NO_SAVE`;
+- lifecycle jednostek `visible → memory → lost` oraz exact blipy tylko dla
+  bieżącego kontaktu;
 - stabilne klucze logiczne jednostek niezależne od wrapperów JavaScript;
 - ograniczona pula natywnych blipów oraz wolniejsza aktualizacja markerów
   kierunku, aby nie wyczerpywać puli blipów gry;
@@ -65,7 +74,7 @@ chmod +x install.sh
 ## Jak działa renderer
 
 Szczegółowa analiza przepływu danych, geometrii, kosztu `DRAW_RECT` i przyczyny
-domyślnego wyłączenia HUD-u znajduje się w
+naprawy wywołania HUD-u znajduje się w
 [HUD-ARCHITECTURE.md](HUD-ARCHITECTURE.md).
 
 Pozycje świata są przeliczane do konfigurowalnego, znormalizowanego modelu HUD:
@@ -116,11 +125,10 @@ Sekcja `[hud]` pozwala zmienić:
 ustala limit logicznych wywołań `DRAW_RECT` na jedną klatkę. Wartość jest
 ograniczana do 8–24; przekroczenie budżetu obcina dalsze elementy tej klatki.
 
-`hud.enabled=1` włącza nowy prostokątny renderer, ale w dostarczonej
-konfiguracji pozostaje wyłączony do czasu potwierdzenia runtime w konkretnej
-instalacji. Ma limit 6 jednostek, logiczny budżet 8–24, pomiar czasu klatki,
-degradację `REDUCED → MINIMAL → NATIVE_ONLY → OFF` i automatyczną pauzę po
-błędzie. Po wykryciu gameplayu skrypt odczekuje 5 sekund, aby nie wykonywać
+Własny renderer jest domyślnie włączony. Model pozycji pozostaje
+znormalizowany, ale `Hud.DrawRect` otrzymuje pozycje i rozmiary przeliczone do
+`640×448`, zgodnie z API oraz działającymi skryptami HUD dla SA:DE. Po wykryciu
+gameplayu skrypt odczekuje 5 sekund, aby nie wykonywać
 odczytów świata podczas kończenia ładowania.
 `blips.show_native_blips=1` włącza standardowe blipy CLEO na oryginalnej
 minimapie. `max_native_blips` ogranicza liczbę blipów śledzących, a
@@ -137,8 +145,7 @@ przeładowuje konfigurację bez restartu gry.
   więc próbkowane rotującymi pierścieniami. Wyszukiwanie nowych jednostek jest
   wykonywane rzadziej niż odświeżanie już znanych, aby nie obciążać puli ruchu
   ulicznego i AI.
-- `DRAW_RECT` jest prostym primitive 2D. Aktualny fallback pokazuje podstawowe
-  markery; pełne stożki i obrotowe ikony pozostają zależne od stabilnego atlasu
-  sprite’ów.
+- Prostokątny HUD nie ma jeszcze obrotowych sprite’ów ikon ani stożków; model
+  zachowuje te dane na potrzeby przyszłego atlasu.
 - Repozytorium nie zawiera instalacji gry, więc nie deklaruje zweryfikowanego
   runtime smoke testu.
