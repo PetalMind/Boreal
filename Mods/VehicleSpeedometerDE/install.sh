@@ -10,8 +10,8 @@ fi
 game_root="${1:A}"
 win64_root="$game_root/Gameface/Binaries/Win64"
 cleo_root="$win64_root/CLEO"
-script_source="${0:A:h}/adaptive_third_person_camera.js"
-config_source="${0:A:h}/AdaptiveThirdPersonCamera.ini"
+script_source="${0:A:h}/VehicleSpeedometerDE.js"
+config_source="${0:A:h}/VehicleSpeedometerDE.ini"
 
 if [[ ! -f "$win64_root/SanAndreas.exe" ]]; then
   print -u2 "SanAndreas.exe was not found in $win64_root"
@@ -34,26 +34,20 @@ if [[ ! -f "$cleo_root/CLEO_PLUGINS/IniFiles64.cleo" ]]; then
 fi
 
 mkdir -p "$cleo_root"
-destination="$cleo_root/adaptive_third_person_camera[fs].js"
+destination="$cleo_root/VehicleSpeedometerDE[fs].js"
 
 if [[ -e "$destination" ]] && ! cmp -s "$script_source" "$destination"; then
   backup="$destination.backup-$(date +%Y%m%d-%H%M%S)"
   cp -p "$destination" "$backup"
-  print "Previous Adaptive Third-Person Camera backed up to $backup"
+  print "Previous Vehicle Speedometer DE backed up to $backup"
 fi
 
 cp "$script_source" "$destination"
-if ! cmp -s "$script_source" "$destination"; then
-  print -u2 "The deployed camera script does not match the source archive."
-  exit 70
-fi
-script_hash="$(shasum -a 256 "$destination" | awk '{print $1}')"
-config_destination="$cleo_root/AdaptiveThirdPersonCamera.ini"
+config_destination="$cleo_root/VehicleSpeedometerDE.ini"
 if [[ ! -e "$config_destination" ]]; then
   cp "$config_source" "$config_destination"
   print "Default configuration installed at $config_destination"
 fi
 
-print "Adaptive Third-Person Camera installed at $destination"
-print "Deployed script SHA-256: $script_hash"
-print "Press F9 in GTA SA Definitive Edition to toggle it; F11 reloads the INI."
+print "Vehicle Speedometer DE installed at $destination"
+print "Press F11 in-game to reload VehicleSpeedometerDE.ini."

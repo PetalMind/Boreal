@@ -2056,7 +2056,13 @@ final class BorealStore {
                         pluginsFile: context.pluginsFile,
                         profileID: profileID
                     )
-                    if preview.isUpdate {
+                    // GTA SA:DE archives are immediately deployed after every
+                    // install, including a first install. This prevents a
+                    // freshly imported JS archive from remaining only in
+                    // Boreal staging while the game keeps running the old
+                    // CLEO file. Other adapters retain their existing
+                    // update-only behavior until their deployment UX changes.
+                    if preview.adapter == .gtaSanAndreasDefinitiveEdition || preview.isUpdate {
                         return try manager.deploy(
                             state: installed,
                             gameRoot: context.gameRoot,
@@ -2071,7 +2077,9 @@ final class BorealStore {
                 self?.present(
                     error,
                     title: preview.isUpdate ? "Mod couldn’t be updated" : "Mod couldn’t be installed",
-                    stage: preview.isUpdate ? "Updating and deploying the mod archive" : "Staging the mod archive"
+                    stage: preview.adapter == .gtaSanAndreasDefinitiveEdition || preview.isUpdate
+                        ? "Installing and verifying the deployed mod archive"
+                        : "Staging the mod archive"
                 )
                 if preview.isUpdate {
                     self?.refreshMods(for: game)

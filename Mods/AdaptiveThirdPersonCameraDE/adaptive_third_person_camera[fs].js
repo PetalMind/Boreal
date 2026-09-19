@@ -4,8 +4,12 @@
 // Runtime: CLEO Redux x64 + IniFiles64.
 //
 // The script only uses public SA:DE script natives. It moves a scriptable
-// camera behind the player and restores the regular game camera whenever the
-// player gives a strong manual camera input. It never changes movement,
+// camera behind the player and keeps ownership of that camera while manual
+// free-look is active, so mouse/right-stick orbiting does not fight the native
+// camera. v29 keeps the native mouse bridge, but vehicle ownership changes are
+// deliberately sticky and rate-limited. Driving never flips the camera to the
+// front just because reverse was detected; the vehicle camera stays on one
+// continuous side of the car and recenters with a damped yaw. It never changes movement,
 // vehicle handling, input bindings or mission state.
 
 if (HOST !== "sa_unreal") {
@@ -15,7 +19,7 @@ if (HOST !== "sa_unreal") {
 const PLAYER_ID = 0;
 const CONFIG_PATH = "./AdaptiveThirdPersonCamera.ini";
 const CONFIG_VERSION = 1;
-const MOD_BUILD_ID = "ATC-DE-20260919-14";
+const MOD_BUILD_ID = "ATC-DE-20260920-29-smooth-drive";
 const VK_TOGGLE = 120; // F9.
 const VK_RELOAD = 122; // F11.
 const VK_CAMERA_DISTANCE = 116; // F5.
@@ -34,9 +38,37 @@ const VEHICLE_CAMERA_LAYOUTS = [
 const VEHICLE_LAYOUT_BLEND_MS = 280;
 const MIN_CAMERA_RELATIVE_Z = 0.40;
 const IDLE_ACTIVATION_MS = 60000;
-const VEHICLE_MANUAL_MOUSE_DEADZONE = 1.5;
-const VEHICLE_MANUAL_STICK_DEADZONE = 12;
-const VEHICLE_MANUAL_CONFIRM_FRAMES = 1;
+const VEHICLE_MANUAL_MOUSE_ACTIVATION_MIN = 0.25;
+const VEHICLE_MANUAL_STICK_ACTIVATION_MIN = 24;
+const VEHICLE_MANUAL_STICK_CONFIRM_FRAMES = 2;
+const VEHICLE_MANUAL_ACQUIRE_GRACE_MS = 420;
+const MANUAL_INPUT_DIAGNOSTIC_MS = 500;
+// v28 mouse bridge. On this SA:DE/Wine build GET_PC_MOUSE_MOVEMENT becomes a
+// synthetic near-diagonal signal while a fixed CLEO camera owns the transform.
+// Instead of integrating that broken signal, a confident gesture temporarily
+// releases camera ownership back to GTA, where native mouse-look is correct.
+const NATIVE_MOUSE_BRIDGE_TRIGGER_VARIATION = 0.82;
+const NATIVE_MOUSE_BRIDGE_TRIGGER_RESIDUAL = 1.05;
+const NATIVE_MOUSE_BRIDGE_TRIGGER_CURSOR_PIXELS = 1.0;
+const NATIVE_MOUSE_BRIDGE_MIN_HOLD_MS = 260;
+const NATIVE_MOUSE_BRIDGE_IDLE_RELEASE_MS = 620;
+const NATIVE_MOUSE_BRIDGE_MAX_HOLD_MS = 15000;
+// Vehicle free-look must not bounce between native and scripted ownership every
+// few hundred milliseconds. Keep native ownership sticky after a real mouse
+// gesture and only hand back once the view has been idle for long enough.
+const VEHICLE_MOUSE_BRIDGE_MIN_HOLD_MS = 420;
+const VEHICLE_MOUSE_BRIDGE_IDLE_RELEASE_MS = 1800;
+const VEHICLE_MOUSE_BRIDGE_HIGH_SPEED_IDLE_RELEASE_MS = 3000;
+const VEHICLE_MOUSE_BRIDGE_HIGH_SPEED_KMH = 60;
+const VEHICLE_MOUSE_BRIDGE_REENTRY_COOLDOWN_MS = 420;
+// Mouse deltas are already frame deltas, so they are applied directly.
+// Analogue-stick values represent a held deflection and therefore drive an
+// angular velocity that is multiplied by dt. Keeping those paths separate
+// makes controller free-look independent of frame rate.
+const MANUAL_MOUSE_YAW_RADIANS_PER_UNIT = 0.0055;
+const MANUAL_MOUSE_PITCH_RADIANS_PER_UNIT = 0.0036;
+const MANUAL_STICK_YAW_RADIANS_PER_SECOND = (155 * Math.PI) / 180;
+const MANUAL_STICK_PITCH_RADIANS_PER_SECOND = (110 * Math.PI) / 180;
 const VEHICLE_MIN_ORBIT_PITCH = -0.20;
 const VEHICLE_MAX_ORBIT_PITCH = 0.65;
 const CameraControl = {
@@ -44,6 +76,67 @@ const CameraControl = {
   MANUAL: 1,
 };
 const COLLISION_EMERGENCY_GRACE_MS = 220;
+const VEHICLE_ANCHOR_ACQUIRE_MS = 120;
+const VEHICLE_ENTER_FALLBACK_MS = 1400;
+const MANUAL_COLLISION_UPDATE_MS = 16;
+const SPRING_PATH_VALIDATION_MS = 33;
+const CAMERA_GROUND_CLEARANCE = 0.35;
+const VEHICLE_SPEED_FILTER_TIME_CONSTANT = 0.10;
+// Camera composition reacts more slowly than gameplay state. A separate
+// profile-speed filter prevents small/high-frequency velocity errors from
+// repeatedly pulling the camera in/out at high speed.
+const VEHICLE_CAMERA_SPEED_FILTER_TIME_CONSTANT = 0.28;
+const ON_FOOT_SPEED_FILTER_TIME_CONSTANT = 0.075;
+// Position delta occasionally spikes above 100 km/h for a walking ped on this
+// runtime. Reject impossible one-frame pedestrian speeds before they reach the
+// camera profile; legitimate SA sprint/bike/vehicle movement is unaffected.
+const ON_FOOT_MAX_PLAUSIBLE_SPEED_MPS = 13.0;
+const ON_FOOT_SPIKE_RATIO = 2.75;
+const VEHICLE_DRIFT_FILTER_TIME_CONSTANT = 0.30;
+const AIRBORNE_CONFIRM_MS = 120;
+// SA:DE can report a small persistent GET_PC_MOUSE_MOVEMENT vector even while
+// the physical mouse is idle (observed around 1.7,1.7). Learn that idle bias
+// during camera acquisition and subtract it before deciding user intent.
+const MOUSE_BASELINE_TRACK_ALPHA = 0.12;
+const MOUSE_BASELINE_CALIBRATION_ALPHA = 0.35;
+const MOUSE_BASELINE_MAX_LEARN_DELTA = 5.5;
+const MOUSE_RESIDUAL_DEADZONE = 0.35;
+// The DE binding can sit on a stable +3,+3-ish value even with the physical
+// mouse idle. v22 distinguishes that stable signature from actual movement
+// using temporal variation and, when available, OS cursor displacement.
+const MOUSE_IDLE_DIAGONAL_MAX_MAGNITUDE = 5.5;
+const MOUSE_IDLE_DIAGONAL_AXIS_DELTA = 0.40;
+const MOUSE_RAW_VARIATION_TRIGGER = 0.70;
+const MOUSE_RAW_STABLE_VARIATION = 0.35;
+const MOUSE_GESTURE_LATCH_MS = 180;
+const MOUSE_CURSOR_TRIGGER_PIXELS = 2.0;
+const MOUSE_CURSOR_MAX_DELTA_PIXELS = 120;
+const MOUSE_CURSOR_TO_DELTA_SCALE = 0.35;
+const VEHICLE_HIGH_SPEED_SPRING_START_KMH = 70;
+const VEHICLE_HIGH_SPEED_SPRING_FULL_KMH = 160;
+const VEHICLE_HIGH_SPEED_SPRING_MAX_BOOST = 1.28;
+const VEHICLE_HIGH_SPEED_MAX_RELATIVE_LAG_LOW = 1.60;
+const VEHICLE_HIGH_SPEED_MAX_RELATIVE_LAG_HIGH = 0.90;
+const VEHICLE_VISUAL_ANCHOR_START_KMH = 70;
+const VEHICLE_VISUAL_ANCHOR_FULL_KMH = 155;
+const VEHICLE_VISUAL_ANCHOR_RESET_DISTANCE = 3.0;
+const VEHICLE_VISUAL_ANCHOR_MAX_ERROR_LOW = 0.18;
+const VEHICLE_VISUAL_ANCHOR_MAX_ERROR_HIGH = 0.55;
+const VEHICLE_DIRECTION_FILTER_TIME_CONSTANT = 0.13;
+const VEHICLE_STEERING_FILTER_TIME_CONSTANT = 0.16;
+const HIGH_SPEED_DIAGNOSTIC_MS = 1000;
+// v23: On this SA:DE/Wine setup Mouse.GetMovement() is not a trustworthy
+// physical-mouse signal: logs show equal X/Y synthetic values while the OS
+// cursor remains stationary. The vehicle camera therefore defaults to GTA's
+// native orbit camera. The mod only adjusts the native behind-camera tweak in
+// coarse buckets, so mouse/right-stick free-look and engine interpolation stay
+// fully native and high-speed transform jitter cannot be introduced by a
+// per-frame fixed camera.
+const NATIVE_VEHICLE_TWEAK_UPDATE_MS = 140;
+// Five hysteretic speed bands make the native vehicle camera evolve more
+// gradually than the old 3-step setup without rewriting opcode 09EF every
+// frame. Context (drift/acceleration/airborne) is quantized separately.
+const NATIVE_VEHICLE_SPEED_BUCKETS = [45, 80, 120, 155];
 // F5/V changes the profile owned by this script. Do not call
 // SetPlayerInCarMode here: its values are GTA camera modes (including
 // Top-Down), not Close/Standard/Wide distances, and changing that native
@@ -58,12 +151,12 @@ const DEFAULTS = {
   enabled: true,
   manualOverride: true,
   manualOverrideThreshold: 24,
-  manualFreeMs: 1100,
-  manualBlendMs: 650,
-  recenterLowSpeedMs: 1800,
-  recenterNormalSpeedMs: 1100,
-  recenterHighSpeedMs: 650,
-  anchorTransitionMs: 320,
+  manualFreeMs: 900,
+  manualBlendMs: 520,
+  recenterLowSpeedMs: 1550,
+  recenterNormalSpeedMs: 950,
+  recenterHighSpeedMs: 520,
+  anchorTransitionMs: 280,
   collisionEnabled: true,
   collisionProbeRadius: 0.22,
   collisionUpdateMs: 33,
@@ -71,18 +164,23 @@ const DEFAULTS = {
   toggleHotkeyEnabled: true,
   verticalTracking: 0.58,
   airborneVerticalTracking: 0.23,
-  positionFrequencyHz: 4.5,
+  positionFrequencyHz: 5.2,
   positionDampingRatio: 1.0,
-  targetFrequencyHz: 5.2,
+  targetFrequencyHz: 6.0,
   targetDampingRatio: 1.0,
-  collisionFrequencyHz: 7.0,
+  collisionFrequencyHz: 8.0,
   collisionDampingRatio: 1.0,
-  driftVelocityInfluence: 0.42,
+  nativeOnFootCamera: false,
+  nativeOnFootDynamicFov: true,
+  nativeVehicleCamera: false,
+  nativeVehicleDynamicFov: true,
+  nativeVehicleContextualTweak: true,
+  driftVelocityInfluence: 0.28,
   driftMinSpeedKmh: 22,
-  driftDistance: 0.65,
-  vehicleYawDelayMs: 120,
-  vehicleYawFollowStrength: 0.70,
-  maxSteeringYawBiasDegrees: 7,
+  driftDistance: 0.35,
+  vehicleYawDelayMs: 180,
+  vehicleYawFollowStrength: 0.62,
+  maxSteeringYawBiasDegrees: 4,
   reverseMinSpeedKmh: 3,
   reverseEnterHoldMs: 280,
   reverseExitHoldMs: 420,
@@ -92,35 +190,42 @@ const DEFAULTS = {
   airborneExitVerticalSpeed: 4 / 3.6,
   landingMinAirborneMs: 180,
   landingDurationMs: 220,
+  vehicleDriftFovBoost: 2.0,
+  vehicleAccelerationFovBoost: 2.4,
+  vehicleBrakingFovReduction: 1.2,
+  onFootShoulderOffset: 0.34,
+  onFootSprintShoulderOffset: 0.20,
+  onFootTurnLookAhead: 0.65,
+  onFootSprintTurnLookAhead: 1.05,
   collisionSafetyMargin: 0.20,
   collisionEmergencyDistance: 1.45,
   velocityDirectionThresholdMps: 0.35,
   // Distances are stored in metres here and as centimetres in the INI file.
-  idleDistance: 3.65,
-  idleHeight: 1.65,
+  idleDistance: 3.45,
+  idleHeight: 1.60,
   idleFov: 72,
-  walkDistance: 3.8,
-  walkHeight: 1.62,
-  walkFov: 73,
-  jogDistance: 4.15,
-  jogHeight: 1.58,
-  jogFov: 75,
-  sprintDistance: 4.55,
-  sprintHeight: 1.52,
-  sprintFov: 77,
+  walkDistance: 3.65,
+  walkHeight: 1.58,
+  walkFov: 74,
+  jogDistance: 4.00,
+  jogHeight: 1.53,
+  jogFov: 76,
+  sprintDistance: 4.40,
+  sprintHeight: 1.48,
+  sprintFov: 79,
   aimFov: 59,
   carSlowDistance: 5.25,
   carSlowHeight: 1.85,
   carSlowFov: 74,
   carNormalDistance: 5.65,
   carNormalHeight: 1.95,
-  carNormalFov: 76,
+  carNormalFov: 77,
   carFastDistance: 6.1,
   carFastHeight: 2.05,
-  carFastFov: 79,
+  carFastFov: 82,
   motorbikeDistance: 5.6,
   motorbikeHeight: 1.9,
-  motorbikeFov: 75,
+  motorbikeFov: 77,
   bicycleDistance: 4.8,
   bicycleHeight: 1.7,
   bicycleFov: 72,
@@ -143,19 +248,49 @@ let springPositionVelocity = { x: 0, y: 0, z: 0 };
 let springTarget = null;
 let springTargetVelocity = { x: 0, y: 0, z: 0 };
 let lastActorSample = null;
-let lastFrameAt = Date.now();
+let lastFrameAt = getGameTimerMs();
 let manualFreeUntil = 0;
 let manualRecenterUntil = 0;
 let manualCameraDirection = null;
 let manualControlActive = false;
 let manualPitchOffset = 0;
-let vehicleManualInputFrames = 0;
+let vehicleManualStickFrames = 0;
+let vehicleManualInputSuppressedUntil = 0;
+let lastManualInputDiagnosticAt = 0;
+let lastHighSpeedDiagnosticAt = 0;
+let mouseMovementBaselineX = null;
+let mouseMovementBaselineY = null;
+let mouseBaselineCalibrateUntil = 0;
+let previousRawMouseX = null;
+let previousRawMouseY = null;
+let previousMouseCursorPosition = null;
+let mouseGestureUntil = 0;
+let nativeMouseBridgeActive = false;
+let nativeMouseBridgeEnteredAt = 0;
+let nativeMouseBridgeLastGestureAt = 0;
+let nativeMouseBridgeAnchorKey = "";
+let nativeMouseBridgeSuppressedUntil = 0;
+let lastNativeMouseBridgeDiagnosticAt = 0;
+let vehicleVisualAnchor = null;
+let vehicleVisualAnchorVelocity = { x: 0, y: 0, z: 0 };
+let vehicleVisualAnchorIdentity = null;
+let nativeVehicleTweakActive = false;
+let nativeVehicleTweakModel = -1;
+let nativeVehicleTweakKey = "";
+let nativeVehicleSpeedBucket = 0;
+let nativeVehicleTweakCapability = null;
+let lastNativeVehicleTweakAt = 0;
+let nativeCameraFovActive = false;
 let vehicleCameraControl = CameraControl.AUTO;
 let vehicleOrbitYaw = null;
 let vehicleOrbitPitch = 0;
-let vehicleRecenterYaw = 0;
-let vehicleRecenterPitch = 0;
-let lastSpringAnchor = null;
+let vehicleRecenterStartedAt = 0;
+let vehicleRecenterFromYaw = null;
+let vehicleRecenterFromPitch = 0;
+// World-space springs are transported by the vehicle's translation each
+// frame. The spring then smooths only the camera's relative offset/orientation
+// instead of physically lagging metres behind a fast-moving car.
+let springAnchorPosition = null;
 let stationarySince = 0;
 let anchorTransition = null;
 let vehicleFollowDirection = null;
@@ -168,8 +303,7 @@ let interactionState = "onFoot";
 let interactionStateStartedAt = 0;
 let collisionCache = null;
 let collisionEmergencySince = 0;
-let fovSpringValue = null;
-let fovSpringVelocity = 0;
+let lastSpringPathValidationAt = 0;
 let lastToggleDown = false;
 let lastReloadDown = false;
 let lastCameraDistanceDown = false;
@@ -186,7 +320,7 @@ const cameraLayoutController = {
   revision: 0,
 
   requestNext(source) {
-    const now = Date.now();
+    const now = getGameTimerMs();
     const current = this.getParameters(now);
     this.layout = (this.layout + 1) % VEHICLE_CAMERA_LAYOUT_NAMES.length;
     this.source = source;
@@ -195,7 +329,8 @@ const cameraLayoutController = {
     log(
       "Adaptive Third-Person Camera vehicle layout=" +
         VEHICLE_CAMERA_LAYOUT_NAMES[this.layout] +
-        " (" + source + "; script profile only)"
+        " (" + source + "; " +
+        (config.nativeVehicleCamera ? "native tweak" : "script profile") + ")"
     );
   },
 
@@ -254,24 +389,30 @@ if (!keyboardInputCapability) {
 }
 log(
   "Adaptive Third-Person Camera loaded. build=" + MOD_BUILD_ID +
-    "; F5 cycles vehicle layouts; F9 toggles the camera; F11 reloads the INI."
+    "; onFootBackend=" + (config.nativeOnFootCamera ? "native-orbit" : "scripted+native-mouse-bridge") +
+    "; vehicleBackend=" + (config.nativeVehicleCamera ? "hybrid-native" : "scripted+native-mouse-bridge") +
+    "; F5 cycles vehicle layouts; V remains GTA-native; F9 toggles the camera; F11 reloads the INI."
 );
 
 while (true) {
   wait(0);
 
-  const now = Date.now();
+  const now = getGameTimerMs();
   const rawDt = Math.max(0, (now - lastFrameAt) / 1000);
   const dt = clamp(rawDt, 0.001, 0.05);
   lastFrameAt = now;
   if (rawDt > 0.08) {
     springPositionVelocity = scaleVector(springPositionVelocity, 0.10);
     springTargetVelocity = scaleVector(springTargetVelocity, 0.10);
-    fovSpringVelocity *= 0.10;
   }
   handleHotkeys();
 
-  if (!config.enabled || !player.isPlaying() || cameraTransitionIsActive()) {
+  if (
+    !config.enabled ||
+    !player.isPlaying() ||
+    cameraTransitionIsActive() ||
+    !isPlayerControlAvailable()
+  ) {
     cameraLayoutController.resetInputState();
     releaseCamera();
     lastActorSample = null;
@@ -284,6 +425,17 @@ while (true) {
     cameraLayoutController.resetInputState();
     releaseCamera();
     lastActorSample = null;
+    continue;
+  }
+
+  // During the enter animation, and for a short period after the game first
+  // reports DRIVING, keep the native camera in charge. This avoids anchoring
+  // the scripted camera to a door animation or an unstable vehicle handle.
+  if (sample.interactionState === "entering" ||
+      (sample.interactionState === "driving" && !sample.vehicle)) {
+    cameraLayoutController.resetInputState();
+    releaseCamera();
+    lastActorSample = sample;
     continue;
   }
 
@@ -316,27 +468,149 @@ while (true) {
     continue;
   }
 
-  const manualInput = readManualCameraInput();
-  const vehicleCameraIntent = !!sample.vehicle &&
-    (Math.abs(manualInput.mouseX) >= VEHICLE_MANUAL_MOUSE_DEADZONE ||
-      Math.abs(manualInput.mouseY) >= VEHICLE_MANUAL_MOUSE_DEADZONE ||
-      Math.abs(manualInput.stickX) >= VEHICLE_MANUAL_STICK_DEADZONE ||
-      Math.abs(manualInput.stickY) >= VEHICLE_MANUAL_STICK_DEADZONE);
-  vehicleManualInputFrames = vehicleCameraIntent
-    ? Math.min(VEHICLE_MANUAL_CONFIRM_FRAMES, vehicleManualInputFrames + 1)
+  // Native fallback: useful for troubleshooting, while v28 defaults to scripted composition + native mouse bridge.
+  // GET_PC_MOUSE_MOVEMENT / Mouse.GetMovement is a game-level camera input
+  // signal (and can also represent the right stick), not guaranteed raw mouse
+  // input. On this runtime it is unreliable while a fixed script camera owns
+  // the transform. Therefore GTA owns normal on-foot orbit by default too.
+  // When enabled, GTA owns on-foot orbit. v27 keeps this only as a fallback;
+  // the default is scripted composition with reconstructed mouse free-look.
+  if (!sample.vehicle && config.nativeOnFootCamera) {
+    resetNativeVehicleTweak();
+    releaseScriptCameraForNativeOrbit();
+    applyNativeOnFootDynamicEffects(sample, now);
+    lastActorSample = sample;
+    continue;
+  }
+
+  // Vehicle camera ownership is intentionally native by default. The log from
+  // this runtime shows Mouse.GetMovement() returning a synthetic diagonal
+  // value even while the physical cursor does not move. A fixed scripted
+  // camera can therefore never offer reliable mouse orbiting here. Let GTA
+  // own the vehicle transform/input and only apply coarse camera tweaks.
+  if (sample.vehicle && config.nativeVehicleCamera) {
+    // Do not call readManualCameraInput() in this branch. On this SA:DE/Wine
+    // runtime GET_PC_MOUSE_MOVEMENT reports a synthetic diagonal signal and
+    // cannot be used to drive a reliable scripted orbit. GTA therefore keeps
+    // full ownership of vehicle orbit/input; CLEO only changes coarse follow
+    // geometry through SET_VEHICLE_CAMERA_TWEAK.
+    releaseScriptCameraForNativeOrbit();
+    applyNativeVehicleCamera(sample, now);
+    applyNativeVehicleDynamicEffects(sample, now);
+    lastActorSample = sample;
+    continue;
+  } else if (!sample.vehicle) {
+    resetNativeVehicleTweak();
+  }
+
+  const manualInput = readManualCameraInput(now);
+
+  // v28: never integrate the unreliable DE mouse delta into the scripted
+  // camera. A confident gesture is used only as a *handoff trigger*. GTA then
+  // owns the camera while the mouse is active, giving us its real native
+  // mouse-look. After a short idle period we capture that native orbit and
+  // smoothly resume the dynamic scripted camera from the same view.
+  const mouseBridgeGesture = config.manualOverride &&
+    now >= nativeMouseBridgeSuppressedUntil &&
+    isConfidentNativeMouseBridgeGesture(manualInput);
+
+  if (mouseBridgeGesture) {
+    nativeMouseBridgeLastGestureAt = now;
+    if (!nativeMouseBridgeActive) {
+      enterNativeMouseBridge(sample, now, manualInput);
+    }
+  }
+
+  if (nativeMouseBridgeActive) {
+    const sameAnchor = nativeMouseBridgeAnchorKey === getMouseBridgeAnchorKey(sample);
+    if (!sameAnchor) {
+      cancelNativeMouseBridge();
+    } else {
+      releaseScriptCameraForNativeOrbit();
+      if (sample.vehicle) {
+        // Do not rewrite 09EF speed/drift buckets while native free-look owns
+        // the camera. Those discrete native-camera changes were visible as
+        // small pops during fast driving. Keep the currently selected native
+        // view stable until the scripted camera takes over again.
+        applyNativeVehicleDynamicEffects(sample, now);
+      } else {
+        resetNativeVehicleTweak();
+        applyNativeOnFootDynamicEffects(sample, now);
+      }
+
+      const heldFor = now - nativeMouseBridgeEnteredAt;
+      const idleFor = now - nativeMouseBridgeLastGestureAt;
+      const releaseIdleMs = sample.vehicle
+        ? ((sample.cameraSpeedKmh ?? sample.speedKmh) >= VEHICLE_MOUSE_BRIDGE_HIGH_SPEED_KMH
+            ? VEHICLE_MOUSE_BRIDGE_HIGH_SPEED_IDLE_RELEASE_MS
+            : VEHICLE_MOUSE_BRIDGE_IDLE_RELEASE_MS)
+        : NATIVE_MOUSE_BRIDGE_IDLE_RELEASE_MS;
+      const minimumHoldMs = sample.vehicle
+        ? VEHICLE_MOUSE_BRIDGE_MIN_HOLD_MS
+        : NATIVE_MOUSE_BRIDGE_MIN_HOLD_MS;
+      const shouldRelease =
+        heldFor >= minimumHoldMs &&
+        (idleFor >= releaseIdleMs ||
+          (!sample.vehicle && heldFor >= NATIVE_MOUSE_BRIDGE_MAX_HOLD_MS));
+
+      if (!shouldRelease) {
+        if (now - lastNativeMouseBridgeDiagnosticAt >= MANUAL_INPUT_DIAGNOSTIC_MS) {
+          lastNativeMouseBridgeDiagnosticAt = now;
+          log(
+            "Adaptive Third-Person Camera native mouse bridge active" +
+              " rawMouse=(" + manualInput.rawMouseX.toFixed(1) + "," + manualInput.rawMouseY.toFixed(1) + ")" +
+              " variation=" + manualInput.rawVariation.toFixed(1) +
+              " cursorDelta=(" + manualInput.cursorDeltaX.toFixed(1) + "," + manualInput.cursorDeltaY.toFixed(1) + ")" +
+              " idleMs=" + idleFor.toFixed(0)
+          );
+        }
+        lastActorSample = sample;
+        continue;
+      }
+
+      exitNativeMouseBridge(sample, now);
+    }
+  }
+
+  // Controller right-stick input remains safe to integrate directly. The mouse
+  // path above deliberately does not call beginManualOverride with mouse data.
+  const stickActivationThreshold = Math.max(
+    VEHICLE_MANUAL_STICK_ACTIVATION_MIN,
+    config.manualOverrideThreshold
+  );
+  const stickIntent = config.manualOverride &&
+    manualInput.stickMagnitude >= stickActivationThreshold;
+  vehicleManualStickFrames = stickIntent
+    ? Math.min(VEHICLE_MANUAL_STICK_CONFIRM_FRAMES, vehicleManualStickFrames + 1)
     : 0;
-  const manualInputActive = config.manualOverride && (sample.vehicle
-    ? vehicleManualInputFrames >= VEHICLE_MANUAL_CONFIRM_FRAMES
-    : manualInput.magnitude >= config.manualOverrideThreshold);
-  if (manualInputActive) {
+  const confirmedStickIntent =
+    vehicleManualStickFrames >= VEHICLE_MANUAL_STICK_CONFIRM_FRAMES;
+
+  if ((mouseBridgeGesture || stickIntent || manualInput.rawVariation >= 0.70 ||
+      Math.abs(manualInput.cursorDeltaX) >= 1 || Math.abs(manualInput.cursorDeltaY) >= 1) &&
+      now - lastManualInputDiagnosticAt >= MANUAL_INPUT_DIAGNOSTIC_MS) {
+    lastManualInputDiagnosticAt = now;
+    log(
+      "Adaptive Third-Person Camera input diagnostic" +
+        " bridgeGesture=" + (mouseBridgeGesture ? "yes" : "no") +
+        " rawMouse=(" + manualInput.rawMouseX.toFixed(1) + "," + manualInput.rawMouseY.toFixed(1) + ")" +
+        " baseline=(" + manualInput.mouseBaselineX.toFixed(1) + "," + manualInput.mouseBaselineY.toFixed(1) + ")" +
+        " residual=(" + manualInput.mouseX.toFixed(1) + "," + manualInput.mouseY.toFixed(1) + ")" +
+        " variation=" + manualInput.rawVariation.toFixed(1) +
+        " cursorDelta=(" + manualInput.cursorDeltaX.toFixed(1) + "," + manualInput.cursorDeltaY.toFixed(1) + ")" +
+        " stickMag=" + manualInput.stickMagnitude.toFixed(1)
+    );
+  }
+
+  if (confirmedStickIntent) {
     if (!sample.vehicle) {
-      // Manual camera movement is activity too. Restart the full idle delay so
-      // sway cannot resume immediately after the user releases the mouse.
       stationarySince = now;
       sample.idleElapsedMs = 0;
       sample.idleActive = false;
     }
-    beginManualOverride(sample, manualInput, now, dt);
+    // Suppress the broken mouse component when the right stick is the real
+    // manual source.
+    beginManualOverride(sample, { ...manualInput, mouseX: 0, mouseY: 0, mouseMagnitude: 0 }, now, dt);
   }
 
   if (cameraSessionDisabled) {
@@ -391,9 +665,17 @@ function handleVehicleCameraLayout(sample) {
   const cameraDown = isVehicleCameraControlActive();
   const distanceHotkeyDown = isKeyPressed(VK_CAMERA_DISTANCE);
   const distanceHotkeyPressed = distanceHotkeyDown && !lastCameraDistanceDown;
-  const fallbackPressed = cameraDown && !lastVehicleCameraDown;
-  if (distanceHotkeyPressed) cameraLayoutController.requestNext("F5");
-  else if (fallbackPressed) cameraLayoutController.requestNext("V/controller fallback");
+
+  if (distanceHotkeyPressed) {
+    cameraLayoutController.requestNext("F5");
+  } else if (!config.nativeVehicleCamera) {
+    // Scripted backend historically used V/controller input as a local
+    // Close/Standard/Wide cycle. In native backend mode GTA must receive V
+    // untouched so its own camera/free-look state remains authoritative.
+    const fallbackPressed = cameraDown && !lastVehicleCameraDown;
+    if (fallbackPressed) cameraLayoutController.requestNext("V/controller fallback");
+  }
+
   lastVehicleCameraDown = cameraDown;
   lastCameraDistanceDown = distanceHotkeyDown;
 }
@@ -411,7 +693,7 @@ function updateAimCameraState(sample, dt) {
     releaseScriptCameraForAim();
     aimCameraActive = true;
   } else if (!aimingOnFoot && aimCameraActive && aimBlend <= 0) {
-    applyRequestedFov(getOnFootFov(sample), 230, Date.now());
+    applyRequestedFov(getOnFootFov(sample), 230, getGameTimerMs());
     aimCameraActive = false;
   }
 }
@@ -430,14 +712,16 @@ function releaseScriptCameraForAim() {
 }
 
 function applyNativeAimCamera() {
-  applyRequestedFov(config.aimFov, 180, Date.now());
+  applyRequestedFov(config.aimFov, 180, getGameTimerMs());
 }
 
 function getOnFootFov(sample) {
   const speed = sample?.speedMps || 0;
   if (speed < 0.65) return config.idleFov;
-  if (speed < 2.0) return config.jogFov;
-  return config.sprintFov;
+  if (speed < 2.0) {
+    return lerp(config.walkFov, config.jogFov, clamp((speed - 0.65) / 1.35, 0, 1));
+  }
+  return lerp(config.jogFov, config.sprintFov, clamp((speed - 2.0) / 2.0, 0, 1));
 }
 
 function applyRequestedFov(targetFov, durationMs, now) {
@@ -447,7 +731,7 @@ function applyRequestedFov(targetFov, durationMs, now) {
     if (now - fovProbe.startedAt < 220) return;
     const measured = getCameraFov();
     fovCapability = Number.isFinite(measured) &&
-      Math.abs(measured - fovProbe.baseline) >= 1;
+      Math.abs(measured - fovProbe.baseline) >= 0.4;
     log(
       "Adaptive Third-Person Camera: FOV lerp capability=" +
         (fovCapability ? "available" : "unavailable")
@@ -464,7 +748,7 @@ function applyRequestedFov(targetFov, durationMs, now) {
       log("Adaptive Third-Person Camera: FOV readback unavailable; FOV disabled for this session.");
       return;
     }
-    const probeTarget = baseline > 50 ? baseline - 5 : baseline + 5;
+    const probeTarget = baseline > 50 ? baseline - 1.5 : baseline + 1.5;
     if (!setLerpFov(baseline, probeTarget, 150)) {
       fovCapability = false;
       log("Adaptive Third-Person Camera: FOV lerp binding unavailable; FOV disabled for this session.");
@@ -550,17 +834,44 @@ function cameraAnchorChanged(previous, current) {
 
   const previousAnchor = previous.vehicle ? previous.kind : "onFoot";
   const currentAnchor = current.vehicle ? current.kind : "onFoot";
-  return previousAnchor !== currentAnchor;
+  if (previousAnchor !== currentAnchor) return true;
+
+  // A mission/script can replace the player's vehicle without changing the
+  // broad kind (car -> car). Treat a confirmed handle change as a new anchor
+  // so velocity and springs are never carried between unrelated vehicles.
+  if (previous.vehicle && current.vehicle &&
+      previous.vehicleIdentity !== null && current.vehicleIdentity !== null) {
+    return previous.vehicleIdentity !== current.vehicleIdentity;
+  }
+  return false;
 }
 
 function beginAnchorTransition(sample, now) {
-  lastSpringAnchor = null;
-  vehicleFollowDirection = null;
-  collisionCache = null;
-  vehicleManualInputFrames = 0;
+  vehicleManualStickFrames = 0;
+  vehicleManualInputSuppressedUntil = sample.vehicle
+    ? now + VEHICLE_MANUAL_ACQUIRE_GRACE_MS
+    : 0;
+  mouseMovementBaselineX = null;
+  mouseMovementBaselineY = null;
+  mouseBaselineCalibrateUntil = sample.vehicle
+    ? now + VEHICLE_MANUAL_ACQUIRE_GRACE_MS
+    : 0;
+  previousRawMouseX = null;
+  previousRawMouseY = null;
+  previousMouseCursorPosition = null;
+  mouseGestureUntil = 0;
+  cancelNativeMouseBridge();
+  vehicleVisualAnchor = null;
+  vehicleVisualAnchorVelocity = { x: 0, y: 0, z: 0 };
+  vehicleVisualAnchorIdentity = sample.vehicle ? sample.vehicleIdentity : null;
+  lastManualInputDiagnosticAt = 0;
   vehicleCameraControl = CameraControl.AUTO;
   vehicleOrbitYaw = null;
   vehicleOrbitPitch = 0;
+  vehicleRecenterStartedAt = 0;
+  vehicleRecenterFromYaw = null;
+  vehicleRecenterFromPitch = 0;
+  springAnchorPosition = null;
   lastVehicleGeometryDiagnosticKey = null;
   // A manual orbit belongs to its previous anchor. Carrying vehicle free-look
   // into the on-foot countdown leaves OnFootStand in Manual and can look like
@@ -592,13 +903,129 @@ function getAnchorTransitionState(now) {
   return { ...anchorTransition, amount };
 }
 
-function beginManualOverride(sample, input, now, dt) {
+function getMouseBridgeAnchorKey(sample) {
+  if (!sample) return "none";
+  if (!sample.vehicle) return "onFoot";
+  return "vehicle:" + (sample.vehicleIdentity ?? sample.kind ?? "unknown");
+}
+
+function isConfidentNativeMouseBridgeGesture(input) {
+  if (!input) return false;
+  const cursorGesture =
+    Math.abs(input.cursorDeltaX) >= NATIVE_MOUSE_BRIDGE_TRIGGER_CURSOR_PIXELS ||
+    Math.abs(input.cursorDeltaY) >= NATIVE_MOUSE_BRIDGE_TRIGGER_CURSOR_PIXELS;
+  const variationGesture = input.rawVariation >= NATIVE_MOUSE_BRIDGE_TRIGGER_VARIATION;
+  const residualGesture = input.mouseMagnitude >= NATIVE_MOUSE_BRIDGE_TRIGGER_RESIDUAL;
+
+  // The observed idle bug is near-diagonal. A residual alone is accepted only
+  // when accompanied by temporal variation; this prevents +1.4,+1.4 idle noise
+  // from keeping the native bridge open forever. Cursor movement is strongest.
+  return cursorGesture || variationGesture ||
+    (residualGesture && input.rawVariation >= 0.55);
+}
+
+function enterNativeMouseBridge(sample, now, input) {
+  nativeMouseBridgeActive = true;
+  nativeMouseBridgeEnteredAt = now;
+  nativeMouseBridgeLastGestureAt = now;
+  nativeMouseBridgeAnchorKey = getMouseBridgeAnchorKey(sample);
+  lastNativeMouseBridgeDiagnosticAt = 0;
+  vehicleManualStickFrames = 0;
+  log(
+    "Adaptive Third-Person Camera scripted -> native mouse bridge" +
+      " anchor=" + nativeMouseBridgeAnchorKey +
+      " variation=" + input.rawVariation.toFixed(1) +
+      " cursorDelta=(" + input.cursorDeltaX.toFixed(1) + "," + input.cursorDeltaY.toFixed(1) + ")"
+  );
+}
+
+function exitNativeMouseBridge(sample, now) {
+  const camera = getCameraState();
   if (sample.vehicle) {
-    if (vehicleCameraControl === CameraControl.AUTO || vehicleOrbitYaw === null) {
+    // Seed the scripted orbit from the native camera position. This preserves
+    // the angle chosen with the real GTA mouse-look instead of snapping behind
+    // the vehicle when CLEO takes ownership again.
+    if (camera?.position) {
+      const offset = subtractVector(camera.position, sample.position);
+      const horizontalDistance = Math.sqrt(offset.x * offset.x + offset.y * offset.y);
+      if (horizontalDistance > 0.25) {
+        vehicleOrbitYaw = Math.atan2(offset.y, offset.x);
+        const profileValue = buildProfile(sample);
+        vehicleOrbitPitch = clamp(
+          Math.atan2(offset.z - profileValue.height, horizontalDistance),
+          VEHICLE_MIN_ORBIT_PITCH,
+          VEHICLE_MAX_ORBIT_PITCH
+        );
+      } else {
+        initializeVehicleOrbit(sample);
+      }
+    } else {
       initializeVehicleOrbit(sample);
     }
     vehicleCameraControl = CameraControl.MANUAL;
     manualControlActive = true;
+    vehicleRecenterStartedAt = 0;
+    vehicleRecenterFromYaw = null;
+    vehicleRecenterFromPitch = vehicleOrbitPitch;
+  } else {
+    if (camera?.forward) {
+      const horizontal = { x: camera.forward.x, y: camera.forward.y, z: 0 };
+      if (vectorLength(horizontal) > 0.05) {
+        manualCameraDirection = normalizeVector(horizontal);
+      }
+      // Convert native view pitch to the target-height convention used by the
+      // scripted on-foot camera. Clamp prevents extreme look-up/down handoffs.
+      const horizontalForward = Math.max(0.05, Math.sqrt(
+        camera.forward.x * camera.forward.x + camera.forward.y * camera.forward.y
+      ));
+      const viewPitch = Math.atan2(camera.forward.z, horizontalForward);
+      manualPitchOffset = clamp(Math.tan(viewPitch), -0.45, 0.45);
+    }
+    manualCameraDirection = manualCameraDirection || sample.forward;
+    manualControlActive = true;
+    stationarySince = now;
+  }
+
+  manualFreeUntil = now + config.manualFreeMs;
+  manualRecenterUntil = manualFreeUntil + getRecenterDelay(sample);
+  nativeMouseBridgeActive = false;
+  nativeMouseBridgeEnteredAt = 0;
+  nativeMouseBridgeLastGestureAt = 0;
+  nativeMouseBridgeAnchorKey = "";
+  nativeMouseBridgeSuppressedUntil = now + (sample.vehicle ? VEHICLE_MOUSE_BRIDGE_REENTRY_COOLDOWN_MS : 180);
+  previousRawMouseX = null;
+  previousRawMouseY = null;
+  mouseMovementBaselineX = null;
+  mouseMovementBaselineY = null;
+  lastNativeMouseBridgeDiagnosticAt = 0;
+  // Leave cameraApplied=false: initializeSpringIfNeeded will seed the spring
+  // directly from the native pose on the same frame.
+  log("Adaptive Third-Person Camera native mouse bridge -> scripted handoff");
+}
+
+function cancelNativeMouseBridge() {
+  nativeMouseBridgeActive = false;
+  nativeMouseBridgeEnteredAt = 0;
+  nativeMouseBridgeLastGestureAt = 0;
+  nativeMouseBridgeAnchorKey = "";
+  nativeMouseBridgeSuppressedUntil = 0;
+  lastNativeMouseBridgeDiagnosticAt = 0;
+}
+
+function beginManualOverride(sample, input, now, dt) {
+  if (sample.vehicle) {
+    const enteringManual =
+      vehicleCameraControl === CameraControl.AUTO || vehicleOrbitYaw === null;
+    if (enteringManual) {
+      initializeVehicleOrbit(sample);
+      log("Adaptive Third-Person Camera vehicle camera=AUTO -> MANUAL");
+    }
+    vehicleCameraControl = CameraControl.MANUAL;
+    manualControlActive = true;
+    // Any fresh input cancels an in-progress recenter and starts a new hold.
+    vehicleRecenterStartedAt = 0;
+    vehicleRecenterFromYaw = null;
+    vehicleRecenterFromPitch = vehicleOrbitPitch;
   } else if (!manualControlActive) {
     const camera = getCameraState();
     if (camera?.forward) {
@@ -613,14 +1040,20 @@ function beginManualOverride(sample, input, now, dt) {
     collisionCache = null;
   }
 
-  const yawDelta = input.stickMagnitude > input.mouseMagnitude
-    ? normalizeStickAxis(input.stickX) * 2.8 * dt
-    : input.mouseX * 0.004;
-  const pitchDelta = input.stickMagnitude > input.mouseMagnitude
-    ? normalizeStickAxis(input.stickY) * 1.8 * dt
-    : input.mouseY * 0.0025;
+  const usingStick = input.stickMagnitude > input.mouseMagnitude;
+  const frameDt = clamp(dt || 1 / 60, 0.001, 0.05);
+  const yawDelta = usingStick
+    ? clamp(input.stickX / 128, -1, 1) *
+      MANUAL_STICK_YAW_RADIANS_PER_SECOND * frameDt
+    : input.mouseX * MANUAL_MOUSE_YAW_RADIANS_PER_UNIT;
+  const pitchDelta = usingStick
+    ? clamp(input.stickY / 128, -1, 1) *
+      MANUAL_STICK_PITCH_RADIANS_PER_SECOND * frameDt
+    : input.mouseY * MANUAL_MOUSE_PITCH_RADIANS_PER_UNIT;
+
   if (sample.vehicle) {
-    // Manual input interrupts recentering and owns the orbit immediately.
+    // Vehicle manual mode owns the orbit. The vehicle heading must never
+    // overwrite this yaw while the user is looking around.
     vehicleOrbitYaw = normalizeAngleRadians(vehicleOrbitYaw + yawDelta);
     vehicleOrbitPitch = clamp(
       vehicleOrbitPitch - pitchDelta,
@@ -631,18 +1064,10 @@ function beginManualOverride(sample, input, now, dt) {
     manualCameraDirection = rotateHorizontal(manualCameraDirection, yawDelta);
     manualPitchOffset = clamp(manualPitchOffset - pitchDelta, -0.45, 0.45);
   }
-  if (sample.vehicle) {
-    // Hold while input is active; then return from this fixed starting angle.
-    // Do not recursively lerp the orbit on every frame of the return.
-    vehicleRecenterYaw = vehicleOrbitYaw;
-    vehicleRecenterPitch = vehicleOrbitPitch;
-    manualFreeUntil = now + Math.max(config.manualFreeMs, getRecenterDelay(sample));
-    manualRecenterUntil = manualFreeUntil + config.manualBlendMs;
-  } else {
-    const freeLookHold = config.manualFreeMs;
-    manualFreeUntil = now + freeLookHold;
-    manualRecenterUntil = manualFreeUntil + getRecenterDelay(sample);
-  }
+
+  const freeLookHold = config.manualFreeMs;
+  manualFreeUntil = now + freeLookHold;
+  manualRecenterUntil = manualFreeUntil + getRecenterDelay(sample);
 }
 
 function initializeVehicleOrbit(sample) {
@@ -662,9 +1087,9 @@ function initializeVehicleOrbit(sample) {
     }
   }
 
-  const autoDirection = sample.reverseActive
-    ? sample.stableVelocityDirection || sample.forward
-    : sample.forward;
+  // Keep the same orbit side when reversing. Flipping to travel direction
+  // here makes a 180-degree camera jump as reverse engages/disengages.
+  const autoDirection = sample.forward;
   vehicleOrbitYaw = cameraYawFromViewDirection(autoDirection);
   vehicleOrbitPitch = 0;
 }
@@ -672,9 +1097,26 @@ function initializeVehicleOrbit(sample) {
 function getAutoFollowWeight(sample, now) {
   if (sample.vehicle && vehicleOrbitYaw !== null &&
       vehicleCameraControl === CameraControl.MANUAL) {
-    return smoothstep(manualFreeUntil, manualRecenterUntil, now);
+    if ((sample.speedKmh || 0) < 3.0) return 0;
+    if (now <= manualFreeUntil || now <= manualRecenterUntil) return 0;
+
+    if (!vehicleRecenterStartedAt) {
+      vehicleRecenterStartedAt = now;
+      vehicleRecenterFromYaw = vehicleOrbitYaw;
+      vehicleRecenterFromPitch = vehicleOrbitPitch;
+      log("Adaptive Third-Person Camera vehicle camera=MANUAL -> RECENTER");
+    }
+
+    return smoothstep(
+      0,
+      Math.max(1, config.manualBlendMs),
+      now - vehicleRecenterStartedAt
+    );
   }
 
+  if (!sample.vehicle && manualCameraDirection && (sample.speedMps || 0) < 0.15) {
+    return 0;
+  }
   if (now <= manualFreeUntil) return 0;
   if (!manualCameraDirection) return 1;
   if (now <= manualRecenterUntil) return 0;
@@ -729,11 +1171,20 @@ function deriveAirState(vehicle, kind, verticalSpeed, previous, now) {
   const previousVerticalSpeed = previous?.velocity?.z || 0;
   const enterThreshold = config.airborneEnterVerticalSpeed;
   const exitThreshold = config.airborneExitVerticalSpeed;
+  const properAir = isVehicleInAirProper(vehicle);
+  const enterSignal = properAir === null
+    ? Math.abs(verticalSpeed) >= enterThreshold
+    : properAir && Math.abs(verticalSpeed) >= Math.min(enterThreshold, exitThreshold * 1.15);
 
   if (!wasAirborne) {
-    if (Math.abs(verticalSpeed) >= enterThreshold) {
-      if (!previous || !airborneSince) airborneSince = now;
-      return "airborne";
+    if (enterSignal) {
+      if (!airborneSince) airborneSince = now;
+      // A single frame over a crest or kerb is not enough to switch the
+      // vehicle profile. Rapid grounded/airborne oscillation was moving the
+      // target lead at high speed and looked like the camera briefly snapped
+      // backwards. Require a short confirmed air interval first.
+      if (now - airborneSince >= AIRBORNE_CONFIRM_MS) return "airborne";
+      return "grounded";
     }
     airborneSince = 0;
     return "grounded";
@@ -745,13 +1196,25 @@ function deriveAirState(vehicle, kind, verticalSpeed, previous, now) {
     airborneLongEnough &&
     previousVerticalSpeed < -exitThreshold &&
     verticalSpeed > previousVerticalSpeed + exitThreshold * 0.35 &&
-    verticalSpeed > -exitThreshold;
+    verticalSpeed > -exitThreshold &&
+    properAir !== true;
   if (landingSignal) landingUntil = now + config.landingDurationMs;
   if (now < landingUntil) return "landing";
 
-  if (Math.abs(verticalSpeed) >= exitThreshold) return "airborne";
+  if (properAir === true || Math.abs(verticalSpeed) >= exitThreshold) return "airborne";
   airborneSince = 0;
   return "grounded";
+}
+
+function isVehicleInAirProper(vehicle) {
+  if (!vehicle) return null;
+  try {
+    if (typeof vehicle.isInAirProper === "function") {
+      return !!vehicle.isInAirProper();
+    }
+  } catch (_) {}
+  const value = safeNative("IS_CAR_IN_AIR_PROPER", vehicle);
+  return value === null ? null : !!value;
 }
 
 function updateReverseState(sample, now) {
@@ -791,26 +1254,16 @@ function calculateSlipAngle(forward, velocityDirection, speedMps) {
   if (!velocityDirection || speedMps <= 0.1) return 0;
   const cross = Math.abs(cross2D(forward, velocityDirection));
   const dot = clamp(dotProduct(forward, velocityDirection), -1, 1);
-  return Math.abs((Math.atan2(cross, dot) * 180) / Math.PI);
+  const rawAngle = Math.abs((Math.atan2(cross, dot) * 180) / Math.PI);
+  // Straight reverse travel is 180 degrees from vehicle forward, but it is not
+  // a 180-degree drift. Fold the angle into 0..90 so forward and reverse both
+  // measure lateral slip rather than travel direction.
+  return Math.min(rawAngle, Math.abs(180 - rawAngle));
 }
 
 function driftVelocityWeight(slipAngleDegrees, speedKmh = Infinity) {
   if (config.driftVelocityInfluence <= 0 || speedKmh < config.driftMinSpeedKmh) return 0;
   return smoothstep(5, 30, slipAngleDegrees) * config.driftVelocityInfluence;
-}
-
-function updateFovSpring(target, dt) {
-  if (fovSpringValue === null) fovSpringValue = desiredFovFallback();
-  const result = dampedScalarStep(
-    fovSpringValue,
-    target,
-    fovSpringVelocity,
-    2.4,
-    1.0,
-    dt
-  );
-  fovSpringValue = result.value;
-  fovSpringVelocity = result.velocity;
 }
 
 function desiredFovFallback() {
@@ -824,11 +1277,12 @@ function readActorSample(actor, now) {
   const sittingInVehicle = vehicleState.isSitting && !vehicleState.isOnFoot;
   const inAnyVehicle = vehicleState.interactingWithVehicle;
   const interactionState = resolveInteractionState(vehicleState, now);
-  // IS_CHAR_SITTING_IN_ANY_CAR can be false for part of the enter animation
-  // and on some CLEO builds even while driving. Keep the camera on the car
-  // whenever the ped is not on foot and a vehicle interaction is reported;
-  // IS_CHAR_ON_FOOT remains the hard exit boundary.
-  const vehicleAnchorAvailable = !vehicleState.isOnFoot &&
+  // Do not acquire the vehicle camera during the door animation. Once the
+  // state reaches DRIVING, give the game's camera a brief stabilization window
+  // before the scripted vehicle anchor takes ownership.
+  const vehicleAnchorAvailable = interactionState === "driving" &&
+    now - interactionStateStartedAt >= VEHICLE_ANCHOR_ACQUIRE_MS &&
+    !vehicleState.isOnFoot &&
     (vehicleState.isSitting || vehicleState.interactingWithVehicle);
   const vehicle = vehicleAnchorAvailable
     ? getPlayerVehicle(actor, vehicleState)
@@ -845,9 +1299,14 @@ function readActorSample(actor, now) {
   // GTA's heading convention is easy to mirror accidentally; the vehicle
   // wrapper/native already exposes the actual world-space forward axes.
   const forward = getEntityForward(entity, !!vehicle, heading);
+  const vehicleIdentity = vehicle ? getEntityIdentity(vehicle) : null;
+  const previousSameVehicle = !vehicle || !lastActorSample?.vehicle ||
+    vehicleIdentity === null || lastActorSample.vehicleIdentity === null ||
+    vehicleIdentity === lastActorSample.vehicleIdentity;
   const previous = lastActorSample &&
       lastActorSample.kind === kind &&
-      !!lastActorSample.vehicle === !!vehicle
+      !!lastActorSample.vehicle === !!vehicle &&
+      previousSameVehicle
     ? lastActorSample
     : null;
   const elapsed = previous ? clamp((now - previous.timestamp) / 1000, 0.001, 0.25) : 0;
@@ -856,29 +1315,89 @@ function readActorSample(actor, now) {
     : { x: 0, y: 0, z: 0 };
   const nativeVelocity = readNativeVelocity(entity, !!vehicle);
   const velocity = nativeVelocity || positionVelocity;
-  // The vehicle speed-vector binding is useful for magnitude, but its axis
-  // space is not guaranteed by every CLEO host. Position delta is always in
-  // world coordinates and is therefore the only vehicle direction source.
+  // Direction and profile speed are derived from world-space position delta.
+  // The native speed vector remains useful as a fallback/diagnostic source,
+  // but its coordinate/scale contract is not documented strongly enough here
+  // to treat its magnitude as metres per second. High-speed noise is handled
+  // with a frame-rate-independent speed filter below.
   const worldHorizontalVelocity = previous
     ? { x: positionVelocity.x, y: positionVelocity.y, z: 0 }
     : null;
   const horizontalVelocity = worldHorizontalVelocity || { x: velocity.x, y: velocity.y, z: 0 };
-  const vectorSpeedMps = vectorLength(horizontalVelocity);
-  const reportedSpeed = getEntitySpeed(entity, !!vehicle);
-  const speedMps = vectorSpeedMps > 0.08
-    ? vectorSpeedMps
-    : clamp(reportedSpeed, 0, 90);
+  const positionSpeedMps = vectorLength(horizontalVelocity);
+  const reportedSpeed = clamp(getEntitySpeed(entity, !!vehicle), 0, 90);
+  // Keep world-position delta as the authoritative speed source. The public
+  // binding exposes the native vector but does not document a coordinate/scale
+  // contract strong enough to use its magnitude as metres per second here.
+  // Instead, filter the world-space measurement before it drives the profile.
+  const measuredRawSpeedMps = positionSpeedMps > 0.08
+    ? positionSpeedMps
+    : reportedSpeed;
+  let rawSpeedMps = measuredRawSpeedMps;
+  if (!vehicle) {
+    const previousSpeed = previous?.speedMps ?? 0;
+    const impossibleAbsolute = measuredRawSpeedMps > ON_FOOT_MAX_PLAUSIBLE_SPEED_MPS;
+    const impossibleJump = previous && measuredRawSpeedMps > Math.max(
+      9.0,
+      previousSpeed * ON_FOOT_SPIKE_RATIO + 3.0
+    );
+    if (impossibleAbsolute || impossibleJump) {
+      // A walking actor cannot legitimately jump to 80-120 km/h for one frame.
+      // Prefer the public speed value if sane; otherwise retain the previous
+      // filtered speed and let the next real position delta recover naturally.
+      rawSpeedMps = reportedSpeed > 0 && reportedSpeed <= ON_FOOT_MAX_PLAUSIBLE_SPEED_MPS
+        ? reportedSpeed
+        : previousSpeed;
+    }
+    rawSpeedMps = clamp(rawSpeedMps, 0, ON_FOOT_MAX_PLAUSIBLE_SPEED_MPS);
+  }
+  const speedTimeConstant = vehicle
+    ? VEHICLE_SPEED_FILTER_TIME_CONSTANT
+    : ON_FOOT_SPEED_FILTER_TIME_CONSTANT;
+  const speedAlpha = previous && elapsed > 0
+    ? 1 - Math.exp(-elapsed / speedTimeConstant)
+    : 1;
+  const speedMps = previous
+    ? lerp(previous.speedMps, rawSpeedMps, speedAlpha)
+    : rawSpeedMps;
+  const cameraSpeedAlpha = previous && elapsed > 0
+    ? 1 - Math.exp(-elapsed / (vehicle
+      ? VEHICLE_CAMERA_SPEED_FILTER_TIME_CONSTANT
+      : ON_FOOT_SPEED_FILTER_TIME_CONSTANT))
+    : 1;
+  const cameraSpeedMps = previous
+    ? lerp(previous.cameraSpeedMps ?? previous.speedMps, rawSpeedMps, cameraSpeedAlpha)
+    : rawSpeedMps;
   const measuredVelocityDirection = worldHorizontalVelocity &&
     vectorLength(worldHorizontalVelocity) > config.velocityDirectionThresholdMps
     ? normalizeVector(horizontalVelocity)
     : null;
-  const stableVelocityDirection =
+  let stableVelocityDirection =
     measuredVelocityDirection ||
     previous?.stableVelocityDirection ||
     forward;
-  const signedSpeedMps = dotProduct(horizontalVelocity, forward);
+  if (vehicle && previous?.stableVelocityDirection && measuredVelocityDirection && elapsed > 0) {
+    const directionAlpha = 1 - Math.exp(-elapsed / VEHICLE_DIRECTION_FILTER_TIME_CONSTANT);
+    stableVelocityDirection = smoothHorizontalDirection(
+      previous.stableVelocityDirection,
+      measuredVelocityDirection,
+      directionAlpha
+    );
+  }
+  const signedDirection = measuredVelocityDirection
+    ? dotProduct(measuredVelocityDirection, forward)
+    : positionSpeedMps > 0.08
+      ? clamp(dotProduct(horizontalVelocity, forward) / positionSpeedMps, -1, 1)
+      : 1;
+  const signedSpeedMps = speedMps * signedDirection;
+  // Camera lead should react to sustained acceleration, not every noisy
+  // world-delta speed sample. Use the slower composition speed here.
   const rawAccelerationMps2 = previous && elapsed > 0
-    ? clamp((speedMps - previous.speedMps) / elapsed, -20, 20)
+    ? clamp(
+        (cameraSpeedMps - (previous.cameraSpeedMps ?? previous.speedMps)) / elapsed,
+        -14,
+        14
+      )
     : 0;
   const accelerationAlpha = frameRateIndependentAlpha(
     config.accelerationFilterAlpha,
@@ -891,11 +1410,50 @@ function readActorSample(actor, now) {
         accelerationAlpha
       )
     : 0;
+  // Signed turn rate is derived from actual world-space forward vectors rather
+  // than GTA heading conventions. It drives a small target lead into a turn,
+  // giving the on-foot camera the anticipatory composition common in modern
+  // third-person games without rotating the player's movement itself.
+  let turnAmount = 0;
+  if (previous && elapsed > 0 && !vehicle) {
+    const previousForward2D = normalizeVector({
+      x: previous.forward.x,
+      y: previous.forward.y,
+      z: 0,
+    });
+    const currentForward2D = normalizeVector({ x: forward.x, y: forward.y, z: 0 });
+    const signedTurnRadians = Math.atan2(
+      cross2D(previousForward2D, currentForward2D),
+      clamp(dotProduct(previousForward2D, currentForward2D), -1, 1)
+    );
+    const rawTurnAmount = clamp(
+      signedTurnRadians / elapsed / ((150 * Math.PI) / 180),
+      -1,
+      1
+    );
+    const turnAlpha = 1 - Math.exp(-elapsed / 0.11);
+    turnAmount = lerp(previous.turnAmount || 0, rawTurnAmount, turnAlpha);
+  }
   const uprightValue = getVehicleUprightValue(vehicle);
+  const worldVerticalSpeed = previous ? positionVelocity.z : velocity.z;
+  const slipAngleDegrees = calculateSlipAngle(
+    forward,
+    measuredVelocityDirection,
+    positionSpeedMps
+  );
+  const rawDriftAmount = vehicle
+    ? driftVelocityWeight(slipAngleDegrees, cameraSpeedMps * 3.6)
+    : 0;
+  const driftAlpha = previous && elapsed > 0
+    ? 1 - Math.exp(-elapsed / VEHICLE_DRIFT_FILTER_TIME_CONSTANT)
+    : 1;
+  const cameraDriftAmount = previous && vehicle
+    ? lerp(previous.cameraDriftAmount ?? 0, rawDriftAmount, driftAlpha)
+    : rawDriftAmount;
   const airState = deriveAirState(
     vehicle,
     kind,
-    velocity.z,
+    worldVerticalSpeed,
     previous,
     now
   );
@@ -903,6 +1461,7 @@ function readActorSample(actor, now) {
   const sample = {
     actor,
     vehicle,
+    vehicleIdentity,
     kind,
     sittingInVehicle,
     inAnyVehicle,
@@ -910,24 +1469,36 @@ function readActorSample(actor, now) {
     position,
     heading,
     forward,
-    velocity,
+    velocity: previous ? { x: velocity.x, y: velocity.y, z: worldVerticalSpeed } : velocity,
     velocityDirection: measuredVelocityDirection,
     stableVelocityDirection,
-    velocitySource: nativeVelocity ? "native" : "positionDelta",
+    velocitySource: nativeVelocity ? "nativeVector+worldDelta" : "positionDelta",
+    rawSpeedMps,
+    measuredRawSpeedMps,
     speedMps,
     speedKmh: speedMps * 3.6,
+    cameraSpeedMps,
+    cameraSpeedKmh: cameraSpeedMps * 3.6,
     signedSpeedMps,
     rawAccelerationMps2,
     filteredAccelerationMps2,
-    slipAngleDegrees: calculateSlipAngle(forward, measuredVelocityDirection, vectorSpeedMps),
+    turnAmount,
+    slipAngleDegrees,
+    rawDriftAmount,
+    cameraDriftAmount,
     orientationInstability: clamp((1 - uprightValue) / 0.45, 0, 1),
-    steering: steeringAmount({
-      vehicle,
-      kind,
-      heading,
-      speedKmh: speedMps * 3.6,
-      timestamp: now,
-    }),
+    steering: (() => {
+      const rawSteering = steeringAmount({
+        vehicle,
+        kind,
+        heading,
+        speedKmh: speedMps * 3.6,
+        timestamp: now,
+      });
+      if (!vehicle || !previous || elapsed <= 0) return rawSteering;
+      const steeringAlpha = 1 - Math.exp(-elapsed / VEHICLE_STEERING_FILTER_TIME_CONSTANT);
+      return lerp(previous.steering || 0, rawSteering, steeringAlpha);
+    })(),
     uprightValue,
     airState,
     timestamp: now,
@@ -955,17 +1526,11 @@ function updateStationaryState(sample, now) {
 }
 
 function applyCameraDirector(sample, dt, now, autoFollowWeight) {
+  const visualAnchor = stabilizeVehicleCameraAnchor(sample, dt);
+  const renderSample = sample.vehicle
+    ? { ...sample, position: visualAnchor }
+    : sample;
   const transition = getAnchorTransitionState(now);
-  // Carry both springs by the vehicle's actual horizontal displacement.
-  // Their velocities then describe orbit/profile changes, not road speed.
-  // Keep Z world-damped to retain the existing bump/airborne filtering.
-  if (sample.vehicle && lastSpringAnchor && springPosition && springTarget) {
-    const displacement = subtractVector(sample.position, lastSpringAnchor);
-    displacement.z = 0;
-    springPosition = addVector(springPosition, displacement);
-    springTarget = addVector(springTarget, displacement);
-  }
-  lastSpringAnchor = sample.vehicle ? sample.position : null;
   let profile = buildProfile(sample);
   if (transition?.fromProfile) {
     profile = interpolateProfiles(transition.fromProfile, profile, transition.amount);
@@ -976,7 +1541,15 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
   };
   profile.stateName = composeProfileState(profile.baseName, profile.modifiers);
 
-  let geometry = buildCameraGeometry(sample, profile, autoFollowWeight, transition);
+  let geometry = buildCameraGeometry(renderSample, profile, autoFollowWeight, transition);
+  geometry = {
+    ...geometry,
+    desiredPosition: enforceCameraGroundSafety(
+      geometry.desiredPosition,
+      renderSample.position
+    ),
+  };
+  transportSpringWithVehicleAnchor(renderSample, transition);
   const manualFreeLook = !!sample.vehicle && manualControlActive && autoFollowWeight < 1;
   let collision = resolveCameraCollision(
     geometry.target,
@@ -986,6 +1559,36 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
     true,
     sample.vehicle
   );
+
+  // Side probe obstruction is first solved by removing shoulder bias rather
+  // than collapsing the entire camera toward the player.
+  if (collision.shoulderObstructed && Math.abs(profile.shoulderOffset) > 0.01) {
+    const centeredProfile = { ...profile, shoulderOffset: 0 };
+    const centeredGeometry = buildCameraGeometry(
+      renderSample,
+      centeredProfile,
+      autoFollowWeight,
+      transition
+    );
+    centeredGeometry.desiredPosition = enforceCameraGroundSafety(
+      centeredGeometry.desiredPosition,
+      renderSample.position
+    );
+    const centeredCollision = resolveCameraCollision(
+      centeredGeometry.target,
+      centeredGeometry.desiredPosition,
+      now,
+      manualFreeLook,
+      true,
+      sample.vehicle,
+      true
+    );
+    if (!centeredCollision.emergency || collision.emergency) {
+      geometry = centeredGeometry;
+      collision = centeredCollision;
+      profile = centeredProfile;
+    }
+  }
 
   if (collision.emergency) {
     if (!collisionEmergencySince) collisionEmergencySince = now;
@@ -1012,7 +1615,7 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
 
   collision = {
     ...collision,
-    position: enforceMinimumCameraHeight(collision.position, sample.position),
+    position: enforceCameraGroundSafety(collision.position, renderSample.position),
   };
 
   if (
@@ -1030,7 +1633,7 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
     return;
   }
 
-  initializeSpringIfNeeded(collision.position, geometry.target);
+  initializeSpringIfNeeded(collision.position, geometry.target, renderSample.position, sample.vehicle);
 
   // Only snap when the camera's current path is actually blocked. A blocked
   // desired orbit alone must not pull an otherwise safe driving view forward.
@@ -1058,9 +1661,21 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
     ? profile.verticalTracking ?? config.verticalTracking
     : 0.86;
   const transitionSpringBoost = transition && transition.amount < 1 ? 1.25 : 1;
+  const highSpeedSpringAmount = sample.vehicle
+    ? smoothstep(
+        VEHICLE_HIGH_SPEED_SPRING_START_KMH,
+        VEHICLE_HIGH_SPEED_SPRING_FULL_KMH,
+        sample.cameraSpeedKmh ?? sample.speedKmh
+      )
+    : 0;
+  const highSpeedSpringBoost = lerp(
+    1,
+    VEHICLE_HIGH_SPEED_SPRING_MAX_BOOST,
+    highSpeedSpringAmount
+  );
   const positionFrequency =
     (collision.collided ? config.collisionFrequencyHz : config.positionFrequencyHz) *
-    transitionSpringBoost;
+    transitionSpringBoost * highSpeedSpringBoost;
   const positionDampingRatio = collision.collided
     ? config.collisionDampingRatio
     : config.positionDampingRatio;
@@ -1076,19 +1691,48 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
   springPosition = positionResult.position;
   springPositionVelocity = positionResult.velocity;
 
-  if (
-    collision.collided &&
-    !isCameraPathClear(geometry.target, springPosition, sample.vehicle)
-  ) {
-    springPosition = collision.position;
-    springPositionVelocity = { x: 0, y: 0, z: 0 };
+  // Keep the camera elastically attached to the vehicle in vehicle-relative
+  // space. At high speed a large offset error becomes a visible pull-back /
+  // catch-up jerk even though the anchor translation itself is correct.
+  // Clamp only excessive relative lag; normal spring motion is untouched.
+  let relativeSpringLag = 0;
+  if (sample.vehicle) {
+    const currentRelative = subtractVector(springPosition, renderSample.position);
+    const desiredRelative = subtractVector(collision.position, renderSample.position);
+    const relativeError = subtractVector(desiredRelative, currentRelative);
+    relativeSpringLag = vectorLength(relativeError);
+    const maxRelativeLag = lerp(
+      VEHICLE_HIGH_SPEED_MAX_RELATIVE_LAG_LOW,
+      VEHICLE_HIGH_SPEED_MAX_RELATIVE_LAG_HIGH,
+      highSpeedSpringAmount
+    );
+    if (relativeSpringLag > maxRelativeLag && relativeSpringLag > 0.0001) {
+      const correction = scaleVector(
+        relativeError,
+        (relativeSpringLag - maxRelativeLag) / relativeSpringLag
+      );
+      springPosition = addVector(springPosition, correction);
+      springPositionVelocity = scaleVector(springPositionVelocity, 0.55);
+      relativeSpringLag = maxRelativeLag;
+    }
   }
 
+  const validateSpringPath = collision.collided ||
+    now - lastSpringPathValidationAt >= SPRING_PATH_VALIDATION_MS;
+  if (validateSpringPath) {
+    lastSpringPathValidationAt = now;
+    if (!isCameraPathClear(geometry.target, springPosition, sample.vehicle)) {
+      springPosition = collision.position;
+      springPositionVelocity = { x: 0, y: 0, z: 0 };
+    }
+  }
+
+  const targetHighSpeedScale = lerp(1.0, 0.78, highSpeedSpringAmount);
   const targetResult = springStep(
     springTarget,
     geometry.target,
     springTargetVelocity,
-    config.targetFrequencyHz * transitionSpringBoost,
+    config.targetFrequencyHz * transitionSpringBoost * targetHighSpeedScale,
     config.targetDampingRatio,
     sample.vehicle ? verticalTracking : 0.90,
     dt
@@ -1156,8 +1800,9 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
 
   if (!setScriptCameraPose(springPosition, springTarget)) return;
 
-  updateFovSpring(profile.fov, dt);
-  applyRequestedFov(fovSpringValue, 180, now);
+  // The engine already performs the FOV interpolation. A second local spring
+  // made zoom changes feel rubbery and added unnecessary latency.
+  applyRequestedFov(profile.fov, 180, now);
 
   if (profile.stateName !== lastStateName) {
     lastStateName = profile.stateName;
@@ -1170,8 +1815,9 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
         profile.height.toFixed(2) +
         " fovTarget=" +
         profile.fov.toFixed(0) +
-        " fovSpring=" +
-        fovSpringValue.toFixed(1) +
+        " speed=" + sample.speedKmh.toFixed(1) +
+        " cameraSpeed=" + (sample.cameraSpeedKmh ?? sample.speedKmh).toFixed(1) +
+        " rawSpeed=" + ((sample.measuredRawSpeedMps || sample.rawSpeedMps || sample.speedMps) * 3.6).toFixed(1) +
         " velocitySource=" +
         sample.velocitySource +
         " collision=" +
@@ -1180,6 +1826,21 @@ function applyCameraDirector(sample, dt, now, autoFollowWeight) {
         (collision.clearanceScore ?? 7).toFixed(1) +
         " interaction=" +
         sample.interactionState
+    );
+  }
+  if (sample.vehicle &&
+      (sample.cameraSpeedKmh ?? sample.speedKmh) >= VEHICLE_HIGH_SPEED_SPRING_START_KMH &&
+      now - lastHighSpeedDiagnosticAt >= HIGH_SPEED_DIAGNOSTIC_MS) {
+    lastHighSpeedDiagnosticAt = now;
+    log(
+      "Adaptive Third-Person Camera high-speed stability" +
+        " speed=" + sample.speedKmh.toFixed(1) +
+        " cameraSpeed=" + (sample.cameraSpeedKmh ?? sample.speedKmh).toFixed(1) +
+        " rawSpeed=" + ((sample.measuredRawSpeedMps || sample.rawSpeedMps || sample.speedMps) * 3.6).toFixed(1) +
+        " relativeLag=" + relativeSpringLag.toFixed(2) +
+        " anchorError=" + distanceBetween(renderSample.position, sample.position).toFixed(2) +
+        " springBoost=" + highSpeedSpringBoost.toFixed(2) +
+        " collision=" + collision.collided
     );
   }
   cameraApplied = true;
@@ -1200,17 +1861,25 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition 
     vehicleCameraControl !== CameraControl.AUTO &&
     vehicleOrbitYaw !== null;
   if (useVehicleOrbit && autoFollowWeight > 0) {
+    const recenterFromYaw = vehicleRecenterFromYaw ?? vehicleOrbitYaw;
+    const recenterFromPitch = vehicleRecenterStartedAt
+      ? vehicleRecenterFromPitch
+      : vehicleOrbitPitch;
     vehicleOrbitYaw = smoothAngle(
-      vehicleRecenterYaw,
+      recenterFromYaw,
       cameraYawFromViewDirection(direction),
       autoFollowWeight
     );
-    vehicleOrbitPitch = lerp(vehicleRecenterPitch, 0, autoFollowWeight);
+    vehicleOrbitPitch = lerp(recenterFromPitch, 0, autoFollowWeight);
     if (autoFollowWeight >= 1) {
       vehicleCameraControl = CameraControl.AUTO;
       vehicleOrbitYaw = null;
       vehicleOrbitPitch = 0;
+      vehicleRecenterStartedAt = 0;
+      vehicleRecenterFromYaw = null;
+      vehicleRecenterFromPitch = 0;
       manualControlActive = false;
+      log("Adaptive Third-Person Camera vehicle camera=RECENTER -> AUTO");
       useVehicleOrbit = false;
     }
   }
@@ -1222,7 +1891,7 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition 
     };
     right = { x: orbitViewDirection.y, y: -orbitViewDirection.x, z: 0 };
   }
-  const speedFactor = clamp(sample.speedKmh / 120, 0, 1);
+  const speedFactor = clamp((sample.cameraSpeedKmh ?? sample.speedKmh) / 120, 0, 1);
   const travelDirection = sample.stableVelocityDirection || direction;
   const accelerationFactor = clamp(sample.filteredAccelerationMps2 / 8, -1, 1);
   const autoTargetLead = addVector(
@@ -1232,7 +1901,8 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition 
       addVector(
         scaleVector(
           right,
-          profileValue.steeringLookAhead * profileValue.steering * speedFactor
+          profileValue.steeringLookAhead * profileValue.steering * speedFactor +
+            (profileValue.turnLookAhead || 0) * (sample.turnAmount || 0)
         ),
         scaleVector(anchorForward, profileValue.accelerationLead * accelerationFactor)
       )
@@ -1282,7 +1952,7 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition 
 function buildProfile(sample) {
   if (!sample.vehicle) return buildOnFootProfile(sample);
 
-  const speed = clamp(sample.speedKmh, 0, 220);
+  const speed = clamp(sample.cameraSpeedKmh ?? sample.speedKmh, 0, 220);
   let result;
   if (sample.kind === "motorbike") {
     const highSpeed = clamp(speed / 140, 0, 1);
@@ -1334,6 +2004,7 @@ function applyProfileModifiers(baseProfile, sample) {
     result.height += drift * 0.18;
     result.velocityLead += drift * 0.20;
     result.lookAhead += drift * 0.15;
+    result.fov += drift * config.vehicleDriftFovBoost;
   }
 
   if (sample.vehicle) {
@@ -1406,6 +2077,20 @@ function buildOnFootProfile(sample) {
     movementProfile.stateName = movementProfile.baseName;
   }
 
+  const sprintComposition = smoothstep(1.1, 4.0, speed);
+  movementProfile.shoulderOffset = lerp(
+    config.onFootShoulderOffset,
+    config.onFootSprintShoulderOffset,
+    sprintComposition
+  );
+  movementProfile.turnLookAhead = lerp(
+    config.onFootTurnLookAhead,
+    config.onFootSprintTurnLookAhead,
+    sprintComposition
+  );
+  // At a true idle there is no reason to keep looking into a stale turn.
+  if (speed < 0.20) movementProfile.turnLookAhead *= 0.35;
+
   return movementProfile;
 }
 
@@ -1423,8 +2108,14 @@ function buildCarProfile(speedKmh, accelerationMps2) {
   result.accelerationLead = 0.35;
   if (accelerationMps2 > 2) {
     const boost = clamp((accelerationMps2 - 2) / 8, 0, 1);
-    result.distance += 0.2 + boost * 0.3;
-    result.fov += boost * 2;
+    // Watch-Dogs-style driving reads acceleration mostly through framing/FOV,
+    // not a large fore/aft camera step. Keep distance changes deliberately soft.
+    result.distance += 0.08 + boost * 0.16;
+    result.fov += boost * config.vehicleAccelerationFovBoost;
+  } else if (accelerationMps2 < -2.5) {
+    const braking = clamp((-accelerationMps2 - 2.5) / 7.5, 0, 1);
+    result.distance -= braking * 0.06;
+    result.fov -= braking * config.vehicleBrakingFovReduction;
   }
   return result;
 }
@@ -1451,6 +2142,7 @@ function profile(
     lookAhead,
     velocityLead: 0,
     accelerationLead: 0,
+    turnLookAhead: 0,
     verticalTracking: stateName.startsWith("OnFoot") ? 0.86 : config.verticalTracking,
     shoulderOffset,
     steeringLookAhead,
@@ -1463,15 +2155,17 @@ function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverr
   if (sample.stableVelocityDirection && sample.speedMps > config.velocityDirectionThresholdMps) {
     if (!sample.vehicle) {
       autoDirection = sample.stableVelocityDirection;
-    } else if (sample.reverseActive) {
-      // In reverse the camera sits in front of the car and follows its actual
-      // travel direction, rather than snapping through the vehicle heading.
-      autoDirection = sample.stableVelocityDirection;
     } else {
-      // In forward vehicle AUTO mode the camera must remain behind the car's
-      // actual forward axis. Slip/velocity affects the target lead below, but
-      // must not move the camera to the side during a turn or drift.
-      autoDirection = forwardOverride;
+      // Driving always follows vehicle heading as the primary frame. Reverse
+      // does not flip the camera to the velocity vector. Sustained lateral slip
+      // may pull the view slightly toward travel direction, but the cap is low
+      // enough to avoid the side-snap seen in v28.
+      const slipFollow = sample.reverseActive
+        ? 0
+        : clamp(driftAmount(sample) * 0.32, 0, 0.14);
+      autoDirection = slipFollow > 0.01
+        ? smoothHorizontalDirection(forwardOverride, sample.stableVelocityDirection, slipFollow)
+        : forwardOverride;
     }
   }
 
@@ -1482,29 +2176,26 @@ function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverr
       const elapsed = lastActorSample
         ? clamp((sample.timestamp - lastActorSample.timestamp) / 1000, 0.001, 0.05)
         : 1 / 60;
+      const highSpeedFollowBoost = lerp(
+        1.0,
+        1.18,
+        clamp((sample.cameraSpeedKmh ?? sample.speedKmh) / 160, 0, 1)
+      );
       const followTimeConstant = config.vehicleYawDelayMs /
-        Math.max(0.1, config.vehicleYawFollowStrength) /
+        Math.max(0.1, config.vehicleYawFollowStrength * highSpeedFollowBoost) /
         1000;
       const followAlpha = 1 - Math.exp(-elapsed / followTimeConstant);
-      const currentYaw = Math.atan2(vehicleFollowDirection.y, vehicleFollowDirection.x);
-      const targetYaw = Math.atan2(autoDirection.y, autoDirection.x);
-      // Interpolate angles, not opposite vectors (which cancel to zero).
-      // Bound the turn rate so reversing cannot cut straight through the car.
-      const yawStep = clamp(
-        normalizeAngleRadians(targetYaw - currentYaw) * followAlpha,
-        -Math.PI * elapsed,
-        Math.PI * elapsed
+      // Angle-aware interpolation prevents heading wrap-around from turning
+      // into a visible snap. Reverse uses the same continuous heading frame.
+      vehicleFollowDirection = smoothHorizontalDirection(
+        vehicleFollowDirection,
+        autoDirection,
+        followAlpha
       );
-      vehicleFollowDirection = {
-        x: Math.cos(currentYaw + yawStep),
-        y: Math.sin(currentYaw + yawStep),
-        z: 0,
-      };
     }
     autoDirection = rotateHorizontal(
       vehicleFollowDirection,
-      (sample.steering * (sample.reverseActive ? 0 : 1) *
-        config.maxSteeringYawBiasDegrees * Math.PI) / 180
+      (sample.steering * config.maxSteeringYawBiasDegrees * Math.PI) / 180
     );
   } else {
     vehicleFollowDirection = null;
@@ -1519,8 +2210,15 @@ function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverr
 }
 
 function driftAmount(sample) {
-  return driftVelocityWeight(sample.slipAngleDegrees, sample.speedKmh) /
-    Math.max(0.001, config.driftVelocityInfluence);
+  // Use the camera-specific low-pass value so small slip-angle oscillations do
+  // not repeatedly move the camera backwards/forwards at motorway speeds.
+  if (Number.isFinite(sample.cameraDriftAmount)) {
+    return clamp(sample.cameraDriftAmount, 0, 1);
+  }
+  return driftVelocityWeight(
+    sample.slipAngleDegrees,
+    sample.cameraSpeedKmh ?? sample.speedKmh
+  );
 }
 
 function steeringAmount(sample) {
@@ -1542,26 +2240,27 @@ function resolveCameraCollision(
   target,
   desiredPosition,
   now,
-  forceRefresh = false,
+  manualActive = false,
   allowEmergency = true,
-  ownVehicle = null
+  ownVehicle = null,
+  bypassCache = false
 ) {
   if (!config.collisionEnabled) {
     return { position: desiredPosition, collided: false, clearanceScore: 7 };
   }
 
+  const updateInterval = manualActive
+    ? Math.min(config.collisionUpdateMs, MANUAL_COLLISION_UPDATE_MS)
+    : config.collisionUpdateMs;
+  const movementThreshold = manualActive ? 0.18 : 0.45;
   if (
-    !forceRefresh &&
+    !bypassCache &&
     collisionCache &&
-    now - collisionCache.timestamp < config.collisionUpdateMs &&
-    distanceBetween(collisionCache.target, target) < 0.45 &&
-    distanceBetween(collisionCache.desiredPosition, desiredPosition) < 0.45
+    now - collisionCache.timestamp < updateInterval &&
+    distanceBetween(collisionCache.target, target) < movementThreshold &&
+    distanceBetween(collisionCache.desiredPosition, desiredPosition) < movementThreshold
   ) {
-    // Cached clear space must never return an old world-space camera pose.
-    // A constrained pose depends on static geometry and needs a fresh query.
-    if (!collisionCache.result.collided) {
-      return { ...collisionCache.result, position: desiredPosition };
-    }
+    return collisionCache.result;
   }
 
   if (isCameraPathClear(target, desiredPosition, ownVehicle)) {
@@ -1678,17 +2377,149 @@ function isLineOfSightClear(from, to, ignoreVehicles = false) {
   return result === null ? true : !!result;
 }
 
-function initializeSpringIfNeeded(desiredPosition, desiredTarget) {
+function stabilizeVehicleCameraAnchor(sample, dt) {
+  if (!sample?.vehicle || !isVector(sample.position)) {
+    vehicleVisualAnchor = null;
+    vehicleVisualAnchorVelocity = { x: 0, y: 0, z: 0 };
+    vehicleVisualAnchorIdentity = null;
+    return sample?.position;
+  }
+
+  const identity = sample.vehicleIdentity;
+  const changedVehicle = vehicleVisualAnchorIdentity !== null &&
+    identity !== null && vehicleVisualAnchorIdentity !== identity;
+  if (!vehicleVisualAnchor || changedVehicle) {
+    vehicleVisualAnchor = { ...sample.position };
+    vehicleVisualAnchorIdentity = identity;
+    const direction = sample.stableVelocityDirection || sample.forward;
+    vehicleVisualAnchorVelocity = {
+      x: direction.x * (sample.cameraSpeedMps || 0),
+      y: direction.y * (sample.cameraSpeedMps || 0),
+      z: sample.velocity?.z || 0,
+    };
+    return vehicleVisualAnchor;
+  }
+
+  const frameDt = clamp(dt || 1 / 60, 0.001, 0.05);
+  const speedAmount = smoothstep(
+    VEHICLE_VISUAL_ANCHOR_START_KMH,
+    VEHICLE_VISUAL_ANCHOR_FULL_KMH,
+    sample.cameraSpeedKmh ?? sample.speedKmh
+  );
+  const direction = sample.stableVelocityDirection || sample.forward;
+  const measuredVelocity = {
+    x: direction.x * (sample.cameraSpeedMps || 0),
+    y: direction.y * (sample.cameraSpeedMps || 0),
+    z: sample.velocity?.z || 0,
+  };
+  const velocityAlpha = lerp(0.62, 0.30, speedAmount);
+  vehicleVisualAnchorVelocity = lerpVector(
+    vehicleVisualAnchorVelocity,
+    measuredVelocity,
+    velocityAlpha
+  );
+
+  const predicted = addVector(
+    vehicleVisualAnchor,
+    scaleVector(vehicleVisualAnchorVelocity, frameDt)
+  );
+  const residual = subtractVector(sample.position, predicted);
+  const residualLength = vectorLength(residual);
+  if (residualLength > VEHICLE_VISUAL_ANCHOR_RESET_DISTANCE) {
+    vehicleVisualAnchor = { ...sample.position };
+    vehicleVisualAnchorVelocity = measuredVelocity;
+    vehicleVisualAnchorIdentity = identity;
+    return vehicleVisualAnchor;
+  }
+
+  // Smooth only the noisy per-frame anchor displacement. Prediction keeps the
+  // camera travelling with the car, while residual correction prevents the
+  // old high-speed "left behind then catch up" behaviour.
+  const correctionAlpha = lerp(0.92, 0.42, speedAmount);
+  vehicleVisualAnchor = addVector(
+    predicted,
+    scaleVector(residual, correctionAlpha)
+  );
+
+  const anchorError = subtractVector(sample.position, vehicleVisualAnchor);
+  const anchorErrorLength = vectorLength(anchorError);
+  const maxAnchorError = lerp(
+    VEHICLE_VISUAL_ANCHOR_MAX_ERROR_LOW,
+    VEHICLE_VISUAL_ANCHOR_MAX_ERROR_HIGH,
+    speedAmount
+  );
+  if (anchorErrorLength > maxAnchorError && anchorErrorLength > 0.0001) {
+    vehicleVisualAnchor = subtractVector(
+      sample.position,
+      scaleVector(anchorError, maxAnchorError / anchorErrorLength)
+    );
+  }
+  vehicleVisualAnchorIdentity = identity;
+  return vehicleVisualAnchor;
+}
+
+function transportSpringWithVehicleAnchor(sample, transition = null) {
+  if (!sample?.vehicle) {
+    springAnchorPosition = null;
+    return;
+  }
+
+  const currentAnchor = sample.position;
+  if (!isVector(currentAnchor)) return;
+
+  // During an explicit car<->ped handoff the transition already owns the
+  // world-space interpolation. Translating the spring at the same time would
+  // apply the anchor motion twice.
+  if (transition && transition.amount < 1) {
+    springAnchorPosition = { ...currentAnchor };
+    return;
+  }
+
+  if (!cameraApplied || !springPosition || !springTarget || !springAnchorPosition) {
+    springAnchorPosition = { ...currentAnchor };
+    return;
+  }
+
+  const delta = subtractVector(currentAnchor, springAnchorPosition);
+  const deltaLength = vectorLength(delta);
+  if (deltaLength > 0.0001) {
+    // isHardTeleport() has already rejected implausible anchor jumps before
+    // the director runs. Do not impose another fixed 12 m transport cap here:
+    // after a long frame at high speed that cap left the world-space spring
+    // behind the car, producing the visible "pull back / catch up" jerk.
+    springPosition = addVector(springPosition, delta);
+    springTarget = addVector(springTarget, delta);
+  }
+
+  springAnchorPosition = { ...currentAnchor };
+}
+
+function initializeSpringIfNeeded(desiredPosition, desiredTarget, anchor, ownVehicle = null) {
   if (cameraApplied) return;
-  // Never seed the spring from the current game camera. It may still contain
-  // an invalid native/top-down pose left by an older build and can place the
-  // scripted camera below the map before the spring converges.
-  springPosition = desiredPosition;
-  springTarget = desiredTarget;
+
+  const nativeCamera = getCameraState();
+  const nativeDistance = nativeCamera?.position
+    ? distanceBetween(anchor, nativeCamera.position)
+    : Infinity;
+  const nativeHeight = nativeCamera?.position
+    ? nativeCamera.position.z - anchor.z
+    : Infinity;
+  const canSeedFromNative = !!nativeCamera &&
+    nativeDistance >= 1.0 && nativeDistance <= 15 &&
+    nativeHeight >= MIN_CAMERA_RELATIVE_Z && nativeHeight <= 8 &&
+    isSafeCameraPose(anchor, nativeCamera.position, nativeCamera.pointAt) &&
+    isCameraPathClear(desiredTarget, nativeCamera.position, ownVehicle);
+
+  if (canSeedFromNative) {
+    springPosition = nativeCamera.position;
+    springTarget = nativeCamera.pointAt;
+    log("Adaptive Third-Person Camera seeded spring from native camera.");
+  } else {
+    springPosition = desiredPosition;
+    springTarget = desiredTarget;
+  }
   springPositionVelocity = { x: 0, y: 0, z: 0 };
   springTargetVelocity = { x: 0, y: 0, z: 0 };
-  fovSpringValue = finiteNumber(safeNative("GET_CAMERA_FOV"), desiredFovFallback());
-  fovSpringVelocity = 0;
   resetScriptCamera();
 }
 
@@ -1749,23 +2580,41 @@ function setScriptCameraPose(position, target) {
 }
 
 function releaseCamera() {
-  lastSpringAnchor = null;
-  const hadCameraControl = cameraApplied || aimCameraActive || fovProbe;
+  resetNativeVehicleTweak();
+  const hadCameraControl =
+    cameraApplied || aimCameraActive || fovProbe || nativeCameraFovActive;
   anchorTransition = null;
   manualCameraDirection = null;
   manualControlActive = false;
   manualPitchOffset = 0;
-  vehicleManualInputFrames = 0;
+  vehicleManualStickFrames = 0;
+  vehicleManualInputSuppressedUntil = 0;
+  mouseMovementBaselineX = null;
+  mouseMovementBaselineY = null;
+  mouseBaselineCalibrateUntil = 0;
+  previousRawMouseX = null;
+  previousRawMouseY = null;
+  previousMouseCursorPosition = null;
+  mouseGestureUntil = 0;
+  cancelNativeMouseBridge();
+  vehicleVisualAnchor = null;
+  vehicleVisualAnchorVelocity = { x: 0, y: 0, z: 0 };
+  vehicleVisualAnchorIdentity = null;
+  lastManualInputDiagnosticAt = 0;
   vehicleCameraControl = CameraControl.AUTO;
   vehicleOrbitYaw = null;
   vehicleOrbitPitch = 0;
+  vehicleRecenterStartedAt = 0;
+  vehicleRecenterFromYaw = null;
+  vehicleRecenterFromPitch = 0;
+  springAnchorPosition = null;
   manualFreeUntil = 0;
   manualRecenterUntil = 0;
   collisionCache = null;
   collisionEmergencySince = 0;
-  fovSpringValue = null;
-  fovSpringVelocity = 0;
   fovProbe = null;
+  nativeCameraFovActive = false;
+  lastSpringPathValidationAt = 0;
   vehicleFollowDirection = null;
   stationarySince = 0;
   if (hadCameraControl) {
@@ -1784,6 +2633,7 @@ function releaseCamera() {
   aimBlend = 0;
   aimCameraActive = false;
   lastAppliedFovTarget = null;
+  nativeCameraFovActive = false;
 }
 
 function springStep(current, target, velocity, frequencyHz, dampingRatio, verticalTracking, dt) {
@@ -1878,16 +2728,25 @@ function resolveInteractionState(vehicleState, now) {
   if (sittingInVehicle) {
     nextState = "driving";
   } else if (vehicleState.isOnFoot && inAnyVehicle) {
-    // The broad vehicle-use natives can stay true during the door animation.
-    // The previous logical state decides whether this is an enter or exit;
-    // it is never inferred from the current frame alone.
-    nextState = interactionState === "driving" ? "exiting" : "entering";
+    // Latch EXITING once it starts. The broad vehicle-use natives may remain
+    // true for several door-animation frames; without this latch the state can
+    // oscillate driving -> exiting -> entering.
+    nextState = interactionState === "driving" || interactionState === "exiting"
+      ? "exiting"
+      : "entering";
   } else if (!vehicleState.isOnFoot && inAnyVehicle) {
-    // If the seated native is unavailable or temporarily false, the
-    // on-foot/native interaction pair is the only reliable fallback. Do not
-    // misclassify a still-seated player as exiting before IS_CHAR_ON_FOOT
-    // becomes true.
-    nextState = interactionState === "driving" ? "driving" : "entering";
+    // Keep an already latched exit stable if a native flickers for a frame.
+    // Otherwise stay DRIVING only if driving had already been established;
+    // an entering ped is not promoted until the sitting native confirms it.
+    if (interactionState === "exiting") nextState = "exiting";
+    else if (interactionState === "driving") nextState = "driving";
+    else if (interactionState === "entering" &&
+             now - interactionStateStartedAt >= VEHICLE_ENTER_FALLBACK_MS) {
+      // Some SA:DE/CLEO combinations intermittently fail to report the
+      // sitting native. A long, continuous not-on-foot vehicle interaction is
+      // a conservative fallback so the camera cannot remain ENTERING forever.
+      nextState = "driving";
+    } else nextState = "entering";
   } else {
     nextState = "onFoot";
   }
@@ -1977,6 +2836,20 @@ function readNativeVelocity(entity, vehicle) {
   return isVector(value) ? value : null;
 }
 
+function getEntityIdentity(entity) {
+  if (entity === null || entity === undefined) return null;
+  if (typeof entity === "number" && Number.isFinite(entity)) return entity;
+  if (typeof entity === "object") {
+    for (const key of ["handle", "id", "_handle", "scriptHandle", "value"]) {
+      try {
+        const value = Number(entity[key]);
+        if (Number.isFinite(value)) return value;
+      } catch (_) {}
+    }
+  }
+  return null;
+}
+
 function getEntityHeading(entity, vehicle) {
   try {
     if (entity && typeof entity.getHeading === "function") {
@@ -2041,6 +2914,204 @@ function getVehicleUprightValue(vehicle) {
   return finiteNumber(safeNative("GET_CAR_UPRIGHT_VALUE", vehicle), 1);
 }
 
+
+function releaseScriptCameraForNativeOrbit() {
+  // FOV interpolation is independent from fixed-position camera ownership.
+  // Do not cancel fovProbe here; otherwise the capability probe restarts every
+  // frame and native-vehicle dynamic FOV can never become active.
+  if (!cameraApplied && !aimCameraActive) return;
+
+  resetScriptCamera();
+  restoreScriptCamera();
+  cameraApplied = false;
+  aimCameraActive = false;
+  springPosition = null;
+  springTarget = null;
+  springPositionVelocity = { x: 0, y: 0, z: 0 };
+  springTargetVelocity = { x: 0, y: 0, z: 0 };
+  springAnchorPosition = null;
+  collisionCache = null;
+  lastSpringPathValidationAt = 0;
+}
+
+function getNativeVehicleSpeedBucket(speedKmh) {
+  const speed = Math.max(0, finiteNumber(speedKmh, 0));
+  const enter = NATIVE_VEHICLE_SPEED_BUCKETS;
+  const exit = [35, 70, 108, 142];
+
+  while (nativeVehicleSpeedBucket < enter.length &&
+      speed >= enter[nativeVehicleSpeedBucket]) {
+    nativeVehicleSpeedBucket += 1;
+  }
+  while (nativeVehicleSpeedBucket > 0 &&
+      speed <= exit[nativeVehicleSpeedBucket - 1]) {
+    nativeVehicleSpeedBucket -= 1;
+  }
+  return nativeVehicleSpeedBucket;
+}
+
+function getNativeVehicleTweak(sample, now) {
+  const layoutIndex = clamp(cameraLayoutController.layout, 0, 2);
+  const speedBucket = getNativeVehicleSpeedBucket(
+    sample.cameraSpeedKmh ?? sample.speedKmh
+  );
+
+  const layoutDistance = [0.86, 1.08, 1.30][layoutIndex];
+  const layoutAltitude = [0.95, 1.055, 1.15][layoutIndex];
+  const speedDistance = [0.00, 0.055, 0.12, 0.19, 0.26][speedBucket];
+  const speedAltitude = [0.00, 0.018, 0.040, 0.064, 0.090][speedBucket];
+
+  let driftBucket = 0;
+  let accelerationBucket = 0;
+  let airborneBucket = 0;
+  if (config.nativeVehicleContextualTweak) {
+    driftBucket = Math.round(clamp(driftAmount(sample), 0, 1) * 2);
+    const acceleration = finiteNumber(sample.filteredAccelerationMps2, 0);
+    accelerationBucket = acceleration > 2.2 ? 1 : acceleration < -3.0 ? -1 : 0;
+    airborneBucket = sample.airState === "airborne" ? 1 : 0;
+  }
+
+  // Contextual values stay intentionally subtle because 09EF is a model-level
+  // native tweak. The game still owns orbit, collision and mouse/right-stick.
+  const distance = layoutDistance + speedDistance +
+    driftBucket * 0.045 +
+    (accelerationBucket > 0 ? 0.045 : accelerationBucket < 0 ? -0.025 : 0);
+  const altitude = layoutAltitude + speedAltitude +
+    driftBucket * 0.018 + airborneBucket * 0.045;
+
+  return {
+    distance,
+    altitude,
+    angle: 0.12,
+    speedBucket,
+    driftBucket,
+    accelerationBucket,
+    airborneBucket,
+    layoutIndex,
+  };
+}
+
+function setNativeVehicleTweak(modelId, distance, altitude, angle) {
+  try {
+    if (typeof Camera !== "undefined" &&
+        typeof Camera.SetVehicleTweak === "function") {
+      Camera.SetVehicleTweak(modelId, distance, altitude, angle);
+      return true;
+    }
+  } catch (_) {}
+
+  try {
+    native("SET_VEHICLE_CAMERA_TWEAK", modelId, distance, altitude, angle);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resetNativeVehicleTweak() {
+  if (!nativeVehicleTweakActive) return;
+
+  try {
+    if (typeof Camera !== "undefined" &&
+        typeof Camera.ResetVehicleTweak === "function") {
+      Camera.ResetVehicleTweak();
+    } else {
+      native("RESET_VEHICLE_CAMERA_TWEAK");
+    }
+  } catch (_) {
+    try {
+      safeNative("RESET_VEHICLE_CAMERA_TWEAK");
+    } catch (_) {}
+  }
+
+  nativeVehicleTweakActive = false;
+  nativeVehicleTweakModel = -1;
+  nativeVehicleTweakKey = "";
+  nativeVehicleSpeedBucket = 0;
+  lastNativeVehicleTweakAt = 0;
+}
+
+function applyNativeVehicleCamera(sample, now) {
+  const modelId = getVehicleModel(sample.vehicle);
+  if (!Number.isFinite(modelId) || modelId < 0) return;
+
+  const tweak = getNativeVehicleTweak(sample, now);
+  const key = [
+    modelId,
+    tweak.layoutIndex,
+    tweak.speedBucket,
+    tweak.driftBucket,
+    tweak.accelerationBucket,
+    tweak.airborneBucket,
+  ].join(":");
+
+  if (key === nativeVehicleTweakKey &&
+      now - lastNativeVehicleTweakAt < NATIVE_VEHICLE_TWEAK_UPDATE_MS) {
+    return;
+  }
+  if (key === nativeVehicleTweakKey) {
+    // Do not continuously rewrite 09EF. The engine owns the camera and its
+    // interpolation; reapplying identical values can itself create micro-jank.
+    return;
+  }
+
+  const previousCapability = nativeVehicleTweakCapability;
+  const ok = setNativeVehicleTweak(
+    modelId,
+    tweak.distance,
+    tweak.altitude,
+    tweak.angle
+  );
+  nativeVehicleTweakCapability = ok;
+
+  if (ok) {
+    nativeVehicleTweakActive = true;
+    nativeVehicleTweakModel = modelId;
+    nativeVehicleTweakKey = key;
+    lastNativeVehicleTweakAt = now;
+    log(
+      "Adaptive Third-Person Camera hybrid vehicle camera" +
+        " model=" + modelId +
+        " layout=" + VEHICLE_CAMERA_LAYOUT_NAMES[tweak.layoutIndex] +
+        " speedBucket=" + tweak.speedBucket +
+        " driftBucket=" + tweak.driftBucket +
+        " accelBucket=" + tweak.accelerationBucket +
+        " airborne=" + tweak.airborneBucket +
+        " distanceTweak=" + tweak.distance.toFixed(2) +
+        " altitudeTweak=" + tweak.altitude.toFixed(2) +
+        " angle=" + tweak.angle.toFixed(2)
+    );
+  } else if (previousCapability !== false) {
+    log(
+      "Adaptive Third-Person Camera: native vehicle camera tweak unavailable; " +
+      "using GTA stock vehicle camera."
+    );
+  }
+}
+
+function applyNativeOnFootDynamicEffects(sample, now) {
+  if (!config.nativeOnFootDynamicFov) return;
+
+  // GTA owns camera yaw/pitch, mouse input, collision and recentering. The mod
+  // only adds speed-aware FOV, so free-look behaves exactly like the native
+  // camera instead of depending on synthetic mouse-delta detection.
+  const targetFov = clamp(getOnFootFov(sample), 50, 90);
+  nativeCameraFovActive = true;
+  applyRequestedFov(targetFov, sample.speedMps > 2.0 ? 135 : 190, now);
+}
+
+function applyNativeVehicleDynamicEffects(sample, now) {
+  if (!config.nativeVehicleDynamicFov) return;
+
+  // Reuse the same profile system as the scripted camera so entering a car no
+  // longer throws away speed/acceleration/drift FOV behavior. Transform/input
+  // remain native; only FOV is interpolated here.
+  const profileValue = buildProfile(sample);
+  const targetFov = clamp(profileValue.fov, 50, 90);
+  nativeCameraFovActive = true;
+  applyRequestedFov(targetFov, 160, now);
+}
+
 function getVehicleModel(vehicle) {
   try {
     if (vehicle && typeof vehicle.getModel === "function") {
@@ -2068,48 +3139,192 @@ function getCameraState() {
   return vectorLength(forward) > 0.01 ? { position, pointAt, forward } : null;
 }
 
-function normalizeStickAxis(value) {
-  const magnitude = Math.abs(value);
-  if (magnitude <= VEHICLE_MANUAL_STICK_DEADZONE) return 0;
-  return Math.sign(value) * clamp(
-    (magnitude - VEHICLE_MANUAL_STICK_DEADZONE) /
-      (128 - VEHICLE_MANUAL_STICK_DEADZONE),
-    0,
-    1
-  );
-}
-
-function readManualCameraInput() {
-  // GET_PC_MOUSE_MOVEMENT may also expose the right stick. Select one source
-  // by control mode; do not interpret held stick deflection as mouse counts.
-  const usingJoypad = isPcUsingJoypad();
+function readManualCameraInput(now = getGameTimerMs()) {
+  // v27: scripted camera needs a real free-look signal, but SA:DE can expose a
+  // stable synthetic +3,+3-ish GET_PC_MOUSE_MOVEMENT value while the physical
+  // mouse is idle. Treat that stable vector as a learned bias instead of using
+  // it as a gate. Real movement is reconstructed from three independent
+  // candidates: raw-minus-bias, frame-to-frame raw variation and OS cursor
+  // displacement. The strongest candidate wins immediately; there is no
+  // gesture-confirmation latch that can swallow short mouse movements.
   let sticks = {};
-  if (usingJoypad) {
-    try {
-      if (typeof Pad !== "undefined" &&
-          typeof Pad.GetPositionOfAnalogueSticks === "function") {
-        sticks = Pad.GetPositionOfAnalogueSticks(PAD_ID) || {};
-      } else {
-        sticks = safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {};
-      }
-    } catch (_) {
+  try {
+    if (typeof Pad !== "undefined" &&
+        typeof Pad.GetPositionOfAnalogueSticks === "function") {
+      sticks = Pad.GetPositionOfAnalogueSticks(PAD_ID) || {};
+    } else {
       sticks = safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {};
     }
+  } catch (_) {
+    sticks = safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {};
   }
-  const mouse = usingJoypad ? {} :
-    readUnifiedCameraMovement() || safeNative("GET_PC_MOUSE_MOVEMENT") || {};
-  const mouseX = finiteNumber(mouse.deltaX, 0);
-  const inversion = isMouseUsingVerticalInversion() ? -1 : 1;
-  const mouseY = finiteNumber(mouse.deltaY, 0) * inversion;
+
   const stickX = finiteNumber(sticks.rightStickX, 0);
   const stickY = finiteNumber(sticks.rightStickY, 0);
-  const mouseMagnitude = Math.sqrt(mouseX * mouseX + mouseY * mouseY);
   const stickMagnitude = Math.sqrt(stickX * stickX + stickY * stickY);
+
+  let mouse = readUnifiedCameraMovement();
+  if (!mouse) {
+    const rawMouse = safeNative("GET_PC_MOUSE_MOVEMENT");
+    mouse = rawMouse && typeof rawMouse === "object" ? rawMouse : {};
+  }
+
+  const rawMouseX = finiteNumber(mouse.deltaX ?? mouse.x, 0);
+  const rawMouseY = finiteNumber(mouse.deltaY ?? mouse.y, 0);
+  const inversion = isMouseUsingVerticalInversion() ? -1 : 1;
+  const rawMouseMagnitude = Math.sqrt(rawMouseX * rawMouseX + rawMouseY * rawMouseY);
+
+  const mouseMirrorsStick = stickMagnitude > 0.5 &&
+    Math.abs(rawMouseX - stickX) <= 1.5 &&
+    (Math.abs(rawMouseY - stickY) <= 1.5 ||
+      Math.abs(rawMouseY + stickY) <= 1.5);
+
+  const oldRawX = previousRawMouseX;
+  const oldRawY = previousRawMouseY;
+  const rawVariationX = oldRawX === null ? 0 : rawMouseX - oldRawX;
+  const rawVariationY = oldRawY === null ? 0 : rawMouseY - oldRawY;
+  const rawVariation = Math.sqrt(
+    rawVariationX * rawVariationX + rawVariationY * rawVariationY
+  );
+  previousRawMouseX = rawMouseX;
+  previousRawMouseY = rawMouseY;
+
+  let cursorDeltaX = 0;
+  let cursorDeltaY = 0;
+  let cursorMagnitude = 0;
+  const cursor = readMouseCursorPosition();
+  if (cursor && previousMouseCursorPosition) {
+    cursorDeltaX = cursor.x - previousMouseCursorPosition.x;
+    cursorDeltaY = cursor.y - previousMouseCursorPosition.y;
+    cursorMagnitude = Math.sqrt(
+      cursorDeltaX * cursorDeltaX + cursorDeltaY * cursorDeltaY
+    );
+    if (cursorMagnitude > MOUSE_CURSOR_MAX_DELTA_PIXELS) {
+      cursorDeltaX = 0;
+      cursorDeltaY = 0;
+      cursorMagnitude = 0;
+    }
+  }
+  if (cursor) previousMouseCursorPosition = cursor;
+
+  const looksLikeIdleDiagonal = !mouseMirrorsStick && stickMagnitude < 0.5 &&
+    rawMouseX > 0.5 && rawMouseY > 0.5 &&
+    rawMouseMagnitude <= 6.25 &&
+    Math.abs(rawMouseX - rawMouseY) <= 0.65;
+
+  if (!mouseMirrorsStick &&
+      (mouseMovementBaselineX === null || mouseMovementBaselineY === null)) {
+    // Only auto-learn the first sample when it matches the known synthetic
+    // diagonal signature. A first real mouse gesture must not become "zero".
+    if (looksLikeIdleDiagonal) {
+      mouseMovementBaselineX = rawMouseX;
+      mouseMovementBaselineY = rawMouseY;
+    } else {
+      mouseMovementBaselineX = 0;
+      mouseMovementBaselineY = 0;
+    }
+  }
+
+  const baselineX = finiteNumber(mouseMovementBaselineX, 0);
+  const baselineY = finiteNumber(mouseMovementBaselineY, 0);
+  let mouseX = mouseMirrorsStick ? 0 : rawMouseX - baselineX;
+  let mouseY = mouseMirrorsStick ? 0 : (rawMouseY - baselineY) * inversion;
+
+  // A stable synthetic diagonal is bias, not input. Importantly, this is not a
+  // prerequisite for accepting movement: any meaningful variation, sign
+  // change or cursor displacement bypasses this suppression immediately.
+  const idleDiagonalSignature = looksLikeIdleDiagonal &&
+    rawVariation <= 0.30 && cursorMagnitude < 1.0 &&
+    Math.sqrt(mouseX * mouseX + mouseY * mouseY) <= 0.85;
+  if (idleDiagonalSignature) {
+    mouseX = 0;
+    mouseY = 0;
+  }
+
+  // Candidate #2: high-pass component. This catches DE/Wine builds where the
+  // absolute opcode value is biased but physical motion still changes it.
+  const variationX = mouseMirrorsStick ? 0 : rawVariationX;
+  const variationY = mouseMirrorsStick ? 0 : rawVariationY * inversion;
+  const variationMagnitude = Math.sqrt(
+    variationX * variationX + variationY * variationY
+  );
+  let bestMagnitude = Math.sqrt(mouseX * mouseX + mouseY * mouseY);
+  if (variationMagnitude >= 0.32 && variationMagnitude > bestMagnitude) {
+    mouseX = variationX;
+    mouseY = variationY;
+    bestMagnitude = variationMagnitude;
+  }
+
+  // Candidate #3: Input64 cursor movement. Some Wine configurations expose
+  // useful cursor displacement even when GET_PC_MOUSE_MOVEMENT is noisy.
+  if (!mouseMirrorsStick && cursorMagnitude >= 1.0) {
+    const cursorX = clamp(cursorDeltaX, -45, 45) * 0.45;
+    const cursorY = clamp(cursorDeltaY, -45, 45) * 0.45 * inversion;
+    const candidateMagnitude = Math.sqrt(cursorX * cursorX + cursorY * cursorY);
+    if (candidateMagnitude > bestMagnitude) {
+      mouseX = cursorX;
+      mouseY = cursorY;
+      bestMagnitude = candidateMagnitude;
+    }
+  }
+
+  // Keep pathological spikes from throwing the camera through a half-turn in
+  // one frame after alt-tab or focus changes.
+  mouseX = clamp(mouseX, -80, 80);
+  mouseY = clamp(mouseY, -80, 80);
+  let mouseMagnitude = Math.sqrt(mouseX * mouseX + mouseY * mouseY);
+  if (mouseMagnitude < 0.20) {
+    mouseX = 0;
+    mouseY = 0;
+    mouseMagnitude = 0;
+  }
+
+  // Update the bias only while there is strong evidence that the mouse is
+  // actually idle. Never chase the baseline during a real gesture.
+  if (!mouseMirrorsStick && looksLikeIdleDiagonal &&
+      rawVariation <= 0.22 && cursorMagnitude < 1.0 && mouseMagnitude === 0) {
+    const calibrating = now <= mouseBaselineCalibrateUntil;
+    const alpha = calibrating ? 0.30 : 0.055;
+    mouseMovementBaselineX = lerp(baselineX, rawMouseX, alpha);
+    mouseMovementBaselineY = lerp(baselineY, rawMouseY, alpha);
+  }
+
   return {
-    mouseX, mouseY, stickX, stickY, mouseMagnitude, stickMagnitude,
+    mouseX,
+    mouseY,
+    stickX,
+    stickY,
+    mouseMagnitude,
+    stickMagnitude,
+    rawMouseX,
+    rawMouseY,
+    mouseBaselineX: finiteNumber(mouseMovementBaselineX, 0),
+    mouseBaselineY: finiteNumber(mouseMovementBaselineY, 0),
+    rawVariation,
+    cursorDeltaX,
+    cursorDeltaY,
+    idleDiagonalSignature,
     horizontalMagnitude: Math.max(Math.abs(mouseX), Math.abs(stickX)),
     magnitude: Math.max(mouseMagnitude, stickMagnitude),
+    source: stickMagnitude > mouseMagnitude ? "stick" : "mouse",
   };
+}
+
+function readMouseCursorPosition() {
+  try {
+    if (typeof Mouse !== "undefined" && typeof Mouse.GetCursorPos === "function") {
+      const cursor = Mouse.GetCursorPos();
+      if (cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y)) {
+        return { x: cursor.x, y: cursor.y };
+      }
+    }
+  } catch (_) {}
+  const cursor = safeNative("GET_CURSOR_POS");
+  if (cursor && typeof cursor === "object" &&
+      Number.isFinite(cursor.x) && Number.isFinite(cursor.y)) {
+    return { x: cursor.x, y: cursor.y };
+  }
+  return null;
 }
 
 function readUnifiedCameraMovement() {
@@ -2125,15 +3340,6 @@ function readUnifiedCameraMovement() {
     }
   } catch (_) {}
   return null;
-}
-
-function isPcUsingJoypad() {
-  try {
-    if (typeof Game !== "undefined" && typeof Game.IsPcUsingJoypad === "function") {
-      return !!Game.IsPcUsingJoypad();
-    }
-  } catch (_) {}
-  return !!safeNative("IS_PC_USING_JOYPAD");
 }
 
 function isMouseUsingVerticalInversion() {
@@ -2152,9 +3358,21 @@ function isAimHeld() {
 }
 
 function cameraTransitionIsActive() {
-  if (safeNative("HAS_CUTSCENE_LOADED") === true) return true;
+  // HAS_CUTSCENE_LOADED only means the resource finished loading; it is not a
+  // reliable "cutscene is currently playing" signal. Player.IsControlOn is
+  // used by the main ownership guard instead, while fades remain explicit.
   const fading = safeNative("GET_FADING_STATUS");
   return fading !== null && Number(fading) > 0;
+}
+
+function isPlayerControlAvailable() {
+  try {
+    if (player && typeof player.isControlOn === "function") {
+      return !!player.isControlOn();
+    }
+  } catch (_) {}
+  const nativeValue = safeNative("IS_PLAYER_CONTROL_ON", player);
+  return nativeValue === null ? true : !!nativeValue;
 }
 
 function loadConfig() {
@@ -2195,6 +3413,11 @@ function loadConfig() {
     nextConfig.targetDampingRatio = clamp(readConfigInt("camera", "target_damping_ratio_percent", nextConfig.targetDampingRatio * 100), 70, 180) / 100;
     nextConfig.collisionFrequencyHz = clamp(readConfigInt("camera", "collision_frequency_hz_x100", nextConfig.collisionFrequencyHz * 100), 350, 1200) / 100;
     nextConfig.collisionDampingRatio = clamp(readConfigInt("camera", "collision_damping_ratio_percent", nextConfig.collisionDampingRatio * 100), 70, 180) / 100;
+    nextConfig.nativeOnFootCamera = readConfigBool("on_foot", "native_camera_backend", nextConfig.nativeOnFootCamera);
+    nextConfig.nativeOnFootDynamicFov = readConfigBool("on_foot", "native_dynamic_fov", nextConfig.nativeOnFootDynamicFov);
+    nextConfig.nativeVehicleCamera = readConfigBool("vehicle", "native_camera_backend", nextConfig.nativeVehicleCamera);
+    nextConfig.nativeVehicleDynamicFov = readConfigBool("vehicle", "native_dynamic_fov", nextConfig.nativeVehicleDynamicFov);
+    nextConfig.nativeVehicleContextualTweak = readConfigBool("vehicle", "native_contextual_tweak", nextConfig.nativeVehicleContextualTweak);
     nextConfig.driftVelocityInfluence = clamp(readConfigInt("vehicle", "drift_velocity_influence_percent", nextConfig.driftVelocityInfluence * 100), 0, 100) / 100;
     nextConfig.driftMinSpeedKmh = clamp(readConfigInt("vehicle", "drift_min_speed_kmh", nextConfig.driftMinSpeedKmh), 5, 40);
     nextConfig.driftDistance = clamp(readConfigInt("vehicle", "drift_distance_cm", nextConfig.driftDistance * 100), 0, 400) / 100;
@@ -2211,6 +3434,13 @@ function loadConfig() {
     nextConfig.airborneExitVerticalSpeed = clamp(readConfigInt("vehicle", "airborne_exit_vertical_kmh", nextConfig.airborneExitVerticalSpeed * 3.6), 2, 15) / 3.6;
     nextConfig.landingMinAirborneMs = clamp(readConfigInt("vehicle", "landing_min_airborne_ms", nextConfig.landingMinAirborneMs), 100, 800);
     nextConfig.landingDurationMs = clamp(readConfigInt("vehicle", "landing_duration_ms", nextConfig.landingDurationMs), 80, 500);
+    nextConfig.vehicleDriftFovBoost = clamp(readConfigInt("vehicle", "drift_fov_boost_deg_x10", nextConfig.vehicleDriftFovBoost * 10), 0, 60) / 10;
+    nextConfig.vehicleAccelerationFovBoost = clamp(readConfigInt("vehicle", "acceleration_fov_boost_deg_x10", nextConfig.vehicleAccelerationFovBoost * 10), 0, 60) / 10;
+    nextConfig.vehicleBrakingFovReduction = clamp(readConfigInt("vehicle", "braking_fov_reduction_deg_x10", nextConfig.vehicleBrakingFovReduction * 10), 0, 40) / 10;
+    nextConfig.onFootShoulderOffset = clamp(readConfigInt("on_foot", "shoulder_offset_cm", nextConfig.onFootShoulderOffset * 100), 0, 80) / 100;
+    nextConfig.onFootSprintShoulderOffset = clamp(readConfigInt("on_foot", "sprint_shoulder_offset_cm", nextConfig.onFootSprintShoulderOffset * 100), 0, 80) / 100;
+    nextConfig.onFootTurnLookAhead = clamp(readConfigInt("on_foot", "turn_look_cm", nextConfig.onFootTurnLookAhead * 100), 0, 160) / 100;
+    nextConfig.onFootSprintTurnLookAhead = clamp(readConfigInt("on_foot", "sprint_turn_look_cm", nextConfig.onFootSprintTurnLookAhead * 100), 0, 220) / 100;
     readDistanceAndHeightConfig(nextConfig);
     nextConfig.reloadHotkeyEnabled = readConfigBool("input", "reload_hotkey_enabled", nextConfig.reloadHotkeyEnabled);
     nextConfig.toggleHotkeyEnabled = readConfigBool("input", "toggle_hotkey_enabled", nextConfig.toggleHotkeyEnabled);
@@ -2398,7 +3628,7 @@ function isButtonPressed(padId, buttonId) {
 
 function headingVector(degrees) {
   const angle = (degrees * Math.PI) / 180;
-  return { x: -Math.sin(angle), y: Math.cos(angle), z: 0 };
+  return { x: Math.sin(angle), y: Math.cos(angle), z: 0 };
 }
 
 function cross2D(left, right) {
@@ -2434,6 +3664,59 @@ function normalizeVector(vector) {
   const length = vectorLength(vector);
   if (length <= 0.0001) return { x: 0, y: 1, z: 0 };
   return scaleVector(vector, 1 / length);
+}
+
+function getGameTimerMs() {
+  try {
+    if (typeof Clock !== "undefined" && typeof Clock.GetGameTimer === "function") {
+      const value = Number(Clock.GetGameTimer());
+      if (Number.isFinite(value)) return value;
+    }
+  } catch (_) {}
+  const rawNativeValue = safeNative("GET_GAME_TIMER");
+  if (rawNativeValue !== null && rawNativeValue !== undefined) {
+    const nativeValue = Number(rawNativeValue);
+    if (Number.isFinite(nativeValue)) return nativeValue;
+  }
+  return Date.now();
+}
+
+function getGroundZAt(position) {
+  if (!isVector(position)) return null;
+  try {
+    if (typeof World !== "undefined" && typeof World.GetGroundZFor3DCoord === "function") {
+      const value = Number(World.GetGroundZFor3DCoord(position.x, position.y, position.z));
+      if (Number.isFinite(value)) return value;
+    }
+  } catch (_) {}
+  const raw = safeNative("GET_GROUND_Z_FOR_3D_COORD", position.x, position.y, position.z);
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (raw && typeof raw === "object") {
+    const value = Number(raw.groundZ ?? raw.z);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function enforceCameraGroundSafety(position, anchor) {
+  let safe = enforceMinimumCameraHeight(position, anchor);
+  const minimumRaised = safe.z > position.z + 0.001;
+  // The actor-relative minimum already protects normal camera poses. Ground Z
+  // is an emergency sanity check only, so avoid an extra native query on every
+  // ordinary frame.
+  if (!minimumRaised && safe.z >= anchor.z + 0.75) return safe;
+
+  const groundZ = getGroundZAt(safe);
+  // Ground queries can return a bridge/upper surface in stacked geometry. Only
+  // use values reasonably close to the current actor's vertical band.
+  if (Number.isFinite(groundZ) &&
+      groundZ >= anchor.z - 15 && groundZ <= anchor.z + 4) {
+    safe = {
+      ...safe,
+      z: Math.max(safe.z, groundZ + CAMERA_GROUND_CLEARANCE),
+    };
+  }
+  return safe;
 }
 
 function isSafeCameraPose(anchor, position, target) {
@@ -2480,6 +3763,13 @@ function normalizeAngleRadians(angle) {
 
 function smoothAngle(current, target, amount) {
   return current + normalizeAngleRadians(target - current) * clamp(amount, 0, 1);
+}
+
+function smoothHorizontalDirection(current, target, amount) {
+  const currentYaw = Math.atan2(current.y, current.x);
+  const targetYaw = Math.atan2(target.y, target.x);
+  const yaw = smoothAngle(currentYaw, targetYaw, amount);
+  return { x: Math.cos(yaw), y: Math.sin(yaw), z: 0 };
 }
 
 function cameraYawFromViewDirection(viewDirection) {

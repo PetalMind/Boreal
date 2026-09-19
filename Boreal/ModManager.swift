@@ -339,10 +339,28 @@ nonisolated enum ModIdentity {
             .lowercased()
     }
 
-    static func existingModID(for archiveName: String, in state: ModGameState) -> UUID? {
+    static func existingModID(
+        for archiveName: String,
+        relativePaths: [String] = [],
+        in state: ModGameState
+    ) -> UUID? {
         let archiveKey = key(for: archiveName)
-        guard !archiveKey.isEmpty else { return nil }
-        return state.mods.first { key(for: $0.name) == archiveKey }?.id
+        if !archiveKey.isEmpty,
+           let namedMatch = state.mods.first(where: { key(for: $0.name) == archiveKey }) {
+            return namedMatch.id
+        }
+
+        // An archive can be renamed between revisions. When the name no
+        // longer identifies the installed mod, use an exact payload-path
+        // match only if it points to one unambiguous installed mod. This keeps
+        // renamed updates from becoming a second copy without guessing when
+        // two mods intentionally own the same destination.
+        let incomingPaths = Set(relativePaths.map { $0.lowercased() })
+        guard !incomingPaths.isEmpty else { return nil }
+        let candidates = state.mods.filter { mod in
+            !incomingPaths.isDisjoint(with: mod.files.map { $0.relativePath.lowercased() })
+        }
+        return candidates.count == 1 ? candidates[0].id : nil
     }
 }
 
@@ -573,6 +591,7 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     case invalidRelativePath(String)
     case duplicatePath(String)
     case stagedFileChanged(String)
+    case deployedFileMismatch(String)
     case externalFileChanged(String)
     case missingPluginMasters([ModMissingMaster])
     case invalidPluginHeaders([String])
@@ -616,6 +635,8 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
             "The mod contains duplicate files that differ only by letter case: \(path)"
         case .stagedFileChanged(let path):
             "A staged mod file changed outside Boreal, so deployment was stopped: \(path)"
+        case .deployedFileMismatch(let path):
+            "Boreal deployed a mod file but its SHA-256 does not match the staged archive: \(path)"
         case .externalFileChanged(let path):
             "A file managed by Boreal changed outside the mod manager, so deployment was stopped: \(path)"
         case .missingPluginMasters(let missing):

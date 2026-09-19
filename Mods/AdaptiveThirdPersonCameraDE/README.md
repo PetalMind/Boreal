@@ -25,13 +25,14 @@ using one fixed camera distance for every situation.
   interpreted as separate signals for the latched driving, entering, exiting
   and on-foot states. The on-foot signal has priority so a stale vehicle-use
   result cannot keep the camera attached after an exit.
-- Manual camera input has priority without restoring the standard camera. The
-  adaptive camera follows the user's yaw/pitch for 1.1 s, then blends back
-  instead of taking control immediately. Recenter delay scales from about
-  1.8 s at low speed to 0.65 s at high speed.
-- Motion analysis uses `Car.GetSpeedVector` / `Char.GetVelocity` first, with
-  position delta only as a fallback. It includes dt-aware acceleration,
-  slip angle, velocity prediction, reverse hysteresis and airborne/landing.
+- Manual vehicle camera is a real orbit controller on top of the fixed camera:
+  `AUTO` and persistent `MANUAL` own separate yaw/pitch state. The current
+  active pose is used when manual control begins, so there is no reset to the
+  vehicle heading. Once vehicle free-look starts, it never expires or forces a
+  recenter while driving; changing the anchor is the only reset.
+- Vehicle AUTO uses the actual world-space forward axes exposed by the car
+  wrapper/native. Speed and world position delta drive look-ahead, slip angle,
+  reverse hysteresis and airborne/landing, but cannot move the camera sideways.
 - Horizontal and vertical spring response are separated. Cars follow bumps and
   jumps more conservatively on the Z axis, keeping the horizon stable.
 - Camera collision uses a cached 30 Hz result, a six-step center-ray search and
@@ -49,9 +50,13 @@ a small 5-degree change and reading the value back. Profile FOV is applied only
 after successful readback; otherwise FOV changes stay disabled for the session.
 No classic GTA SA memory address is used.
 
-The camera position and target are real scriptable camera operations using
-`SET_FIXED_CAMERA_POSITION` and `POINT_CAMERA_AT_POINT`. The collision path is
-real LOS data, not a visual approximation.
+The camera position and target use the CLEO Redux `Camera.SetFixedPosition` and
+`Camera.PointAtPoint` operations with switch style `2`. The active pose is
+written once per frame by this script only; `Camera.PersistPos` and
+`Camera.PersistTrack` remain disabled so the native and scripted camera cannot
+fight over the rendered transform. The raw natives remain only as a
+compatibility fallback. The collision path is real LOS data, not a visual
+approximation.
 
 Vehicle ownership is cleared whenever `IS_CHAR_ON_FOOT` becomes true. While
 the ped is not on foot, the seated state (`IS_CHAR_SITTING_IN_ANY_CAR`) and the
@@ -71,6 +76,10 @@ teleports. It is not used for an ordinary vehicle-to-on-foot handoff.
 - [CLEO Redux x64 1.5.0+](https://github.com/cleolibrary/CLEO-Redux/releases).
 - Ultimate ASI Loader x64 installed as `version.dll`.
 - `IniFiles64.cleo` in `CLEO/CLEO_PLUGINS` for the persistent INI.
+- A CLEO Redux runtime exposing `Pad.IsKeyPressed` or the
+  `IS_KEY_PRESSED` native. If neither is available, the script logs that
+  keyboard input is unavailable and disables F5/F9/F11 without affecting the
+  camera loop.
 
 ## Installation
 
@@ -91,20 +100,50 @@ chmod +x install.sh
 ```
 
 The installer verifies the executable and runtime, keeps a timestamped backup
-when replacing the script, and never overwrites an existing user INI.
+when replacing the script, verifies the deployed script byte-for-byte and
+prints its SHA-256, and never overwrites an existing user INI. Boreal performs
+the same hash verification after deploying an imported SA:DE archive.
+
+The CLEO startup log contains the build identifier
+`ATC-DE-20260919-13`. Use it to distinguish the active script from an older
+copy.
 
 ## Controls and configuration
 
 - `F9`: enable/disable the adaptive camera.
 - `F11`: reload `AdaptiveThirdPersonCamera.ini`.
 - The in-game `Change Camera` action (`V` by default) while in a vehicle:
-  cycle the Close, Standard and Wide layouts. The script observes the native
-  in-car mode so remapped/controller input works; physical `V` is only a
-  keyboard fallback if the fixed camera blocks that native state change. The
-  controller Select/Back button is also accepted as a physical fallback.
-- Move the mouse or right stick strongly: take manual control of the adaptive
-  camera. It waits, respects a speed-dependent recenter delay and blends back
-  over `manual_blend_ms`.
+  physical `V` or controller Select/Back cycles the Close, Standard and Wide
+  script profiles. It does not call the native GTA camera-mode setter, because
+  native modes such as Top-Down and Behind Car are not these distance profiles.
+- `F5` while in a vehicle: directly cycle the camera distance through
+  `Standard`, `Wide` and `Close`. The log records the selected script profile.
+- While driving, any intentional mouse/right-stick movement immediately enters
+  persistent `Car+Manual` free-look after one sample above the device deadzone.
+  Both horizontal and vertical input are accepted. The manual orbit owns yaw
+  and bounded pitch; it never expires, is never overridden by auto-follow and
+  is reset only when leaving/changing the vehicle anchor.
+- Manual input prefers `Mouse.GetMovement()` when the runtime exposes it. That
+  API is treated as the single mouse/right-stick source; the separate stick
+  native is used only as a compatibility fallback, so the look delta cannot be
+  applied twice.
+- During vehicle free-look, collision is refreshed every frame. A transient
+  emergency sample gets a 220 ms grace period while the current camera path is
+  clear; the camera snaps only when its current path is actually blocked.
+
+The stable on-foot standing profile is used immediately after movement stops.
+The `OnFootIdle` state activates only after 60 seconds of continuous stationary
+time, but it has no idle movement: its camera geometry is identical to
+`OnFootStand`. Character movement or manual camera input resets the full timer.
+Entering or leaving a vehicle also clears the manual orbit owned by the previous
+anchor, so `OnFootStand` cannot inherit `Car+Manual`.
+
+The camera reads actor coordinates through the generated SA:DE `Char` and
+`Car` instance APIs and rejects poses outside a safe range around the actor.
+Layout changes blend distance, height and target-height parameters before a
+fresh world-space pose is calculated. Resolved positions are clamped to at
+least 0.40 m above the actor anchor. The CLEO log records the complete
+anchor/desired/resolved/spring chain after every layout change.
 
 Distances and heights are stored in centimetres in the INI. The state machine
 uses the following starting values:
@@ -118,7 +157,7 @@ uses the following starting values:
 | Aim | native camera | native | 59° |
 | Car slow | 5.25 m | 1.85 m | 74° |
 | Car normal | 5.65 m | 1.95 m | 76° |
-| Car fast | 6.1 m → 6.45 m | 2.05 m → 2.12 m | 79° → 81° |
+| Car fast | 6.1 m | 2.05 m | 79° |
 | Motorbike | 5.6 m → 5.0 m | 1.9 m → 1.7 m | 75° → 78° |
 | Aircraft | 15 m | 5 m | 79° |
 

@@ -15,7 +15,7 @@ if (HOST !== "sa_unreal") {
 const PLAYER_ID = 0;
 const CONFIG_PATH = "./AdaptiveThirdPersonCamera.ini";
 const CONFIG_VERSION = 1;
-const MOD_BUILD_ID = "ATC-DE-20260919-14";
+const MOD_BUILD_ID = "ATC-DE-20260919-13";
 const VK_TOGGLE = 120; // F9.
 const VK_RELOAD = 122; // F11.
 const VK_CAMERA_DISTANCE = 116; // F5.
@@ -153,9 +153,6 @@ let vehicleManualInputFrames = 0;
 let vehicleCameraControl = CameraControl.AUTO;
 let vehicleOrbitYaw = null;
 let vehicleOrbitPitch = 0;
-let vehicleRecenterYaw = 0;
-let vehicleRecenterPitch = 0;
-let lastSpringAnchor = null;
 let stationarySince = 0;
 let anchorTransition = null;
 let vehicleFollowDirection = null;
@@ -325,9 +322,9 @@ while (true) {
   vehicleManualInputFrames = vehicleCameraIntent
     ? Math.min(VEHICLE_MANUAL_CONFIRM_FRAMES, vehicleManualInputFrames + 1)
     : 0;
-  const manualInputActive = config.manualOverride && (sample.vehicle
+  const manualInputActive = sample.vehicle
     ? vehicleManualInputFrames >= VEHICLE_MANUAL_CONFIRM_FRAMES
-    : manualInput.magnitude >= config.manualOverrideThreshold);
+    : config.manualOverride && manualInput.magnitude >= config.manualOverrideThreshold;
   if (manualInputActive) {
     if (!sample.vehicle) {
       // Manual camera movement is activity too. Restart the full idle delay so
@@ -336,7 +333,7 @@ while (true) {
       sample.idleElapsedMs = 0;
       sample.idleActive = false;
     }
-    beginManualOverride(sample, manualInput, now, dt);
+    beginManualOverride(sample, manualInput, now);
   }
 
   if (cameraSessionDisabled) {
@@ -554,9 +551,6 @@ function cameraAnchorChanged(previous, current) {
 }
 
 function beginAnchorTransition(sample, now) {
-  lastSpringAnchor = null;
-  vehicleFollowDirection = null;
-  collisionCache = null;
   vehicleManualInputFrames = 0;
   vehicleCameraControl = CameraControl.AUTO;
   vehicleOrbitYaw = null;
@@ -592,7 +586,7 @@ function getAnchorTransitionState(now) {
   return { ...anchorTransition, amount };
 }
 
-function beginManualOverride(sample, input, now, dt) {
+function beginManualOverride(sample, input, now) {
   if (sample.vehicle) {
     if (vehicleCameraControl === CameraControl.AUTO || vehicleOrbitYaw === null) {
       initializeVehicleOrbit(sample);
@@ -614,13 +608,14 @@ function beginManualOverride(sample, input, now, dt) {
   }
 
   const yawDelta = input.stickMagnitude > input.mouseMagnitude
-    ? normalizeStickAxis(input.stickX) * 2.8 * dt
+    ? input.stickX * 0.055
     : input.mouseX * 0.004;
   const pitchDelta = input.stickMagnitude > input.mouseMagnitude
-    ? normalizeStickAxis(input.stickY) * 1.8 * dt
+    ? input.stickY * 0.040
     : input.mouseY * 0.0025;
   if (sample.vehicle) {
-    // Manual input interrupts recentering and owns the orbit immediately.
+    // Vehicle manual mode owns the orbit. The vehicle heading must never
+    // overwrite this yaw while the user is looking around.
     vehicleOrbitYaw = normalizeAngleRadians(vehicleOrbitYaw + yawDelta);
     vehicleOrbitPitch = clamp(
       vehicleOrbitPitch - pitchDelta,
@@ -632,12 +627,11 @@ function beginManualOverride(sample, input, now, dt) {
     manualPitchOffset = clamp(manualPitchOffset - pitchDelta, -0.45, 0.45);
   }
   if (sample.vehicle) {
-    // Hold while input is active; then return from this fixed starting angle.
-    // Do not recursively lerp the orbit on every frame of the return.
-    vehicleRecenterYaw = vehicleOrbitYaw;
-    vehicleRecenterPitch = vehicleOrbitPitch;
-    manualFreeUntil = now + Math.max(config.manualFreeMs, getRecenterDelay(sample));
-    manualRecenterUntil = manualFreeUntil + config.manualBlendMs;
+    // Vehicle free-look never expires. Auto-follow must not take control back
+    // between two mouse samples, during a drift, or after a profile change.
+    // The orbit is reset only when the vehicle anchor is released/changed.
+    manualFreeUntil = Number.POSITIVE_INFINITY;
+    manualRecenterUntil = Number.POSITIVE_INFINITY;
   } else {
     const freeLookHold = config.manualFreeMs;
     manualFreeUntil = now + freeLookHold;
@@ -672,7 +666,9 @@ function initializeVehicleOrbit(sample) {
 function getAutoFollowWeight(sample, now) {
   if (sample.vehicle && vehicleOrbitYaw !== null &&
       vehicleCameraControl === CameraControl.MANUAL) {
-    return smoothstep(manualFreeUntil, manualRecenterUntil, now);
+    // Persistent vehicle free-look: never force the camera back behind the
+    // car while the player is driving.
+    return 0;
   }
 
   if (now <= manualFreeUntil) return 0;
@@ -680,7 +676,7 @@ function getAutoFollowWeight(sample, now) {
   if (now <= manualRecenterUntil) return 0;
   const weight = smoothstep(
     0,
-    Math.max(1, config.manualBlendMs),
+    Math.max(1, sample.vehicle ? VEHICLE_MANUAL_BLEND_MS : config.manualBlendMs),
     now - manualRecenterUntil
   );
   if (weight >= 1) {
@@ -956,16 +952,6 @@ function updateStationaryState(sample, now) {
 
 function applyCameraDirector(sample, dt, now, autoFollowWeight) {
   const transition = getAnchorTransitionState(now);
-  // Carry both springs by the vehicle's actual horizontal displacement.
-  // Their velocities then describe orbit/profile changes, not road speed.
-  // Keep Z world-damped to retain the existing bump/airborne filtering.
-  if (sample.vehicle && lastSpringAnchor && springPosition && springTarget) {
-    const displacement = subtractVector(sample.position, lastSpringAnchor);
-    displacement.z = 0;
-    springPosition = addVector(springPosition, displacement);
-    springTarget = addVector(springTarget, displacement);
-  }
-  lastSpringAnchor = sample.vehicle ? sample.position : null;
   let profile = buildProfile(sample);
   if (transition?.fromProfile) {
     profile = interpolateProfiles(transition.fromProfile, profile, transition.amount);
@@ -1201,11 +1187,11 @@ function buildCameraGeometry(sample, profileValue, autoFollowWeight, transition 
     vehicleOrbitYaw !== null;
   if (useVehicleOrbit && autoFollowWeight > 0) {
     vehicleOrbitYaw = smoothAngle(
-      vehicleRecenterYaw,
+      vehicleOrbitYaw,
       cameraYawFromViewDirection(direction),
       autoFollowWeight
     );
-    vehicleOrbitPitch = lerp(vehicleRecenterPitch, 0, autoFollowWeight);
+    vehicleOrbitPitch = lerp(vehicleOrbitPitch, 0, autoFollowWeight);
     if (autoFollowWeight >= 1) {
       vehicleCameraControl = CameraControl.AUTO;
       vehicleOrbitYaw = null;
@@ -1475,7 +1461,7 @@ function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverr
     }
   }
 
-  if (sample.vehicle) {
+  if (sample.vehicle && !sample.reverseActive) {
     if (!vehicleFollowDirection) {
       vehicleFollowDirection = autoDirection;
     } else {
@@ -1486,27 +1472,15 @@ function getCameraDirection(sample, profileValue, autoFollowWeight, forwardOverr
         Math.max(0.1, config.vehicleYawFollowStrength) /
         1000;
       const followAlpha = 1 - Math.exp(-elapsed / followTimeConstant);
-      const currentYaw = Math.atan2(vehicleFollowDirection.y, vehicleFollowDirection.x);
-      const targetYaw = Math.atan2(autoDirection.y, autoDirection.x);
-      // Interpolate angles, not opposite vectors (which cancel to zero).
-      // Bound the turn rate so reversing cannot cut straight through the car.
-      const yawStep = clamp(
-        normalizeAngleRadians(targetYaw - currentYaw) * followAlpha,
-        -Math.PI * elapsed,
-        Math.PI * elapsed
+      vehicleFollowDirection = normalizeVector(
+        lerpVector(vehicleFollowDirection, autoDirection, followAlpha)
       );
-      vehicleFollowDirection = {
-        x: Math.cos(currentYaw + yawStep),
-        y: Math.sin(currentYaw + yawStep),
-        z: 0,
-      };
     }
     autoDirection = rotateHorizontal(
       vehicleFollowDirection,
-      (sample.steering * (sample.reverseActive ? 0 : 1) *
-        config.maxSteeringYawBiasDegrees * Math.PI) / 180
+      (sample.steering * config.maxSteeringYawBiasDegrees * Math.PI) / 180
     );
-  } else {
+  } else if (!sample.vehicle || sample.reverseActive) {
     vehicleFollowDirection = null;
   }
 
@@ -1557,11 +1531,7 @@ function resolveCameraCollision(
     distanceBetween(collisionCache.target, target) < 0.45 &&
     distanceBetween(collisionCache.desiredPosition, desiredPosition) < 0.45
   ) {
-    // Cached clear space must never return an old world-space camera pose.
-    // A constrained pose depends on static geometry and needs a fresh query.
-    if (!collisionCache.result.collided) {
-      return { ...collisionCache.result, position: desiredPosition };
-    }
+    return collisionCache.result;
   }
 
   if (isCameraPathClear(target, desiredPosition, ownVehicle)) {
@@ -1749,7 +1719,6 @@ function setScriptCameraPose(position, target) {
 }
 
 function releaseCamera() {
-  lastSpringAnchor = null;
   const hadCameraControl = cameraApplied || aimCameraActive || fovProbe;
   anchorTransition = null;
   manualCameraDirection = null;
@@ -2068,47 +2037,46 @@ function getCameraState() {
   return vectorLength(forward) > 0.01 ? { position, pointAt, forward } : null;
 }
 
-function normalizeStickAxis(value) {
-  const magnitude = Math.abs(value);
-  if (magnitude <= VEHICLE_MANUAL_STICK_DEADZONE) return 0;
-  return Math.sign(value) * clamp(
-    (magnitude - VEHICLE_MANUAL_STICK_DEADZONE) /
-      (128 - VEHICLE_MANUAL_STICK_DEADZONE),
-    0,
-    1
-  );
-}
-
 function readManualCameraInput() {
-  // GET_PC_MOUSE_MOVEMENT may also expose the right stick. Select one source
-  // by control mode; do not interpret held stick deflection as mouse counts.
-  const usingJoypad = isPcUsingJoypad();
-  let sticks = {};
-  if (usingJoypad) {
-    try {
-      if (typeof Pad !== "undefined" &&
-          typeof Pad.GetPositionOfAnalogueSticks === "function") {
-        sticks = Pad.GetPositionOfAnalogueSticks(PAD_ID) || {};
-      } else {
-        sticks = safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {};
-      }
-    } catch (_) {
-      sticks = safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {};
-    }
+  const unifiedMovement = readUnifiedCameraMovement();
+  if (unifiedMovement) {
+    const inversion = isMouseUsingVerticalInversion() ? -1 : 1;
+    const mouseX = unifiedMovement.deltaX;
+    const mouseY = unifiedMovement.deltaY * inversion;
+    return {
+      mouseX,
+      mouseY,
+      stickX: 0,
+      stickY: 0,
+      mouseMagnitude: Math.sqrt(mouseX * mouseX + mouseY * mouseY),
+      stickMagnitude: 0,
+      horizontalMagnitude: Math.abs(mouseX),
+      magnitude: Math.sqrt(mouseX * mouseX + mouseY * mouseY),
+    };
   }
-  const mouse = usingJoypad ? {} :
-    readUnifiedCameraMovement() || safeNative("GET_PC_MOUSE_MOVEMENT") || {};
+
+  const usingJoypad = isPcUsingJoypad();
+  const mouse = usingJoypad ? {} : safeNative("GET_PC_MOUSE_MOVEMENT") || {};
+  const sticks = usingJoypad
+    ? safeNative("GET_POSITION_OF_ANALOGUE_STICKS", PAD_ID) || {}
+    : {};
   const mouseX = finiteNumber(mouse.deltaX, 0);
   const inversion = isMouseUsingVerticalInversion() ? -1 : 1;
   const mouseY = finiteNumber(mouse.deltaY, 0) * inversion;
   const stickX = finiteNumber(sticks.rightStickX, 0);
   const stickY = finiteNumber(sticks.rightStickY, 0);
-  const mouseMagnitude = Math.sqrt(mouseX * mouseX + mouseY * mouseY);
-  const stickMagnitude = Math.sqrt(stickX * stickX + stickY * stickY);
   return {
-    mouseX, mouseY, stickX, stickY, mouseMagnitude, stickMagnitude,
+    mouseX,
+    mouseY,
+    stickX,
+    stickY,
+    mouseMagnitude: Math.sqrt(mouseX * mouseX + mouseY * mouseY),
+    stickMagnitude: Math.sqrt(stickX * stickX + stickY * stickY),
     horizontalMagnitude: Math.max(Math.abs(mouseX), Math.abs(stickX)),
-    magnitude: Math.max(mouseMagnitude, stickMagnitude),
+    magnitude: Math.max(
+      Math.sqrt(mouseX * mouseX + mouseY * mouseY),
+      Math.sqrt(stickX * stickX + stickY * stickY)
+    ),
   };
 }
 
@@ -2398,7 +2366,7 @@ function isButtonPressed(padId, buttonId) {
 
 function headingVector(degrees) {
   const angle = (degrees * Math.PI) / 180;
-  return { x: -Math.sin(angle), y: Math.cos(angle), z: 0 };
+  return { x: Math.sin(angle), y: Math.cos(angle), z: 0 };
 }
 
 function cross2D(left, right) {

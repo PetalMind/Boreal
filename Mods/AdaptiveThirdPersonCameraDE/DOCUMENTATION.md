@@ -17,7 +17,9 @@ Wymagane są:
 - GTA San Andreas: The Definitive Edition na PC,
 - CLEO Redux x64,
 - Ultimate ASI Loader jako `version.dll`,
-- `IniFiles64.cleo` w `CLEO/CLEO_PLUGINS`.
+- `IniFiles64.cleo` w `CLEO/CLEO_PLUGINS`,
+- runtime CLEO Redux z działającym `Pad.IsKeyPressed` albo natywem
+  `IS_KEY_PRESSED` dla hotkeyów.
 
 W Boreal należy zaimportować `AdaptiveThirdPersonCameraDE.zip`. Pliki są
 wdrażane do:
@@ -51,9 +53,12 @@ Collision System: cache 30 Hz i probe'y kamery
 Spring System i renderer kamery
 ```
 
-Na końcu klatki używane są `SET_FIXED_CAMERA_POSITION` oraz
-`POINT_CAMERA_AT_POINT`. Jeżeli kamera nie powinna być sterowana przez mod,
-wykonywany jest bezpieczny powrót do kamery gry.
+Na końcu klatki używane są `Camera.SetFixedPosition` oraz
+`Camera.PointAtPoint(..., 2)`. Jest to jedyne miejsce zapisujące transformację
+kamery. `Camera.PersistPos` i `Camera.PersistTrack` pozostają wyłączone, dzięki
+czemu kamera natywna oraz skryptowa nie nadpisują sobie wzajemnie pozycji w
+tej samej klatce. Jeżeli dany build CLEO Redux nie udostępnia metod klasy
+`Camera`, skrypt używa publicznych native'ów jako jawnego fallbacku.
 
 ## 4. Kotwica kamery i stany pojazdu
 
@@ -71,20 +76,22 @@ Mod rozdziela dwa rodzaje informacji:
 | --- | --- |
 | `IS_CHAR_ON_FOOT` | Autorytatywny sygnał, że postać zakończyła wysiadanie i kamera musi przejść na postać. |
 | `IS_CHAR_SITTING_IN_ANY_CAR` | Faktyczne siedzenie w pojeździe i możliwość użycia pojazdu jako kotwicy. |
-| `IS_CHAR_IN_ANY_CAR` oraz odpowiedniki łodzi, helikoptera i samolotu | Trwająca interakcja z pojazdem, np. otwieranie albo zamykanie drzwi. |
+| `IS_CHAR_IN_ANY_CAR` oraz odpowiedniki łodzi, helikoptera i samolotu | Trwająca interakcja z pojazdem, np. otwieranie albo zamykanie drzwi; fallback kotwicy, gdy postać nie jest na piechotę. |
 
-`IS_CHAR_IN_ANY_CAR` nie jest samodzielnie używany do utrzymywania kotwicy.
-W części wersji CLEO Redux także wynik `IS_CHAR_SITTING_IN_ANY_CAR` nie jest
-wiarygodny, dlatego `IS_CHAR_ON_FOOT` ma pierwszeństwo i odcina uchwyt pojazdu
-natychmiast po faktycznym zakończeniu wysiadania.
+`IS_CHAR_IN_ANY_CAR` nie jest samodzielnie używany do utrzymywania kotwicy:
+musi wystąpić razem z `IS_CHAR_ON_FOOT = false`. W części wersji CLEO Redux
+wynik `IS_CHAR_SITTING_IN_ANY_CAR` nie jest wiarygodny, dlatego broad vehicle
+state pozostaje fallbackiem podczas wsiadania i jazdy, a `IS_CHAR_ON_FOOT` ma
+pierwszeństwo i odcina uchwyt pojazdu natychmiast po faktycznym rozpoczęciu
+wysiadania.
 
 Stany logiczne:
 
 | Stan | Warunek | Kotwica |
 | --- | --- | --- |
-| `driving` | Gracz siedzi w pojeździe | pojazd |
-| `entering` | Nie siedzi, ale trwa interakcja rozpoczęta z pozycji pieszej | postać |
-| `exiting` | Nie siedzi, ale trwa interakcja rozpoczęta podczas jazdy | postać w logice, z pamięcią pojazdu w handoffie |
+| `driving` | Gracz siedzi w pojeździe albo działa fallback interakcji przy `IS_CHAR_ON_FOOT = false` | pojazd |
+| `entering` | Interakcja rozpoczęta z pozycji pieszej | postać, następnie pojazd po utracie `IS_CHAR_ON_FOOT` |
+| `exiting` | Interakcja rozpoczęta podczas jazdy i `IS_CHAR_ON_FOOT = true` | postać z pamięcią pojazdu w handoffie |
 | `onFoot` | Brak interakcji z pojazdem | postać |
 
 Stan `entering` albo `exiting` jest zatrzaskiwany na początku interakcji.
@@ -162,14 +169,14 @@ max_steering_yaw_bias_deg=7
 ```
 
 Siła driftu zwiększa też dystans kamery, maksymalnie o wartość
-`drift_distance_cm`. Mod obserwuje `Camera.GetPlayerInCarMode()`, więc zmiana
-natywnego trybu kamery przełącza układy `Close`, `Standard` i `Wide` niezależnie
-od przypisania klawiatury lub pada. Fizyczne `V` jest wyłącznie fallbackiem,
-gdy fixed camera blokuje zmianę natywnego trybu. Fizyczny przycisk kontrolera
-`Select/Back` (button ID 13) jest dodatkowym fallbackiem; nie jest traktowany
-jako semantyczna akcja z remapem.
+`drift_distance_cm`. Mod obserwuje `Camera.GetPlayerInCarMode()` wyłącznie
+diagnostycznie. Jego build-zależnej wartości liczbowej nie mapuje automatycznie
+na lokalne układy `Close`, `Standard` i `Wide`, bo mogłoby to zgubić zmianę
+wykonaną przez fixed camera albo przełączyć niewłaściwy układ. Fizyczne `V`
+oraz fizyczny przycisk kontrolera `Select/Back` (button ID 13) są jawnie
+obsługiwanymi fallbackami i przełączają lokalny layout przez jeden kontroler.
 
-Podczas celowania pieszo mod zwalnia `SET_FIXED_CAMERA_POSITION` i pozostawia
+Podczas celowania pieszo mod zwalnia `Camera.SetFixedPosition` i pozostawia
 grze pełną kontrolę nad pozycją, pitch i natywną kamerą celowania. Nie wywołuje
 `Camera.SetPositionUnfixed`, ponieważ weryfikacja w SA:DE wykazała, że cykliczne
 wywołanie tej komendy może wymusić celowanie w górę i zablokować sterowanie
@@ -259,7 +266,7 @@ niezależne modyfikatory:
 
 ```text
 BaseProfile: CarSlow <-> CarNormal <-> CarFast
-Modifiers:   Drift + Reverse + Airborne/Landing + Manual + CollisionEmergency
+Modifiers:   Drift + Reverse + Airborne/Landing + Manual
 ```
 
 Profil określa dystans, wysokość, wysokość targetu, look-ahead, shoulder bias,
@@ -275,7 +282,7 @@ docelowy FOV oraz wpływ ruchu. Profile samochodu są mieszane funkcją
 | Aim | kamera natywna | natywna | celowanie gry |
 | Car slow | 5,25 m | 1,85 m | 0,75 m |
 | Car normal | 5,65 m | 1,95 m | 0,78 m |
-| Car fast | 6,1 -> 6,45 m | 2,05 -> 2,12 m | 0,82 -> 0,85 m |
+| Car fast | 6,1 m | 2,05 m | 0,82 m |
 | Motorbike | 5,6 m -> 5,0 m | 1,9 m -> 1,7 m | zależny od prędkości |
 | Aircraft | 15 m | 5 m | profil powietrzny |
 
@@ -291,7 +298,7 @@ sprint 0,06 m
 Aim nie korzysta z shoulder bias profilu ani nie modyfikuje pozycji natywnej
 kamery celowania.
 
-## 9. Ręczne sterowanie i delayed recenter
+## 9. Ręczne sterowanie i trwały vehicle free-look
 
 Mod wybiera jedno źródło przez `Game.IsPcUsingJoypad()`: ruch myszy albo prawy
 analog, nigdy oba naraz. Dla myszy respektuje też
@@ -301,23 +308,31 @@ analog, nigdy oba naraz. Dla myszy respektuje też
 manual_override_threshold=24
 ```
 
-mod nie wykonuje `RESTORE_CAMERA`. Odczytuje bieżący kierunek aktywnej kamery,
-przejmuje ruch myszy/prawego analoga do własnego yaw/pitch i wyłącza tylko
-automatyczne śledzenie pojazdu. Dzięki temu nie ma pierwszego snapu do kamery
-standardowej ani drugiego snapu przy powrocie.
+przejmowane są ruchy pionowe i ogólny ruch prawego analoga. Podczas jazdy
+poziomy i pionowy ruch myszy oraz prawego analoga ma osobne progi neutralne.
+Aktywacja pojazdu wymaga jednej próbki rzeczywistego ruchu ponad deadzone.
+Vehicle free-look nie wygasa po puszczeniu sterowania: mod nie uruchamia
+opóźnionego recenteringu i nie odbiera graczowi możliwości kolejnego obrotu.
+Pieszo nadal obowiązuje pełny skonfigurowany próg. W pojeździe mod utrzymuje
+osobny kontroler orbity ze stanami `AUTO` i `MANUAL`, przy czym `MANUAL` pozostaje aktywny
+aż do zmiany kotwicy albo zwolnienia kamery.
+Przy wejściu w `MANUAL` yaw i pitch są wyliczane z aktualnej pozycji oraz punktu
+widoku aktywnej kamery, więc nie ma zerowania kierunku ani snapu za samochód.
+W `MANUAL` heading pojazdu nie zapisuje yaw i nie uruchamia wymuszonego powrotu.
+Pitch orbity jest ograniczony do `-0.20..0.65` radiana. Mod nie wykonuje
+`RESTORE_CAMERA` przy zwykłym obrocie. Pozycja orbity jest dopiero przekazywana
+do `SetFixedPosition`, a `PointAtPoint` celuje w środek pojazdu.
 
 Cykl wygląda tak:
 
 ```text
 AUTO FOLLOW
     |
-silny ruch myszy/pada
+rzeczywisty ruch myszy/pada
     |
-USER CONTROL       manual_free_ms
+MANUAL             trwały yaw/pitch orbity
     |
-RECENTER DELAY     zależny od prędkości
-    |
-BLEND BACK         manual_blend_ms
+zmiana kotwicy / releaseCamera()
     |
 AUTO FOLLOW
 ```
@@ -332,10 +347,13 @@ recenter_normal_speed_ms=1100
 recenter_high_speed_ms=650
 ```
 
-Kierunek kamery w chwili ręcznego sterowania jest zapamiętywany. Powrót
-automatu zaczyna się więc od aktualnego widoku gracza, a nie od natychmiastowego
-obrotu za pojazd. Ruch poziomy jest akumulowany jako yaw, pionowy jako
-ograniczony pitch targetu. Pełny `RESTORE_CAMERA` pozostaje tylko mechanizmem
+Kierunek kamery w chwili ręcznego sterowania jest zapamiętywany z aktywnej
+pozycji i punktu widoku. Ruch poziomy jest akumulowany jako yaw orbity, a
+pionowy jako pitch pozycji kamery, nie tylko pitch targetu. Kamera nadal jest
+renderowana przez `SetFixedPosition` i `PointAtPoint`, ale pozycja nie jest już
+co klatkę resetowana za samochód. `Mouse.GetMovement()` jest preferowanym
+jedynym źródłem ruchu myszy/prawego analoga; natywne odczyty są fallbackiem
+kompatybilności. Pełny `RESTORE_CAMERA` pozostaje tylko mechanizmem
 bezpieczeństwa dla cutscenek, śmierci, teleportu i wyłączenia moda.
 
 ## 10. Kolizja kamery
@@ -379,10 +397,12 @@ układy do identycznego dystansu awaryjnego. Priorytetem jest poprawny dystans
 Close/Standard/Wide; inne pojazdy nie są więc przeszkodami dla tego LOS.
 
 Przy korekcie do geometrii odejmowany jest margines bezpieczeństwa, domyślnie
-20 cm. Gdy żaden kandydat nie osiąga minimalnego wyniku, używany jest osobny
-profil awaryjny: dystans około 1,45 m, wysokość obniżona, shoulder i look-ahead
-wyzerowane. Dzięki temu kamera nie wciska się w target ani nie przenosi
-niebezpiecznego offsetu do ciasnego interioru.
+20 cm. Gdy żaden kandydat nie osiąga minimalnego wyniku, resolver wyznacza
+punkt awaryjny w odległości około 1,45 m, ale nie zastępuje nim całego profilu
+jazdy ani nie zmienia wysokości, shoulder lub look-ahead. Pojedynczy alarm ma
+220 ms tolerancji, jeśli dotychczasowa ścieżka kamery nadal jest wolna. Dopiero
+utrzymująca się albo faktycznie blokująca bieżącą pozycję przeszkoda może
+przesunąć kamerę do bezpieczniejszego punktu.
 
 ```ini
 collision_safety_margin_cm=20
@@ -473,8 +493,8 @@ Ta sekwencja nie jest używana przy zwykłym `car -> onFoot`; tam działa płynn
 handoff.
 
 Natywy odczytowe są opcjonalne i mają wartości awaryjne. Natomiast
-`SET_FIXED_CAMERA_POSITION` oraz `POINT_CAMERA_AT_POINT` są wymagane dla sesji
-moda. Jeżeli którykolwiek z nich zgłosi błąd, skrypt zapisuje to w logu,
+`Camera.SetFixedPosition` oraz `Camera.PointAtPoint` (albo ich publiczny
+fallback natywny) są wymagane dla sesji moda. Jeżeli którykolwiek z nich zgłosi błąd, skrypt zapisuje to w logu,
 zwalnia kamerę i wyłącza bieżącą sesję zamiast kontynuować przez setki klatek
 z pozornym fallbackiem.
 
@@ -494,6 +514,21 @@ walk_height_cm=162
 
 oznacza to 3,8 m i 1,62 m.
 
+`F5` podczas jazdy przełącza bezpośrednio układy dystansu `Standard -> Wide ->
+Close -> Standard` i zapisuje wybrany profil w logu. Fizyczny `V` oraz
+przycisk Select/Back kontrolera używają tego samego lokalnego przełącznika.
+Skrypt nie wywołuje przy tej zmianie `SetPlayerInCarMode`, ponieważ natywne
+wartości GTA (`Top-Down`, `GTA Classic`, `Behind Car`) nie są profilami
+`Close/Standard/Wide` i nie mogą równocześnie sterować kamerą ze skryptem.
+`F5`, `F9` i `F11` używają
+narastającego wykrywania (`down && !lastDown`); gdy API klawiatury nie jest
+dostępne, są wyłączane z jednoznacznym wpisem w logu.
+
+`F11` buduje najpierw kompletny kandydat konfiguracji, waliduje wszystkie
+odległości, wysokości, FOV i zależności progów, a dopiero potem podmienia
+aktywny obiekt `config`. Błąd odczytu albo wersji INI nie może więc pozostawić
+częściowo załadowanych ustawień; poprzednia konfiguracja pozostaje aktywna.
+
 Najważniejsze grupy konfiguracji:
 
 | Sekcja | Zakres |
@@ -505,7 +540,7 @@ Najważniejsze grupy konfiguracji:
 | `[car]` | slow, normal i fast car |
 | `[motorbike]`, `[bicycle]` | profile jednośladów |
 | `[boat]`, `[helicopter]`, `[aircraft]` | profile pojazdów wodnych i powietrznych |
-| `[input]` | F9 i F11 |
+| `[input]` | F5, F9, F11 i diagnostyka dostępności API klawiatury |
 
 ## 15. Logi diagnostyczne
 
@@ -513,14 +548,45 @@ Przykładowe komunikaty:
 
 ```text
 Adaptive Third-Person Camera configuration loaded.
+Adaptive Third-Person Camera loaded. build=ATC-DE-20260919-13; F5 cycles vehicle layouts; F9 toggles the camera; F11 reloads the INI.
+Adaptive Third-Person Camera applied pose camera=(123.45,456.78,18.20) target=(127.00,460.00,17.10) distance=4.92
+Adaptive Third-Person Camera observed native vehicle camera mode=2 (previous=1; local layout unchanged).
+Adaptive Third-Person Camera vehicle layout=Wide (F5; script profile only)
+Adaptive Third-Person Camera layout geometry revision=1 layout=Wide anchor=(...) desired=(...) resolved=(...) spring=(...) target=(...)
+Adaptive Third-Person Camera: keyboard input API unavailable; F5/F9/F11 are disabled.
 Adaptive Third-Person Camera anchor changed car -> onFoot; starting smooth handoff.
 Adaptive Third-Person Camera state=Car+Drift ...
 Adaptive Third-Person Camera state=Car+Airborne ...
 Adaptive Third-Person Camera safety reset after a large anchor displacement.
 ```
 
+Pozycja, kierunek i prędkość aktora są odczytywane przede wszystkim przez
+metody instancji `Char`/`Car` dostarczane przez definicje SA:DE. Surowe native'y
+są wyłącznie fallbackiem. Zmiana layoutu interpoluje parametry `distance`,
+`height` i `targetHeight`, po czym w każdej klatce ponownie buduje współrzędne
+świata względem kotwicy. Każda wyliczona pozycja jest sprawdzana względem
+aktualnej pozycji aktora, a wynik kolizji jest ograniczany do co najmniej
+`anchor.z + 0.40`. Pozycja niefinitywna albo zbyt odległa powoduje zwolnienie
+kamery zamiast renderowania świata od spodu.
+
 Log stanu pokazuje profil, dystans, wysokość, target FOV, wartość diagnostyczną
 FOV spring, wynik kolizji i stan interakcji z pojazdem.
+
+Po zatrzymaniu postaci używany jest najpierw stabilny profil `OnFootStand`.
+Timer bezczynności wymaga 60 sekund ciągłego pozostawania w miejscu, zanim
+zostanie aktywowany stan `OnFootIdle`, ale bez jakiegokolwiek ruchu kamery —
+geometria tego stanu jest identyczna z `OnFootStand`. Ruch postaci oraz
+ręczne poruszenie kamerą resetują pełny minutowy timer. Zmiana kotwicy między
+pojazdem i postacią czyści też ręczny obrót należący do poprzedniej kotwicy,
+więc `OnFootStand` nie dziedziczy stanu `Car+Manual`. Poziomy ruch myszy lub
+prawego analoga przejmuje yaw/pitch bez starego progu 24 jednostek w pojeździe.
+W pojeździe składowa pionowa wejścia nie zmienia celu kamery,
+więc grunt pod samochodem nie jest błędnie rozpoznawany jako przeszkoda. Po
+świadomym ruchu kamera utrzymuje ręczny kąt bez limitu czasu, więc auto-follow
+nie odbiera możliwości dalszego obracania. W czasie free-look test kolizji
+jest odświeżany w każdej klatce. Chwilowy alarm ma 220 ms tolerancji, dopóki
+bieżąca pozycja kamery jest bezpieczna; natychmiastowe przeniesienie następuje
+tylko wtedy, gdy zablokowana jest faktyczna bieżąca ścieżka kamery.
 
 ## 16. Mapa kodu
 

@@ -1,12 +1,13 @@
 /// <reference path="./.config/sa.d.ts" />
 
-// Police Pursuit Radar DE, version 1.4 entity-lifecycle rewrite.
+// Police Pursuit Radar DE, version 1.10 native-minimap-only pursuit radar.
 // Runtime: CLEO Redux x64 + IniFiles64.
 //
 // Tracking and presentation are deliberately separated. The tracker owns all
-// GTA handles/native reads; the HUD receives only a finite RadarModel made of
-// normalized screen-space values. Native blips remain the compatibility
-// fallback when the custom renderer is disabled or degraded.
+// GTA handles/native reads are kept separate from presentation. v1.10 is
+// native-minimap-only: all visible output is produced through GTA radar blips.
+// The legacy custom rectangle renderer remains in the file only for backwards
+// compatibility but is hard-disabled by NATIVE_MINIMAP_ONLY.
 
 if (HOST !== "sa_unreal") {
   exit("Police Pursuit Radar supports only GTA San Andreas: The Definitive Edition.");
@@ -16,33 +17,35 @@ const PLAYER_ID = 0;
 const player = new Player(PLAYER_ID);
 const CONFIG_PATH = "./PolicePursuitRadar.ini";
 const CONFIG_VERSION = 1;
-const VK_RELOAD = 122; // F11
-// This CLEO implementation drew a second HUD surface and its first world scan
-// crashes SA:DE 1.0.113.21181. The official minimap is an Unreal BP_Radar_Base
-// asset and cannot be reshaped by SCM HUD commands. Keep this legacy script
-// inert; the replacement must be a version-matched Unreal .pak override.
-const LEGACY_CLEO_IMPLEMENTATION_ENABLED = false;
-// A safe renderer can be called every game frame. The old 15 FPS throttle was
-// masking the cost of a rasterized renderer instead of fixing its cost.
-const HUD_FRAME_INTERVAL_MS = 0;
+const NATIVE_MINIMAP_ONLY = true;
+const VK_RELOAD = 0x75; // F6 (117)
+// Version 1.4 was shipped inert after a crash report on SA:DE 1.0.113.21181.
+// The crash-prone generic ped-pool scan is no longer used by default in 1.5.
+// Discovery now uses only bounded NO_SAVE pool lookups so pursuit AI remains
+// owned entirely by the game. Native blips are the only active presentation path.
+// The legacy rectangle renderer is unreachable in v1.10. Its frame cap remains
+// here only so older configuration code stays harmless. Cap it at ~30 FPS to avoid
+// spending native calls on frames that do not materially improve radar motion.
+const HUD_FRAME_INTERVAL_MS = 33; // ~30 FPS is sufficient for a radar and cuts HUD native calls.
 const GAMEPLAY_SETTLE_MS = 5000;
 const HUD_RENDER_HARD_BUDGET_MS = 4;
 const HUD_PERF_SAMPLE_LIMIT = 30;
+const BLIP_VALIDATION_INTERVAL_MS = 2000;
 // SCM HUD commands use the original virtual screen rather than normalized
 // coordinates. Keep the presentation model normalized and convert only at
 // the CLEO boundary, like other working SA:DE HUD/menu scripts do.
 const HUD_VIRTUAL_WIDTH = 640;
 const HUD_VIRTUAL_HEIGHT = 448;
-const CUSTOM_HUD_RENDERER_AVAILABLE = true;
+const CUSTOM_HUD_RENDERER_AVAILABLE =
+  typeof Hud !== "undefined" && Hud && typeof Hud.DrawRect === "function";
 
-const HUD_LEVEL_FULL = "FULL";
 const HUD_LEVEL_REDUCED = "REDUCED";
 const HUD_LEVEL_MINIMAL = "MINIMAL";
 const HUD_LEVEL_NATIVE_ONLY = "NATIVE_ONLY";
 const HUD_LEVEL_OFF = "OFF";
 
-const CONTACT_MEMORY_MS = 350;
-const UNIT_EVICTION_TTL_MS = 2500;
+const MIN_CONTACT_MEMORY_MS = 1000;
+const MIN_UNIT_EVICTION_TTL_MS = 3500;
 const POLICE_CONTACT_FOV_DEG = 120;
 const LIFECYCLE_VISIBLE = "visible";
 const LIFECYCLE_MEMORY = "memory";
@@ -58,15 +61,29 @@ const BLIP_COLOR_RED = 0;
 const BLIP_COLOR_BLUE = 2;
 const BLIP_COLOR_YELLOW = 4;
 const BLIP_COLOR_DESTINATION = 8;
-const BLIP_DISPLAY_MARKER_ONLY = 1;
-const BLIP_DISPLAY_BOTH = 3;
+const BLIP_DISPLAY_BLIP_ONLY = 2;
 
 const PED_POLICE = 6;
-const POLICE_PED_MODELS = new Set([280, 281, 282, 283, 284, 285]);
-const POLICE_CAR_MODELS = new Set([407, 420, 427, 428, 432, 490, 528, 596, 597, 598, 599]);
+const POLICE_PED_MODELS = new Set([280, 281, 282, 283, 284, 285, 286, 287, 288]);
+// Restrict the vehicle sets to actual law-enforcement / high-wanted response
+// vehicles. The 1.4 lists also contained taxis, fire trucks, civilian boats and
+// civilian helicopters, which produced incorrect icons/classification.
+const POLICE_CAR_MODELS = new Set([427, 432, 490, 528, 596, 597, 598, 599, 601]);
 const POLICE_BIKE_MODELS = new Set([523]);
-const POLICE_HELICOPTER_MODELS = new Set([417, 425, 447, 469, 487, 488, 497, 548, 563]);
-const POLICE_BOAT_MODELS = new Set([430, 446, 452]);
+const POLICE_HELICOPTER_MODELS = new Set([425, 497]);
+const POLICE_BOAT_MODELS = new Set([430]);
+const POLICE_RESPONSE_VEHICLE_MODELS = Array.from(
+  new Set([
+    ...POLICE_CAR_MODELS,
+    ...POLICE_BIKE_MODELS,
+    ...POLICE_HELICOPTER_MODELS,
+    ...POLICE_BOAT_MODELS,
+  ])
+);
+// Common ground pursuit vehicles get one extra rotating sector lookup. This
+// finds multiple units that share the same model without scanning the whole
+// world four times per discovery pass.
+const COMMON_POLICE_VEHICLE_MODELS = [427, 523, 596, 597, 598, 599];
 
 const DEFAULTS = {
   enabled: true,
@@ -74,6 +91,8 @@ const DEFAULTS = {
   scanIntervalMs: 450,
   discoveryIntervalMs: 1200,
   lostSightDelayMs: 1200,
+  contactMemoryMs: 1100,
+  unitEvictionTtlMs: 4200,
   searchRadiusBaseM: 55,
   searchRadiusPerStarM: 25,
   showFoot: true,
@@ -83,17 +102,23 @@ const DEFAULTS = {
   showHelicopters: true,
   showDirectionBlips: true,
   showSearchLocation: true,
+  showSearchArea: true,
+  searchAreaMaxBlips: 10,
+  searchAreaSweep: true,
+  searchAreaSweepIntervalMs: 450,
+  searchLocationScale: 2,
   directionMarkerDistanceM: 12,
   directionUpdateDistanceM: 8,
   directionUpdateIntervalMs: 900,
+  nativeBlipUpdateDistanceM: 5,
+  nativeBlipUpdateIntervalMs: 700,
   maxTrackedUnits: 16,
   maxNativeBlips: 12,
   maxDirectionBlips: 4,
   wantedZeroGraceMs: 800,
-  // Keep the game's original minimap useful together with the bounded HUD.
+  // Use the original GTA minimap only.
   showNativeBlips: true,
-  // The custom renderer has a strict per-frame budget and a unit limit.
-  hudEnabled: true,
+  hudEnabled: false,
   hudRangeM: 180,
   hudSizePx: 166,
   hudXPercent: 10,
@@ -153,17 +178,22 @@ let gameplayDetectedAt = 0;
 let discoveredTotal = 0;
 let evictedTotal = 0;
 let lastRegistryLogAt = 0;
+let lastDebugScanLogAt = 0;
 
 // Each scan keeps a logical key on the unit record. The key is independent of
 // the JavaScript wrapper returned by a native query.
 let unitBlips = [];
 let searchBlip = null;
 let searchBlipPosition = null;
+let searchBlipValidatedAt = 0;
+let searchAreaBlips = [];
+let searchAreaSignature = null;
+let searchSweepBlip = null;
+let searchSweepPosition = null;
+let searchSweepUpdatedAt = 0;
+let coordBlipMode = "auto";
 
-log("Police Pursuit Radar DE 1.4 entity-lifecycle rewrite loaded. Host: " + HOST);
-if (!LEGACY_CLEO_IMPLEMENTATION_ENABLED) {
-  exit("Police Pursuit Radar DE legacy CLEO implementation disabled; install the Unreal radar asset package instead.");
-}
+log("Police Pursuit Radar DE 1.10 native minimap only loaded. Host: " + HOST);
 loadConfig();
 
 while (true) {
@@ -222,6 +252,7 @@ while (true) {
 
   if (
     config.enabled &&
+    !NATIVE_MINIMAP_ONLY &&
     config.hudEnabled &&
     !hudPermanentlyDisabled &&
     now >= hudFaultedUntil &&
@@ -261,7 +292,14 @@ function getPlayerActor() {
 }
 
 function readWantedLevel(now) {
-  const value = safeNative("STORE_WANTED_LEVEL", player);
+  let value = null;
+  try {
+    value = typeof player.storeWantedLevel === "function"
+      ? player.storeWantedLevel()
+      : safeNative("STORE_WANTED_LEVEL", player);
+  } catch (_) {
+    value = safeNative("STORE_WANTED_LEVEL", player);
+  }
   const current = clamp(Math.trunc(finiteNumber(value, 0)), 0, 6);
   if (current > 0) {
     lastRawWantedLevel = current;
@@ -286,7 +324,7 @@ function scanPolice(actor, playerPosition, stars, now) {
   const discoverNewUnits = now - lastDiscoveryScanAt >= config.discoveryIntervalMs;
 
   // Re-check previously found units first. This prevents the single-result
-  // sphere native from making an attached blip flicker between scans and lets
+  // discovery query from making an attached blip flicker between scans and lets
   // each active unit keep its stable logical key.
   for (const previous of previousUnits) {
     const refreshed = inspectPolice(previous.char, actor, playerPosition, stars, now);
@@ -306,24 +344,9 @@ function scanPolice(actor, playerPosition, stars, now) {
   }
 
   if (discoverNewUnits) {
-    const samples = samplePoints(playerPosition, config.maxDistanceM, scanPhase);
     scanPhase = (scanPhase + 1) % 32;
     lastDiscoveryScanAt = now;
-    for (const sample of samples) {
-      // NO_SAVE is intentional: discovery observes the population without
-      // putting ambient peds into script/mission ownership.
-      const value = safeNative(
-        "GET_RANDOM_CHAR_IN_AREA_OFFSET_NO_SAVE",
-        sample.x,
-        sample.y,
-        sample.z,
-        sample.radius,
-        sample.radius,
-        sample.radius
-      );
-      const police = toHandle(value, Char);
-      if (police) addUnit(results, inspectPolice(police, actor, playerPosition, stars, now));
-    }
+    discoverPoliceUnits(results, actor, playerPosition, stars, now);
   }
 
   const finalUnits = results
@@ -336,6 +359,86 @@ function scanPolice(actor, playerPosition, stars, now) {
   }
   return finalUnits;
 }
+
+function discoverPoliceUnits(results, actor, playerPosition, stars, now) {
+  // Observation-only discovery. Do not use GET_RANDOM_COP_IN_AREA here.
+  // On SA/DE we want the wanted system to remain the sole owner of pursuit AI.
+  // The NO_SAVE pool lookups below only discover existing world entities.
+  discoverPoliceByVehicleLookup(results, actor, playerPosition, stars, now);
+  discoverPoliceByPassivePedPool(results, actor, playerPosition, stars, now);
+}
+
+function discoverPoliceByVehicleLookup(results, actor, playerPosition, stars, now) {
+  const radius = config.maxDistanceM;
+  const fullArea = {
+    left: playerPosition.x - radius,
+    bottom: playerPosition.y - radius,
+    right: playerPosition.x + radius,
+    top: playerPosition.y + radius,
+  };
+
+  // One whole-area query per response model keeps discovery deterministic and
+  // bounded. A rotating quadrant pass for common models allows several LSPD /
+  // SFPD / LVPD units of the same model to enter the registry over time.
+  for (const model of POLICE_RESPONSE_VEHICLE_MODELS) {
+    discoverPoliceVehicleInArea(results, actor, playerPosition, stars, now, model, fullArea);
+  }
+
+  const sector = getDiscoverySector(fullArea, scanPhase);
+  for (const model of COMMON_POLICE_VEHICLE_MODELS) {
+    discoverPoliceVehicleInArea(results, actor, playerPosition, stars, now, model, sector);
+  }
+}
+
+function discoverPoliceVehicleInArea(results, actor, playerPosition, stars, now, model, area) {
+  const value = safeNative(
+    "GET_RANDOM_CAR_OF_TYPE_IN_AREA_NO_SAVE",
+    area.left,
+    area.bottom,
+    area.right,
+    area.top,
+    model
+  );
+  const car = toHandle(value, Car);
+  if (!car || !isCarValid(car)) return;
+
+  const driver = toHandle(safeNative("GET_DRIVER_OF_CAR", car), Char);
+  if (!driver) return;
+  addUnit(results, inspectPolice(driver, actor, playerPosition, stars, now));
+}
+
+function getDiscoverySector(area, phase) {
+  const midX = (area.left + area.right) * 0.5;
+  const midY = (area.bottom + area.top) * 0.5;
+  switch (phase & 3) {
+    case 0:
+      return { left: midX, bottom: midY, right: area.right, top: area.top };
+    case 1:
+      return { left: area.left, bottom: midY, right: midX, top: area.top };
+    case 2:
+      return { left: area.left, bottom: area.bottom, right: midX, top: midY };
+    default:
+      return { left: midX, bottom: area.bottom, right: area.right, top: midY };
+  }
+}
+
+function discoverPoliceByPassivePedPool(results, actor, playerPosition, stars, now) {
+  const samples = samplePoints(playerPosition, config.maxDistanceM, scanPhase);
+  for (const sample of samples) {
+    const value = safeNative(
+      "GET_RANDOM_CHAR_IN_AREA_OFFSET_NO_SAVE",
+      sample.x,
+      sample.y,
+      sample.z,
+      sample.radius,
+      sample.radius,
+      sample.radius
+    );
+    const police = toHandle(value, Char);
+    if (police) addUnit(results, inspectPolice(police, actor, playerPosition, stars, now));
+  }
+}
+
 
 function retainUnitForOneScan(previous, playerPosition, now) {
   if (!previous || previous.missedScans >= 1) return null;
@@ -353,31 +456,30 @@ function retainUnitForOneScan(previous, playerPosition, now) {
     contact: false,
     seenNow: false,
     spotted: false,
+    observedNow: false,
     missedScans: 1,
   }, now);
   return shouldEvictUnit(retained, now) ? null : retained;
 }
 
 function samplePoints(center, maxDistance, phase) {
-  const result = [{ x: center.x, y: center.y, z: center.z, radius: Math.min(115, maxDistance) }];
-  // The native returns one nearest ped per sample. A bounded 17-point layout
-  // rotates between discovery cycles, while existing units are refreshed more
-  // often without querying the whole world every frame.
-  const rings = [maxDistance * 0.36, maxDistance * 0.72];
-  for (let ring = 0; ring < rings.length; ring += 1) {
-    const count = 8;
-    for (let index = 0; index < count; index += 1) {
-      const angle =
-        (Math.PI * 2 * index) / count +
-        ring * 0.31 +
-        phase * 0.11;
-      result.push({
-        x: center.x + Math.cos(angle) * rings[ring],
-        y: center.y + Math.sin(angle) * rings[ring],
-        z: center.z,
-        radius: Math.min(105, Math.max(60, maxDistance * 0.24)),
-      });
-    }
+  const centerRadius = Math.min(135, maxDistance);
+  const result = [{ x: center.x, y: center.y, z: center.z, radius: centerRadius }];
+  // Four rotating outer samples replace the old eight-sample ring. Across two
+  // discovery passes they cover eight directions while cutting ped-pool native
+  // calls almost in half. NO_SAVE keeps this observational.
+  const ringDistance = maxDistance * 0.65;
+  const sampleRadius = Math.min(140, Math.max(65, maxDistance * 0.33));
+  const count = 4;
+  const phaseOffset = (phase & 1) ? Math.PI / 4 : 0;
+  for (let index = 0; index < count; index += 1) {
+    const angle = (Math.PI * 2 * index) / count + phaseOffset;
+    result.push({
+      x: center.x + Math.cos(angle) * ringDistance,
+      y: center.y + Math.sin(angle) * ringDistance,
+      z: center.z,
+      radius: sampleRadius,
+    });
   }
   return result;
 }
@@ -411,26 +513,30 @@ function inspectPolice(char, actor, playerPosition, stars, now) {
   const distance = distanceBetween(position, playerPosition);
   if (distance > config.maxDistanceM) return null;
 
-  const lineOfSight = !!safeNative(
-    "IS_LINE_OF_SIGHT_CLEAR",
-    position.x,
-    position.y,
-    position.z + (type === "foot" ? 1.0 : 1.7),
-    playerPosition.x,
-    playerPosition.y,
-    playerPosition.z + 1.0,
-    true,
-    true,
-    true,
-    true,
-    true
-  );
   const spotted = !!safeNative("HAS_CHAR_SPOTTED_CHAR", char, actor);
   const heading = car
     ? finiteNumber(safeNative("GET_CAR_HEADING", car), 0)
     : finiteNumber(safeNative("GET_CHAR_HEADING", char), 0);
   const inFieldOfView = isTargetInHeadingFov(position, heading, playerPosition, POLICE_CONTACT_FOV_DEG);
-  const seenNow = lineOfSight && inFieldOfView && spotted;
+  // LOS is one of the more expensive world queries. Do it only when the game's
+  // own awareness flag and our cheap heading test say contact is plausible.
+  const lineOfSight = spotted && inFieldOfView
+    ? !!safeNative(
+        "IS_LINE_OF_SIGHT_CLEAR",
+        position.x,
+        position.y,
+        position.z + (type === "foot" ? 1.0 : 1.7),
+        playerPosition.x,
+        playerPosition.y,
+        playerPosition.z + 1.0,
+        true,
+        true,
+        true,
+        true,
+        true
+      )
+    : false;
+  const seenNow = lineOfSight && spotted && inFieldOfView;
 
   return {
     char,
@@ -449,6 +555,7 @@ function inspectPolice(char, actor, playerPosition, stars, now) {
     lastSeenAt: seenNow ? now : 0,
     lastValidAt: now,
     firstSeenAt: now,
+    observedNow: true,
     missedScans: 0,
     stars,
   };
@@ -457,20 +564,25 @@ function inspectPolice(char, actor, playerPosition, stars, now) {
 function mergeUnitObservation(previous, observation, now) {
   if (!observation) return null;
   const seenNow = !!observation.seenNow;
+  const observedNow = observation.observedNow !== false;
   const lastSeenAt = seenNow ? now : finiteNumber(previous && previous.lastSeenAt, 0);
+  const lastValidAt = observedNow
+    ? now
+    : finiteNumber(previous && previous.lastValidAt, finiteNumber(observation.lastValidAt, 0));
   const sinceLastSeen = lastSeenAt > 0 ? now - lastSeenAt : Number.POSITIVE_INFINITY;
   const lifecycle = seenNow
     ? LIFECYCLE_VISIBLE
-    : sinceLastSeen <= CONTACT_MEMORY_MS
+    : sinceLastSeen <= getContactMemoryMs()
       ? LIFECYCLE_MEMORY
       : LIFECYCLE_LOST;
   return {
     ...observation,
     key: previous && previous.key ? previous.key : observation.key,
     firstSeenAt: previous && previous.firstSeenAt ? previous.firstSeenAt : now,
-    lastValidAt: now,
+    lastValidAt,
     lastSeenAt,
     seenNow,
+    observedNow,
     contact: seenNow,
     lifecycle,
     missedScans: observation.missedScans || 0,
@@ -486,10 +598,21 @@ function isObservationConsistent(previous, current) {
   return distanceBetween(previous.position, current.position) <= Math.max(80, config.maxDistanceM * 0.5);
 }
 
+function getContactMemoryMs() {
+  return Math.max(MIN_CONTACT_MEMORY_MS, config.contactMemoryMs, config.scanIntervalMs * 2 + 100);
+}
+
+function getUnitEvictionTtlMs() {
+  return Math.max(MIN_UNIT_EVICTION_TTL_MS, config.unitEvictionTtlMs, getContactMemoryMs() * 2);
+}
+
 function shouldEvictUnit(unit, now) {
   if (!unit || unit.lifecycle !== LIFECYCLE_LOST) return false;
-  const anchor = unit.lastSeenAt || unit.firstSeenAt || now;
-  return now - anchor > UNIT_EVICTION_TTL_MS;
+  // A valid nearby blue contact must not expire merely because it is not
+  // currently looking at the player. Expire only after the entity stopped
+  // validating for the configured TTL.
+  const anchor = unit.lastValidAt || unit.firstSeenAt || now;
+  return now - anchor > getUnitEvictionTtlMs();
 }
 
 function isCharValid(char) {
@@ -497,6 +620,13 @@ function isCharValid(char) {
   const exists = safeNative("DOES_CHAR_EXIST", char);
   if (exists === false) return false;
   return !safeNative("IS_CHAR_DEAD", char);
+}
+
+function isCarValid(car) {
+  if (!car) return false;
+  const exists = safeNative("DOES_VEHICLE_EXIST", car);
+  if (exists === false) return false;
+  return !safeNative("IS_CAR_DEAD", car);
 }
 
 function isTargetInHeadingFov(origin, heading, target, fovDegrees) {
@@ -532,12 +662,14 @@ function addUnit(list, unit, preferredKey) {
   }
 
   const stableKey = duplicate.key || unit.key || "police-" + nextUnitKey++;
-  const stableChar = duplicate.char;
-  const stableCar = sameCarEntity(duplicate, unit) ? duplicate.car : unit.car;
+  const stableChar = sameEntityHandle(duplicate.char, unit.char) ? duplicate.char : unit.char;
+  const stableCar = sameCarEntity(duplicate, unit) && sameEntityHandle(duplicate.car, unit.car)
+    ? duplicate.car
+    : unit.car;
   Object.assign(duplicate, unit);
   duplicate.key = stableKey;
-  // Keep the canonical wrapper used by the first successful scan. This avoids
-  // treating a fresh JS wrapper for the same game handle as a new unit.
+  // Preserve an old wrapper only when it is demonstrably the same handle.
+  // Otherwise prefer the fresh wrapper to avoid holding a recycled entity.
   duplicate.char = stableChar;
   duplicate.car = stableCar;
 }
@@ -549,21 +681,47 @@ function comparePoliceUnits(left, right) {
 
 function samePoliceUnit(left, right) {
   if (!left || !right) return false;
-  if (left.char === right.char) return left.pedModel === right.pedModel;
+  if (sameEntityHandle(left.char, right.char)) return left.pedModel === right.pedModel;
   if (left.car && right.car && sameCarEntity(left, right)) return true;
 
-  const samePed = left.type === right.type && left.pedModel === right.pedModel;
-  const mergeDistance = left.car || right.car ? 6.0 : 3.0;
+  // Fallback only when CLEO does not expose a numeric handle on wrappers. Keep
+  // the radius tight so two officers standing next to each other are not merged
+  // into one logical radar contact.
+  const samePed =
+    left.type === right.type &&
+    left.pedModel === right.pedModel &&
+    left.carModel === right.carModel;
+  const mergeDistance = left.car || right.car ? 2.5 : 1.25;
   return samePed && distanceBetween(left.position, right.position) < mergeDistance;
 }
 
 function sameCarEntity(left, right) {
   if (!left.car || !right.car) return false;
-  if (left.car === right.car) return true;
+  if (sameEntityHandle(left.car, right.car)) return true;
   return (
     left.carModel === right.carModel &&
-    distanceBetween(left.position, right.position) < 8.0
+    distanceBetween(left.position, right.position) < 3.0
   );
+}
+
+function sameEntityHandle(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const leftHandle = getEntityHandleValue(left);
+  const rightHandle = getEntityHandleValue(right);
+  return leftHandle !== null && rightHandle !== null && leftHandle === rightHandle;
+}
+
+function getEntityHandleValue(entity) {
+  if (entity === null || entity === undefined) return null;
+  const direct = Number(entity);
+  if (Number.isFinite(direct)) return direct;
+  if (typeof entity !== "object") return null;
+  for (const key of ["handle", "id", "value", "__handle"]) {
+    const value = Number(entity[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
 }
 
 function updatePursuitState(playerPosition, currentUnits, stars, now) {
@@ -593,7 +751,8 @@ function updatePursuitState(playerPosition, currentUnits, stars, now) {
     state = STATE_SEARCHING;
   }
 
-  if (config.debug && now - lastScanAt < 20) {
+  if (config.debug && now - lastDebugScanLogAt >= 2000) {
+    lastDebugScanLogAt = now;
     log(
       "Radar scan: units=" +
         currentUnits.length +
@@ -648,8 +807,14 @@ function updateRadarModel(playerPosition, playerHeading, currentUnits, now) {
       y: point.y,
       rotation: relativeHeading(unit.heading, playerHeading),
       icon: unit.type,
-      state: unit.contact ? "CONTACT" : "TRACKED",
-      alpha: point.offRadar ? 0.42 : 0.96,
+      state: unit.lifecycle,
+      alpha: point.offRadar
+        ? 0.40
+        : unit.lifecycle === LIFECYCLE_VISIBLE
+          ? 0.98
+          : unit.lifecycle === LIFECYCLE_MEMORY
+            ? 0.72
+            : 0.38,
       offRadar: point.offRadar,
       // These values are part of the presentation contract. The reduced
       // rectangle renderer does not draw a cone, but a future sprite renderer
@@ -907,7 +1072,8 @@ function drawRadarUnitMarker(unit, geometry) {
 }
 
 function radarUnitColor(unit) {
-  if (unit.state === "CONTACT") return { r: 1.0, g: 0.16, b: 0.10 };
+  if (unit.state === LIFECYCLE_VISIBLE) return { r: 1.0, g: 0.16, b: 0.10 };
+  if (unit.state === LIFECYCLE_MEMORY) return { r: 1.0, g: 0.62, b: 0.12 };
   if (unit.icon === "helicopter") return { r: 0.42, g: 1.0, b: 0.76 };
   if (unit.icon === "boat") return { r: 0.24, g: 0.72, b: 1.0 };
   if (unit.icon === "bike") return { r: 0.88, g: 0.42, b: 1.0 };
@@ -932,8 +1098,7 @@ function recordHudRenderTime(elapsed) {
 
 function degradeHudRenderer(reason) {
   const previous = hudRenderLevel;
-  if (hudRenderLevel === HUD_LEVEL_FULL) hudRenderLevel = HUD_LEVEL_REDUCED;
-  else if (hudRenderLevel === HUD_LEVEL_REDUCED) hudRenderLevel = HUD_LEVEL_MINIMAL;
+  if (hudRenderLevel === HUD_LEVEL_REDUCED) hudRenderLevel = HUD_LEVEL_MINIMAL;
   else if (hudRenderLevel === HUD_LEVEL_MINIMAL) hudRenderLevel = HUD_LEVEL_NATIVE_ONLY;
   else if (hudRenderLevel === HUD_LEVEL_NATIVE_ONLY) hudRenderLevel = HUD_LEVEL_OFF;
   if (previous !== hudRenderLevel) {
@@ -985,7 +1150,7 @@ function syncBlips(currentUnits) {
 
   const nativeUnits = prioritizeUnits(currentUnits)
     .filter((unit) => isTypeEnabled(unit.type))
-    .filter((unit) => isContactBlipEligible(unit, now))
+    .filter((unit) => isNativeBlipEligible(unit, now))
     .slice(0, config.maxNativeBlips);
   const activeKeys = new Set();
   for (let index = 0; index < nativeUnits.length; index += 1) {
@@ -996,40 +1161,66 @@ function syncBlips(currentUnits) {
     activeKeys.add(key);
     const recordIndex = unitBlips.findIndex((entry) => entry.key === key);
     let record = recordIndex >= 0 ? unitBlips[recordIndex] : null;
-    if (!record || !sameTrackedTarget(record, unit)) {
-      if (record) {
-        removeUnitBlips(record);
-      }
-      const replacement = {
+    if (!record) {
+      record = {
         key,
-        target: null,
-        targetKind: null,
-        targetCarModel: -1,
-        targetPosition: null,
         blip: null,
+        blipPosition: null,
+        blipUpdatedAt: 0,
+        blipValidatedAt: 0,
+        blipColor: null,
+        blipScale: null,
         directionBlip: null,
         directionPosition: null,
         directionUpdatedAt: 0,
+        directionValidatedAt: 0,
+        directionColor: null,
       };
-      if (recordIndex >= 0) {
-        unitBlips[recordIndex] = replacement;
-      } else {
-        unitBlips.push(replacement);
-      }
-      record = replacement;
+      unitBlips.push(record);
     }
 
-    if (record.blip && !isBlipAlive(record.blip)) record.blip = null;
-    if (!record.blip) {
-      record.blip = addTrackingBlip(unit);
-      if (record.blip) {
-        record.target = unit.car || unit.char;
-        record.targetKind = unit.car ? "car" : "char";
-        record.targetCarModel = unit.carModel;
-      }
+    if (
+      record.blip &&
+      now - record.blipValidatedAt >= BLIP_VALIDATION_INTERVAL_MS &&
+      !isBlipAlive(record.blip)
+    ) {
+      record.blip = null;
+      record.blipPosition = null;
+      record.blipUpdatedAt = 0;
+      record.blipColor = null;
+      record.blipScale = null;
+    } else if (record.blip && now - record.blipValidatedAt >= BLIP_VALIDATION_INTERVAL_MS) {
+      record.blipValidatedAt = now;
     }
-    record.targetPosition = { ...unit.position };
-    styleTrackingBlip(record.blip, unit);
+
+    // Never attach a radar blip directly to a game-owned pursuit Char/Car.
+    // Entity blips can keep references to streamed entities alive. Instead we
+    // draw a coordinate blip and periodically move it by recreation. This lets
+    // the wanted system freely despawn old cops and spawn replacement units.
+    const shouldMoveBlip =
+      !record.blip ||
+      !record.blipPosition ||
+      distanceBetween(record.blipPosition, unit.position) >= config.nativeBlipUpdateDistanceM ||
+      now - record.blipUpdatedAt >= config.nativeBlipUpdateIntervalMs;
+
+    if (shouldMoveBlip) {
+      removeBlip(record.blip);
+      const nextColor = trackingBlipColor(unit);
+      const nextScale = trackingBlipScale(unit);
+      record.blip = addCoordinateBlip(
+        unit.position,
+        nextColor,
+        BLIP_DISPLAY_BLIP_ONLY,
+        nextScale
+      );
+      record.blipPosition = record.blip ? { ...unit.position } : null;
+      record.blipUpdatedAt = record.blip ? now : 0;
+      record.blipValidatedAt = record.blip ? now : 0;
+      record.blipColor = record.blip ? nextColor : null;
+      record.blipScale = record.blip ? nextScale : null;
+    } else {
+      styleTrackingBlip(record, unit);
+    }
     syncDirectionBlip(record, unit, index < config.maxDirectionBlips);
   }
 
@@ -1041,69 +1232,87 @@ function syncBlips(currentUnits) {
     }
   }
 
-  syncSearchBlip();
+  syncSearchAreaBlips();
   logRegistryStats(currentUnits, now);
 }
 
-function isContactBlipEligible(unit, now) {
+function isNativeBlipEligible(unit, now) {
   if (!unit) return false;
   if (unit.seenNow) return true;
-  return (
+  if (
     unit.lifecycle === LIFECYCLE_MEMORY &&
     unit.lastSeenAt > 0 &&
-    now - unit.lastSeenAt <= CONTACT_MEMORY_MS
-  );
-}
-
-function addTrackingBlip(unit) {
-  const value = unit.car
-    ? safeNative("ADD_BLIP_FOR_CAR", unit.car)
-    : safeNative("ADD_BLIP_FOR_CHAR", unit.char);
-  if (!value) {
-    noteNativeFailure(unit.car ? "ADD_BLIP_FOR_CAR" : "ADD_BLIP_FOR_CHAR", "empty result");
+    now - unit.lastSeenAt <= getContactMemoryMs()
+  ) {
+    return true;
   }
-  return toHandle(value, Blip);
+  // Keep discovered nearby units visible as blue tracking contacts. In v1.4
+  // these were filtered out, making the blue blip style unreachable.
+  return unit.lifecycle === LIFECYCLE_LOST && !shouldEvictUnit(unit, now);
 }
 
-function sameTrackedTarget(record, unit) {
-  const kind = unit.car ? "car" : "char";
-  if (!record.target) return false;
-  if (record.targetKind !== kind) return false;
-  if (kind === "char") return true;
-  if (record.target === unit.car) return true;
-  return (
-    record.targetCarModel === unit.carModel &&
-    record.targetPosition &&
-    distanceBetween(record.targetPosition, unit.position) < 12.0
-  );
-}
-
-function styleTrackingBlip(blip, unit) {
-  if (!blip) return;
-  const color = unit.seenNow || unit.lifecycle === LIFECYCLE_MEMORY
+function trackingBlipColor(unit) {
+  return unit.seenNow
     ? BLIP_COLOR_RED
-    : BLIP_COLOR_BLUE;
-  safeNative("CHANGE_BLIP_COLOUR", blip, color);
-  safeNative("CHANGE_BLIP_DISPLAY", blip, BLIP_DISPLAY_BOTH);
-  safeNative("CHANGE_BLIP_SCALE", blip, 1);
+    : unit.lifecycle === LIFECYCLE_MEMORY
+      ? BLIP_COLOR_YELLOW
+      : BLIP_COLOR_BLUE;
+}
+
+function styleTrackingBlip(record, unit) {
+  if (!record || !record.blip) return;
+  const nextColor = trackingBlipColor(unit);
+  const nextScale = trackingBlipScale(unit);
+  if (record.blipColor !== nextColor) {
+    safeNative("CHANGE_BLIP_COLOUR", record.blip, nextColor);
+    record.blipColor = nextColor;
+  }
+  if (record.blipScale !== nextScale) {
+    safeNative("CHANGE_BLIP_SCALE", record.blip, nextScale);
+    record.blipScale = nextScale;
+  }
+}
+
+function trackingBlipScale(unit) {
+  // Make an active threat slightly more prominent on the original GTA radar
+  // without introducing any custom HUD element.
+  if (unit && unit.seenNow && unit.distance <= 90) return 2;
+  return 1;
 }
 
 function syncDirectionBlip(record, unit, allowed) {
-  if (!config.showDirectionBlips || !allowed) {
+  if (
+    !config.showDirectionBlips ||
+    !allowed ||
+    (unit.lifecycle !== LIFECYCLE_VISIBLE && unit.lifecycle !== LIFECYCLE_MEMORY)
+  ) {
     removeBlip(record.directionBlip);
     record.directionBlip = null;
     record.directionPosition = null;
     record.directionUpdatedAt = 0;
+    record.directionValidatedAt = 0;
+    record.directionColor = null;
     return;
   }
 
   const now = Date.now();
-  if (record.directionBlip && !isBlipAlive(record.directionBlip)) {
+  if (
+    record.directionBlip &&
+    now - record.directionValidatedAt >= BLIP_VALIDATION_INTERVAL_MS &&
+    !isBlipAlive(record.directionBlip)
+  ) {
     record.directionBlip = null;
     record.directionPosition = null;
     record.directionUpdatedAt = 0;
+    record.directionColor = null;
+  } else if (
+    record.directionBlip &&
+    now - record.directionValidatedAt >= BLIP_VALIDATION_INTERVAL_MS
+  ) {
+    record.directionValidatedAt = now;
   }
   const nextPosition = getDirectionPosition(unit);
+  const nextColor = state === STATE_PURSUIT ? BLIP_COLOR_RED : BLIP_COLOR_YELLOW;
   if (
     record.directionBlip &&
     record.directionPosition &&
@@ -1112,23 +1321,25 @@ function syncDirectionBlip(record, unit, allowed) {
       now - record.directionUpdatedAt < config.directionUpdateIntervalMs
     )
   ) {
-    safeNative(
-      "CHANGE_BLIP_COLOUR",
-      record.directionBlip,
-      state === STATE_PURSUIT ? BLIP_COLOR_RED : BLIP_COLOR_YELLOW
-    );
+    if (record.directionColor !== nextColor) {
+      safeNative("CHANGE_BLIP_COLOUR", record.directionBlip, nextColor);
+      record.directionColor = nextColor;
+    }
     return;
   }
 
   removeBlip(record.directionBlip);
   const directionBlip = addCoordinateBlip(
     nextPosition,
-    state === STATE_PURSUIT ? BLIP_COLOR_RED : BLIP_COLOR_YELLOW,
-    BLIP_DISPLAY_MARKER_ONLY
+    nextColor,
+    BLIP_DISPLAY_BLIP_ONLY,
+    1
   );
   record.directionBlip = directionBlip;
   record.directionPosition = directionBlip ? nextPosition : null;
-  record.directionUpdatedAt = now;
+  record.directionUpdatedAt = directionBlip ? now : 0;
+  record.directionValidatedAt = directionBlip ? now : 0;
+  record.directionColor = directionBlip ? nextColor : null;
 }
 
 function getDirectionPosition(unit) {
@@ -1141,18 +1352,28 @@ function getDirectionPosition(unit) {
   };
 }
 
-function syncSearchBlip() {
-  const shouldShow = config.showSearchLocation && state === STATE_SEARCHING && lastKnownPlayerPosition;
+function syncSearchAreaBlips() {
+  const shouldShow = state === STATE_SEARCHING && lastKnownPlayerPosition;
   if (!shouldShow) {
     removeBlip(searchBlip);
     searchBlip = null;
     searchBlipPosition = null;
+    searchBlipValidatedAt = 0;
+    clearSearchAreaBlips();
     return;
   }
 
-  if (searchBlip && !isBlipAlive(searchBlip)) {
+  const now = Date.now();
+  if (
+    searchBlip &&
+    now - searchBlipValidatedAt >= BLIP_VALIDATION_INTERVAL_MS &&
+    !isBlipAlive(searchBlip)
+  ) {
     searchBlip = null;
     searchBlipPosition = null;
+    searchBlipValidatedAt = 0;
+  } else if (searchBlip && now - searchBlipValidatedAt >= BLIP_VALIDATION_INTERVAL_MS) {
+    searchBlipValidatedAt = now;
   }
 
   if (
@@ -1161,26 +1382,147 @@ function syncSearchBlip() {
     distanceBetween(searchBlipPosition, lastKnownPlayerPosition) > 0.5
   ) {
     removeBlip(searchBlip);
-    searchBlip = addCoordinateBlip(
-      lastKnownPlayerPosition,
-      BLIP_COLOR_YELLOW,
-      BLIP_DISPLAY_BOTH
-    );
-    searchBlipPosition = { ...lastKnownPlayerPosition };
+    if (config.showSearchLocation) {
+      searchBlip = addCoordinateBlip(
+        lastKnownPlayerPosition,
+        BLIP_COLOR_YELLOW,
+        BLIP_DISPLAY_BLIP_ONLY,
+        config.searchLocationScale
+      );
+      searchBlipPosition = searchBlip ? { ...lastKnownPlayerPosition } : null;
+      searchBlipValidatedAt = searchBlip ? now : 0;
+    } else {
+      removeBlip(searchBlip);
+      searchBlip = null;
+      searchBlipPosition = null;
+      searchBlipValidatedAt = 0;
+    }
+  } else if (!config.showSearchLocation && searchBlip) {
+    removeBlip(searchBlip);
+    searchBlip = null;
+    searchBlipPosition = null;
+    searchBlipValidatedAt = 0;
   }
+
+  syncSearchAreaPerimeter();
 }
 
-function addCoordinateBlip(position, color, display) {
-  // The old coordinate form accepts color/display directly. The fallback is
-  // useful on definitions that expose only the newer three-argument form.
-  let value = safeNative(
-    "ADD_BLIP_FOR_COORD_OLD",
-    position.x,
-    position.y,
-    position.z,
-    color,
-    display
+function syncSearchAreaPerimeter() {
+  if (!config.showSearchArea || !lastKnownPlayerPosition || state !== STATE_SEARCHING) {
+    clearSearchAreaBlips();
+    clearSearchSweepBlip();
+    return;
+  }
+
+  const radius = getSearchRadius(wantedLevel);
+  const positions = buildSearchAreaPositions(lastKnownPlayerPosition, radius);
+  const signature = buildSearchAreaSignature(lastKnownPlayerPosition, radius, positions.length);
+  if (signature === searchAreaSignature && searchAreaBlips.length === positions.length) {
+    syncSearchSweepBlip(radius);
+    return;
+  }
+
+  clearSearchAreaBlips();
+  for (const position of positions) {
+    const blip = addCoordinateBlip(position, BLIP_COLOR_YELLOW, BLIP_DISPLAY_BLIP_ONLY, 1);
+    if (blip) {
+      searchAreaBlips.push({ blip, position });
+    }
+  }
+  searchAreaSignature = signature;
+  syncSearchSweepBlip(radius);
+}
+
+function buildSearchAreaPositions(center, radius) {
+  const requested = clamp(config.searchAreaMaxBlips, 6, 12);
+  const dynamic = clamp(Math.round(radius / 16), 6, requested);
+  const count = Math.max(6, Math.min(requested, dynamic));
+  const positions = [];
+  const elevatedZ = center.z + 0.2;
+  for (let index = 0; index < count; index += 1) {
+    const angle = (Math.PI * 2 * index) / count;
+    // A very small stagger makes the perimeter read as a search zone rather
+    // than a perfect mission-marker circle, while staying on the native radar.
+    const ringRadius = index % 2 === 0 ? radius : radius * 0.94;
+    positions.push({
+      x: center.x + Math.cos(angle) * ringRadius,
+      y: center.y + Math.sin(angle) * ringRadius,
+      z: elevatedZ,
+    });
+  }
+  return positions;
+}
+
+function buildSearchAreaSignature(center, radius, count) {
+  return [
+    Math.round(center.x * 2),
+    Math.round(center.y * 2),
+    Math.round(center.z * 2),
+    Math.round(radius),
+    count,
+  ].join(":");
+}
+
+function syncSearchSweepBlip(radius) {
+  if (!config.searchAreaSweep || !lastKnownPlayerPosition || state !== STATE_SEARCHING) {
+    clearSearchSweepBlip();
+    return;
+  }
+  const now = Date.now();
+  if (searchSweepBlip && now - searchSweepUpdatedAt < config.searchAreaSweepIntervalMs) return;
+
+  const periodMs = 4200;
+  const phase = (now % periodMs) / periodMs;
+  const angle = phase * Math.PI * 2;
+  const nextPosition = {
+    x: lastKnownPlayerPosition.x + Math.cos(angle) * radius,
+    y: lastKnownPlayerPosition.y + Math.sin(angle) * radius,
+    z: lastKnownPlayerPosition.z + 0.2,
+  };
+
+  removeBlip(searchSweepBlip);
+  searchSweepBlip = addCoordinateBlip(
+    nextPosition,
+    BLIP_COLOR_YELLOW,
+    BLIP_DISPLAY_BLIP_ONLY,
+    2
   );
+  searchSweepPosition = searchSweepBlip ? nextPosition : null;
+  searchSweepUpdatedAt = searchSweepBlip ? now : 0;
+}
+
+function clearSearchSweepBlip() {
+  removeBlip(searchSweepBlip);
+  searchSweepBlip = null;
+  searchSweepPosition = null;
+  searchSweepUpdatedAt = 0;
+}
+
+function clearSearchAreaBlips() {
+  for (const record of searchAreaBlips) {
+    removeBlip(record.blip);
+  }
+  searchAreaBlips = [];
+  searchAreaSignature = null;
+  clearSearchSweepBlip();
+}
+
+function addCoordinateBlip(position, color, display, scale = 1) {
+  // Probe the legacy coordinate form once. If this build does not expose it,
+  // remember the result instead of throwing an exception for every blip.
+  let value = null;
+  if (coordBlipMode !== "new") {
+    value = safeNative(
+      "ADD_BLIP_FOR_COORD_OLD",
+      position.x,
+      position.y,
+      position.z,
+      color,
+      display
+    );
+    if (value) coordBlipMode = "old";
+    else coordBlipMode = "new";
+  }
   if (!value) {
     value = safeNative("ADD_BLIP_FOR_COORD", position.x, position.y, position.z);
   }
@@ -1189,7 +1531,7 @@ function addCoordinateBlip(position, color, display) {
   if (blip) {
     safeNative("CHANGE_BLIP_COLOUR", blip, color);
     safeNative("CHANGE_BLIP_DISPLAY", blip, display);
-    safeNative("CHANGE_BLIP_SCALE", blip, 1);
+    safeNative("CHANGE_BLIP_SCALE", blip, clamp(Math.round(scale), 1, 3));
   }
   return blip;
 }
@@ -1198,7 +1540,16 @@ function removeUnitBlips(record) {
   removeBlip(record.blip);
   removeBlip(record.directionBlip);
   record.blip = null;
+  record.blipPosition = null;
+  record.blipUpdatedAt = 0;
+  record.blipValidatedAt = 0;
+  record.blipColor = null;
+  record.blipScale = null;
   record.directionBlip = null;
+  record.directionPosition = null;
+  record.directionUpdatedAt = 0;
+  record.directionValidatedAt = 0;
+  record.directionColor = null;
 }
 
 function clearBlips() {
@@ -1207,14 +1558,16 @@ function clearBlips() {
   removeBlip(searchBlip);
   searchBlip = null;
   searchBlipPosition = null;
+  searchBlipValidatedAt = 0;
+  clearSearchAreaBlips();
+  clearSearchSweepBlip();
 }
 
 function releaseTrackedEntity(unit) {
   if (!unit) return;
-  // Discovery uses *_NO_SAVE and therefore never takes script ownership of
-  // ambient peds or vehicles. Calling MARK_* here can release an entity owned
-  // by the game while another system is still using it. Dropping our wrapper
-  // and its blips is the complete cleanup for a read-only observation.
+  // Discovery is observational. Do not call MARK_* here: releasing a game-owned
+  // pursuit entity could interfere with the wanted system. Dropping our wrapper
+  // and its blips is the complete cleanup for this radar.
   evictedTotal += 1;
 }
 
@@ -1287,6 +1640,10 @@ function updateConfigValue(section, key, fallback) {
 }
 
 function loadConfig() {
+  // A reload is transactional from the user's perspective: missing/invalid
+  // values fall back to known-safe defaults rather than retaining stale values
+  // from a previous configuration.
+  config = { ...DEFAULTS };
   if (typeof IniFile === "undefined" || typeof IniFile.ReadInt !== "function") {
     log("Police Pursuit Radar: IniFiles64 unavailable; using defaults.");
     return;
@@ -1302,6 +1659,8 @@ function loadConfig() {
     config.scanIntervalMs = clamp(updateConfigValue("tracking", "scan_interval_ms", DEFAULTS.scanIntervalMs), 100, 2000);
     config.discoveryIntervalMs = clamp(updateConfigValue("tracking", "discovery_interval_ms", DEFAULTS.discoveryIntervalMs), 600, 5000);
     config.lostSightDelayMs = clamp(updateConfigValue("tracking", "lost_sight_delay_ms", DEFAULTS.lostSightDelayMs), 250, 10000);
+    config.contactMemoryMs = clamp(updateConfigValue("tracking", "contact_memory_ms", DEFAULTS.contactMemoryMs), 500, 5000);
+    config.unitEvictionTtlMs = clamp(updateConfigValue("tracking", "unit_eviction_ttl_ms", DEFAULTS.unitEvictionTtlMs), 1500, 15000);
     config.wantedZeroGraceMs = clamp(updateConfigValue("tracking", "wanted_zero_grace_ms", DEFAULTS.wantedZeroGraceMs), 0, 3000);
     config.maxTrackedUnits = clamp(updateConfigValue("tracking", "max_tracked_units", DEFAULTS.maxTrackedUnits), 6, 16);
     config.searchRadiusBaseM = clamp(updateConfigValue("search", "radius_base_m", DEFAULTS.searchRadiusBaseM), 20, 150);
@@ -1313,14 +1672,24 @@ function loadConfig() {
     config.showHelicopters = updateConfigValue("blips", "show_helicopters", DEFAULTS.showHelicopters ? 1 : 0) !== 0;
     config.showDirectionBlips = updateConfigValue("blips", "show_direction_blips", DEFAULTS.showDirectionBlips ? 1 : 0) !== 0;
     config.showSearchLocation = updateConfigValue("blips", "show_search_location", DEFAULTS.showSearchLocation ? 1 : 0) !== 0;
+    config.showSearchArea = updateConfigValue("blips", "show_search_area", DEFAULTS.showSearchArea ? 1 : 0) !== 0;
+    config.searchAreaMaxBlips = clamp(updateConfigValue("blips", "search_area_max_blips", DEFAULTS.searchAreaMaxBlips), 6, 12);
+    config.searchAreaSweep = updateConfigValue("blips", "search_area_sweep", DEFAULTS.searchAreaSweep ? 1 : 0) !== 0;
+    config.searchAreaSweepIntervalMs = clamp(updateConfigValue("blips", "search_area_sweep_interval_ms", DEFAULTS.searchAreaSweepIntervalMs), 300, 2000);
+    config.searchLocationScale = clamp(updateConfigValue("blips", "search_location_scale", DEFAULTS.searchLocationScale), 1, 3);
     config.directionMarkerDistanceM = clamp(updateConfigValue("blips", "direction_marker_distance_m", DEFAULTS.directionMarkerDistanceM), 3, 40);
     config.directionUpdateDistanceM = clamp(updateConfigValue("blips", "direction_update_distance_m", DEFAULTS.directionUpdateDistanceM), 3, 30);
     config.directionUpdateIntervalMs = clamp(updateConfigValue("blips", "direction_update_interval_ms", DEFAULTS.directionUpdateIntervalMs), 250, 5000);
+    config.nativeBlipUpdateDistanceM = clamp(updateConfigValue("blips", "native_blip_update_distance_m", DEFAULTS.nativeBlipUpdateDistanceM), 2, 30);
+    config.nativeBlipUpdateIntervalMs = clamp(updateConfigValue("blips", "native_blip_update_interval_ms", DEFAULTS.nativeBlipUpdateIntervalMs), 250, 3000);
     config.maxNativeBlips = clamp(updateConfigValue("blips", "max_native_blips", DEFAULTS.maxNativeBlips), 4, 12);
     config.maxDirectionBlips = clamp(updateConfigValue("blips", "max_direction_blips", DEFAULTS.maxDirectionBlips), 0, 4);
     config.showNativeBlips = updateConfigValue("blips", "show_native_blips", DEFAULTS.showNativeBlips ? 1 : 0) !== 0;
-    const requestedHudEnabled = updateConfigValue("hud", "enabled", DEFAULTS.hudEnabled ? 1 : 0) !== 0;
-    config.hudEnabled = CUSTOM_HUD_RENDERER_AVAILABLE && requestedHudEnabled;
+    const requestedHudEnabled = updateConfigValue("hud", "enabled", 0) !== 0;
+    config.hudEnabled = false;
+    if (requestedHudEnabled) {
+      log("Police Pursuit Radar: custom HUD is disabled in v1.10; using the original GTA minimap only.");
+    }
     config.hudRangeM = clamp(updateConfigValue("hud", "range_m", DEFAULTS.hudRangeM), 60, 500);
     config.hudSizePx = clamp(updateConfigValue("hud", "size_px", DEFAULTS.hudSizePx), 110, 260);
     config.hudXPercent = clamp(updateConfigValue("hud", "screen_x_percent", DEFAULTS.hudXPercent), 4, 45);
@@ -1366,6 +1735,8 @@ function resetRuntimeState() {
   discoveredTotal = 0;
   evictedTotal = 0;
   lastRegistryLogAt = 0;
+  lastDebugScanLogAt = 0;
+  lastLoggedState = null;
   resetHudPresentationState();
 }
 

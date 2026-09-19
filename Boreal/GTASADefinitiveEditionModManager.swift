@@ -149,7 +149,11 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 totalSize: selectedFiles.reduce(Int64(0)) {
                     $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
                 },
-                existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current)
+                existingModID: ModIdentity.existingModID(
+                    for: archive.lastPathComponent,
+                    relativePaths: relativeNames,
+                    in: current
+                )
             )
         } catch {
             try? FileManager.default.removeItem(at: pendingURL)
@@ -376,6 +380,9 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                     oldFile: oldFile
                 )
                 try replace(source: source, destination: destination)
+                guard try RuntimeSecurity.sha256(of: destination) == resolvedFile.file.sha256 else {
+                    throw ModManagerError.deployedFileMismatch(resolvedFile.destination)
+                }
                 nextFiles[resolvedFile.destination.lowercased()] = ModDeploymentFile(
                     path: resolvedFile.destination,
                     owner: resolvedFile.mod.id,
