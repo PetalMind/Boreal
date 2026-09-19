@@ -539,6 +539,9 @@ struct LibraryView: View {
     let importAction: (URL) -> Void
     let selectAction: (UUID) -> Void
     let selectStoreGameAction: (UUID) -> Void
+    let transitionNamespace: Namespace.ID
+    let selectedTransitionGameID: UUID?
+    let transitionPhase: GameDetailsTransitionPhase
     let selectDiscoveryGameAction: (AppleGamingWikiGame) -> Void
     @AppStorage("developerMode") private var developerMode = false
     @State private var removeCandidate: WindowsApplication?
@@ -1206,15 +1209,21 @@ struct LibraryView: View {
 
     private func gridItem(_ item: LibraryItem) -> some View {
         LibraryGridHoverContainer { hovering in
-            gridItemCard(item, hovering: hovering)
+            gridItemCard(item, hovering: transitionPhase == .library && hovering)
         }
+        .zIndex(isSelectedTransitionItem(item) ? 100 : 0)
     }
 
     private func gridItemCard(_ item: LibraryItem, hovering: Bool) -> some View {
         let contextMenu = erasedItemContextMenu(item)
         return AnyView(
             ZStack {
-                libraryCardArtwork(item)
+                Button { select(item) } label: {
+                    transitionableLibraryArtwork(item)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(LibraryArtworkButtonStyle())
                     .onDrop(
                         of: [UTType.image.identifier, UTType.fileURL.identifier],
                         isTargeted: nil,
@@ -1290,8 +1299,9 @@ struct LibraryView: View {
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
                                 .frame(maxWidth: .infinity, minHeight: 36)
+                                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .buttonStyle(.plain)
+                                .buttonStyle(LibraryPressButtonStyle())
 
                             Menu {
                                 erasedItemContextMenu(item)
@@ -1316,6 +1326,7 @@ struct LibraryView: View {
         .modifier(
             LibraryCardPresentationModifier(
                 hovering: hovering,
+                cornerRadius: isSelectedTransitionItem(item) ? 20 : 15,
                 contextMenu: contextMenu,
                 accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)"
             )
@@ -1347,10 +1358,29 @@ struct LibraryView: View {
                 GameArtworkView(
                     game: game,
                     width: geometry.size.width,
-                    height: geometry.size.height
+                    height: geometry.size.height,
+                    cornerRadius: isSelectedTransitionItem(item) ? 20 : 16
                 )
             }
         }
+    }
+
+    @ViewBuilder private func transitionableLibraryArtwork(_ item: LibraryItem) -> some View {
+        if case .storeGame(let game) = item.kind {
+            libraryCardArtwork(item)
+                .matchedGeometryEffect(
+                    id: game.id,
+                    in: transitionNamespace,
+                    isSource: transitionPhase != .details
+                )
+        } else {
+            libraryCardArtwork(item)
+        }
+    }
+
+    private func isSelectedTransitionItem(_ item: LibraryItem) -> Bool {
+        guard case .storeGame(let game) = item.kind else { return false }
+        return selectedTransitionGameID == game.id
     }
 
     private func favoriteButton(for item: LibraryItem) -> some View {
@@ -1445,16 +1475,35 @@ struct LibraryView: View {
         }
     }
 
+    private struct LibraryArtworkButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .scaleEffect(configuration.isPressed ? 0.975 : 1)
+                .opacity(configuration.isPressed ? 0.86 : 1)
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        }
+    }
+
+    private struct LibraryPressButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .opacity(configuration.isPressed ? 0.88 : 1)
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        }
+    }
+
     private struct LibraryCardPresentationModifier: ViewModifier {
         let hovering: Bool
+        let cornerRadius: CGFloat
         let contextMenu: AnyView
         let accessibilityText: String
 
         func body(content: Content) -> some View {
             let shaped = content
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-            let outlined = shaped.overlay(LibraryCardOutline(hovering: hovering))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            let outlined = shaped.overlay(LibraryCardOutline(hovering: hovering, cornerRadius: cornerRadius))
 
             return outlined
                 .shadow(
@@ -1463,7 +1512,7 @@ struct LibraryView: View {
                     y: 5
                 )
                 .scaleEffect(hovering ? 1.012 : 1)
-                .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .modifier(LibraryCardContextMenuModifier(menu: contextMenu))
                 .accessibilityLabel(Text(accessibilityText))
         }
@@ -1471,9 +1520,10 @@ struct LibraryView: View {
 
     private struct LibraryCardOutline: View {
         let hovering: Bool
+        let cornerRadius: CGFloat
 
         var body: some View {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .stroke(
                     hovering ? Color.accentColor : Color.white.opacity(0.15),
                     lineWidth: hovering ? 3 : 1

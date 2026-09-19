@@ -1,6 +1,25 @@
 import AppKit
 @preconcurrency import QuartzCore
 
+nonisolated final class FrameGenerationPresentationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var acquired = false
+
+    func tryAcquire() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !acquired else { return false }
+        acquired = true
+        return true
+    }
+
+    func release() {
+        lock.lock()
+        acquired = false
+        lock.unlock()
+    }
+}
+
 nonisolated final class FrameGenerationTimingController: NSObject, CAMetalDisplayLinkDelegate, @unchecked Sendable {
     typealias UpdateHandler = @Sendable (
         _ drawable: CAMetalDrawable,
@@ -13,7 +32,7 @@ nonisolated final class FrameGenerationTimingController: NSObject, CAMetalDispla
     private let runLoop: RunLoop
     private var isStarted = false
 
-    init(metalLayer: CAMetalLayer, updateHandler: @escaping UpdateHandler) throws {
+    init(metalLayer: CAMetalLayer, updateHandler: @escaping UpdateHandler) {
         self.displayLink = CAMetalDisplayLink(metalLayer: metalLayer)
         self.updateHandler = updateHandler
         self.runLoop = .main

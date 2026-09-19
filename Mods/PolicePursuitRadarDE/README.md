@@ -1,24 +1,34 @@
-# Police Pursuit Radar DE
+# Police Pursuit Radar DE — wersja 1.2 stabilizacja HUD/blipów
 
-Radarowy mod dla **Grand Theft Auto: San Andreas – The Definitive Edition**
-uruchamianej jako `sa_unreal` przez CLEO Redux x64.
+Mod dla **Grand Theft Auto: San Andreas – The Definitive Edition** uruchamianej
+jako `sa_unreal` przez CLEO Redux x64.
 
-Ta wersja jest przeznaczona dla instalacji widocznej w Boreal, czyli 64-bitowej
-wersji DE. Nie jest to plugin `.asi` dla klasycznego GTA SA 1.0 US.
+Wersja 1.2 zawiera własną warstwę HUD rysowaną natywnym `DRAW_RECT`,
+ograniczony cykl życia standardowych blipów oraz rozdzielone odświeżanie
+istniejących jednostek od wyszukiwania nowych. HUD `DRAW_RECT` jest obecnie
+wyłączony domyślnie, ponieważ w tej wersji powodował blokadę renderera UE4
+podczas ładowania. Standardowe blipy CLEO pozostają bezpiecznym uzupełnieniem
+minimapy.
 
 ## Funkcje
 
-- radarowa warstwa HUD w lewym dolnym rogu ekranu;
-- wykrywanie policjantów w aktywnym wanted levelu przez natywne handle DE;
-- rozpoznawanie jednostek pieszych, radiowozów, motocykli, łodzi i helikopterów;
-- osobne markery dla typów jednostek oraz marker kierunku gracza;
-- testy `IS_LINE_OF_SIGHT_CLEAR` i `HAS_CHAR_SPOTTED_CHAR`;
-- stany `PURSUIT`, `LOSING CONTACT`, `SEARCHING` i `ESCAPED`;
-- zamrożona pozycja ostatniego kontaktu;
-- kołowy obszar poszukiwań wokół ostatniej znanej pozycji;
-- opcjonalne markery jednostek poza zakresem radaru;
-- konfiguracja INI i przeładowanie przez F11;
-- diagnostyka przez `cleo_redux.log`.
+- wykrywanie pobliskich policjantów oraz ich aktualnych pojazdów;
+- własny radar HUD z półprzezroczystym tłem, pierścieniami i markerem gracza;
+- markery pieszych, samochodów, motocykli, łodzi i helikopterów;
+- kierunek ruchu/patrzenia jednostki przez chevron oraz stożek widzenia;
+- półprzezroczysty obszar `SEARCH` wokół zamrożonego
+  `lastKnownPlayerPosition`;
+- stany `PURSUIT → SEARCH → ESCAPED`;
+- sprawdzanie LOS przez `IS_LINE_OF_SIGHT_CLEAR` oraz kontaktu przez
+  `HAS_CHAR_SPOTTED_CHAR`;
+- stabilne klucze logiczne jednostek niezależne od wrapperów JavaScript;
+- ograniczona pula natywnych blipów oraz wolniejsza aktualizacja markerów
+  kierunku, aby nie wyczerpywać puli blipów gry;
+- brak zmian wanted levelu, AI, spawnów, misji i zachowania policji.
+
+Nie ma ctOS, Jam Com ani nowych spawnów policji. Renderer jest celowo
+oparty na `DRAW_RECT`, ponieważ nie korzysta z ImGui ani prywatnego renderera
+radaru UE4.
 
 ## Wymagania
 
@@ -27,88 +37,104 @@ wersji DE. Nie jest to plugin `.asi` dla klasycznego GTA SA 1.0 US.
 - Ultimate ASI Loader x64 jako `version.dll`;
 - `IniFiles64.cleo`.
 
-Radar nie wymaga `ImGuiReduxWin64.cleo`. Renderowanie korzysta z natywnej
-komendy `DRAW_RECT`, ponieważ oficjalny instalator CLEO Redux wyłącza
-ImGuiRedux dla GTA San Andreas: The Definitive Edition.
-
-W katalogu gry powinien być aktywny tylko jeden proxy Ultimate ASI Loader:
-`version.dll`. Jeżeli instalator wykryje drugą kopię UAL jako `dinput8.dll`,
-przeniesie ją do pliku `dinput8.dll.disabled-duplicate-ual-*` zamiast usuwać,
-żeby CLEO Redux nie było uruchamiane przez dwa konkurujące punkty wejścia.
-
-Przy uruchomieniu przez Wine/Boreal dla `SanAndreas.exe` musi być ustawiony
-natywny override `version=n,b`. Boreal ustawia go automatycznie tylko dla tego
-wykonywalnego, dzięki czemu Wine ładuje UAL i CLEO Redux zamiast wbudowanego
-`version.dll`.
-
-CLEO Redux rozpoznaje ten host jako `sa_unreal` i używa definicji
-`sa_unreal.json`. Oficjalna dokumentacja CLEO Redux opisuje obsługę DE,
-JavaScript oraz dostęp do natywnych komend:
+CLEO Redux dla DE używa hosta `sa_unreal` i pliku definicji
+`sa_unreal.json`. Dokumentacja CLEO Redux opisuje obsługę JavaScript i natywów
+gry:
 [DE FAQ](https://re.cleo.li/docs/en/the-definitive-edition-faq.html),
-[JavaScript API](https://github.com/cleolibrary/CLEO-Redux/blob/master/docs/en/api.md),
-[definicje `sa_unreal`](https://re.cleo.li/docs/en/definitions.html).
+[JavaScript API](https://re.cleo.li/docs/en/api.html),
+[definicje hostów](https://re.cleo.li/docs/en/definitions.html).
 
 ## Instalacja
 
-Jeżeli używasz Boreal, zaimportuj plik `PolicePursuitRadarDE.zip` z tego
-katalogu w sekcji modów gry. Menedżer rozpozna skrypt CLEO Redux, zachowa go w
-bibliotece i wdroży do `Gameface/Binaries/Win64/CLEO` po zatwierdzeniu profilu.
-Plik `.js` otrzyma przy wdrożeniu wymagany sufiks `[fs]`.
-
-```sh
-chmod +x install.sh
-./install.sh "/ścieżka/do/GTA San Andreas - The Definitive Edition"
-```
-
-Instalator kopiuje:
+Jeśli używasz Boreal, zaimportuj `PolicePursuitRadarDE.zip` z tego katalogu w
+sekcji modów gry. Menedżer wdroży:
 
 ```text
 Gameface/Binaries/Win64/CLEO/PolicePursuitRadar[fs].js
 Gameface/Binaries/Win64/CLEO/PolicePursuitRadar.ini
 ```
 
-Sufiks `[fs]` jest wymagany do zapisu konfiguracji przez IniFiles. Jeżeli
-istnieje wcześniejsza wersja skryptu, instalator tworzy kopię zapasową.
+Sufiks `[fs]` pozwala CLEO Redux rozwiązać ścieżkę INI względnie do skryptu.
 
-## Jak działa wykrywanie
+Instalacja ręczna:
 
-DE nie udostępnia skryptom listy `CWanted::m_pCopsInPursuit` ani prywatnego
-renderera klasycznego radaru. Skrypt korzysta więc z publicznego interfejsu
-CLEO Redux:
+```sh
+chmod +x install.sh
+./install.sh "/ścieżka/do/GTA San Andreas - The Definitive Edition"
+```
 
-1. odczytuje wanted level gracza;
-2. próbuje znaleźć najbliższe postacie w próbkowanych punktach wokół gracza;
-3. filtruje postacie typu policjant i rozpoznaje ich aktualny pojazd;
-4. sprawdza LOS oraz to, czy policjant widzi gracza;
-5. rysuje własny radar przez natywną komendę HUD `DRAW_RECT` w miejscu HUD
-   radaru.
+## Jak działa renderer
 
-Oznacza to, że radar jest oparty o rzeczywiście dostępne dane DE, ale nie
-udaje dostępu do wewnętrznego pursuit poolu z klasycznej wersji gry.
+Pozycje świata są przeliczane do konfigurowalnego, znormalizowanego układu HUD:
 
-## Konfiguracja
+1. pozycja jednostki jest obracana względem headingu gracza, jeśli
+   `rotate_with_player=1`;
+2. odległość jest skalowana przez `range_m`;
+3. punkty są ograniczane do elipsy radaru;
+4. wypełnienia są rasteryzowane poziomymi prostokątami `DRAW_RECT`.
 
-Plik `PolicePursuitRadar.ini` pozwala zmienić między innymi:
+W ten sposób renderer może narysować obszar poszukiwań i stożki jako
+półprzezroczyste trójkąty/ellipse, mimo że natywny primitive udostępniony
+skryptom jest tylko prostokątem. Stożki są skierowane zgodnie z headingiem
+policjanta, a kolorem rozróżniają kontakt aktywny od jednostki, która nie widzi
+gracza.
 
-- zasięg skanowania i radaru;
-- częstotliwość skanowania;
-- czas przejścia z utraty kontaktu do wyszukiwania;
-- promień obszaru poszukiwań;
-- położenie i rozmiar warstwy radaru;
-- obrót radaru względem kierunku gracza;
-- widoczność poszczególnych typów jednostek;
-- tryb debugowania.
+## Mechanika pościgu
 
-F11 przeładowuje plik bez ponownego uruchamiania gry.
+Przy aktywnym wanted levelu skrypt próbuje znaleźć policjantów w próbkowanych
+obszarach wokół gracza. Natywne zapytanie zwraca jedną najbliższą postać na
+próbkę, dlatego skan używa stałej, ograniczonej siatki punktów i najpierw
+odświeża już wykryte jednostki. Jeśli policjant przejdzie oba testy — LOS oraz
+`HAS_CHAR_SPOTTED_CHAR` — stan przechodzi do `PURSUIT`, a
+`lastKnownPlayerPosition` jest aktualizowane.
+
+Po utracie kontaktu pozycja zostaje zamrożona. Po `lost_sight_delay_ms` stan
+przechodzi do `SEARCH`, a radar pokazuje żółty punkt i półprzezroczysty obszar
+poszukiwań. Po wyzerowaniu wanted levelu markery są usuwane, stan przechodzi do
+`ESCAPED`, a po krótkim okresie wraca do `IDLE`.
+
+Przejścia stanów i współrzędna ostatniego kontaktu są zapisywane w
+`cleo_redux.log`.
+
+## Konfiguracja HUD
+
+Sekcja `[hud]` pozwala zmienić:
+
+- `range_m`, `size_px`, `screen_x_percent`, `screen_y_percent` — skalę i
+  pozycję własnego radaru;
+- `rotate_with_player` — radar obracany z graczem albo północą u góry;
+- `background_alpha_percent` i `ring_alpha_percent` — wygląd podstawy HUD;
+- `search_fill_alpha_percent` i `search_border_alpha_percent` — obszar
+  poszukiwań;
+- `cone_length_m`, `cone_fov_deg`, `cone_fill_alpha_percent` i
+  `cone_border_alpha_percent` — stożki policji.
+
+`max_units` ogranicza liczbę jednostek rysowanych przez HUD, a `draw_budget`
+ustala maksymalną liczbę wywołań `DRAW_RECT` na jedną klatkę. Przekroczenie
+budżetu obcina tylko dalsze elementy tej klatki i nie wyłącza całej gry.
+
+`hud.enabled=1` włącza eksperymentalny renderer `DRAW_RECT`, ale w dostarczonej
+konfiguracji pozostaje wyłączony do czasu zastąpienia go bezpieczniejszym
+rendererem sprite'owym. Jeśli zostanie ręcznie włączony, ma limit 6 jednostek,
+około 15 FPS, domyślnie 96 wywołań na klatkę (maksymalnie 120) i automatyczną
+pauzę po błędzie. Po wykryciu gameplayu skrypt odczekuje 5 sekund, aby nie
+wykonywać odczytów świata podczas kończenia ładowania.
+`blips.show_native_blips=1` włącza standardowe blipy CLEO na oryginalnej
+minimapie. `max_native_blips` ogranicza liczbę blipów śledzących, a
+`max_direction_blips`, `direction_update_distance_m` i
+`direction_update_interval_ms` ograniczają koszt markerów kierunku. F11
+przeładowuje konfigurację bez restartu gry.
 
 ## Ograniczenia
 
-- Skrypt nie zmienia wanted levelu, AI, spawnów ani misji.
-- Próbkowanie świata jest ograniczone, aby nie wykonywać ciężkiego skanu co
-  klatkę. Jednostki mogą pojawić się na radarze z niewielkim opóźnieniem.
-- Skrypt jest ładowany jako zwykły skrypt CLEO Redux przy rozpoczęciu nowej
-  gry lub wczytaniu zapisu. Samo wejście do menu głównego nie uruchamia jego
-  pętli rozgrywki; wpis `Police Pursuit Radar DE loaded` można sprawdzić w
-  `cleo_redux.log` po wczytaniu zapisu.
-- Zachowanie końcowe zależy od wersji CLEO Redux, aktualizacji gry DE i
-  zainstalowanych komponentów ASI.
+- CLEO Redux nie udostępnia skryptowi prywatnej transformacji radaru UE4.
+  Pozycja własnej warstwy jest dlatego konfigurowalną aproksymacją HUD, a nie
+  odczytem wewnętrznego layoutu gry.
+- Natywne skanowanie zwraca pojedynczą postać dla jednego obszaru; jednostki są
+  więc próbkowane rotującymi pierścieniami. Wyszukiwanie nowych jednostek jest
+  wykonywane rzadziej niż odświeżanie już znanych, aby nie obciążać puli ruchu
+  ulicznego i AI.
+- `DRAW_RECT` jest prostym primitive 2D. Renderer daje wypełnione obszary i
+  stożki, ale nie używa tekstur ani prawdziwego wektorowego clippingu UE4.
+- Repozytorium nie zawiera instalacji gry, więc nie deklaruje zweryfikowanego
+  runtime smoke testu.

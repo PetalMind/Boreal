@@ -8,7 +8,7 @@ final class FrameGenerationOverlayWindow {
     private let metalView: FrameGenerationMetalView
     private let hudView: FrameGenerationHUDView
 
-    init(frame: CGRect, pixelWidth: Int, pixelHeight: Int) throws {
+    init(frame: CGRect, pixelWidth: Int, pixelHeight: Int, device: MTLDevice) throws {
         metalView = FrameGenerationMetalView(frame: .zero)
         hudView = FrameGenerationHUDView(frame: .zero)
         panel = NSPanel(
@@ -27,13 +27,16 @@ final class FrameGenerationOverlayWindow {
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.contentView = metalView
+        // On macOS CAMetalLayer has no default device. Set it before the
+        // CAMetalDisplayLink asks the layer for its first drawable.
+        metalView.metalLayer.device = device
         metalView.addSubview(hudView)
         hudView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             hudView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor, constant: 14),
             hudView.topAnchor.constraint(equalTo: metalView.topAnchor, constant: 14),
             hudView.widthAnchor.constraint(greaterThanOrEqualToConstant: 264),
-            hudView.heightAnchor.constraint(greaterThanOrEqualToConstant: 92)
+            hudView.heightAnchor.constraint(greaterThanOrEqualToConstant: 110)
         ])
         hudView.updateResolution(width: pixelWidth, height: pixelHeight)
         updateGeometry(frame: frame, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
@@ -55,6 +58,10 @@ final class FrameGenerationOverlayWindow {
 
     func setStatisticsVisible(_ visible: Bool) {
         hudView.setStatisticsVisible(visible)
+    }
+
+    func setDisplaySyncEnabled(_ enabled: Bool) {
+        metalView.metalLayer.displaySyncEnabled = enabled
     }
 
     func updateStatistics(_ statistics: FrameGenerationStatistics) {
@@ -95,7 +102,7 @@ private final class FrameGenerationHUDView: NSVisualEffectView {
         statisticsLabel.textColor = .white
         detailLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         detailLabel.textColor = .white.withAlphaComponent(0.75)
-        detailLabel.maximumNumberOfLines = 3
+        detailLabel.maximumNumberOfLines = 4
         detailLabel.lineBreakMode = .byWordWrapping
 
         [titleLabel, resolutionLabel, statisticsLabel, detailLabel].forEach {
@@ -141,12 +148,13 @@ private final class FrameGenerationHUDView: NSVisualEffectView {
             statistics.outputFPS
         )
         detailLabel.stringValue = String(
-            format: "Dropped %llu  •  Skipped %llu  •  %.1f ms\nResets %llu  •  Stale %llu  •  GPU %llu\nPresentation drops %llu  •  Capture→Presentation %.1f ms\nLast reset: %@",
+            format: "Dropped %llu  •  Skipped %llu  •  %.1f ms\nResets %llu  •  Stale %llu  •  Motion %llu\nGPU %llu  •  Presentation drops %llu\nCapture→Presentation %.1f ms  •  Last reset: %@",
             statistics.droppedInputFrames,
             statistics.skippedGeneratedFrames,
             statistics.averageGenerationTimeMS,
             statistics.temporalResetCount,
             statistics.staleEpochDrops,
+            statistics.motionEstimationDrops,
             statistics.gpuErrorCount,
             statistics.presentationDrops,
             statistics.captureToPresentationLatencyMS,
@@ -189,31 +197,28 @@ private final class FrameGenerationMetalView: NSView {
 }
 
 nonisolated final class FrameGenerationRenderer: @unchecked Sendable {
-    private let layer: CAMetalLayer
     private let commandQueue: MTLCommandQueue
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
 
-    init(layer: CAMetalLayer, commandQueue: MTLCommandQueue) {
-        self.layer = layer
+    init(commandQueue: MTLCommandQueue) {
         self.commandQueue = commandQueue
     }
 
     func present(
         texture: MTLTexture,
-        drawable suppliedDrawable: CAMetalDrawable?,
-        completion: @escaping @Sendable () -> Void
+        drawable: CAMetalDrawable,
+        completion: @escaping @Sendable (_ succeeded: Bool) -> Void
     ) -> Bool {
         guard inFlightSemaphore.wait(timeout: .now()) == .success else {
             return false
         }
-        guard let drawable = suppliedDrawable ?? layer.nextDrawable(),
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             inFlightSemaphore.signal()
             return false
         }
-        commandBuffer.addCompletedHandler { [inFlightSemaphore] _ in
+        commandBuffer.addCompletedHandler { [inFlightSemaphore] commandBuffer in
             inFlightSemaphore.signal()
-            completion()
+            completion(commandBuffer.status == .completed)
         }
         guard let blit = commandBuffer.makeBlitCommandEncoder() else {
             inFlightSemaphore.signal()

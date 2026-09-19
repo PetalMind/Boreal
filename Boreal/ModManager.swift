@@ -21,12 +21,14 @@ nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashab
     case skyrimSpecialEdition
     case gtaSanAndreas
     case gtaSanAndreasDefinitiveEdition
+    case dragonAgeOrigins
 
     var displayName: String {
         switch self {
         case .skyrimSpecialEdition: "Skyrim Special Edition"
         case .gtaSanAndreas: "GTA San Andreas"
         case .gtaSanAndreasDefinitiveEdition: "GTA San Andreas — Definitive Edition"
+        case .dragonAgeOrigins: "Dragon Age: Origins"
         }
     }
 }
@@ -39,6 +41,8 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
     case rootOverlay
     case unrealPak
     case config
+    case dragonAgeOverride
+    case dragonAgeDazip
     case manual
     case unknown
 
@@ -51,6 +55,8 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .rootOverlay: "Root Overlay"
         case .unrealPak: "Unreal Pak"
         case .config: "Configuration"
+        case .dragonAgeOverride: "Dragon Age Override"
+        case .dragonAgeDazip: "Dragon Age DAZIP"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
         }
@@ -64,6 +70,8 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
     case cleo
     case manual
     case unrealPaks
+    case dragonAgeOverride
+    case dragonAgeDazip
 
     var displayName: String {
         switch self {
@@ -73,6 +81,8 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
         case .cleo: "CLEO"
         case .manual: "Manual"
         case .unrealPaks: "Unreal Paks"
+        case .dragonAgeOverride: "Dragon Age Override"
+        case .dragonAgeDazip: "Dragon Age DAZIP"
         }
     }
 }
@@ -313,6 +323,29 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+nonisolated enum ModIdentity {
+    static func key(for name: String) -> String {
+        let baseName = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+        let folded = baseName.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        let normalized = folded.unicodeScalars.map { scalar -> String in
+            CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "-"
+        }.joined()
+        return normalized
+            .split(separator: "-")
+            .joined(separator: "-")
+            .lowercased()
+    }
+
+    static func existingModID(for archiveName: String, in state: ModGameState) -> UUID? {
+        let archiveKey = key(for: archiveName)
+        guard !archiveKey.isEmpty else { return nil }
+        return state.mods.first { key(for: $0.name) == archiveKey }?.id
+    }
+}
+
 nonisolated enum ModConflictKind: String, Codable, CaseIterable, Sendable, Hashable {
     case directReplacement
     case potentialRuntime
@@ -483,6 +516,9 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
     let warnings: [String]
     let canInstallAutomatically: Bool
     let totalSize: Int64
+    let existingModID: UUID?
+
+    var isUpdate: Bool { existingModID != nil }
 
     init(
         id: UUID = UUID(),
@@ -499,7 +535,8 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
         requirements: [String] = [],
         warnings: [String] = [],
         canInstallAutomatically: Bool = true,
-        totalSize: Int64 = 0
+        totalSize: Int64 = 0,
+        existingModID: UUID? = nil
     ) {
         self.id = id
         self.gameID = gameID
@@ -516,6 +553,7 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
         self.warnings = warnings
         self.canInstallAutomatically = canInstallAutomatically
         self.totalSize = totalSize
+        self.existingModID = existingModID
     }
 }
 
@@ -529,6 +567,9 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     case symbolicLinkNotAllowed(URL)
     case unsupportedGame(String)
     case gameRootUnavailable
+    case dragonAgeDocumentsUnavailable
+    case dragonAgeManifestUnavailable
+    case dragonAgeArchiveInvalid(String)
     case invalidRelativePath(String)
     case duplicatePath(String)
     case stagedFileChanged(String)
@@ -544,7 +585,7 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .unsupportedArchive(let url):
-            "Boreal supports ZIP, RAR and 7z mod archives. This file is not a supported archive: \(url.lastPathComponent)."
+            "Boreal supports ZIP, RAR, 7z and Dragon Age DAZIP mod archives. This file is not a supported archive: \(url.lastPathComponent)."
         case .archiveToolUnavailable(let format):
             format == .zip
                 ? "The system ZIP extraction tool is unavailable."
@@ -560,9 +601,15 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
         case .symbolicLinkNotAllowed(let url):
             "Symbolic links are not allowed in a mod archive: \(url.lastPathComponent)."
         case .unsupportedGame(let name):
-            "Boreal’s mod manager does not support \(name) yet. Skyrim Special Edition is supported in this version."
+            "Boreal’s mod manager does not support \(name) yet."
         case .gameRootUnavailable:
             "The installed game folder is unavailable. Connect the game volume before managing mods."
+        case .dragonAgeDocumentsUnavailable:
+            "Boreal couldn’t locate Dragon Age: Origins’ Wine Documents folder. The game must be installed in a managed Wine environment with a writable drive_c/users folder."
+        case .dragonAgeManifestUnavailable:
+            "This Dragon Age: Origins DAZIP does not contain a readable Manifest.xml and cannot be registered safely."
+        case .dragonAgeArchiveInvalid(let detail):
+            "Boreal couldn’t interpret this Dragon Age: Origins mod archive: \(detail)"
         case .invalidRelativePath(let path):
             "The mod contains an invalid relative path: \(path)"
         case .duplicatePath(let path):
@@ -837,6 +884,7 @@ nonisolated struct ModManager: Sendable {
             let dataRoot = try findDataRoot(in: extracted)
             let files = try contentFiles(in: dataRoot)
             let plugins = files.compactMap { SkyrimModAdapter.pluginType(for: $0.lastPathComponent) }
+            let current = try load(gameID: gameID, gameRoot: nil, pluginsFile: nil, profileID: nil)
             return ModInstallPreview(
                 gameID: gameID,
                 archiveURL: pendingURL,
@@ -844,7 +892,8 @@ nonisolated struct ModManager: Sendable {
                 format: format,
                 detectedRoot: relativeDisplayPath(dataRoot, from: extracted),
                 fileCount: files.count,
-                pluginCount: plugins.count
+                pluginCount: plugins.count,
+                existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current)
             )
         } catch {
             try? FileManager.default.removeItem(at: pendingURL)
@@ -923,6 +972,10 @@ nonisolated struct ModManager: Sendable {
         let sourceFiles = try contentFiles(in: dataRoot)
         guard !sourceFiles.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
 
+        let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
+        let replacement = preview.existingModID.flatMap { modID in
+            current.mods.first { $0.id == modID }
+        }
         let gameDirectory = gameURL(for: preview.gameID)
         let stagingID = UUID()
         let stagingDirectory = gameDirectory.appending(path: "Staging/\(stagingID.uuidString)/files", directoryHint: .isDirectory)
@@ -946,11 +999,10 @@ nonisolated struct ModManager: Sendable {
                 ))
             }
 
-            let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
-            let modID = stagingID
+            let modID = replacement?.id ?? stagingID
             let archiveDirectory = gameDirectory.appending(path: "Archives", directoryHint: .isDirectory)
             try fileManager.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
-            let archiveName = "\(modID.uuidString)-\(preview.archiveName)"
+            let archiveName = "\(stagingID.uuidString)-\(preview.archiveName)"
             let archiveDestination = archiveDirectory.appending(path: archiveName)
             try fileManager.copyItem(at: preview.archiveURL, to: archiveDestination)
 
@@ -958,6 +1010,9 @@ nonisolated struct ModManager: Sendable {
                 guard let type = SkyrimModAdapter.pluginType(for: file.relativePath) else { return nil }
                 let source = append(file.relativePath, to: stagingDirectory)
                 let header = SkyrimModAdapter.inspectPlugin(at: source)
+                let previous = replacement?.plugins.first {
+                    $0.filename.caseInsensitiveCompare(URL(fileURLWithPath: file.relativePath).lastPathComponent) == .orderedSame
+                }
                 return BethesdaPlugin(
                     filename: URL(fileURLWithPath: file.relativePath).lastPathComponent,
                     type: type,
@@ -965,23 +1020,30 @@ nonisolated struct ModManager: Sendable {
                     masters: header?.masters ?? [],
                     headerFlags: header?.flags ?? 0,
                     headerParsed: header != nil,
-                    enabled: true,
-                    loadOrder: current.plugins.count,
+                    enabled: previous?.enabled ?? true,
+                    loadOrder: previous?.loadOrder ?? current.plugins.count,
                     modID: modID
                 )
             }
             let mod = InstalledMod(
                 id: modID,
                 name: URL(fileURLWithPath: preview.archiveName).deletingPathExtension().lastPathComponent,
-                priority: current.mods.count,
+                version: replacement?.version,
+                enabled: replacement?.enabled ?? true,
+                priority: replacement?.priority ?? current.mods.count,
                 archiveRelativePath: "Archives/\(archiveName)",
-                stagingRelativePath: "Staging/\(modID.uuidString)",
+                stagingRelativePath: "Staging/\(stagingID.uuidString)",
+                installedAt: .now,
                 files: files,
                 plugins: pluginRecords
             )
             var mods = current.mods
-            mods.append(mod)
-            var plugins = current.plugins
+            if let index = replacement.flatMap({ replacement in mods.firstIndex { $0.id == replacement.id } }) {
+                mods[index] = mod
+            } else {
+                mods.append(mod)
+            }
+            var plugins = current.plugins.filter { $0.modID != modID }
             plugins.append(contentsOf: pluginRecords)
             try saveProfile(
                 gameID: preview.gameID,
@@ -991,6 +1053,13 @@ nonisolated struct ModManager: Sendable {
                 plugins: plugins,
                 gameDirectory: gameDirectory
             )
+            if let replacement,
+               !isModStorageReferenced(replacement, gameID: preview.gameID, excludingProfileID: current.profileID) {
+                if let archive = replacement.archiveRelativePath {
+                    try? fileManager.removeItem(at: append(archive, to: gameDirectory))
+                }
+                try? fileManager.removeItem(at: append(replacement.stagingRelativePath, to: gameDirectory))
+            }
             try? fileManager.removeItem(at: preview.archiveURL)
             return try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: current.profileID)
         } catch {
@@ -1391,6 +1460,30 @@ nonisolated struct ModManager: Sendable {
         return children.compactMap { child in
             try? read(InstalledMod.self, at: child.appending(path: "manifest.json"))
         }.sorted { $0.priority < $1.priority }
+    }
+
+    private func isModStorageReferenced(
+        _ mod: InstalledMod,
+        gameID: UUID,
+        excludingProfileID: String
+    ) -> Bool {
+        for profile in profiles(for: gameID) where profile.id.caseInsensitiveCompare(excludingProfileID) != .orderedSame {
+            let storedProfile: ModProfile?
+            do {
+                storedProfile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: profile.id))
+            } catch {
+                return true
+            }
+            guard let storedProfile else { return true }
+            if storedProfile.mods.contains(where: {
+                $0.id == mod.id
+                    || $0.stagingRelativePath == mod.stagingRelativePath
+                    || $0.archiveRelativePath == mod.archiveRelativePath
+            }) {
+                return true
+            }
+        }
+        return false
     }
 
     private func read<T: Decodable>(_ type: T.Type, at url: URL) throws -> T? {

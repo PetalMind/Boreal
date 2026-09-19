@@ -1,8 +1,30 @@
 import CoreVideo
 import Foundation
+import os
 import VideoToolbox
 
 nonisolated final class MotionEstimator: @unchecked Sendable {
+    static let isAvailable: Bool = {
+        guard #available(macOS 26.0, *) else { return false }
+        do {
+            _ = try VTMotionEstimationSession(
+                width: 256,
+                height: 160,
+                motionVectorSize: .blockSize16x16,
+                useMultiPassSearch: false,
+                label: "Boreal Frame Generation capability probe"
+            )
+            return true
+        } catch {
+            let nsError = error as NSError
+            Logger(subsystem: "STDMSolution.Boreal", category: "FrameGeneration").error(
+                "VTMotionEstimationSession capability probe failed; OSStatus=\(nsError.code, privacy: .public); error=\(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+    }()
+
+    private let logger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGeneration")
     private let session: VTMotionEstimationSession
     private let width: Int
     private let height: Int
@@ -19,6 +41,10 @@ nonisolated final class MotionEstimator: @unchecked Sendable {
                 label: "Boreal Frame Generation"
             )
         } catch {
+            let nsError = error as NSError
+            logger.error(
+                "VTMotionEstimationSession creation failed; OSStatus=\(nsError.code, privacy: .public); error=\(error.localizedDescription, privacy: .public)"
+            )
             throw FrameGenerationError.motionEstimatorUnavailable
         }
     }
@@ -40,6 +66,10 @@ nonisolated final class MotionEstimator: @unchecked Sendable {
             )
             return motion.motionVector
         } catch {
+            let nsError = error as NSError
+            logger.error(
+                "VTMotionEstimationSession motion request failed; OSStatus=\(nsError.code, privacy: .public); error=\(error.localizedDescription, privacy: .public)"
+            )
             throw FrameGenerationError.motionEstimatorUnavailable
         }
     }

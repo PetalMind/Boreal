@@ -28,14 +28,6 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
     func start(gamePID: pid_t, configuration: FrameGenerationRuntimeConfiguration) async throws {
         await stop()
         guard configuration.enabled, configuration.backend == .metalFX else { return }
-        let capabilities = capabilities()
-        guard capabilities.isSupported else {
-            throw FrameGenerationError.unsupportedHardware
-        }
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
-            throw FrameGenerationError.metalDeviceUnavailable
-        }
 
         if MotionVectorDiagnostic.isEnabled {
             let logger = logger
@@ -44,16 +36,30 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
             }
         }
 
+        let capabilities = capabilities()
+        guard capabilities.isSupported else {
+            if #available(macOS 26.0, *), !MotionEstimator.isAvailable {
+                throw FrameGenerationError.motionEstimatorUnavailable
+            }
+            throw FrameGenerationError.unsupportedHardware
+        }
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw FrameGenerationError.metalDeviceUnavailable
+        }
+
         logger.info("Starting MetalFX provider; game PID: \(gamePID, privacy: .public); device: \(device.name, privacy: .public)")
+        try GameWindowResolver.requireScreenCaptureAccess()
         let resolved = try await GameWindowResolver.resolve(gamePID: gamePID)
         logger.info("Resolved game window PID: \(resolved.processID, privacy: .public); resolution: \(resolved.pixelWidth, privacy: .public)x\(resolved.pixelHeight, privacy: .public)")
 
         let overlay = try FrameGenerationOverlayWindow(
             frame: resolved.frame,
             pixelWidth: resolved.pixelWidth,
-            pixelHeight: resolved.pixelHeight
+            pixelHeight: resolved.pixelHeight,
+            device: device
         )
-        let renderer = FrameGenerationRenderer(layer: overlay.metalLayer, commandQueue: commandQueue)
+        let renderer = FrameGenerationRenderer(commandQueue: commandQueue)
         let pipeline = try MetalFXFrameGenerationPipeline(
             device: device,
             commandQueue: commandQueue,
@@ -77,29 +83,33 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
         )
 
         do {
-            try await capture.start(
+            let captureEpoch = try await capture.start(
                 window: resolved.window,
                 width: resolved.pixelWidth,
                 height: resolved.pixelHeight
             )
+            await pipeline.acceptCaptureEpoch(captureEpoch)
             guard await pipeline.waitForFirstFrame() else {
                 throw FrameGenerationError.captureFailed("Timed out waiting for the first captured frame.")
             }
 
-            let controller = try FrameGenerationTimingController(
+            let presentationGate = FrameGenerationPresentationGate()
+            let controller = FrameGenerationTimingController(
                 metalLayer: overlay.metalLayer,
                 updateHandler: { [weak pipeline] drawable, targetTimestamp, targetPresentationTimestamp in
-                    guard let pipeline else { return }
+                    guard let pipeline, presentationGate.tryAcquire() else { return }
                     Task {
                         await pipeline.presentNext(
                             drawable: drawable,
                             targetTimestamp: targetTimestamp,
                             targetPresentationTimestamp: targetPresentationTimestamp
                         )
+                        presentationGate.release()
                     }
                 }
             )
             overlay.show()
+            overlay.setDisplaySyncEnabled(configuration.verticalSyncEnabled)
             controller.start()
 
             self.capture = capture
@@ -173,13 +183,14 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
         let windowChanged = previous.windowID != resolved.windowID || previous.processID != resolved.processID
         if windowChanged {
             do {
-                await pipeline.resetTemporalState(reason: .windowChanged)
+                await pipeline.invalidateCaptureEpoch(reason: .windowChanged)
                 await capture.stop()
-                try await capture.start(
+                let captureEpoch = try await capture.start(
                     window: resolved.window,
                     width: resolved.pixelWidth,
                     height: resolved.pixelHeight
                 )
+                await pipeline.acceptCaptureEpoch(captureEpoch)
                 logger.info("Frame Generation capture restarted for a new game window")
             } catch {
                 handleRuntimeError(error)
@@ -189,8 +200,18 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
 
         guard previous.pixelWidth != resolved.pixelWidth || previous.pixelHeight != resolved.pixelHeight else { return }
         do {
-            try await capture.updateDimensions(width: resolved.pixelWidth, height: resolved.pixelHeight)
+            // Do not let frames from the old and new capture dimensions meet
+            // in one temporal pair. Stop the stream before rebuilding all
+            // MetalFX resources, then start it again with a fresh sequence.
+            await pipeline.invalidateCaptureEpoch()
+            await capture.stop()
             try await pipeline.resizeIfNeeded(width: resolved.pixelWidth, height: resolved.pixelHeight)
+            let captureEpoch = try await capture.start(
+                window: resolved.window,
+                width: resolved.pixelWidth,
+                height: resolved.pixelHeight
+            )
+            await pipeline.acceptCaptureEpoch(captureEpoch)
             logger.info("Frame Generation resized to \(resolved.pixelWidth, privacy: .public)x\(resolved.pixelHeight, privacy: .public)")
         } catch {
             handleRuntimeError(error)

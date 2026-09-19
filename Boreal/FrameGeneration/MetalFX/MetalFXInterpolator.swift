@@ -7,6 +7,10 @@ struct ExternalCaptureMetalFXParameters: Sendable {
     let fieldOfView: Float
     let depthReversed: Bool
 
+    // ScreenCaptureKit exposes the final composited image, not the game's
+    // projection/depth buffers. The pipeline therefore uses one fixed,
+    // documented fallback projection together with a flat normal-depth
+    // texture; these values must not be presented as camera telemetry.
     static let fallback = ExternalCaptureMetalFXParameters(
         nearPlane: 0.1,
         farPlane: 1_000,

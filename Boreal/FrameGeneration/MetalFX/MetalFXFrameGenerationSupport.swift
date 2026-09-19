@@ -21,6 +21,12 @@ enum MetalFXFrameGenerationSupport {
                 reason: FrameGenerationError.unsupportedHardware.localizedDescription
             )
         }
+        guard MotionEstimator.isAvailable else {
+            return FrameGenerationCapabilities(
+                isSupported: false,
+                reason: FrameGenerationError.motionEstimatorUnavailable.localizedDescription
+            )
+        }
         return FrameGenerationCapabilities(isSupported: true, reason: nil)
     }
 }

@@ -33,6 +33,8 @@ struct StoreGameDetailView: View {
     let game: StoreLibraryGame
     var discoveryGame: AppleGamingWikiGame? = nil
     var onSelectProducer: (String) -> Void = { _ in }
+    var transitionNamespace: Namespace.ID? = nil
+    var transitionPhase: GameDetailsTransitionPhase = .details
     @State private var showsInstallationOptions = false
     @State private var showsProgressDetails = false
     @State private var selectedMedia: StoreMediaSelection?
@@ -72,6 +74,14 @@ struct StoreGameDetailView: View {
         return value
     }
 
+    private var isTransitioning: Bool {
+        transitionNamespace != nil
+    }
+
+    private var transitionContentVisible: Bool {
+        !isTransitioning || transitionPhase == .details
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let hasRail = geometry.size.width >= 1080
@@ -83,6 +93,9 @@ struct StoreGameDetailView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         hero(width: contentWidth)
                         detailTabBar
+                            .opacity(transitionContentVisible ? 1 : 0)
+                            .offset(y: transitionContentVisible ? 0 : 8)
+                            .animation(.easeOut(duration: 0.25).delay(0.06), value: transitionContentVisible)
                         VStack(alignment: .leading, spacing: 12) {
                             if currentGame.resolvedEntitlementState == .accountDisconnected {
                                 entitlementDisconnectedNotice
@@ -95,10 +108,16 @@ struct StoreGameDetailView: View {
                             if !hasRail { detailsSidebar }
                         }
                         .padding(.top, 14)
+                        .opacity(transitionContentVisible ? 1 : 0)
+                        .offset(y: transitionContentVisible ? 0 : 10)
+                        .animation(.easeOut(duration: 0.25).delay(0.1), value: transitionContentVisible)
                     }
                     .frame(width: contentWidth, alignment: .leading)
                     if hasRail {
                         detailsSidebar.frame(width: railWidth)
+                            .opacity(transitionContentVisible ? 1 : 0)
+                            .offset(y: transitionContentVisible ? 0 : 10)
+                            .animation(.easeOut(duration: 0.25).delay(0.1), value: transitionContentVisible)
                     }
                 }
                 .padding(.horizontal, inset)
@@ -107,10 +126,34 @@ struct StoreGameDetailView: View {
                 .frame(width: geometry.size.width, alignment: .topLeading)
             }
             .background {
-                LinearGradient(
-                    colors: [Color(red: 0.045, green: 0.08, blue: 0.12), Color(red: 0.025, green: 0.04, blue: 0.065)],
-                    startPoint: .topTrailing, endPoint: .bottomLeading
-                )
+                ZStack {
+                    LinearGradient(
+                        colors: [Color(red: 0.045, green: 0.08, blue: 0.12), Color(red: 0.025, green: 0.04, blue: 0.065)],
+                        startPoint: .topTrailing, endPoint: .bottomLeading
+                    )
+                    .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
+                    .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                    if isTransitioning {
+                        GeometryReader { backgroundGeometry in
+                            GameArtworkView(
+                                game: currentGame,
+                                width: backgroundGeometry.size.width,
+                                height: backgroundGeometry.size.height,
+                                kind: .hero,
+                                displayMode: .fill,
+                                showsChrome: false
+                            )
+                            .blur(radius: 12)
+                            .opacity(transitionPhase == .details ? 0.18 : 0)
+                            .scaleEffect(transitionPhase == .details ? 1 : 1.035)
+                            .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                        }
+                        .clipped()
+                        Color.black
+                            .opacity(transitionPhase == .details ? 0.42 : 0)
+                            .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                    }
+                }
             }
         }
         .id(currentGame.storeReference)
@@ -304,7 +347,10 @@ struct StoreGameDetailView: View {
     private func hero(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: width < 620 ? 16 : 24) {
-                GameArtworkView(game: currentGame, width: width < 620 ? 82 : 124, height: width < 620 ? 123 : 186)
+                transitionableGameArtwork(
+                    width: width < 620 ? 82 : 124,
+                    height: width < 620 ? 123 : 186
+                )
                 VStack(alignment: .leading, spacing: 8) {
                     heroIdentity
                     if width >= 620 {
@@ -313,10 +359,21 @@ struct StoreGameDetailView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(transitionContentVisible ? 1 : 0)
+                .offset(y: transitionContentVisible ? 0 : 14)
+                .scaleEffect(transitionContentVisible ? 1 : 0.98)
+                .animation(.easeOut(duration: 0.25), value: transitionContentVisible)
             }
             if width < 620 {
                 heroBadges
+                    .opacity(transitionContentVisible ? 1 : 0)
+                    .offset(y: transitionContentVisible ? 0 : 12)
+                    .animation(.easeOut(duration: 0.25), value: transitionContentVisible)
                 primaryActions
+                    .opacity(transitionContentVisible ? 1 : 0)
+                    .offset(y: transitionContentVisible ? 0 : 10)
+                    .scaleEffect(transitionContentVisible ? 1 : 0.97)
+                    .animation(.easeOut(duration: 0.25), value: transitionContentVisible)
             }
         }
         .padding(width < 620 ? 16 : 20)
@@ -340,11 +397,33 @@ struct StoreGameDetailView: View {
                     .overlay {
                         LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
                     }
+                    .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
+                    .scaleEffect(!isTransitioning || transitionPhase == .details ? 1 : 1.035)
+                    .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder private func transitionableGameArtwork(width: CGFloat, height: CGFloat) -> some View {
+        let artwork = GameArtworkView(
+            game: currentGame,
+            width: width,
+            height: height,
+            cornerRadius: isTransitioning ? 20 : 16
+        )
+        if let transitionNamespace {
+            artwork
+                .matchedGeometryEffect(
+                    id: game.id,
+                    in: transitionNamespace,
+                    isSource: transitionPhase == .details
+                )
+        } else {
+            artwork
+        }
     }
 
     private var heroIdentity: some View {

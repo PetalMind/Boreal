@@ -1,7 +1,0 @@
-Wine host-driver shim
-
-The file BorealLegacyGraphics/x64-unix/winemac.so is built from Wine 11.17
-sources with the Boreal Legacy Graphics DXMT compatibility patch described in
-BorealLegacyGraphics/winemac-dxmt.patch. Wine is distributed under the GNU
-Lesser General Public License, version 2.1 or later. The corresponding Wine
-source distribution and license are available from https://www.winehq.org/.

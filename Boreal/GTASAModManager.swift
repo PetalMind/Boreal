@@ -242,6 +242,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
             let files = try contentFiles(in: payloadRoot)
             guard !files.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
             let (type, strategy, requirements, warnings, canInstall) = GTASAModLoaderAdapter.classify(files: files)
+            let current = try load(gameID: gameID, gameRoot: nil, pluginsFile: nil, profileID: nil)
             return ModInstallPreview(
                 gameID: gameID,
                 archiveURL: pendingURL,
@@ -256,7 +257,8 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
                 requirements: requirements,
                 warnings: warnings,
                 canInstallAutomatically: canInstall,
-                totalSize: files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+                totalSize: files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) },
+                existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current)
             )
         } catch {
             try? FileManager.default.removeItem(at: pendingURL)
@@ -322,6 +324,10 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         let sourceFiles = try contentFiles(in: payloadRoot)
         guard !sourceFiles.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
 
+        let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
+        let replacement = preview.existingModID.flatMap { modID in
+            current.mods.first { $0.id == modID }
+        }
         let gameDirectory = gameURL(for: preview.gameID)
         let stagingID = UUID()
         let stagingDirectory = gameDirectory.appending(path: "Staging/\(stagingID.uuidString)/files", directoryHint: .isDirectory)
@@ -345,16 +351,17 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
                 ))
             }
 
-            let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
             let archiveDirectory = gameDirectory.appending(path: "Archives", directoryHint: .isDirectory)
             try fileManager.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
             let archiveName = "\(stagingID.uuidString)-\(preview.archiveName)"
             let archiveDestination = archiveDirectory.appending(path: archiveName)
             try fileManager.copyItem(at: preview.archiveURL, to: archiveDestination)
             let mod = InstalledMod(
-                id: stagingID,
+                id: replacement?.id ?? stagingID,
                 name: URL(fileURLWithPath: preview.archiveName).deletingPathExtension().lastPathComponent,
-                priority: current.mods.count,
+                version: replacement?.version,
+                enabled: replacement?.enabled ?? true,
+                priority: replacement?.priority ?? current.mods.count,
                 archiveRelativePath: "Archives/\(archiveName)",
                 stagingRelativePath: "Staging/\(stagingID.uuidString)",
                 files: files,
@@ -365,7 +372,11 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
                 warnings: preview.warnings
             )
             var mods = current.mods
-            mods.append(mod)
+            if let index = replacement.flatMap({ replacement in mods.firstIndex { $0.id == replacement.id } }) {
+                mods[index] = mod
+            } else {
+                mods.append(mod)
+            }
             try saveProfile(
                 gameID: preview.gameID,
                 profileID: current.profileID,
@@ -373,6 +384,13 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
                 mods: mods,
                 plugins: []
             )
+            if let replacement,
+               !isModStorageReferenced(replacement, gameID: preview.gameID, excludingProfileID: current.profileID) {
+                if let archive = replacement.archiveRelativePath {
+                    try? fileManager.removeItem(at: append(archive, to: gameDirectory))
+                }
+                try? fileManager.removeItem(at: append(replacement.stagingRelativePath, to: gameDirectory))
+            }
             try? fileManager.removeItem(at: preview.archiveURL)
             return try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: current.profileID)
         } catch {
@@ -835,7 +853,7 @@ extension GTASAModManager {
                 switch mod.deployStrategy {
                 case .rootOverlay:
                     target = file.relativePath
-                case .modLoader, .scripts, .cleo, .manual:
+                case .modLoader, .scripts, .cleo, .manual, .dragonAgeOverride, .dragonAgeDazip:
                     target = "modloader/Boreal/\(modDirectoryName(for: mod))/\(file.relativePath)"
                 case .unrealPaks:
                     continue
@@ -923,6 +941,30 @@ extension GTASAModManager {
         try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fileManager.fileExists(atPath: destination.path) { try fileManager.removeItem(at: destination) }
         try fileManager.copyItem(at: source, to: destination)
+    }
+
+    func isModStorageReferenced(
+        _ mod: InstalledMod,
+        gameID: UUID,
+        excludingProfileID: String
+    ) -> Bool {
+        for profile in profiles(for: gameID) where profile.id.caseInsensitiveCompare(excludingProfileID) != .orderedSame {
+            let storedProfile: ModProfile?
+            do {
+                storedProfile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: profile.id))
+            } catch {
+                return true
+            }
+            guard let storedProfile else { return true }
+            if storedProfile.mods.contains(where: {
+                $0.id == mod.id
+                    || $0.stagingRelativePath == mod.stagingRelativePath
+                    || $0.archiveRelativePath == mod.archiveRelativePath
+            }) {
+                return true
+            }
+        }
+        return false
     }
 
     func read<T: Decodable>(_ type: T.Type, at url: URL) throws -> T? {

@@ -8,6 +8,63 @@ struct ModsView: View {
         case plugins
     }
 
+    private enum ModFilter: Hashable {
+        case all
+        case enabled
+        case disabled
+        case conflicts
+        case content(ModContentType)
+
+        var title: String {
+            switch self {
+            case .all: "All Mods"
+            case .enabled: "Enabled"
+            case .disabled: "Disabled"
+            case .conflicts: "Conflicts"
+            case .content(let type): type.displayName
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .all: "shippingbox"
+            case .enabled: "checkmark.circle"
+            case .disabled: "circle"
+            case .conflicts: "exclamationmark.triangle"
+            case .content(let type):
+                switch type {
+                case .modLoader: "shippingbox"
+                case .asiPlugin: "puzzlepiece.extension"
+                case .cleo: "curlybraces.square"
+                case .coreComponent: "gearshape.2"
+                case .rootOverlay: "folder"
+                case .unrealPak: "shippingbox.fill"
+                case .config: "slider.horizontal.3"
+                case .dragonAgeOverride: "folder.badge.gearshape"
+                case .dragonAgeDazip: "archivebox"
+                case .manual: "hand.raised"
+                case .unknown: "questionmark.square"
+                }
+            }
+        }
+    }
+
+    private enum ModSort: String, CaseIterable, Identifiable {
+        case priority
+        case name
+        case recentlyInstalled
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .priority: "Priority"
+            case .name: "Name"
+            case .recentlyInstalled: "Recently installed"
+            }
+        }
+    }
+
     @Environment(BorealStore.self) private var store
     let game: StoreLibraryGame
     @State private var tab: Tab = .mods
@@ -16,6 +73,10 @@ struct ModsView: View {
     @State private var showsNewProfile = false
     @State private var newProfileName = ""
     @State private var modToRemove: InstalledMod?
+    @State private var searchText = ""
+    @State private var selectedFilter: ModFilter = .all
+    @State private var sort = ModSort.priority
+    @State private var selectedModIDs = Set<UUID>()
 
     private var state: ModGameState? { store.modState(for: game) }
     private var isUnsupportedDefinitiveEdition: Bool {
@@ -33,7 +94,6 @@ struct ModsView: View {
                     gtaRuntime(runtime)
                 }
                 deploymentHealth(state)
-                summary(state)
                 if state.adapter == .skyrimSpecialEdition {
                     Picker("Mod content", selection: $tab) {
                         Text("Mods").tag(Tab.mods)
@@ -71,7 +131,20 @@ struct ModsView: View {
         }
         .padding(22)
         .task(id: game.id) {
+            selectedModIDs = []
+            selectedFilter = .all
+            searchText = ""
+            sort = .priority
             store.refreshMods(for: game)
+        }
+        .onChange(of: store.modState(for: game)?.mods.map(\.id) ?? []) { _, _ in
+            synchronizeSelection()
+        }
+        .onChange(of: selectedFilter) { _, _ in
+            synchronizeSelection()
+        }
+        .onChange(of: searchText) { _, _ in
+            synchronizeSelection()
         }
         .fileImporter(
             isPresented: $showsImporter,
@@ -131,20 +204,32 @@ struct ModsView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(game.name)
+                Text("Mods")
                     .font(.title2.weight(.semibold))
                 Text(isUnsupportedDefinitiveEdition
                     ? "Definitive Edition detected; a verified mod runtime is not available."
-                    : GTASADefinitiveEditionAdapter.supports(game: game)
-                        ? "Manage CLEO Redux and Unreal Engine .pak mods for the Definitive Edition."
-                        : GTASAModLoaderAdapter.supports(game: game)
-                            ? "Manage GTA San Andreas mods through a controlled Mod Loader profile."
-                            : "Stage files outside the game, review conflicts, then deploy one controlled profile.")
+                    : "Manage modifications for \(game.name). Stage changes safely, then deploy them to the game.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Install Mod…", systemImage: "plus") {
+            if !isUnsupportedDefinitiveEdition {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search mods…", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .frame(width: 190)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(.white.opacity(0.10))
+                }
+            }
+            Button("Import Mod…", systemImage: "arrow.down.to.line") {
                 showsImporter = true
             }
             .buttonStyle(.borderedProminent)
@@ -352,19 +437,6 @@ struct ModsView: View {
             .foregroundStyle(.secondary)
     }
 
-    private func summary(_ state: ModGameState) -> some View {
-        HStack(spacing: 10) {
-            ModSummaryCard(title: "Installed", value: "\(state.mods.count)", symbol: "shippingbox")
-            ModSummaryCard(title: "Active", value: "\(state.activeModCount)", symbol: "checkmark.circle")
-            ModSummaryCard(title: "Conflicts", value: "\(state.conflictCount)", symbol: "exclamationmark.triangle", tint: state.conflictCount == 0 ? .green : .orange)
-            if isGTAAdapter(state.adapter) {
-                let size = state.mods.reduce(Int64(0)) { total, mod in total + mod.files.reduce(0) { $0 + $1.size } }
-                ModSummaryCard(title: "Staged size", value: ByteCountFormatter.string(fromByteCount: size, countStyle: .file), symbol: "externaldrive")
-            }
-            Spacer()
-        }
-    }
-
     private var pendingChanges: some View {
         HStack(spacing: 10) {
             Image(systemName: "circle.dotted")
@@ -384,46 +456,429 @@ struct ModsView: View {
     }
 
     private func modsList(_ state: ModGameState) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if state.mods.isEmpty {
-                ContentUnavailableView(
-                    "No mods installed",
-                    systemImage: "shippingbox",
-                    description: Text("Install a ZIP, RAR or 7z archive to add its files to the staged profile.")
-                )
-                .frame(maxWidth: .infinity, minHeight: 220)
-            } else {
-                List {
-                    Section("File priority — later rows win conflicts") {
-                        ForEach(state.mods.sorted { $0.priority < $1.priority }) { mod in
-                            ModRow(
-                                mod: mod,
-                                conflictCount: state.conflicts.filter { $0.modIDs.contains(mod.id) }.count,
-                                isBusy: store.isModOperationActive(for: game),
-                                adapter: state.adapter,
-                                onOpenFiles: { store.openModFiles(mod.id, for: game) },
-                                onRemove: { modToRemove = mod },
-                                enabled: Binding(
-                                    get: { store.modState(for: game)?.mods.first(where: { $0.id == mod.id })?.enabled ?? mod.enabled },
-                                    set: { store.setModEnabled($0, modID: mod.id, for: game) }
-                                )
-                            )
-                        }
-                        .onMove { offsets, destination in
-                            store.moveMod(from: offsets, to: destination, for: game)
-                        }
-                    }
-                    if !state.conflicts.isEmpty {
-                        Section("Conflicts") {
-                            ForEach(state.conflicts) { conflict in
-                                conflictRow(conflict, state: state)
+        let visibleMods = filteredMods(from: state)
+
+        return HStack(alignment: .top, spacing: 12) {
+            modFilterSidebar(state)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Text("Modifications")
+                        .font(.headline)
+                    Text("\(visibleMods.count) of \(state.mods.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Label("Lower rows win conflicts", systemImage: "arrow.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Menu {
+                        ForEach(ModSort.allCases) { value in
+                            Button {
+                                sort = value
+                            } label: {
+                                Label(value.title, systemImage: sort == value ? "checkmark" : "arrow.up.arrow.down")
                             }
+                        }
+                    } label: {
+                        Label("Sort: \(sort.title)", systemImage: "arrow.up.arrow.down")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+
+                if visibleMods.isEmpty {
+                    ContentUnavailableView(
+                        state.mods.isEmpty ? "No mods installed" : "No mods match this filter",
+                        systemImage: state.mods.isEmpty ? "shippingbox" : "line.3.horizontal.decrease.circle",
+                        description: Text(state.mods.isEmpty
+                            ? "Import a ZIP, RAR, 7z or Dragon Age DAZIP archive to add its files to the staged profile."
+                            : "Try another filter or search term.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 320)
+                    .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                } else {
+                    modTable(visibleMods, state: state)
+                }
+            }
+            .frame(minWidth: 450, maxWidth: .infinity, alignment: .topLeading)
+
+            if let selectedMod = selectedMod(in: state) {
+                modDetails(selectedMod, state: state)
+            } else {
+                modDetailsPlaceholder
+            }
+        }
+        .onAppear { synchronizeSelection() }
+        .onChange(of: visibleMods.map(\.id)) { _, _ in synchronizeSelection() }
+    }
+
+    private func modFilterSidebar(_ state: ModGameState) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Library")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 4)
+
+            filterButton(.all, count: state.mods.count)
+            filterButton(.enabled, count: state.mods.filter(\.enabled).count)
+            filterButton(.disabled, count: state.mods.filter { !$0.enabled }.count)
+            filterButton(.conflicts, count: conflictedModIDs(in: state).count)
+
+            Divider()
+                .padding(.vertical, 8)
+
+            Text("Content type")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 4)
+
+            ForEach(ModContentType.allCases.filter { type in
+                state.mods.contains { $0.contentType == type }
+            }, id: \.self) { type in
+                filterButton(.content(type), count: state.mods.filter { $0.contentType == type }.count)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .frame(minWidth: 170, idealWidth: 170, maxWidth: 170, minHeight: 360, maxHeight: 520, alignment: .topLeading)
+        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(.white.opacity(0.08))
+        }
+    }
+
+    private func filterButton(_ filter: ModFilter, count: Int) -> some View {
+        Button {
+            selectedFilter = filter
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: filter.symbol)
+                    .frame(width: 16)
+                Text(filter.title)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(selectedFilter == filter ? .white.opacity(0.75) : .secondary)
+            }
+            .font(.callout)
+            .foregroundStyle(selectedFilter == filter ? .white : .primary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(selectedFilter == filter ? Color.accentColor.opacity(0.72) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(count == 0 && selectedFilter != filter)
+    }
+
+    private func modTable(_ mods: [InstalledMod], state: ModGameState) -> some View {
+        Table(of: InstalledMod.self, selection: $selectedModIDs) {
+            TableColumn("Priority", content: { (mod: InstalledMod) in
+                Text("\(mod.priority + 1)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            })
+            .width(min: 54, ideal: 60, max: 70)
+
+            TableColumn("Modification", content: { (mod: InstalledMod) in
+                HStack(spacing: 9) {
+                    Image(systemName: mod.contentType == .unknown ? "shippingbox" : ModFilter.content(mod.contentType).symbol)
+                        .foregroundStyle(mod.enabled ? Color.accentColor : .secondary)
+                        .frame(width: 20, height: 20)
+                        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(mod.name)
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                        if !mod.requirements.isEmpty {
+                            Text("Requires \(mod.requirements.joined(separator: ", "))")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .lineLimit(1)
                         }
                     }
                 }
-                .listStyle(.inset)
-                .frame(minHeight: 260)
+                .contextMenu {
+                    Button("Move Up", systemImage: "arrow.up") {
+                        moveMod(mod, direction: -1, state: state)
+                    }
+                    Button("Move Down", systemImage: "arrow.down") {
+                        moveMod(mod, direction: 1, state: state)
+                    }
+                    Divider()
+                    Button("Open Files", systemImage: "folder") {
+                        store.openModFiles(mod.id, for: game)
+                    }
+                    Button("Remove", systemImage: "trash", role: .destructive) {
+                        modToRemove = mod
+                    }
+                }
+            })
+            .width(min: 220, ideal: 280)
+
+            TableColumn("Version", content: { (mod: InstalledMod) in
+                Text(mod.version ?? "—")
+                    .font(.caption)
+                    .foregroundStyle(mod.version == nil ? .tertiary : .secondary)
+            })
+            .width(min: 65, ideal: 80, max: 110)
+
+            TableColumn("Type", content: { (mod: InstalledMod) in
+                Text(mod.contentType.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            })
+            .width(min: 105, ideal: 125, max: 160)
+
+            TableColumn("Files", content: { (mod: InstalledMod) in
+                Text("\(mod.files.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            })
+            .width(min: 48, ideal: 58, max: 70)
+
+            TableColumn("Installed", content: { (mod: InstalledMod) in
+                Text(mod.installedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            })
+            .width(min: 120, ideal: 145, max: 180)
+
+            TableColumn("Status", content: { (mod: InstalledMod) in
+                let conflicts = state.conflicts.filter { $0.modIDs.contains(mod.id) }.count
+                Label(
+                    conflicts == 0 ? "Ready" : "\(conflicts) conflict\(conflicts == 1 ? "" : "s")",
+                    systemImage: conflicts == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(conflicts == 0 ? .green : .orange)
+                .lineLimit(1)
+            })
+            .width(min: 82, ideal: 105, max: 125)
+
+            TableColumn("Enabled", content: { (mod: InstalledMod) in
+                Toggle("", isOn: enabledBinding(for: mod))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .disabled(store.isModOperationActive(for: game))
+            })
+            .width(min: 68, ideal: 74, max: 85)
+        } rows: {
+            ForEach(mods) { mod in
+                TableRow(mod)
             }
+        }
+        .tableStyle(.inset)
+        .frame(minHeight: 360, idealHeight: 450, maxHeight: 520)
+        .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(.white.opacity(0.08))
+        }
+    }
+
+    private func modDetails(_ mod: InstalledMod, state: ModGameState) -> some View {
+        let conflicts = state.conflicts.filter { $0.modIDs.contains(mod.id) }
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 11) {
+                    Image(systemName: "shippingbox.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
+                        .background(Color.accentColor.opacity(0.68), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(mod.name)
+                            .font(.headline)
+                            .lineLimit(2)
+                        Label(mod.enabled ? "Enabled" : "Disabled", systemImage: mod.enabled ? "checkmark.circle.fill" : "pause.circle")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(mod.enabled ? .green : .secondary)
+                    }
+                }
+
+                Toggle("Enabled", isOn: enabledBinding(for: mod))
+                    .toggleStyle(.switch)
+                    .disabled(store.isModOperationActive(for: game))
+
+                Divider()
+
+                DetailRow(title: "Version", value: mod.version ?? "Not provided", symbol: "number")
+                DetailRow(title: "Content", value: mod.contentType.displayName, symbol: "square.stack.3d.up")
+                DetailRow(title: "Deployment", value: mod.deployStrategy.displayName, symbol: "arrow.down.app")
+                DetailRow(title: "Files", value: "\(mod.files.count)", symbol: "doc.on.doc")
+                if !mod.plugins.isEmpty {
+                    DetailRow(title: "Plugins", value: "\(mod.plugins.count)", symbol: "list.number")
+                }
+                if let archive = mod.archiveRelativePath {
+                    DetailRow(title: "Archive", value: archive, symbol: "archivebox")
+                }
+                DetailRow(title: "Installed", value: mod.installedAt.formatted(date: .abbreviated, time: .shortened), symbol: "calendar")
+
+                if !mod.requirements.isEmpty {
+                    detailList(title: "Requirements", values: mod.requirements, symbol: "link", tint: .orange)
+                }
+                if !mod.warnings.isEmpty {
+                    detailList(title: "Warnings", values: mod.warnings, symbol: "exclamationmark.triangle.fill", tint: .orange)
+                }
+                if !conflicts.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("Conflicts (\(conflicts.count))", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        ForEach(conflicts.prefix(4)) { conflict in
+                            Text(conflict.relativePath)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        if conflicts.count > 4 {
+                            Text("and \(conflicts.count - 4) more…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(10)
+                    .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 8) {
+                    Button("Open Files", systemImage: "folder") {
+                        store.openModFiles(mod.id, for: game)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isModOperationActive(for: game))
+                    Button("Remove", systemImage: "trash", role: .destructive) {
+                        modToRemove = mod
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isModOperationActive(for: game))
+                }
+            }
+            .padding(15)
+        }
+        .frame(minWidth: 270, idealWidth: 270, maxWidth: 270, minHeight: 360, maxHeight: 520, alignment: .topLeading)
+        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(.white.opacity(0.08))
+        }
+    }
+
+    private var modDetailsPlaceholder: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "sidebar.right")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("Select a mod")
+                .font(.headline)
+            Text("Choose a row to inspect its files, status and deployment details.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(22)
+        .frame(minWidth: 270, idealWidth: 270, maxWidth: 270, minHeight: 360, maxHeight: 520)
+        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(.white.opacity(0.08))
+        }
+    }
+
+    private func detailList(title: String, values: [String], symbol: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+            ForEach(values, id: \.self) { value in
+                Text(value)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func filteredMods(from state: ModGameState) -> [InstalledMod] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let conflictIDs = conflictedModIDs(in: state)
+        let filtered = state.mods.filter { mod in
+            let matchesFilter: Bool
+            switch selectedFilter {
+            case .all: matchesFilter = true
+            case .enabled: matchesFilter = mod.enabled
+            case .disabled: matchesFilter = !mod.enabled
+            case .conflicts: matchesFilter = conflictIDs.contains(mod.id)
+            case .content(let type): matchesFilter = mod.contentType == type
+            }
+            guard matchesFilter else { return false }
+            guard !query.isEmpty else { return true }
+            return mod.name.localizedCaseInsensitiveContains(query)
+                || mod.contentType.displayName.localizedCaseInsensitiveContains(query)
+                || mod.deployStrategy.displayName.localizedCaseInsensitiveContains(query)
+        }
+
+        switch sort {
+        case .priority:
+            return filtered.sorted { $0.priority < $1.priority }
+        case .name:
+            return filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .recentlyInstalled:
+            return filtered.sorted { $0.installedAt > $1.installedAt }
+        }
+    }
+
+    private func selectedMod(in state: ModGameState) -> InstalledMod? {
+        guard let id = selectedModIDs.first else { return nil }
+        return state.mods.first { $0.id == id }
+    }
+
+    private func conflictedModIDs(in state: ModGameState) -> Set<UUID> {
+        Set(state.conflicts.flatMap(\.modIDs))
+    }
+
+    private func enabledBinding(for mod: InstalledMod) -> Binding<Bool> {
+        Binding(
+            get: { store.modState(for: game)?.mods.first(where: { $0.id == mod.id })?.enabled ?? mod.enabled },
+            set: { store.setModEnabled($0, modID: mod.id, for: game) }
+        )
+    }
+
+    private func synchronizeSelection() {
+        guard let state = store.modState(for: game) else {
+            selectedModIDs = []
+            return
+        }
+        let visibleIDs = Set(filteredMods(from: state).map(\.id))
+        selectedModIDs = selectedModIDs.intersection(visibleIDs)
+        if selectedModIDs.isEmpty, let first = filteredMods(from: state).first {
+            selectedModIDs = [first.id]
+        }
+    }
+
+    private func moveMod(_ mod: InstalledMod, direction: Int, state: ModGameState) {
+        guard !store.isModOperationActive(for: game) else { return }
+        let ordered = state.mods.sorted { $0.priority < $1.priority }
+        guard let index = ordered.firstIndex(where: { $0.id == mod.id }) else { return }
+        if direction < 0 {
+            guard index > 0 else { return }
+            store.moveMod(from: IndexSet(integer: index), to: index, for: game)
+        } else {
+            guard index < ordered.count - 1 else { return }
+            store.moveMod(from: IndexSet(integer: index), to: index + 2, for: game)
         }
     }
 
@@ -498,107 +953,18 @@ struct ModsView: View {
         .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    private func conflictRow(_ conflict: ModConflict, state: ModGameState) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(conflict.kind == .directReplacement ? .red : conflict.kind == .mergeable ? .blue : .orange)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(conflict.relativePath)
-                    .font(.body.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                let winner = state.mods.first(where: { $0.id == conflict.winnerModID })?.name ?? "Unknown mod"
-                Text("\(conflict.kind.displayName) · Winner: \(winner) · \(conflict.overriddenModIDs.count) overridden")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.vertical, 3)
-    }
-
     private static var archiveTypes: [UTType] {
-        [.archive, UTType(filenameExtension: "zip") ?? .archive, UTType(filenameExtension: "7z") ?? .archive, UTType(filenameExtension: "rar") ?? .archive]
+        [
+            .archive,
+            UTType(filenameExtension: "zip") ?? .archive,
+            UTType(filenameExtension: "7z") ?? .archive,
+            UTType(filenameExtension: "rar") ?? .archive,
+            UTType(filenameExtension: "dazip") ?? .archive
+        ]
     }
 
     private func isGTAAdapter(_ adapter: ModGameAdapter) -> Bool {
         adapter == .gtaSanAndreas || adapter == .gtaSanAndreasDefinitiveEdition
-    }
-}
-
-private struct ModSummaryCard: View {
-    let title: String
-    let value: String
-    let symbol: String
-    var tint: Color = .accentColor
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: symbol)
-                .foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(value).font(.headline)
-                Text(title).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-}
-
-private struct ModRow: View {
-    let mod: InstalledMod
-    let conflictCount: Int
-    let isBusy: Bool
-    let adapter: ModGameAdapter
-    let onOpenFiles: () -> Void
-    let onRemove: () -> Void
-    @Binding var enabled: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: $enabled)
-                .labelsHidden()
-                .disabled(isBusy)
-            Text("\(mod.priority + 1)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 26, alignment: .trailing)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(mod.name).font(.body.weight(.medium))
-                HStack(spacing: 8) {
-                    if adapter == .gtaSanAndreas || adapter == .gtaSanAndreasDefinitiveEdition {
-                        Text(mod.contentType.displayName)
-                        Text(mod.deployStrategy.displayName)
-                    }
-                    Text("\(mod.files.count) files")
-                    if !mod.plugins.isEmpty { Text("\(mod.plugins.count) plugins") }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if conflictCount > 0 {
-                Label("\(conflictCount)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .help("Files shared with another active mod")
-            }
-            Image(systemName: "line.3.horizontal")
-                .foregroundStyle(.tertiary)
-                .help("Drag to change file priority")
-        }
-        .padding(.vertical, 3)
-        .contextMenu {
-            Button("Open Files", systemImage: "folder") {
-                onOpenFiles()
-            }
-            Divider()
-            Button("Remove", systemImage: "trash", role: .destructive) {
-                onRemove()
-            }
-        }
     }
 }
 
@@ -644,7 +1010,7 @@ private struct ModInstallPreviewSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Install Mod")
+                Text(preview.isUpdate ? "Update Mod" : "Install Mod")
                     .font(.title2.weight(.semibold))
                 Text(preview.archiveName)
                     .font(.headline)
@@ -659,7 +1025,13 @@ private struct ModInstallPreviewSheet: View {
                     previewRow("Files", value: "\(preview.fileCount)")
                     previewRow("Plugins", value: "\(preview.pluginCount)")
                     previewRow("Deployment", value: preview.deployStrategy.displayName)
-                    previewRow("Archive", value: preview.format.rawValue.uppercased())
+                    previewRow(
+                        "Archive",
+                        value: preview.adapter == .dragonAgeOrigins
+                            && preview.archiveName.lowercased().hasSuffix(".dazip")
+                            ? "DAZIP"
+                            : preview.format.rawValue.uppercased()
+                    )
                     previewRow("Installation root", value: "/\(preview.detectedRoot)")
                     if preview.totalSize > 0 {
                         previewRow("Size", value: ByteCountFormatter.string(fromByteCount: preview.totalSize, countStyle: .file))
@@ -679,6 +1051,15 @@ private struct ModInstallPreviewSheet: View {
                     .foregroundStyle(.orange)
             }
 
+            if preview.isUpdate {
+                Label(
+                    "An installed mod with the same name will be replaced. Its UUID, load order and enabled state will be kept.",
+                    systemImage: "arrow.triangle.2.circlepath"
+                )
+                .font(.callout)
+                .foregroundStyle(.blue)
+            }
+
             Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -687,7 +1068,7 @@ private struct ModInstallPreviewSheet: View {
             HStack {
                 Button("Cancel", role: .cancel, action: onCancel)
                 Spacer()
-                Button("Install", action: onInstall)
+                Button(preview.isUpdate ? "Update" : "Install", action: onInstall)
                     .buttonStyle(.borderedProminent)
                     .disabled(!preview.canInstallAutomatically)
             }

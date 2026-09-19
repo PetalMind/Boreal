@@ -106,6 +106,7 @@ final class BorealStore {
     private let modManager: ModManager
     private let gtaModManager: GTASAModManager
     private let gtaDefinitiveEditionModManager: GTASADefinitiveEditionModManager
+    private let dragonAgeOriginsModManager: DragonAgeOriginsModManager
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
     /// Developer-mode diagnostics: the last immutable plan prepared for each
@@ -183,6 +184,7 @@ final class BorealStore {
         self.modManager = ModManager(applicationSupportURL: supportRoot)
         self.gtaModManager = GTASAModManager(applicationSupportURL: supportRoot)
         self.gtaDefinitiveEditionModManager = GTASADefinitiveEditionModManager(applicationSupportURL: supportRoot)
+        self.dragonAgeOriginsModManager = DragonAgeOriginsModManager(applicationSupportURL: supportRoot)
         self.gameDiscoveryCache = GameDiscoveryCacheStore.load(
             at: supportRoot.appending(path: "Discovery/game-discovery.json")
         )
@@ -2273,6 +2275,14 @@ final class BorealStore {
                 .flatMap { SkyrimModAdapter.pluginsFile(in: URL(fileURLWithPath: $0, isDirectory: true)) }
             return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile, adapter: .skyrimSpecialEdition)
         }
+        if DragonAgeOriginsAdapter.supports(game: game),
+           let gameRoot = DragonAgeOriginsAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
+            return ModGameContext(
+                gameRoot: gameRoot,
+                pluginsFile: DragonAgeOriginsAdapter.addInsFile(in: gameRoot),
+                adapter: .dragonAgeOrigins
+            )
+        }
         if GTASADefinitiveEditionAdapter.supports(game: game),
            let gameRoot = GTASADefinitiveEditionAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
             return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreasDefinitiveEdition)
@@ -2291,6 +2301,7 @@ final class BorealStore {
 
     private func modManager(for game: StoreLibraryGame) -> any GameModManaging {
         if GTASADefinitiveEditionAdapter.supports(game: game) { return gtaDefinitiveEditionModManager }
+        if DragonAgeOriginsAdapter.supports(game: game) { return dragonAgeOriginsModManager }
         return GTASAModLoaderAdapter.supports(game: game) ? gtaModManager : modManager
     }
 
@@ -2299,6 +2310,7 @@ final class BorealStore {
         case .gtaSanAndreas: gtaModManager
         case .gtaSanAndreasDefinitiveEdition: gtaDefinitiveEditionModManager
         case .skyrimSpecialEdition: modManager
+        case .dragonAgeOrigins: dragonAgeOriginsModManager
         }
     }
 

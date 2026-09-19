@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -49,9 +50,18 @@ struct FrameGenerationStatusView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .unavailable(let reason), .failed(let reason):
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    if isScreenCapturePermissionReason(reason) {
+                        Button("Open Screen Recording Settings") {
+                            openScreenRecordingSettings()
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption.weight(.semibold))
+                    }
+                }
             case .inactive:
                 Text("Inactive")
                     .font(.caption)
@@ -90,5 +100,16 @@ struct FrameGenerationStatusView: View {
         case .running: .green
         case .unavailable, .failed: .orange
         }
+    }
+
+    private func isScreenCapturePermissionReason(_ reason: String) -> Bool {
+        reason == FrameGenerationError.screenCapturePermissionDenied.localizedDescription
+    }
+
+    private func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 }

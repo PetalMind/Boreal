@@ -15,6 +15,16 @@ struct ResolvedGameWindow: @unchecked Sendable {
 }
 
 enum GameWindowResolver {
+    static func requireScreenCaptureAccess() throws {
+        guard #available(macOS 10.15, *) else { return }
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+            guard CGPreflightScreenCaptureAccess() else {
+                throw FrameGenerationError.screenCapturePermissionDenied
+            }
+        }
+    }
+
     static func resolve(gamePID: pid_t, timeout: Duration = .seconds(15)) async throws -> ResolvedGameWindow {
         let deadline = ContinuousClock.now + timeout
         var lastError: Error?

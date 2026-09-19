@@ -16,6 +16,7 @@ actor MetalFXFrameGenerationPipeline {
         let owner: CapturedGameFrame?
         let kind: FrameKind
         let epoch: UInt64
+        let outputPoolID: UInt64
         let sourceSequence: UInt64
         let sourceTimestamp: CMTime
         let previousSourceSequence: UInt64?
@@ -27,7 +28,6 @@ actor MetalFXFrameGenerationPipeline {
     private struct MotionTexture: @unchecked Sendable {
         let texture: MTLTexture
         let sourceTexture: MTLTexture?
-        let sourceReference: CVMetalTexture
         let sourceBuffer: CVReadOnlyPixelBuffer
     }
 
@@ -36,20 +36,25 @@ actor MetalFXFrameGenerationPipeline {
     private let renderer: FrameGenerationRenderer
     private let lowLatencyModeEnabled: Bool
     private let presentationCapacity: Int
-    private let textureCache: CVMetalTextureCache
     private let logger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGeneration")
     private let verboseDiagnostics = ProcessInfo.processInfo.environment["BOREAL_METALFX_VERBOSE_DIAGNOSTICS"] == "1"
+    private var verbosePresentationTraceCount = 0
 
     private var interpolator: MetalFXInterpolator
     private var motionEstimator: MotionEstimator
     private var motionVectorConverter: MotionVectorConverter
     private var flatDepth: FlatDepthTextureProvider
     private var outputTextures: [MTLTexture]
+    private var outputPoolID: UInt64 = 1
     private var presentationQueue: [PresentationItem] = []
     private var previousFrame: CapturedGameFrame?
     private var pendingFrame: CapturedGameFrame?
     private var processingEpoch: UInt64?
+    private var activePairID: UInt64?
+    private var nextPairID: UInt64 = 1
+    private var motionEstimationInFlight = false
     private var generationID: UInt64 = 1
+    private var acceptedCaptureEpoch: UInt64?
     private var isStopped = false
     private var needsHistoryReset = true
     private var firstRealFrameSeen = false
@@ -87,10 +92,6 @@ actor MetalFXFrameGenerationPipeline {
         self.presentationCapacity = verticalSyncEnabled
             ? (lowLatencyModeEnabled ? 3 : 4)
             : 3
-        var cache: CVMetalTextureCache?
-        CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache)
-        guard let cache else { throw FrameGenerationError.metalDeviceUnavailable }
-        textureCache = cache
         interpolator = try MetalFXInterpolator(
             device: device,
             width: width,
@@ -131,6 +132,23 @@ actor MetalFXFrameGenerationPipeline {
 
     func consume(_ frame: CapturedGameFrame) {
         guard !isStopped else { return }
+        if let acceptedCaptureEpoch {
+            guard frame.captureEpoch >= acceptedCaptureEpoch else {
+                staleEpochDrops += 1
+                return
+            }
+            if frame.captureEpoch > acceptedCaptureEpoch {
+                self.acceptedCaptureEpoch = frame.captureEpoch
+                resetTemporalState(reason: .captureRestart)
+            }
+        } else {
+            acceptedCaptureEpoch = frame.captureEpoch
+        }
+        guard frame.width == interpolator.width, frame.height == interpolator.height else {
+            droppedInputFrames += 1
+            resetTemporalState(reason: .resize)
+            return
+        }
         record(&inputTimes)
 
         if let discontinuity = updateSourceTiming(for: frame) {
@@ -153,6 +171,16 @@ actor MetalFXFrameGenerationPipeline {
             } else {
                 droppedInputFrames += 1
             }
+            return
+        }
+
+        // VideoToolbox motion estimation is intentionally latest-wins with a
+        // single request in flight. A temporal reset invalidates the current
+        // request, but the underlying async operation still has to finish
+        // before another request is started.
+        guard !motionEstimationInFlight else {
+            if pendingFrame != nil { droppedInputFrames += 1 }
+            pendingFrame = frame
             return
         }
 
@@ -195,21 +223,35 @@ actor MetalFXFrameGenerationPipeline {
             let didSubmit = renderer.present(
                 texture: item.texture,
                 drawable: drawable
-            ) { [weak self, item] in
+            ) { [weak self, item] succeeded in
                 guard let self else { return }
-                Task { await self.releaseOutput(item) }
+                Task { await self.finishPresentation(item, succeeded: succeeded) }
             }
             if !didSubmit {
-                presentationDrops += 1
-                recycleOutputIfCurrent(item)
+                handlePresentationDrop(item)
+                dropFollowingGeneratedFrame(after: item)
             }
             return
         }
     }
 
+    func acceptCaptureEpoch(_ captureEpoch: UInt64) {
+        guard acceptedCaptureEpoch != captureEpoch else { return }
+        if acceptedCaptureEpoch != nil {
+            resetTemporalState(reason: .captureRestart)
+        }
+        acceptedCaptureEpoch = captureEpoch
+    }
+
+    func invalidateCaptureEpoch(reason: TemporalResetReason = .captureRestart) {
+        acceptedCaptureEpoch = (acceptedCaptureEpoch ?? 0) &+ 1
+        resetTemporalState(reason: reason)
+    }
+
     func resizeIfNeeded(width: Int, height: Int) throws {
         guard interpolator.width != width || interpolator.height != height else { return }
         resetTemporalState(reason: .resize)
+        outputPoolID &+= 1
         interpolator = try MetalFXInterpolator(
             device: device,
             width: width,
@@ -280,17 +322,29 @@ actor MetalFXFrameGenerationPipeline {
     }
 
     private func beginPair(previous: CapturedGameFrame, current: CapturedGameFrame) {
-        guard processingEpoch == nil, !isStopped else { return }
+        guard processingEpoch == nil, !motionEstimationInFlight, !isStopped else { return }
         let epoch = generationID
+        let pairID = nextPairID
+        nextPairID &+= 1
         previousFrame = current
         processingEpoch = epoch
-        Task { await processPair(previous: previous, current: current, epoch: epoch) }
+        activePairID = pairID
+        motionEstimationInFlight = true
+        Task {
+            await processPair(
+                previous: previous,
+                current: current,
+                epoch: epoch,
+                pairID: pairID
+            )
+        }
     }
 
     private func processPair(
         previous: CapturedGameFrame,
         current: CapturedGameFrame,
-        epoch: UInt64
+        epoch: UInt64,
+        pairID: UInt64
     ) async {
         let startedAt = Date()
         let estimator = motionEstimator
@@ -299,17 +353,22 @@ actor MetalFXFrameGenerationPipeline {
                 previous: previous.pixelBuffer,
                 current: current.pixelBuffer
             )
-            guard epoch == generationID, processingEpoch == epoch, !isStopped else {
+            guard isCurrentPair(epoch: epoch, pairID: pairID) else {
                 staleEpochDrops += 1
-                finishPair(epoch: epoch)
+                finishPair(epoch: epoch, pairID: pairID)
                 return
             }
 
             guard let motion = makeMotionTexture(motionPixelBuffer),
-                  let output = outputTextures.popLast(),
-                  let commandBuffer = commandQueue.makeCommandBuffer() else {
+                  let output = outputTextures.popLast() else {
                 motionEstimationDrops += 1
-                failPair(current: current, epoch: epoch, reason: .motionEstimatorRecreation)
+                failPair(current: current, epoch: epoch, pairID: pairID, reason: .motionEstimatorRecreation)
+                return
+            }
+            guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+                outputTextures.append(output)
+                motionEstimationDrops += 1
+                failPair(current: current, epoch: epoch, pairID: pairID, reason: .motionEstimatorRecreation)
                 return
             }
 
@@ -326,7 +385,7 @@ actor MetalFXFrameGenerationPipeline {
                   let estimatedSourceInterval,
                   deltaTime <= max(estimatedSourceInterval * 3, 0.1) else {
                 outputTextures.append(output)
-                failPair(current: current, epoch: epoch, reason: .timestampDiscontinuity)
+                failPair(current: current, epoch: epoch, pairID: pairID, reason: .timestampDiscontinuity)
                 return
             }
 
@@ -348,6 +407,7 @@ actor MetalFXFrameGenerationPipeline {
                 owner: nil,
                 kind: .generated,
                 epoch: epoch,
+                outputPoolID: outputPoolID,
                 sourceSequence: current.sequence,
                 sourceTimestamp: current.presentationTime,
                 previousSourceSequence: previous.sequence,
@@ -356,7 +416,6 @@ actor MetalFXFrameGenerationPipeline {
                 interpolationFactor: 0.5
             )
             commandBuffer.addCompletedHandler { [weak self, motion] buffer in
-                _ = motion.sourceReference
                 _ = motion.sourceBuffer
                 Task {
                     guard let self else { return }
@@ -365,6 +424,7 @@ actor MetalFXFrameGenerationPipeline {
                         item: generatedItem,
                         current: current,
                         epoch: epoch,
+                        pairID: pairID,
                         duration: Date().timeIntervalSince(startedAt)
                     )
                 }
@@ -372,7 +432,7 @@ actor MetalFXFrameGenerationPipeline {
             commandBuffer.commit()
         } catch {
             motionEstimationDrops += 1
-            failPair(current: current, epoch: epoch, reason: .motionEstimatorRecreation)
+            failPair(current: current, epoch: epoch, pairID: pairID, reason: .motionEstimatorRecreation)
         }
     }
 
@@ -381,16 +441,19 @@ actor MetalFXFrameGenerationPipeline {
         item: PresentationItem,
         current: CapturedGameFrame,
         epoch: UInt64,
+        pairID: UInt64,
         duration: TimeInterval
     ) {
-        guard epoch == generationID, processingEpoch == epoch, !isStopped else {
+        guard isCurrentPair(epoch: epoch, pairID: pairID) else {
             staleEpochDrops += 1
-            finishPair(epoch: epoch)
+            recycleOutputIfCurrent(item)
+            finishPair(epoch: epoch, pairID: pairID)
             return
         }
         guard buffer.status == .completed else {
             gpuErrorCount += 1
-            failPair(current: current, epoch: epoch, reason: .gpuError)
+            recycleOutputIfCurrent(item)
+            failPair(current: current, epoch: epoch, pairID: pairID, reason: .gpuError)
             return
         }
 
@@ -398,12 +461,16 @@ actor MetalFXFrameGenerationPipeline {
         record(&generatedTimes)
         enqueue(item)
         enqueue(real: current)
-        finishPair(epoch: epoch)
+        finishPair(epoch: epoch, pairID: pairID)
     }
 
-    private func finishPair(epoch: UInt64) {
-        guard processingEpoch == epoch else { return }
-        processingEpoch = nil
+    private func finishPair(epoch: UInt64, pairID: UInt64) {
+        guard activePairID == pairID else { return }
+        activePairID = nil
+        motionEstimationInFlight = false
+        if processingEpoch == epoch {
+            processingEpoch = nil
+        }
         guard !isStopped,
               let pendingFrame,
               let previousFrame else { return }
@@ -421,20 +488,30 @@ actor MetalFXFrameGenerationPipeline {
     private func failPair(
         current: CapturedGameFrame,
         epoch: UInt64,
+        pairID: UInt64,
         reason: TemporalResetReason
     ) {
-        guard epoch == generationID, processingEpoch == epoch, !isStopped else {
-            finishPair(epoch: epoch)
+        guard isCurrentPair(epoch: epoch, pairID: pairID) else {
+            finishPair(epoch: epoch, pairID: pairID)
             return
         }
         resetTemporalState(reason: reason)
         previousFrame = current
         enqueue(real: current)
-        finishPair(epoch: epoch)
+        finishPair(epoch: epoch, pairID: pairID)
+    }
+
+    private func isCurrentPair(epoch: UInt64, pairID: UInt64) -> Bool {
+        epoch == generationID
+            && processingEpoch == epoch
+            && activePairID == pairID
+            && motionEstimationInFlight
+            && !isStopped
     }
 
     func resetTemporalState(reason: TemporalResetReason) {
         generationID &+= 1
+        processingEpoch = nil
         needsHistoryReset = true
         previousFrame = nil
         pendingFrame = nil
@@ -445,6 +522,9 @@ actor MetalFXFrameGenerationPipeline {
         temporalResetCount &+= 1
         lastTemporalResetReason = reason
         logger.info("[FrameGeneration] Temporal reset: \(reason.displayName, privacy: .public); epoch=\(self.generationID, privacy: .public)")
+        if verboseDiagnostics {
+            NSLog("[FrameGeneration] Temporal reset: %@; epoch=%llu", reason.displayName, generationID)
+        }
     }
 
     private func updateSourceTiming(for frame: CapturedGameFrame) -> TemporalResetReason? {
@@ -473,6 +553,7 @@ actor MetalFXFrameGenerationPipeline {
             owner: frame,
             kind: .real,
             epoch: generationID,
+            outputPoolID: outputPoolID,
             sourceSequence: frame.sequence,
             sourceTimestamp: frame.presentationTime,
             previousSourceSequence: nil,
@@ -511,7 +592,19 @@ actor MetalFXFrameGenerationPipeline {
 
     private func handlePresentationDrop(_ item: PresentationItem) {
         presentationDrops += 1
+        if item.kind == .generated {
+            skippedGeneratedFrames += 1
+        }
         recycleOutputIfCurrent(item)
+    }
+
+    private func dropFollowingGeneratedFrame(after item: PresentationItem) {
+        guard item.kind == .real,
+              let next = presentationQueue.first,
+              next.kind == .generated,
+              next.previousSourceSequence == item.sourceSequence else { return }
+        presentationQueue.removeFirst()
+        handlePresentationDrop(next)
     }
 
     private func clearPresentationQueue() {
@@ -522,12 +615,22 @@ actor MetalFXFrameGenerationPipeline {
     }
 
     private func recycleOutputIfCurrent(_ item: PresentationItem) {
-        guard item.kind == .generated, item.epoch == generationID, !isStopped else { return }
+        guard item.kind == .generated,
+              item.outputPoolID == outputPoolID,
+              !isStopped else { return }
         outputTextures.append(item.texture)
     }
 
     private func releaseOutput(_ item: PresentationItem) {
         recycleOutputIfCurrent(item)
+    }
+
+    private func finishPresentation(_ item: PresentationItem, succeeded: Bool) {
+        if !succeeded {
+            gpuErrorCount += 1
+            presentationDrops += 1
+        }
+        releaseOutput(item)
     }
 
     private func recordCaptureToPresentationLatency(
@@ -559,13 +662,17 @@ actor MetalFXFrameGenerationPipeline {
         targetTimestamp: CFTimeInterval,
         targetPresentationTimestamp: CFTimeInterval
     ) {
-        guard verboseDiagnostics else { return }
+        guard verboseDiagnostics, verbosePresentationTraceCount < 48 else { return }
+        verbosePresentationTraceCount += 1
+        let message: String
         switch item.kind {
         case .real:
-            logger.debug("[FrameGeneration][PresentationTrace] REAL seq=\(item.sourceSequence, privacy: .public) source=\(item.sourceTimestamp.seconds, privacy: .public) target=\(targetTimestamp, privacy: .public) presentation=\(targetPresentationTimestamp, privacy: .public)")
+            message = "[FrameGeneration][PresentationTrace] REAL seq=\(item.sourceSequence) source=\(item.sourceTimestamp.seconds) target=\(targetTimestamp) presentation=\(targetPresentationTimestamp)"
         case .generated:
-            logger.debug("[FrameGeneration][PresentationTrace] GENERATED pair=\(item.previousSourceSequence ?? 0, privacy: .public)->\(item.sourceSequence, privacy: .public) factor=\(item.interpolationFactor ?? 0, privacy: .public) source=\(self.effectiveSourceTimestamp(for: item) ?? 0, privacy: .public) target=\(targetTimestamp, privacy: .public) presentation=\(targetPresentationTimestamp, privacy: .public)")
+            message = "[FrameGeneration][PresentationTrace] GENERATED pair=\(item.previousSourceSequence ?? 0)->\(item.sourceSequence) factor=\(item.interpolationFactor ?? 0) source=\(self.effectiveSourceTimestamp(for: item) ?? 0) target=\(targetTimestamp) presentation=\(targetPresentationTimestamp)"
         }
+        logger.info("\(message, privacy: .public)")
+        NSLog("%@", message)
     }
 
     private func makeMotionTexture(_ pixelBuffer: CVReadOnlyPixelBuffer) -> MotionTexture? {
@@ -582,20 +689,24 @@ actor MetalFXFrameGenerationPipeline {
             }
             let sourceWidth = CVPixelBufferGetWidth(buffer)
             let sourceHeight = CVPixelBufferGetHeight(buffer)
-            var reference: CVMetalTexture?
-            let status = CVMetalTextureCacheCreateTextureFromImage(
-                kCFAllocatorDefault,
-                textureCache,
-                buffer,
-                nil,
-                sourceFormat,
-                sourceWidth,
-                sourceHeight,
-                0,
-                &reference
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: sourceFormat,
+                width: sourceWidth,
+                height: sourceHeight,
+                mipmapped: false
             )
-            guard status == kCVReturnSuccess, let reference,
-                  let sourceTexture = CVMetalTextureGetTexture(reference) else { return nil }
+            descriptor.storageMode = .shared
+            descriptor.usage = [.shaderRead]
+            guard let sourceTexture = device.makeTexture(descriptor: descriptor) else { return nil }
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+            guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+            sourceTexture.replace(
+                region: MTLRegionMake2D(0, 0, sourceWidth, sourceHeight),
+                mipmapLevel: 0,
+                withBytes: baseAddress,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer)
+            )
             let requiresConversion = motionVectorConverter.requiresTransform
                 || sourceFormat != .rg32Float
                 || sourceWidth != interpolator.width
@@ -605,14 +716,12 @@ actor MetalFXFrameGenerationPipeline {
                 return MotionTexture(
                     texture: destination,
                     sourceTexture: sourceTexture,
-                    sourceReference: reference,
                     sourceBuffer: pixelBuffer
                 )
             }
             return MotionTexture(
                 texture: sourceTexture,
                 sourceTexture: nil,
-                sourceReference: reference,
                 sourceBuffer: pixelBuffer
             )
         }

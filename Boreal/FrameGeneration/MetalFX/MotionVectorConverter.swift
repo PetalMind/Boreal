@@ -8,10 +8,15 @@ struct MotionVectorConversion: Sendable {
     let magnitudeScaleX: Float
     let magnitudeScaleY: Float
 
-    // The transform is intentionally explicit. Spatial sampling (a motion
-    // buffer with one vector per 16x16 block) is separate from the vector's
-    // magnitude units. The diagnostic probe can validate these values on a
-    // supported device without changing them at every application launch.
+    // VideoToolbox convention (verified on the Apple M4/macOS 27.2 app
+    // runtime): session.motion(of: current, comparedTo: previous) returns
+    // current-to-previous vectors in pixel units. A +16 px synthetic
+    // translation produced -16, and the 16x16-block output was 16x10 for a
+    // 256x160 frame. MetalFX with scale 1 expects the same convention, so
+    // the conversion is intentionally identity. Keep the developer probe
+    // available to detect a future device/API variation.
+    // Spatial sampling (a motion buffer with one vector per 16x16 block) is
+    // separate from the vector's magnitude units.
     static let videoToolboxToMetalFX = MotionVectorConversion(
         invertX: false,
         invertY: false,

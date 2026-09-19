@@ -8,10 +8,26 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum GameDetailsTransitionPhase: Equatable {
+    case library
+    case opening
+    case details
+    case closing
+}
+
+struct GameDetailsTransitionState: Equatable {
+    var selectedGameID: UUID?
+    var phase: GameDetailsTransitionPhase = .library
+
+    static let library = Self(selectedGameID: nil, phase: .library)
+}
+
 struct ContentView: View {
     @Environment(BorealStore.self) private var store
     @State private var selection: SidebarDestination? = .library
     @State private var libraryPath: [LibraryRoute] = []
+    @Namespace private var gameTransitionNamespace
+    @State private var gameTransitionState = GameDetailsTransitionState.library
     @State private var searchText = ""
     @State private var discoverySearchText = ""
     @AppStorage("libraryStyle") private var libraryStyle = LibraryStyle.grid
@@ -84,18 +100,39 @@ struct ContentView: View {
 
     private var desktopBody: some View {
         NavigationSplitView {
-            sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+            sidebar
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+                .allowsHitTesting(!isGameTransitionActive)
         } detail: {
             NavigationStack(path: $libraryPath) {
                 ZStack {
                     BorealGlassBackdrop()
                     destinationView
+                        .opacity(libraryTransitionOpacity)
+                        .scaleEffect(libraryTransitionScale)
+                        .allowsHitTesting(!isGameTransitionActive)
+                        .animation(.easeOut(duration: 0.2), value: gameTransitionState.phase)
+
+                    if let game = transitionGame,
+                       isGameTransitionActive {
+                        StoreGameDetailView(
+                            game: game,
+                            onSelectProducer: showProducer,
+                            transitionNamespace: gameTransitionNamespace,
+                            transitionPhase: gameTransitionState.phase
+                        )
+                        .zIndex(100)
+                        .transition(.identity)
+                    }
                 }
                 .frame(minWidth: 640, minHeight: 500)
                 .navigationTitle(Text(title))
                 .toolbar { toolbarContent }
                 .navigationDestination(for: LibraryRoute.self) { route in
                     routeView(route)
+                }
+                .onExitCommand {
+                    if isGameTransitionActive { closeGameTransition() }
                 }
             }
         }
@@ -392,7 +429,10 @@ struct ContentView: View {
                 syncSteamAction: { store.syncSteamLibrary() },
                 importAction: { installCandidate = InstallCandidate(url: $0) },
                 selectAction: { libraryPath.append(.application($0)) },
-                selectStoreGameAction: { libraryPath.append(.storeGame($0)) },
+                selectStoreGameAction: openGameTransition,
+                transitionNamespace: gameTransitionNamespace,
+                selectedTransitionGameID: gameTransitionState.selectedGameID,
+                transitionPhase: gameTransitionState.phase,
                 selectDiscoveryGameAction: { libraryPath.append(.discoveryGame($0)) }
             )
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -453,9 +493,78 @@ struct ContentView: View {
         libraryProducerFilter = producer
         selection = .library
         libraryPath.removeAll()
+        if isGameTransitionActive { closeGameTransition() }
+    }
+
+    private var transitionGame: StoreLibraryGame? {
+        guard let id = gameTransitionState.selectedGameID else { return nil }
+        return store.storeGame(id: id)
+    }
+
+    private var isGameTransitionActive: Bool {
+        gameTransitionState.selectedGameID != nil
+            && gameTransitionState.phase != .library
+    }
+
+    private var libraryTransitionOpacity: Double {
+        switch gameTransitionState.phase {
+        case .library, .opening, .closing: 1
+        case .details: 0
+        }
+    }
+
+    private var libraryTransitionScale: CGFloat {
+        gameTransitionState.phase == .details ? 0.985 : 1
+    }
+
+    private func openGameTransition(_ gameID: UUID) {
+        guard gameTransitionState.phase == .library,
+              store.storeGame(id: gameID) != nil else { return }
+
+        withAnimation(.interpolatingSpring(duration: 0.44, bounce: 0.04)) {
+            gameTransitionState = GameDetailsTransitionState(selectedGameID: gameID, phase: .opening)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            guard gameTransitionState.selectedGameID == gameID,
+                  gameTransitionState.phase == .opening else { return }
+            withAnimation(.easeOut(duration: 0.26)) {
+                gameTransitionState.phase = .details
+            }
+        }
+    }
+
+    private func closeGameTransition() {
+        guard isGameTransitionActive else { return }
+
+        withAnimation(.interpolatingSpring(duration: 0.44, bounce: 0.04)) {
+            gameTransitionState = .library
+        }
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        if isGameTransitionActive {
+            ToolbarItem(placement: .navigation) {
+                Button(action: closeGameTransition) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .bold))
+                        .frame(width: 36, height: 36)
+                        .foregroundStyle(.primary)
+                        .background {
+                            Circle()
+                                .fill(.white.opacity(0.09))
+                                .overlay {
+                                    Circle()
+                                        .stroke(.white.opacity(0.16), lineWidth: 1)
+                                }
+                        }
+                }
+                .buttonStyle(.plain)
+                .help(Text(.Navigation.libraryTitle))
+                .accessibilityLabel(Text(.Navigation.libraryTitle))
+            }
+        }
+
         ToolbarItem(placement: .primaryAction) {
             Button {
                 consoleModeEnabled.toggle()
@@ -465,7 +574,7 @@ struct ContentView: View {
             .help(consoleModeEnabled ? "Turn off console mode" : "Turn on console mode")
             .accessibilityLabel(consoleModeEnabled ? "Turn off console mode" : "Turn on console mode")
         }
-        if selection == .library && libraryPath.isEmpty {
+        if selection == .library && libraryPath.isEmpty && !isGameTransitionActive {
             ToolbarItemGroup(placement: .primaryAction) {
                 LibraryToolbarControls(
                     style: $libraryStyle,
@@ -477,7 +586,8 @@ struct ContentView: View {
                 )
             }
         }
-        if (selection == .library && libraryPath.isEmpty) || (developerMode && selection == .environments) {
+        if ((selection == .library && libraryPath.isEmpty && !isGameTransitionActive)
+            || (developerMode && selection == .environments)) {
             ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("Install Windows App…", systemImage: "shippingbox") { showsImporter = true }.keyboardShortcut("o", modifiers: [.command, .shift])

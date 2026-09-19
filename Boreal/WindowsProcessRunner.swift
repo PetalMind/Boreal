@@ -46,6 +46,111 @@ nonisolated enum WineLaunchArguments {
     }
 }
 
+/// Resolves the actual GTA executable that owns CLEO. Store launchers may be
+/// the process in `plan.executable`, while the game is exposed only as
+/// `processExecutablePath` (or is nested below the install root). The DLL
+/// overrides must be selected from the game executable, otherwise Wine can
+/// silently fall back to builtin DLLs and skip the Ultimate ASI Loader.
+nonisolated enum GTASACLEOLaunchSupport {
+    struct Runtime: Sendable {
+        let executable: URL
+        let nativeDLLOverrides: [String]
+    }
+
+    private static let definitiveExecutableName = "SanAndreas.exe"
+    private static let classicExecutableNames = [
+        "gta_sa.exe",
+        "gta-sa.exe",
+        "gta_sa_enhanced.exe",
+    ]
+    private static let proxyNames: Set<String> = [
+        "dinput8.dll",
+        "dsound.dll",
+        "version.dll",
+        "winmm.dll",
+        "vorbisfile.dll",
+    ]
+
+    static func runtime(for plan: WindowsLaunchPlan) -> Runtime? {
+        let fileManager = FileManager.default
+        let directCandidates = [
+            plan.processExecutablePath.map { URL(fileURLWithPath: $0) },
+            plan.executable,
+        ].compactMap { $0 }
+
+        for candidate in directCandidates {
+            if let runtime = runtime(for: candidate, fileManager: fileManager) {
+                return runtime
+            }
+        }
+
+        var roots = directCandidates.map { $0.deletingLastPathComponent() }
+        roots.append(plan.workingDirectory)
+        var seen = Set<String>()
+        for root in roots {
+            let normalizedRoot = root.standardizedFileURL
+            guard seen.insert(normalizedRoot.path).inserted else { continue }
+            let candidates = [
+                normalizedRoot.appending(path: definitiveExecutableName),
+                normalizedRoot.appending(path: "Gameface/Binaries/Win64/\(definitiveExecutableName)"),
+                normalizedRoot.deletingLastPathComponent()
+                    .appending(path: "Gameface/Binaries/Win64/\(definitiveExecutableName)"),
+            ] + classicExecutableNames.map { normalizedRoot.appending(path: $0) }
+            for candidate in candidates {
+                if let runtime = runtime(for: candidate, fileManager: fileManager) {
+                    return runtime
+                }
+            }
+        }
+        return nil
+    }
+
+    static func isGameExecutable(_ executable: URL) -> Bool {
+        let name = executable.lastPathComponent.lowercased()
+        return name == definitiveExecutableName.lowercased()
+            || classicExecutableNames.contains(where: { $0.lowercased() == name })
+    }
+
+    private static func runtime(for executable: URL, fileManager: FileManager) -> Runtime? {
+        guard fileManager.isReadableFile(atPath: executable.path) else { return nil }
+        let name = executable.lastPathComponent.lowercased()
+        let directory = executable.deletingLastPathComponent()
+
+        if name == definitiveExecutableName.lowercased() {
+            guard ["version.dll", "cleo_redux64.asi"].allSatisfy({
+                fileManager.isReadableFile(atPath: directory.appending(path: $0).path)
+            }) else { return nil }
+            return Runtime(executable: executable.standardizedFileURL, nativeDLLOverrides: ["version"])
+        }
+
+        let hasClassicCleo = fileManager.isReadableFile(atPath: directory.appending(path: "cleo.asi").path)
+            || fileManager.isReadableFile(atPath: directory.appending(path: "cleo_redux.asi").path)
+            || isDirectory(directory.appending(path: "CLEO", directoryHint: .isDirectory), fileManager: fileManager)
+        guard classicExecutableNames.contains(where: { $0.lowercased() == name }), hasClassicCleo else {
+            return nil
+        }
+
+        let nativeDLLs = (try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))?.filter { url in
+            proxyNames.contains(url.lastPathComponent.lowercased())
+                && fileManager.isReadableFile(atPath: url.path)
+        }.map { $0.deletingPathExtension().lastPathComponent.lowercased() } ?? []
+        guard !nativeDLLs.isEmpty else { return nil }
+        return Runtime(
+            executable: executable.standardizedFileURL,
+            nativeDLLOverrides: Array(Set(nativeDLLs)).sorted()
+        )
+    }
+
+    private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+}
+
 actor WindowsProcessRunner: WindowsProcessRunning {
     private static let metalHUDEnvironmentKeys = WineProcessEnvironment.metalHUDEnvironmentKeys
     private let processExecutor: any ProcessExecuting
@@ -89,6 +194,25 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             return CGDisplayIsOnline(candidate) != 0 && !bounds.isEmpty ? candidate : nil
         } ?? CGMainDisplayID()
         var launchPlan = plan
+        let cleoRuntime = GTASACLEOLaunchSupport.runtime(for: plan)
+        if let cleoExecutable = cleoRuntime?.executable {
+            // CLEO resolves its boot directory and relative configuration
+            // files from the game's binary directory. Keep direct launches
+            // anchored there even when an older profile stored another cwd.
+            // The install also contains PlayGTASanAndreas.exe, but that file
+            // is a Steam/Rockstar redirector. A standalone Wine prefix must
+            // start the actual Unreal binary instead.
+            launchPlan.executable = cleoExecutable
+            launchPlan.workingDirectory = cleoExecutable.deletingLastPathComponent()
+            launchPlan.processExecutableName = cleoExecutable.lastPathComponent
+            launchPlan.processExecutablePath = cleoExecutable.path
+        }
+        if cleoRuntime != nil {
+            // CLEO/ASI hooks need the game's native window and loader search
+            // path. Boreal's explorer desktop and capture overlays can keep
+            // the Unreal process alive while its native startup fails.
+            launchPlan.overlayCompatibleFullscreen = false
+        }
         if Heroes3DirectDrawCompatibility.usesWineBuiltinDirectDraw(for: plan.executable) {
             // The virtual explorer desktop keeps the legacy DirectDraw
             // frontbuffer alive but does not expose the resulting window on
@@ -165,18 +289,21 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + libraries.sorted().map { "\($0)=b" }).joined(separator: ";")
         }
-        // GTA San Andreas: The Definitive Edition loads CLEO Redux through
-        // the native Ultimate ASI Loader version.dll proxy. Wine's builtin
-        // version implementation otherwise wins the DLL search and the game
-        // starts without loading cleo_redux64.asi. Keep this override scoped
-        // to the DE executable; other Windows games must retain their own
-        // DLL resolution.
-        if plan.executable.lastPathComponent.caseInsensitiveCompare("SanAndreas.exe") == .orderedSame {
+        // GTA San Andreas loads CLEO through a native Ultimate ASI Loader
+        // proxy. Wine's builtin DLL otherwise wins the search and the game
+        // starts without loading the CLEO runtime. Resolve the real game
+        // executable even when a store launcher owns the initial plan.
+        if let cleoRuntime {
             let existing = processEnvironment["WINEDLLOVERRIDES"]?.split(separator: ";").map(String.init) ?? []
-            let preserved = existing.filter {
-                $0.split(separator: "=", maxSplits: 1).first?.caseInsensitiveCompare("version") != .orderedSame
+            let nativeDLLs = Set(cleoRuntime.nativeDLLOverrides)
+            let preserved = existing.filter { entry in
+                let library = entry.split(separator: "=", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+                let normalizedLibrary = library.hasSuffix(".dll")
+                    ? String(library.dropLast(4))
+                    : library
+                return !nativeDLLs.contains(normalizedLibrary)
             }
-            processEnvironment["WINEDLLOVERRIDES"] = (preserved + ["version=n,b"]).joined(separator: ";")
+            processEnvironment["WINEDLLOVERRIDES"] = (preserved + nativeDLLs.sorted().map { "\($0)=n,b" }).joined(separator: ";")
         }
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
@@ -212,7 +339,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             executable: runtime.wineExecutable,
             arguments: wineArguments,
             environment: processEnvironment,
-            currentDirectory: plan.workingDirectory,
+            currentDirectory: launchPlan.workingDirectory,
             stdoutLog: environment.logsURL.appending(path: "\(stem).stdout.log"),
             stderrLog: environment.logsURL.appending(path: "\(stem).stderr.log")
         )

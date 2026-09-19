@@ -125,6 +125,7 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
             guard Set(relativeNames.map { $0.lowercased() }).count == relativeNames.count else {
                 throw ModManagerError.duplicatePath("Two files have the same destination filename.")
             }
+            let current = try load(gameID: gameID, gameRoot: nil, pluginsFile: nil, profileID: nil)
             return ModInstallPreview(
                 gameID: gameID,
                 archiveURL: pendingURL,
@@ -147,7 +148,8 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 canInstallAutomatically: true,
                 totalSize: selectedFiles.reduce(Int64(0)) {
                     $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-                }
+                },
+                existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current)
             )
         } catch {
             try? FileManager.default.removeItem(at: pendingURL)
@@ -223,6 +225,10 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
             )
         }
 
+        let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
+        let replacement = preview.existingModID.flatMap { modID in
+            current.mods.first { $0.id == modID }
+        }
         let gameDirectory = gameURL(for: preview.gameID)
         let stagingID = UUID()
         let stagingDirectory = gameDirectory.appending(path: "Staging/\(stagingID.uuidString)/files", directoryHint: .isDirectory)
@@ -248,15 +254,16 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 ))
             }
 
-            let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
             let archiveDirectory = gameDirectory.appending(path: "Archives", directoryHint: .isDirectory)
             try fileManager.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
             let archiveName = "\(stagingID.uuidString)-\(preview.archiveName)"
             try fileManager.copyItem(at: preview.archiveURL, to: archiveDirectory.appending(path: archiveName))
             let mod = InstalledMod(
-                id: stagingID,
+                id: replacement?.id ?? stagingID,
                 name: URL(fileURLWithPath: preview.archiveName).deletingPathExtension().lastPathComponent,
-                priority: current.mods.count,
+                version: replacement?.version,
+                enabled: replacement?.enabled ?? true,
+                priority: replacement?.priority ?? current.mods.count,
                 archiveRelativePath: "Archives/\(archiveName)",
                 stagingRelativePath: "Staging/\(stagingID.uuidString)",
                 files: files,
@@ -267,7 +274,11 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 warnings: preview.warnings
             )
             var mods = current.mods
-            mods.append(mod)
+            if let index = replacement.flatMap({ replacement in mods.firstIndex { $0.id == replacement.id } }) {
+                mods[index] = mod
+            } else {
+                mods.append(mod)
+            }
             try saveProfile(
                 gameID: preview.gameID,
                 profileID: current.profileID,
@@ -275,6 +286,13 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 mods: mods,
                 plugins: []
             )
+            if let replacement,
+               !isModStorageReferenced(replacement, gameID: preview.gameID, excludingProfileID: current.profileID) {
+                if let archive = replacement.archiveRelativePath {
+                    try? fileManager.removeItem(at: append(archive, to: gameDirectory))
+                }
+                try? fileManager.removeItem(at: append(replacement.stagingRelativePath, to: gameDirectory))
+            }
             try? fileManager.removeItem(at: preview.archiveURL)
             return try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: current.profileID)
         } catch {
@@ -700,6 +718,30 @@ private extension GTASADefinitiveEditionModManager {
 
     func isCleoFileName(_ name: String) -> Bool {
         ["js", "ini", "cfg", "txt"].contains(URL(fileURLWithPath: name).pathExtension.lowercased())
+    }
+
+    func isModStorageReferenced(
+        _ mod: InstalledMod,
+        gameID: UUID,
+        excludingProfileID: String
+    ) -> Bool {
+        for profile in profiles(for: gameID) where profile.id.caseInsensitiveCompare(excludingProfileID) != .orderedSame {
+            let storedProfile: ModProfile?
+            do {
+                storedProfile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: profile.id))
+            } catch {
+                return true
+            }
+            guard let storedProfile else { return true }
+            if storedProfile.mods.contains(where: {
+                $0.id == mod.id
+                    || $0.stagingRelativePath == mod.stagingRelativePath
+                    || $0.archiveRelativePath == mod.archiveRelativePath
+            }) {
+                return true
+            }
+        }
+        return false
     }
 
     func read<T: Decodable>(_ type: T.Type, at url: URL) throws -> T? {

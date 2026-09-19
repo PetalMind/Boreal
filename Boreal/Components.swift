@@ -117,6 +117,7 @@ struct GameArtworkView: View {
     let game: StoreLibraryGame
     var width: CGFloat = 156
     var height: CGFloat = 218
+    var cornerRadius: CGFloat = 16
     var usesCustomArtwork = true
     var kind: ArtworkKind = .cover
     var displayMode: ArtworkDisplayMode = .automatic
@@ -130,9 +131,9 @@ struct GameArtworkView: View {
             if showsChrome {
                 artworkSurface
                     .frame(width: width, height: height)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .stroke(.white.opacity(0.18), lineWidth: 1)
                     }
                     .shadow(color: .black.opacity(0.22), radius: 12, y: 7)
