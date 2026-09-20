@@ -1,33 +1,54 @@
-# Police Pursuit Radar DE v1.10 — Native Minimap Only
+# Police Pursuit Radar DE v1.12 — Smart Pursuit Radar
 
-Ta wersja usuwa pomysł drugiego radaru/HUD-u. **Nie pojawia się żaden dodatkowy panel UI.** Cała prezentacja moda korzysta wyłącznie z oryginalnej minimapy GTA SA:DE.
+Wersja 1.11 zachowuje zoptymalizowane, pasywne śledzenie policji z poprzednich wersji, ale usuwa całą wizualizację obszaru poszukiwań.
 
-## Jak wygląda radar
+## Minimap
 
-- niebieski — wykryta jednostka policji bez aktualnego kontaktu z graczem;
-- czerwony — jednostka ma aktualny kontakt;
-- żółty — świeżo utracony kontakt / ostatnia znana pozycja;
-- aktywna jednostka bardzo blisko gracza dostaje nieco większy natywny blip;
-- mały punkt przed policjantem/radiowozem pokazuje kierunek, ale tylko dla kontaktów aktywnych lub świeżo utraconych, żeby nie zaśmiecać mapy.
+Mod używa wyłącznie oryginalnej minimapy GTA San Andreas: Definitive Edition. Nie tworzy dodatkowego radaru ani osobnego panelu HUD.
 
-## Strefa poszukiwań
+Na minimapie pozostają tylko kontakty policyjne:
 
-Po utracie kontaktu mod przechodzi w `SEARCHING` i na **tej samej natywnej minimapie** pokazuje:
+- czerwony — jednostka ma aktualny kontakt z graczem;
+- żółty — świeżo utracony kontakt;
+- niebieski — śledzona pobliska jednostka bez aktualnego kontaktu;
+- opcjonalny mały znacznik przed wybranymi jednostkami pokazuje kierunek ruchu/patrzenia.
 
-- większy punkt ostatniej znanej pozycji gracza;
-- pierścień 6–10 żółtych punktów opisujący przybliżony obszar poszukiwań;
-- jeden większy punkt przesuwający się po obwodzie jako subtelny efekt „skanowania”.
+## Usunięte w v1.11
 
-Promień nadal zależy od liczby gwiazdek (`radius_base_m + stars * radius_per_star_m`).
+Całkowicie usunięto z warstwy prezentacji:
 
-## Ważne
+- pierścień obszaru poszukiwań;
+- punkty wypełniające / obwód strefy;
+- marker ostatniej znanej pozycji;
+- animowany punkt skanowania po obwodzie;
+- związane z nimi opcje INI i blipy.
 
-Mod nadal nie tworzy `ADD_BLIP_FOR_CHAR` ani `ADD_BLIP_FOR_CAR` dla policji. Wszystkie markery są blipami współrzędnych, dzięki czemu radar nie utrzymuje encji pościgu i nie powinien wpływać na streaming ani system wanted.
+Stan `SEARCHING` nadal istnieje wewnętrznie jako część logiki pościgu, ale nie rysuje niczego na minimapie.
 
-Custom HUD z v1.9 jest w v1.10 **twardo wyłączony w kodzie**, więc nawet stary plik INI z `hud.enabled=1` nie przywróci dodatkowego prostokątnego radaru.
+## Bezpieczeństwo AI
 
-F6 — przeładowanie ustawień INI.
+Mod pozostaje obserwatorem. Nie ustawia tasków policji, driving style, prędkości, wanted level ani nie oznacza jednostek gry jako `NO_LONGER_NEEDED`. Główne markery są blipami współrzędnych, a nie blipami bezpośrednio przypiętymi do policjantów lub radiowozów.
 
-## Ograniczenie CLEO
+## Sterowanie
 
-Ta wersja modyfikuje zachowanie i markery istniejącej minimapy. Zmiana samego wyglądu bazowej mapy — np. koloru ulic, tła, maski radaru czy własnych ikon teksturowych — wymaga osobnej warstwy assetów / hooka renderera, nie zwykłych natywnych blipów CLEO.
+F6 — przeładowanie `PolicePursuitRadar.ini` podczas gry.
+
+## Pliki
+
+- `PolicePursuitRadar.js`
+- `PolicePursuitRadar.ini`
+- `README.md`
+
+## v1.12 — Smart Pursuit Radar
+
+Wersja 1.12 nie dodaje żadnego nowego HUD-u. Cała prezentacja nadal korzysta wyłącznie z oryginalnej minimapy GTA.
+
+Dodane mechanizmy:
+
+- **Closing speed** — dla każdej śledzonej jednostki radar mierzy zmianę odległości policja↔gracz w czasie i wygładza wynik filtrem EMA. Dodatnia wartość oznacza, że jednostka się zbliża, ujemna — że się oddala.
+- **Threat Score** — wewnętrzny wynik 0–100 uwzględniający aktualny kontakt, świeżość kontaktu, dystans, szybkość zbliżania oraz typ jednostki. Wynik służy wyłącznie do priorytetyzacji radaru i nie zmienia AI gry.
+- **Inteligentny wybór blipów** — limit minimapy jest przydzielany jednostkom o najwyższym zagrożeniu. Kontakty skupione praktycznie w jednym miejscu są częściowo odszumiane, żeby kilka radiowozów w jednym punkcie nie wypierało ważniejszych kontaktów. Aktywne/krytyczne zagrożenia nie są przez ten filtr ukrywane.
+- **Rzeczywisty kierunek ruchu** — marker kierunku używa wektora wyliczonego z kolejnych pozycji jednostki. Heading pojazdu/policjanta jest używany tylko jako fallback przy bardzo małej prędkości.
+- Cztery dostępne markery kierunku trafiają automatycznie do najwyżej sklasyfikowanych kontaktów.
+
+Implementacja jest obserwacyjna: nie ustawia tasków, prędkości, stylu jazdy, wanted level ani ownershipu jednostek policji.

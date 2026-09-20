@@ -6,6 +6,9 @@ nonisolated enum ModArchiveFormat: String, Codable, CaseIterable, Sendable {
     case zip
     case sevenZip = "7z"
     case rar
+    /// A standalone Unreal PAK is copied as a mod payload instead of extracted.
+    /// This format is used only by the GTA San Andreas — Definitive Edition adapter.
+    case loosePak = "pak"
 
     init?(fileExtension: String) {
         switch fileExtension.lowercased() {
@@ -59,6 +62,18 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .dragonAgeDazip: "Dragon Age DAZIP"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
+        }
+    }
+}
+
+nonisolated enum ModInstallationSource: String, Codable, CaseIterable, Sendable, Hashable {
+    case boreal
+    case external
+
+    var displayName: String {
+        switch self {
+        case .boreal: "Managed by Boreal"
+        case .external: "Detected outside Boreal"
         }
     }
 }
@@ -252,7 +267,7 @@ nonisolated struct BethesdaPlugin: Codable, Hashable, Sendable, Identifiable {
 }
 
 nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
-    let id: UUID
+    var id: UUID
     var name: String
     var version: String?
     var enabled: Bool
@@ -266,6 +281,8 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
     var deployStrategy: ModDeployStrategy
     var requirements: [String]
     var warnings: [String]
+    var installationSource: ModInstallationSource
+    var detectionKey: String?
 
     init(
         id: UUID = UUID(),
@@ -281,7 +298,9 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
         contentType: ModContentType = .unknown,
         deployStrategy: ModDeployStrategy = .modLoader,
         requirements: [String] = [],
-        warnings: [String] = []
+        warnings: [String] = [],
+        installationSource: ModInstallationSource = .boreal,
+        detectionKey: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -297,11 +316,14 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
         self.deployStrategy = deployStrategy
         self.requirements = requirements
         self.warnings = warnings
+        self.installationSource = installationSource
+        self.detectionKey = detectionKey
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, version, enabled, priority, archiveRelativePath, stagingRelativePath
         case installedAt, files, plugins, contentType, deployStrategy, requirements, warnings
+        case installationSource, detectionKey
     }
 
     init(from decoder: Decoder) throws {
@@ -320,7 +342,11 @@ nonisolated struct InstalledMod: Codable, Hashable, Sendable, Identifiable {
         deployStrategy = try container.decodeIfPresent(ModDeployStrategy.self, forKey: .deployStrategy) ?? .modLoader
         requirements = try container.decodeIfPresent([String].self, forKey: .requirements) ?? []
         warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        installationSource = try container.decodeIfPresent(ModInstallationSource.self, forKey: .installationSource) ?? .boreal
+        detectionKey = try container.decodeIfPresent(String.self, forKey: .detectionKey)
     }
+
+    var isExternallyDetected: Bool { installationSource == .external }
 }
 
 nonisolated enum ModIdentity {
@@ -346,7 +372,7 @@ nonisolated enum ModIdentity {
     ) -> UUID? {
         let archiveKey = key(for: archiveName)
         if !archiveKey.isEmpty,
-           let namedMatch = state.mods.first(where: { key(for: $0.name) == archiveKey }) {
+           let namedMatch = state.mods.first(where: { !$0.isExternallyDetected && key(for: $0.name) == archiveKey }) {
             return namedMatch.id
         }
 
@@ -358,9 +384,116 @@ nonisolated enum ModIdentity {
         let incomingPaths = Set(relativePaths.map { $0.lowercased() })
         guard !incomingPaths.isEmpty else { return nil }
         let candidates = state.mods.filter { mod in
-            !incomingPaths.isDisjoint(with: mod.files.map { $0.relativePath.lowercased() })
+            guard !mod.isExternallyDetected else { return false }
+            return !incomingPaths.isDisjoint(with: mod.files.map { $0.relativePath.lowercased() })
         }
         return candidates.count == 1 ? candidates[0].id : nil
+    }
+
+    static func externalID(adapter: ModGameAdapter, detectionKey: String) -> UUID {
+        let digest = RuntimeSecurity.sha256(data: Data("\(adapter.rawValue):\(detectionKey)".utf8))
+        let characters = Array(digest)
+        let uuid = [
+            String(characters[0..<8]),
+            String(characters[8..<12]),
+            String(characters[12..<16]),
+            String(characters[16..<20]),
+            String(characters[20..<32])
+        ].joined(separator: "-")
+        return UUID(uuidString: uuid)!
+    }
+}
+
+nonisolated enum ExternalModDiscovery {
+    static func makeMod(
+        adapter: ModGameAdapter,
+        name: String,
+        detectionKey: String,
+        files: [URL],
+        relativeTo root: URL,
+        contentType: ModContentType,
+        requirements: [String] = [],
+        plugins: [BethesdaPlugin] = [],
+        fileManager: FileManager = .default
+    ) -> InstalledMod? {
+        let records = files.compactMap { url -> ModFile? in
+            guard let relativePath = relativePath(of: url, from: root),
+                  let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let sha256 = try? RuntimeSecurity.sha256(of: url) else { return nil }
+            return ModFile(relativePath: relativePath, sha256: sha256, size: Int64(values.fileSize ?? 0))
+        }.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        guard !records.isEmpty else { return nil }
+
+        let key = normalizedPath(detectionKey)
+        return InstalledMod(
+            id: ModIdentity.externalID(adapter: adapter, detectionKey: key),
+            name: name,
+            enabled: true,
+            priority: Int.max,
+            stagingRelativePath: "",
+            installedAt: latestModificationDate(of: files, fileManager: fileManager) ?? .now,
+            files: records,
+            plugins: plugins,
+            contentType: contentType,
+            deployStrategy: .manual,
+            requirements: requirements,
+            warnings: ["Detected in the installed game files. Boreal does not own or deploy these files."],
+            installationSource: .external,
+            detectionKey: key
+        )
+    }
+
+    static func relativePath(of url: URL, from root: URL) -> String? {
+        let rootPath = root.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(rootPath + "/") else { return nil }
+        let relative = String(path.dropFirst(rootPath.count + 1)).replacingOccurrences(of: "\\", with: "/")
+        let components = relative.split(separator: "/").map(String.init)
+        guard !relative.isEmpty,
+              !relative.hasPrefix("/"),
+              !components.contains(".."),
+              !components.contains(where: { $0.contains(":" ) }) else { return nil }
+        return relative
+    }
+
+    /// Returns the comparison form used by deployment manifests and game
+    /// filesystem scans. Manifests created by older builds may contain a
+    /// leading `./` or Windows separators, while URLs use the host platform's
+    /// separator and path casing is not significant for the supported games.
+    static func normalizedPath(_ path: String) -> String {
+        path
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+            .joined(separator: "/")
+            .precomposedStringWithCanonicalMapping
+            .lowercased()
+    }
+
+    static func latestModificationDate(of files: [URL], fileManager: FileManager = .default) -> Date? {
+        files.compactMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+            .max()
+    }
+
+    static func merge(
+        managed: [InstalledMod],
+        discovered: [InstalledMod]
+    ) -> [InstalledMod] {
+        var result = managed.filter { !$0.isExternallyDetected }
+        let storedExternal = managed.reduce(into: [String: InstalledMod]()) { result, mod in
+            guard mod.isExternallyDetected, let detectionKey = mod.detectionKey else { return }
+            result[normalizedPath(detectionKey)] = mod
+        }
+        for detected in discovered {
+            var value = detected
+            if let previous = storedExternal[normalizedPath(detected.detectionKey ?? "")] {
+                value.id = previous.id
+            }
+            result.append(value)
+        }
+        return result
     }
 }
 
@@ -514,7 +647,8 @@ nonisolated struct ModGameState: Hashable, Sendable {
     var conflictCount: Int { conflicts.count }
     var validation: ModValidationReport { ModValidationReport.make(mods: mods, plugins: plugins) }
     var pendingChanges: Bool {
-        deployment.profileFingerprint != ModProfileFingerprint.make(mods: mods, plugins: plugins)
+        guard mods.contains(where: { !$0.isExternallyDetected }) || deployment.deployedAt != nil else { return false }
+        return deployment.profileFingerprint != ModProfileFingerprint.make(mods: mods, plugins: plugins)
     }
 }
 
@@ -606,9 +740,13 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
         case .unsupportedArchive(let url):
             "Boreal supports ZIP, RAR, 7z and Dragon Age DAZIP mod archives. This file is not a supported archive: \(url.lastPathComponent)."
         case .archiveToolUnavailable(let format):
-            format == .zip
-                ? "The system ZIP extraction tool is unavailable."
-                : "A 7-Zip-compatible command is required to extract \(format.rawValue.uppercased()) archives. Install 7-Zip and try again."
+            if format == .loosePak {
+                "A standalone Unreal PAK file is copied directly and does not use an archive extraction tool."
+            } else if format == .zip {
+                "The system ZIP extraction tool is unavailable."
+            } else {
+                "A 7-Zip-compatible command is required to extract \(format.rawValue.uppercased()) archives. Install 7-Zip and try again."
+            }
         case .archiveToolFailed(let detail):
             "Boreal couldn’t read the mod archive: \(detail)"
         case .unsafeArchivePath(let path):
@@ -743,6 +881,24 @@ nonisolated enum SkyrimModAdapter {
         BethesdaPluginType(fileExtension: URL(fileURLWithPath: filename).pathExtension)
     }
 
+    static func isBasePlugin(_ filename: String) -> Bool {
+        let baseNames: Set<String> = [
+            "skyrim.esm", "update.esm", "dawnguard.esm", "hearthfires.esm", "dragonborn.esm"
+        ]
+        let lowercased = filename.lowercased()
+        return baseNames.contains(lowercased) || lowercased.hasPrefix("cc")
+    }
+
+    static func isBaseArchive(_ filename: String) -> Bool {
+        let lowercased = filename.lowercased()
+        return lowercased.hasPrefix("skyrim")
+            || lowercased.hasPrefix("update")
+            || lowercased.hasPrefix("dawnguard")
+            || lowercased.hasPrefix("hearthfires")
+            || lowercased.hasPrefix("dragonborn")
+            || lowercased.hasPrefix("cc")
+    }
+
     /// Reads the TES4 record header used by Skyrim plugins. The extension is
     /// only a fallback: the master and light flags in the header are the
     /// authoritative classification, and MAST subrecords are the dependency
@@ -835,7 +991,7 @@ nonisolated enum ModConflictResolver {
 
 nonisolated enum ModProfileFingerprint {
     static func make(mods: [InstalledMod], plugins: [BethesdaPlugin]) -> String {
-        let modPart = mods.sorted { $0.priority < $1.priority }.map { mod in
+        let modPart = mods.filter { !$0.isExternallyDetected }.sorted { $0.priority < $1.priority }.map { mod in
             let files = mod.files.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
                 .map { "\($0.relativePath)=\($0.sha256)" }
                 .joined(separator: ";")
@@ -941,10 +1097,6 @@ nonisolated struct ModManager: Sendable {
         let deploymentURL = gameURL.appending(path: "deployment.json")
         let profile = try read(ModProfile.self, at: profileURL)
         let deployment = (try? read(ModDeploymentManifest.self, at: deploymentURL)) ?? .empty(gameID: gameID)
-        var mods = profile?.mods ?? scanManifests(in: gameURL)
-        mods = mods.sorted { $0.priority == $1.priority ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : $0.priority < $1.priority }
-        for index in mods.indices { mods[index].priority = index }
-
         var plugins: [BethesdaPlugin]
         if let profile {
             // The profile is Boreal's canonical state. plugins.txt is only an
@@ -957,6 +1109,17 @@ nonisolated struct ModManager: Sendable {
                 plugins = scanBasePlugins(in: dataRoot)
             }
         }
+
+        let storedMods = profile?.mods ?? scanManifests(in: gameURL)
+        let discoveredMods = scanExternalMods(
+            in: gameRoot,
+            deployment: deployment,
+            knownPlugins: plugins
+        )
+        var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
+        mods = mods.sorted { $0.priority == $1.priority ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : $0.priority < $1.priority }
+        for index in mods.indices { mods[index].priority = index }
+        plugins.append(contentsOf: discoveredMods.flatMap(\.plugins))
         plugins = reconcilePlugins(plugins, with: mods)
         plugins = enrichPluginMetadata(plugins, mods: mods, gameRoot: gameRoot, gameDirectory: gameURL)
         for index in mods.indices {
@@ -1325,7 +1488,7 @@ nonisolated struct ModManager: Sendable {
     }
 
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
-        guard let mod = state.mods.first(where: { $0.id == modID }) else { return state }
+        guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
         let fileManager = FileManager.default
         if let archive = mod.archiveRelativePath {
@@ -1469,7 +1632,7 @@ nonisolated struct ModManager: Sendable {
         }
         let profile = ModProfile(gameID: gameID, name: profileName, mods: normalizedMods, plugins: normalizedPlugins, updatedAt: .now)
         try saveJSON(profile, at: profileURL(for: gameID, profileID: profileID))
-        for mod in normalizedMods {
+        for mod in normalizedMods where !mod.isExternallyDetected {
             let manifestURL = append("\(mod.stagingRelativePath)/manifest.json", to: gameDirectory)
             try saveJSON(mod, at: manifestURL)
         }
@@ -1481,6 +1644,106 @@ nonisolated struct ModManager: Sendable {
         return children.compactMap { child in
             try? read(InstalledMod.self, at: child.appending(path: "manifest.json"))
         }.sorted { $0.priority < $1.priority }
+    }
+
+    private func scanExternalMods(
+        in gameRoot: URL?,
+        deployment: ModDeploymentManifest,
+        knownPlugins: [BethesdaPlugin]
+    ) -> [InstalledMod] {
+        guard let gameRoot,
+              let dataRoot = SkyrimModAdapter.dataRoot(for: gameRoot),
+              let children = try? FileManager.default.contentsOfDirectory(
+                  at: dataRoot,
+                  includingPropertiesForKeys: [.isRegularFileKey],
+                  options: [.skipsHiddenFiles]
+              ) else { return [] }
+
+        let managedPaths = Set(deployment.files.values.map { $0.path.lowercased() })
+        let pluginFiles = children.filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                && SkyrimModAdapter.pluginType(for: $0.lastPathComponent) != nil
+                && !SkyrimModAdapter.isBasePlugin($0.lastPathComponent)
+                && !managedPaths.contains($0.lastPathComponent.lowercased())
+        }
+        var groups: [String: [URL]] = [:]
+        for plugin in pluginFiles {
+            groups[ModIdentity.key(for: plugin.lastPathComponent), default: []].append(plugin)
+        }
+
+        for file in children where (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+            guard file.pathExtension.caseInsensitiveCompare("bsa") == .orderedSame,
+                  !managedPaths.contains(file.lastPathComponent.lowercased()),
+                  !SkyrimModAdapter.isBaseArchive(file.lastPathComponent) else { continue }
+            let key = ModIdentity.key(for: file.deletingPathExtension().lastPathComponent)
+            groups[key, default: []].append(file)
+        }
+
+        var result: [InstalledMod] = []
+        for key in groups.keys.sorted() {
+            let files = groups[key] ?? []
+            guard let pluginURL = files.first(where: { SkyrimModAdapter.pluginType(for: $0.lastPathComponent) != nil }) else {
+                if let mod = ExternalModDiscovery.makeMod(
+                    adapter: .skyrimSpecialEdition,
+                    name: files.first?.deletingPathExtension().lastPathComponent ?? "External Skyrim files",
+                    detectionKey: "data/\(key)",
+                    files: files,
+                    relativeTo: dataRoot,
+                    contentType: .unknown
+                ) {
+                    result.append(mod)
+                }
+                continue
+            }
+
+            let detectionKey = "data/\(key)"
+            let modID = ModIdentity.externalID(adapter: .skyrimSpecialEdition, detectionKey: detectionKey)
+            let configured = knownPlugins.first {
+                $0.filename.caseInsensitiveCompare(pluginURL.lastPathComponent) == .orderedSame
+            }
+            var plugin = BethesdaPlugin(
+                filename: pluginURL.lastPathComponent,
+                type: SkyrimModAdapter.pluginType(for: pluginURL.lastPathComponent)!,
+                enabled: configured?.enabled ?? true,
+                loadOrder: configured?.loadOrder ?? 0,
+                modID: modID
+            ).withHeader(SkyrimModAdapter.inspectPlugin(at: pluginURL))
+            guard var mod = ExternalModDiscovery.makeMod(
+                adapter: .skyrimSpecialEdition,
+                name: pluginURL.deletingPathExtension().lastPathComponent,
+                detectionKey: detectionKey,
+                files: files,
+                relativeTo: dataRoot,
+                contentType: .unknown,
+                plugins: [plugin]
+            ) else { continue }
+            plugin.modID = mod.id
+            mod.plugins = [plugin]
+            result.append(mod)
+        }
+
+        let sksePlugins = dataRoot.appending(path: "SKSE/Plugins", directoryHint: .isDirectory)
+        if let files = try? FileManager.default.contentsOfDirectory(
+            at: sksePlugins,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for file in files where (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                let relative = "SKSE/Plugins/\(file.lastPathComponent)"
+                guard !managedPaths.contains(relative.lowercased()) else { continue }
+                if let mod = ExternalModDiscovery.makeMod(
+                    adapter: .skyrimSpecialEdition,
+                    name: "SKSE plugin — \(file.deletingPathExtension().lastPathComponent)",
+                    detectionKey: relative,
+                    files: [file],
+                    relativeTo: dataRoot,
+                    contentType: .coreComponent
+                ) {
+                    result.append(mod)
+                }
+            }
+        }
+        return result
     }
 
     private func isModStorageReferenced(
@@ -1627,6 +1890,8 @@ nonisolated struct ModManager: Sendable {
             case .sevenZip, .rar:
                 guard let tool = sevenZipTool() else { throw ModManagerError.archiveToolUnavailable(format) }
                 _ = try run(tool, arguments: ["x", "-y", archive.path, "-o\(temporary.path)"])
+            case .loosePak:
+                throw ModManagerError.archiveToolUnavailable(format)
             }
             _ = try contentFiles(in: temporary)
             return temporary
@@ -1659,6 +1924,8 @@ nonisolated struct ModManager: Sendable {
                       listedPath != archivePath else { return nil }
                 return path
             }
+        case .loosePak:
+            throw ModManagerError.archiveToolUnavailable(format)
         }
     }
 
@@ -1688,12 +1955,23 @@ nonisolated struct ModManager: Sendable {
     private func reconcilePlugins(_ plugins: [BethesdaPlugin], with mods: [InstalledMod]) -> [BethesdaPlugin] {
         let validModIDs = Set(mods.map(\.id))
         var result = plugins.filter { $0.modID == nil || validModIDs.contains($0.modID!) }
-        let existingKeys = Set(result.map { "\($0.modID?.uuidString ?? "base"):\($0.filename.lowercased())" })
+        var existingKeys = Set(result.map { "\($0.modID?.uuidString ?? "base"):\($0.filename.lowercased())" })
         for mod in mods {
             for plugin in mod.plugins {
+                if let baseIndex = result.firstIndex(where: {
+                    $0.modID == nil && $0.filename.caseInsensitiveCompare(plugin.filename) == .orderedSame
+                }) {
+                    var attached = plugin
+                    attached.enabled = result[baseIndex].enabled
+                    attached.loadOrder = result[baseIndex].loadOrder
+                    result[baseIndex] = attached
+                    existingKeys.insert("\(attached.modID?.uuidString ?? "base"):\(attached.filename.lowercased())")
+                    continue
+                }
                 let key = "\(mod.id.uuidString):\(plugin.filename.lowercased())"
                 guard !existingKeys.contains(key) else { continue }
                 result.append(plugin)
+                existingKeys.insert(key)
             }
         }
         for index in result.indices { result[index].loadOrder = index }
@@ -1743,7 +2021,9 @@ nonisolated struct ModManager: Sendable {
                let file = mod.files.first(where: {
                    URL(fileURLWithPath: $0.relativePath).lastPathComponent.caseInsensitiveCompare(plugin.filename) == .orderedSame
                }) {
-                source = append(file.relativePath, to: append(mod.stagingRelativePath + "/files", to: gameDirectory))
+                source = mod.isExternallyDetected
+                    ? dataRoot?.appending(path: file.relativePath)
+                    : append(file.relativePath, to: append(mod.stagingRelativePath + "/files", to: gameDirectory))
             } else {
                 source = dataRoot?.appending(path: plugin.filename)
             }
@@ -1758,7 +2038,7 @@ nonisolated struct ModManager: Sendable {
 
     private func resolvedFiles(for mods: [InstalledMod], gameDirectory: URL) throws -> [String: ResolvedFile] {
         var result: [String: ResolvedFile] = [:]
-        for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled {
+        for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled && !mod.isExternallyDetected {
             for file in mod.files {
                 guard isSafeRelativePath(file.relativePath) else { throw ModManagerError.invalidRelativePath(file.relativePath) }
                 result[file.relativePath.lowercased()] = ResolvedFile(mod: mod, file: file)

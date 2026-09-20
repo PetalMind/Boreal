@@ -77,6 +77,7 @@ struct ModsView: View {
     @State private var selectedFilter: ModFilter = .all
     @State private var sort = ModSort.priority
     @State private var selectedModIDs = Set<UUID>()
+    @State private var versionDraft = ""
 
     private var state: ModGameState? { store.modState(for: game) }
     private var isUnsupportedDefinitiveEdition: Bool {
@@ -135,6 +136,7 @@ struct ModsView: View {
             selectedFilter = .all
             searchText = ""
             sort = .priority
+            versionDraft = ""
             store.refreshMods(for: game)
         }
         .onChange(of: store.modState(for: game)?.mods.map(\.id) ?? []) { _, _ in
@@ -145,6 +147,12 @@ struct ModsView: View {
         }
         .onChange(of: searchText) { _, _ in
             synchronizeSelection()
+        }
+        .onChange(of: selectedModIDs) { _, _ in
+            synchronizeVersionDraft()
+        }
+        .onChange(of: store.modState(for: game)?.profileID) { _, _ in
+            synchronizeVersionDraft()
         }
         .fileImporter(
             isPresented: $showsImporter,
@@ -492,7 +500,7 @@ struct ModsView: View {
                         state.mods.isEmpty ? "No mods installed" : "No mods match this filter",
                         systemImage: state.mods.isEmpty ? "shippingbox" : "line.3.horizontal.decrease.circle",
                         description: Text(state.mods.isEmpty
-                            ? "Import a ZIP, RAR, 7z or Dragon Age DAZIP archive to add its files to the staged profile."
+                            ? "Import a GTA SA:DE .pak file, ZIP, RAR, 7z or Dragon Age DAZIP archive to add its files to the mod profile."
                             : "Try another filter or search term.")
                     )
                     .frame(maxWidth: .infinity, minHeight: 320)
@@ -595,6 +603,11 @@ struct ModsView: View {
                         Text(mod.name)
                             .font(.body.weight(.medium))
                             .lineLimit(1)
+                        if mod.isExternallyDetected {
+                            Text("Detected outside Boreal")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                         if !mod.requirements.isEmpty {
                             Text("Requires \(mod.requirements.joined(separator: ", "))")
                                 .font(.caption)
@@ -607,9 +620,11 @@ struct ModsView: View {
                     Button("Move Up", systemImage: "arrow.up") {
                         moveMod(mod, direction: -1, state: state)
                     }
+                    .disabled(mod.isExternallyDetected)
                     Button("Move Down", systemImage: "arrow.down") {
                         moveMod(mod, direction: 1, state: state)
                     }
+                    .disabled(mod.isExternallyDetected)
                     Divider()
                     Button("Open Files", systemImage: "folder") {
                         store.openModFiles(mod.id, for: game)
@@ -617,6 +632,7 @@ struct ModsView: View {
                     Button("Remove", systemImage: "trash", role: .destructive) {
                         modToRemove = mod
                     }
+                    .disabled(mod.isExternallyDetected)
                 }
             })
             .width(min: 220, ideal: 280)
@@ -644,7 +660,9 @@ struct ModsView: View {
             .width(min: 48, ideal: 58, max: 70)
 
             TableColumn("Installed", content: { (mod: InstalledMod) in
-                Text(mod.installedAt.formatted(date: .abbreviated, time: .shortened))
+                Text(mod.isExternallyDetected
+                    ? "Detected"
+                    : mod.installedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -668,7 +686,7 @@ struct ModsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.mini)
-                    .disabled(store.isModOperationActive(for: game))
+                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
             })
             .width(min: 68, ideal: 74, max: 85)
         } rows: {
@@ -708,11 +726,12 @@ struct ModsView: View {
 
                 Toggle("Enabled", isOn: enabledBinding(for: mod))
                     .toggleStyle(.switch)
-                    .disabled(store.isModOperationActive(for: game))
+                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
 
                 Divider()
 
-                DetailRow(title: "Version", value: mod.version ?? "Not provided", symbol: "number")
+                DetailRow(title: "Source", value: mod.installationSource.displayName, symbol: "externaldrive")
+                modVersionEditor(for: mod)
                 DetailRow(title: "Content", value: mod.contentType.displayName, symbol: "square.stack.3d.up")
                 DetailRow(title: "Deployment", value: mod.deployStrategy.displayName, symbol: "arrow.down.app")
                 DetailRow(title: "Files", value: "\(mod.files.count)", symbol: "doc.on.doc")
@@ -722,7 +741,11 @@ struct ModsView: View {
                 if let archive = mod.archiveRelativePath {
                     DetailRow(title: "Archive", value: archive, symbol: "archivebox")
                 }
-                DetailRow(title: "Installed", value: mod.installedAt.formatted(date: .abbreviated, time: .shortened), symbol: "calendar")
+                DetailRow(
+                    title: mod.isExternallyDetected ? "Detected" : "Installed",
+                    value: mod.isExternallyDetected ? "In the installed game files" : mod.installedAt.formatted(date: .abbreviated, time: .shortened),
+                    symbol: mod.isExternallyDetected ? "externaldrive" : "calendar"
+                )
 
                 if !mod.requirements.isEmpty {
                     detailList(title: "Requirements", values: mod.requirements, symbol: "link", tint: .orange)
@@ -759,12 +782,12 @@ struct ModsView: View {
                         store.openModFiles(mod.id, for: game)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(store.isModOperationActive(for: game))
+                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
                     Button("Remove", systemImage: "trash", role: .destructive) {
                         modToRemove = mod
                     }
                     .buttonStyle(.bordered)
-                    .disabled(store.isModOperationActive(for: game))
+                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
                 }
             }
             .padding(15)
@@ -812,6 +835,52 @@ struct ModsView: View {
         }
     }
 
+    private func modVersionEditor(for mod: InstalledMod) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label("Version", systemImage: "number")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                TextField("e.g. 1.0.0", text: $versionDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
+                    .onSubmit { saveVersion(for: mod) }
+
+                Button("Save") {
+                    saveVersion(for: mod)
+                }
+                .buttonStyle(.bordered)
+                .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
+
+                if mod.version != nil || !versionDraft.isEmpty {
+                    Button("Clear") {
+                        versionDraft = ""
+                        store.setModVersion(nil, modID: mod.id, for: game)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
+                }
+            }
+
+            if mod.isExternallyDetected {
+                Text("External mods are read-only in Boreal.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Enter the release version manually, for example 1.2.0 or SA:DE 1.0.6.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func saveVersion(for mod: InstalledMod) {
+        let normalized = versionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        versionDraft = normalized
+        store.setModVersion(normalized.isEmpty ? nil : normalized, modID: mod.id, for: game)
+    }
+
     private func filteredMods(from state: ModGameState) -> [InstalledMod] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let conflictIDs = conflictedModIDs(in: state)
@@ -829,6 +898,7 @@ struct ModsView: View {
             return mod.name.localizedCaseInsensitiveContains(query)
                 || mod.contentType.displayName.localizedCaseInsensitiveContains(query)
                 || mod.deployStrategy.displayName.localizedCaseInsensitiveContains(query)
+                || mod.version?.localizedCaseInsensitiveContains(query) == true
         }
 
         switch sort {
@@ -867,6 +937,16 @@ struct ModsView: View {
         if selectedModIDs.isEmpty, let first = filteredMods(from: state).first {
             selectedModIDs = [first.id]
         }
+        synchronizeVersionDraft()
+    }
+
+    private func synchronizeVersionDraft() {
+        guard let state = store.modState(for: game),
+              let selectedMod = selectedMod(in: state) else {
+            versionDraft = ""
+            return
+        }
+        versionDraft = selectedMod.version ?? ""
     }
 
     private func moveMod(_ mod: InstalledMod, direction: Int, state: ModGameState) {
@@ -959,7 +1039,8 @@ struct ModsView: View {
             UTType(filenameExtension: "zip") ?? .archive,
             UTType(filenameExtension: "7z") ?? .archive,
             UTType(filenameExtension: "rar") ?? .archive,
-            UTType(filenameExtension: "dazip") ?? .archive
+            UTType(filenameExtension: "dazip") ?? .archive,
+            UTType(filenameExtension: "pak") ?? .data
         ]
     }
 
@@ -1061,7 +1142,11 @@ private struct ModInstallPreviewSheet: View {
             }
 
             Group {
-                if preview.isUpdate {
+                if preview.adapter == .gtaSanAndreasDefinitiveEdition {
+                    Text(preview.format == .loosePak
+                        ? "Boreal will keep the .pak in its mod library, stage it safely and deploy it to the GTA SA:DE ~mods folder."
+                        : "Boreal will keep the archive in its mod library, stage its PAK files safely and deploy them to the GTA SA:DE ~mods folder.")
+                } else if preview.isUpdate {
                     Text("Boreal will replace the staged files and automatically deploy the updated mod to the game.")
                 } else {
                     Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")

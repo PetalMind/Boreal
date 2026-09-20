@@ -1,11 +1,12 @@
 /// <reference path="./.config/sa.d.ts" />
 
-// Police Pursuit Radar DE, version 1.10 native-minimap-only pursuit radar.
+// Police Pursuit Radar DE, version 1.12 smart native-minimap pursuit radar.
 // Runtime: CLEO Redux x64 + IniFiles64.
 //
 // Tracking and presentation are deliberately separated. The tracker owns all
-// GTA handles/native reads are kept separate from presentation. v1.10 is
+// GTA handles/native reads are kept separate from presentation. v1.12 is
 // native-minimap-only: all visible output is produced through GTA radar blips.
+// Search-zone visualization was removed to keep the original minimap clean.
 // The legacy custom rectangle renderer remains in the file only for backwards
 // compatibility but is hard-disabled by NATIVE_MINIMAP_ONLY.
 
@@ -47,6 +48,16 @@ const HUD_LEVEL_OFF = "OFF";
 const MIN_CONTACT_MEMORY_MS = 1000;
 const MIN_UNIT_EVICTION_TTL_MS = 3500;
 const POLICE_CONTACT_FOV_DEG = 120;
+// Smart-radar kinematics are derived only from successive observations. No AI
+// tasks or entity ownership are changed. Smoothing prevents coordinate jitter
+// from reshuffling the minimap every scan.
+const CLOSING_SPEED_EMA_ALPHA = 0.42;
+const MOTION_VECTOR_EMA_ALPHA = 0.45;
+const MAX_ABS_CLOSING_SPEED_MPS = 80;
+const MAX_VALID_MOTION_SPEED_MPS = 100;
+const MOTION_DIRECTION_MIN_SPEED_MPS = 1.2;
+const DECLUTTER_RADIUS_M = 18;
+const DECLUTTER_CRITICAL_THREAT = 75;
 const LIFECYCLE_VISIBLE = "visible";
 const LIFECYCLE_MEMORY = "memory";
 const LIFECYCLE_LOST = "lost";
@@ -93,20 +104,12 @@ const DEFAULTS = {
   lostSightDelayMs: 1200,
   contactMemoryMs: 1100,
   unitEvictionTtlMs: 4200,
-  searchRadiusBaseM: 55,
-  searchRadiusPerStarM: 25,
   showFoot: true,
   showCars: true,
   showBikes: true,
   showBoats: true,
   showHelicopters: true,
   showDirectionBlips: true,
-  showSearchLocation: true,
-  showSearchArea: true,
-  searchAreaMaxBlips: 10,
-  searchAreaSweep: true,
-  searchAreaSweepIntervalMs: 450,
-  searchLocationScale: 2,
   directionMarkerDistanceM: 12,
   directionUpdateDistanceM: 8,
   directionUpdateIntervalMs: 900,
@@ -183,17 +186,9 @@ let lastDebugScanLogAt = 0;
 // Each scan keeps a logical key on the unit record. The key is independent of
 // the JavaScript wrapper returned by a native query.
 let unitBlips = [];
-let searchBlip = null;
-let searchBlipPosition = null;
-let searchBlipValidatedAt = 0;
-let searchAreaBlips = [];
-let searchAreaSignature = null;
-let searchSweepBlip = null;
-let searchSweepPosition = null;
-let searchSweepUpdatedAt = 0;
 let coordBlipMode = "auto";
 
-log("Police Pursuit Radar DE 1.10 native minimap only loaded. Host: " + HOST);
+log("Police Pursuit Radar DE 1.12 Smart Pursuit Radar loaded. Host: " + HOST);
 loadConfig();
 
 while (true) {
@@ -538,7 +533,7 @@ function inspectPolice(char, actor, playerPosition, stars, now) {
     : false;
   const seenNow = lineOfSight && spotted && inFieldOfView;
 
-  return {
+  const unit = {
     char,
     car,
     type,
@@ -558,7 +553,18 @@ function inspectPolice(char, actor, playerPosition, stars, now) {
     observedNow: true,
     missedScans: 0,
     stars,
+    motionSampleAt: now,
+    motionVx: 0,
+    motionVy: 0,
+    motionSpeedMps: 0,
+    motionHeading: heading,
+    directionHeading: heading,
+    closingSpeedMps: 0,
+    kinematicsReady: false,
+    threatScore: 0,
   };
+  unit.threatScore = calculateThreatScore(unit, now);
+  return unit;
 }
 
 function mergeUnitObservation(previous, observation, now) {
@@ -575,8 +581,11 @@ function mergeUnitObservation(previous, observation, now) {
     : sinceLastSeen <= getContactMemoryMs()
       ? LIFECYCLE_MEMORY
       : LIFECYCLE_LOST;
-  return {
+
+  const kinematics = deriveUnitKinematics(previous, observation, now);
+  const merged = {
     ...observation,
+    ...kinematics,
     key: previous && previous.key ? previous.key : observation.key,
     firstSeenAt: previous && previous.firstSeenAt ? previous.firstSeenAt : now,
     lastValidAt,
@@ -587,6 +596,114 @@ function mergeUnitObservation(previous, observation, now) {
     lifecycle,
     missedScans: observation.missedScans || 0,
   };
+  merged.threatScore = calculateThreatScore(merged, now);
+  return merged;
+}
+
+function deriveUnitKinematics(previous, observation, now) {
+  const fallbackHeading = finiteNumber(observation.heading, finiteNumber(previous && previous.heading, 0));
+  if (!previous || !previous.position || !observation.position) {
+    return {
+      motionSampleAt: now,
+      motionVx: 0,
+      motionVy: 0,
+      motionSpeedMps: 0,
+      motionHeading: fallbackHeading,
+      directionHeading: fallbackHeading,
+      closingSpeedMps: 0,
+      kinematicsReady: false,
+    };
+  }
+
+  const previousAt = finiteNumber(previous.motionSampleAt, 0);
+  const dt = previousAt > 0 ? (now - previousAt) / 1000 : 0;
+  if (dt < 0.08 || dt > 3.0) {
+    return {
+      motionSampleAt: now,
+      motionVx: finiteNumber(previous.motionVx, 0),
+      motionVy: finiteNumber(previous.motionVy, 0),
+      motionSpeedMps: finiteNumber(previous.motionSpeedMps, 0),
+      motionHeading: finiteNumber(previous.motionHeading, fallbackHeading),
+      directionHeading: finiteNumber(previous.directionHeading, fallbackHeading),
+      closingSpeedMps: finiteNumber(previous.closingSpeedMps, 0),
+      kinematicsReady: !!previous.kinematicsReady,
+    };
+  }
+
+  const rawVx = (observation.position.x - previous.position.x) / dt;
+  const rawVy = (observation.position.y - previous.position.y) / dt;
+  const rawMotionSpeed = Math.sqrt(rawVx * rawVx + rawVy * rawVy);
+  const validMotion = Number.isFinite(rawMotionSpeed) && rawMotionSpeed <= MAX_VALID_MOTION_SPEED_MPS;
+
+  const previousVx = finiteNumber(previous.motionVx, 0);
+  const previousVy = finiteNumber(previous.motionVy, 0);
+  const motionVx = validMotion
+    ? lerp(previousVx, rawVx, previous.kinematicsReady ? MOTION_VECTOR_EMA_ALPHA : 1)
+    : previousVx;
+  const motionVy = validMotion
+    ? lerp(previousVy, rawVy, previous.kinematicsReady ? MOTION_VECTOR_EMA_ALPHA : 1)
+    : previousVy;
+  const motionSpeedMps = Math.sqrt(motionVx * motionVx + motionVy * motionVy);
+  const motionHeading = motionSpeedMps >= MOTION_DIRECTION_MIN_SPEED_MPS
+    ? normalizeAngle((Math.atan2(motionVx, motionVy) * 180) / Math.PI)
+    : finiteNumber(previous.motionHeading, fallbackHeading);
+  const directionHeading = motionSpeedMps >= MOTION_DIRECTION_MIN_SPEED_MPS
+    ? motionHeading
+    : fallbackHeading;
+
+  const previousDistance = finiteNumber(previous.distance, observation.distance);
+  const rawClosing = clamp(
+    (previousDistance - finiteNumber(observation.distance, previousDistance)) / dt,
+    -MAX_ABS_CLOSING_SPEED_MPS,
+    MAX_ABS_CLOSING_SPEED_MPS
+  );
+  const previousClosing = finiteNumber(previous.closingSpeedMps, 0);
+  const closingSpeedMps = lerp(
+    previousClosing,
+    rawClosing,
+    previous.kinematicsReady ? CLOSING_SPEED_EMA_ALPHA : 1
+  );
+
+  return {
+    motionSampleAt: now,
+    motionVx,
+    motionVy,
+    motionSpeedMps,
+    motionHeading,
+    directionHeading,
+    closingSpeedMps,
+    kinematicsReady: validMotion,
+  };
+}
+
+function calculateThreatScore(unit, now) {
+  if (!unit) return 0;
+  let score = 0;
+
+  if (unit.lifecycle === LIFECYCLE_VISIBLE || unit.seenNow) score += 45;
+  else if (unit.lifecycle === LIFECYCLE_MEMORY) score += 24;
+  else score += 5;
+
+  const proximity = 1 - clamp(finiteNumber(unit.distance, config.maxDistanceM) / Math.max(1, config.maxDistanceM), 0, 1);
+  score += proximity * 28;
+
+  const closing = finiteNumber(unit.closingSpeedMps, 0);
+  if (closing > 0) score += clamp(closing / 20, 0, 1) * 18;
+  else if (closing < -8) score -= clamp((-closing - 8) / 22, 0, 1) * 4;
+
+  if (unit.spotted && !unit.seenNow) score += 5;
+
+  if (unit.type === "helicopter") score += 6;
+  else if (unit.type === "bike") score += 4;
+  else if (unit.type === "car") score += 3;
+  else if (unit.type === "boat") score += 2;
+
+  if (unit.lifecycle === LIFECYCLE_MEMORY && unit.lastSeenAt > 0) {
+    const freshness = 1 - clamp((now - unit.lastSeenAt) / Math.max(1, getContactMemoryMs()), 0, 1);
+    score += freshness * 6;
+  }
+
+  return clamp(Math.round(score * 10) / 10, 0, 100);
 }
 
 function isObservationConsistent(previous, current) {
@@ -666,7 +783,22 @@ function addUnit(list, unit, preferredKey) {
   const stableCar = sameCarEntity(duplicate, unit) && sameEntityHandle(duplicate.car, unit.car)
     ? duplicate.car
     : unit.car;
+  const stableSmartMetrics = duplicate.key && !unit.key
+    ? {
+        motionSampleAt: duplicate.motionSampleAt,
+        motionVx: duplicate.motionVx,
+        motionVy: duplicate.motionVy,
+        motionSpeedMps: duplicate.motionSpeedMps,
+        motionHeading: duplicate.motionHeading,
+        directionHeading: duplicate.directionHeading,
+        closingSpeedMps: duplicate.closingSpeedMps,
+        kinematicsReady: duplicate.kinematicsReady,
+        threatScore: duplicate.threatScore,
+        firstSeenAt: duplicate.firstSeenAt,
+      }
+    : null;
   Object.assign(duplicate, unit);
+  if (stableSmartMetrics) Object.assign(duplicate, stableSmartMetrics);
   duplicate.key = stableKey;
   // Preserve an old wrapper only when it is demonstrably the same handle.
   // Otherwise prefer the fresh wrapper to avoid holding a recycled entity.
@@ -675,7 +807,11 @@ function addUnit(list, unit, preferredKey) {
 }
 
 function comparePoliceUnits(left, right) {
+  const threatDelta = finiteNumber(right && right.threatScore, 0) - finiteNumber(left && left.threatScore, 0);
+  if (Math.abs(threatDelta) >= 0.1) return threatDelta;
   if (left.contact !== right.contact) return left.contact ? -1 : 1;
+  const closingDelta = finiteNumber(right && right.closingSpeedMps, 0) - finiteNumber(left && left.closingSpeedMps, 0);
+  if (Math.abs(closingDelta) >= 0.25) return closingDelta;
   return left.distance - right.distance;
 }
 
@@ -759,17 +895,12 @@ function updatePursuitState(playerPosition, currentUnits, stars, now) {
         " contact=" +
         hasContact +
         " state=" +
-        state +
-        " searchRadius=" +
-        getSearchRadius(stars)
+        state
     );
   }
   logStateChange();
 }
 
-function getSearchRadius(stars) {
-  return clamp(config.searchRadiusBaseM + stars * config.searchRadiusPerStarM, 20, 250);
-}
 
 function getHudGeometry() {
   const size = clamp(config.hudSizePx, 110, 260);
@@ -841,10 +972,8 @@ function updateRadarModel(playerPosition, playerHeading, currentUnits, now) {
     }
   }
 
-  const search = state === STATE_SEARCHING && lastKnownPlayerPosition
-    ? createSearchPresentation(lastKnownPlayerPosition, playerPosition, playerHeading, geometry)
-    : null;
-  const lastKnown = search ? { x: search.x, y: search.y, alpha: 0.95 } : null;
+  const search = null;
+  const lastKnown = null;
 
   radarModelState = {
     timestamp: now,
@@ -895,20 +1024,6 @@ function interpolateRadarUnit(transition, now) {
     offRadar: progress < 0.5 ? from.offRadar : to.offRadar,
     coneRotation: interpolateAngle(from.coneRotation, to.coneRotation, progress),
     coneScale: lerp(from.coneScale, to.coneScale, progress),
-  };
-}
-
-function createSearchPresentation(position, playerPosition, playerHeading, geometry) {
-  const point = radarPoint(position, playerPosition, playerHeading, geometry);
-  if (!point) return null;
-  const radius = getSearchRadius(wantedLevel);
-  return {
-    x: point.x,
-    y: point.y,
-    width: clamp((radius / geometry.rangeM) * geometry.radius.x * 2, 0.012, geometry.radius.x * 1.8),
-    height: clamp((radius / geometry.rangeM) * geometry.radius.y * 2, 0.016, geometry.radius.y * 1.8),
-    alpha: alphaValue(config.searchFillAlpha),
-    borderAlpha: alphaValue(config.searchBorderAlpha),
   };
 }
 
@@ -1148,10 +1263,16 @@ function syncBlips(currentUnits) {
     return;
   }
 
-  const nativeUnits = prioritizeUnits(currentUnits)
-    .filter((unit) => isTypeEnabled(unit.type))
-    .filter((unit) => isNativeBlipEligible(unit, now))
-    .slice(0, config.maxNativeBlips);
+  const nativeUnits = selectNativeBlipUnits(currentUnits, now, config.maxNativeBlips);
+  const directionKeys = new Set(
+    nativeUnits
+      .filter(
+        (unit) => unit.lifecycle === LIFECYCLE_VISIBLE || unit.lifecycle === LIFECYCLE_MEMORY
+      )
+      .slice(0, config.maxDirectionBlips)
+      .map((unit) => unit.key)
+      .filter(Boolean)
+  );
   const activeKeys = new Set();
   for (let index = 0; index < nativeUnits.length; index += 1) {
     const unit = nativeUnits[index];
@@ -1221,7 +1342,7 @@ function syncBlips(currentUnits) {
     } else {
       styleTrackingBlip(record, unit);
     }
-    syncDirectionBlip(record, unit, index < config.maxDirectionBlips);
+    syncDirectionBlip(record, unit, directionKeys.has(key));
   }
 
   for (let index = unitBlips.length - 1; index >= 0; index -= 1) {
@@ -1232,8 +1353,31 @@ function syncBlips(currentUnits) {
     }
   }
 
-  syncSearchAreaBlips();
   logRegistryStats(currentUnits, now);
+}
+
+function selectNativeBlipUnits(currentUnits, now, limit) {
+  const eligible = prioritizeUnits(currentUnits)
+    .filter((unit) => isTypeEnabled(unit.type))
+    .filter((unit) => isNativeBlipEligible(unit, now));
+
+  const selected = [];
+  const deferred = [];
+  for (const unit of eligible) {
+    const overlaps = selected.some(
+      (chosen) => distanceBetween(chosen.position, unit.position) < DECLUTTER_RADIUS_M
+    );
+    const critical = unit.seenNow || finiteNumber(unit.threatScore, 0) >= DECLUTTER_CRITICAL_THREAT;
+    if (!overlaps || critical) selected.push(unit);
+    else deferred.push(unit);
+    if (selected.length >= limit) return selected;
+  }
+
+  for (const unit of deferred) {
+    selected.push(unit);
+    if (selected.length >= limit) break;
+  }
+  return selected;
 }
 
 function isNativeBlipEligible(unit, now) {
@@ -1343,168 +1487,16 @@ function syncDirectionBlip(record, unit, allowed) {
 }
 
 function getDirectionPosition(unit) {
-  const angle = (finiteNumber(unit.heading, 0) * Math.PI) / 180;
+  // Prefer the real movement vector. Heading is only a fallback for a unit
+  // moving too slowly to derive a stable direction from successive positions.
+  const directionHeading = finiteNumber(unit.directionHeading, finiteNumber(unit.heading, 0));
+  const angle = (directionHeading * Math.PI) / 180;
   const distance = clamp(config.directionMarkerDistanceM, 3, 40);
   return {
     x: unit.position.x + Math.sin(angle) * distance,
     y: unit.position.y + Math.cos(angle) * distance,
     z: unit.position.z,
   };
-}
-
-function syncSearchAreaBlips() {
-  const shouldShow = state === STATE_SEARCHING && lastKnownPlayerPosition;
-  if (!shouldShow) {
-    removeBlip(searchBlip);
-    searchBlip = null;
-    searchBlipPosition = null;
-    searchBlipValidatedAt = 0;
-    clearSearchAreaBlips();
-    return;
-  }
-
-  const now = Date.now();
-  if (
-    searchBlip &&
-    now - searchBlipValidatedAt >= BLIP_VALIDATION_INTERVAL_MS &&
-    !isBlipAlive(searchBlip)
-  ) {
-    searchBlip = null;
-    searchBlipPosition = null;
-    searchBlipValidatedAt = 0;
-  } else if (searchBlip && now - searchBlipValidatedAt >= BLIP_VALIDATION_INTERVAL_MS) {
-    searchBlipValidatedAt = now;
-  }
-
-  if (
-    !searchBlip ||
-    !searchBlipPosition ||
-    distanceBetween(searchBlipPosition, lastKnownPlayerPosition) > 0.5
-  ) {
-    removeBlip(searchBlip);
-    if (config.showSearchLocation) {
-      searchBlip = addCoordinateBlip(
-        lastKnownPlayerPosition,
-        BLIP_COLOR_YELLOW,
-        BLIP_DISPLAY_BLIP_ONLY,
-        config.searchLocationScale
-      );
-      searchBlipPosition = searchBlip ? { ...lastKnownPlayerPosition } : null;
-      searchBlipValidatedAt = searchBlip ? now : 0;
-    } else {
-      removeBlip(searchBlip);
-      searchBlip = null;
-      searchBlipPosition = null;
-      searchBlipValidatedAt = 0;
-    }
-  } else if (!config.showSearchLocation && searchBlip) {
-    removeBlip(searchBlip);
-    searchBlip = null;
-    searchBlipPosition = null;
-    searchBlipValidatedAt = 0;
-  }
-
-  syncSearchAreaPerimeter();
-}
-
-function syncSearchAreaPerimeter() {
-  if (!config.showSearchArea || !lastKnownPlayerPosition || state !== STATE_SEARCHING) {
-    clearSearchAreaBlips();
-    clearSearchSweepBlip();
-    return;
-  }
-
-  const radius = getSearchRadius(wantedLevel);
-  const positions = buildSearchAreaPositions(lastKnownPlayerPosition, radius);
-  const signature = buildSearchAreaSignature(lastKnownPlayerPosition, radius, positions.length);
-  if (signature === searchAreaSignature && searchAreaBlips.length === positions.length) {
-    syncSearchSweepBlip(radius);
-    return;
-  }
-
-  clearSearchAreaBlips();
-  for (const position of positions) {
-    const blip = addCoordinateBlip(position, BLIP_COLOR_YELLOW, BLIP_DISPLAY_BLIP_ONLY, 1);
-    if (blip) {
-      searchAreaBlips.push({ blip, position });
-    }
-  }
-  searchAreaSignature = signature;
-  syncSearchSweepBlip(radius);
-}
-
-function buildSearchAreaPositions(center, radius) {
-  const requested = clamp(config.searchAreaMaxBlips, 6, 12);
-  const dynamic = clamp(Math.round(radius / 16), 6, requested);
-  const count = Math.max(6, Math.min(requested, dynamic));
-  const positions = [];
-  const elevatedZ = center.z + 0.2;
-  for (let index = 0; index < count; index += 1) {
-    const angle = (Math.PI * 2 * index) / count;
-    // A very small stagger makes the perimeter read as a search zone rather
-    // than a perfect mission-marker circle, while staying on the native radar.
-    const ringRadius = index % 2 === 0 ? radius : radius * 0.94;
-    positions.push({
-      x: center.x + Math.cos(angle) * ringRadius,
-      y: center.y + Math.sin(angle) * ringRadius,
-      z: elevatedZ,
-    });
-  }
-  return positions;
-}
-
-function buildSearchAreaSignature(center, radius, count) {
-  return [
-    Math.round(center.x * 2),
-    Math.round(center.y * 2),
-    Math.round(center.z * 2),
-    Math.round(radius),
-    count,
-  ].join(":");
-}
-
-function syncSearchSweepBlip(radius) {
-  if (!config.searchAreaSweep || !lastKnownPlayerPosition || state !== STATE_SEARCHING) {
-    clearSearchSweepBlip();
-    return;
-  }
-  const now = Date.now();
-  if (searchSweepBlip && now - searchSweepUpdatedAt < config.searchAreaSweepIntervalMs) return;
-
-  const periodMs = 4200;
-  const phase = (now % periodMs) / periodMs;
-  const angle = phase * Math.PI * 2;
-  const nextPosition = {
-    x: lastKnownPlayerPosition.x + Math.cos(angle) * radius,
-    y: lastKnownPlayerPosition.y + Math.sin(angle) * radius,
-    z: lastKnownPlayerPosition.z + 0.2,
-  };
-
-  removeBlip(searchSweepBlip);
-  searchSweepBlip = addCoordinateBlip(
-    nextPosition,
-    BLIP_COLOR_YELLOW,
-    BLIP_DISPLAY_BLIP_ONLY,
-    2
-  );
-  searchSweepPosition = searchSweepBlip ? nextPosition : null;
-  searchSweepUpdatedAt = searchSweepBlip ? now : 0;
-}
-
-function clearSearchSweepBlip() {
-  removeBlip(searchSweepBlip);
-  searchSweepBlip = null;
-  searchSweepPosition = null;
-  searchSweepUpdatedAt = 0;
-}
-
-function clearSearchAreaBlips() {
-  for (const record of searchAreaBlips) {
-    removeBlip(record.blip);
-  }
-  searchAreaBlips = [];
-  searchAreaSignature = null;
-  clearSearchSweepBlip();
 }
 
 function addCoordinateBlip(position, color, display, scale = 1) {
@@ -1555,12 +1547,6 @@ function removeUnitBlips(record) {
 function clearBlips() {
   for (const record of unitBlips) removeUnitBlips(record);
   unitBlips = [];
-  removeBlip(searchBlip);
-  searchBlip = null;
-  searchBlipPosition = null;
-  searchBlipValidatedAt = 0;
-  clearSearchAreaBlips();
-  clearSearchSweepBlip();
 }
 
 function releaseTrackedEntity(unit) {
@@ -1603,7 +1589,11 @@ function logRegistryStats(currentUnits, now) {
       " contact=" +
       currentUnits.some((unit) => unit.seenNow) +
       " state=" +
-      state
+      state +
+      " topThreat=" +
+      (currentUnits.length ? finiteNumber(prioritizeUnits(currentUnits)[0].threatScore, 0).toFixed(1) : "0.0") +
+      " topClosingMps=" +
+      (currentUnits.length ? finiteNumber(prioritizeUnits(currentUnits)[0].closingSpeedMps, 0).toFixed(1) : "0.0")
   );
 }
 
@@ -1662,22 +1652,12 @@ function loadConfig() {
     config.contactMemoryMs = clamp(updateConfigValue("tracking", "contact_memory_ms", DEFAULTS.contactMemoryMs), 500, 5000);
     config.unitEvictionTtlMs = clamp(updateConfigValue("tracking", "unit_eviction_ttl_ms", DEFAULTS.unitEvictionTtlMs), 1500, 15000);
     config.wantedZeroGraceMs = clamp(updateConfigValue("tracking", "wanted_zero_grace_ms", DEFAULTS.wantedZeroGraceMs), 0, 3000);
-    config.maxTrackedUnits = clamp(updateConfigValue("tracking", "max_tracked_units", DEFAULTS.maxTrackedUnits), 6, 16);
-    config.searchRadiusBaseM = clamp(updateConfigValue("search", "radius_base_m", DEFAULTS.searchRadiusBaseM), 20, 150);
-    config.searchRadiusPerStarM = clamp(updateConfigValue("search", "radius_per_star_m", DEFAULTS.searchRadiusPerStarM), 0, 80);
-    config.showFoot = updateConfigValue("blips", "show_foot", DEFAULTS.showFoot ? 1 : 0) !== 0;
+    config.maxTrackedUnits = clamp(updateConfigValue("tracking", "max_tracked_units", DEFAULTS.maxTrackedUnits), 6, 16);    config.showFoot = updateConfigValue("blips", "show_foot", DEFAULTS.showFoot ? 1 : 0) !== 0;
     config.showCars = updateConfigValue("blips", "show_cars", DEFAULTS.showCars ? 1 : 0) !== 0;
     config.showBikes = updateConfigValue("blips", "show_bikes", DEFAULTS.showBikes ? 1 : 0) !== 0;
     config.showBoats = updateConfigValue("blips", "show_boats", DEFAULTS.showBoats ? 1 : 0) !== 0;
     config.showHelicopters = updateConfigValue("blips", "show_helicopters", DEFAULTS.showHelicopters ? 1 : 0) !== 0;
-    config.showDirectionBlips = updateConfigValue("blips", "show_direction_blips", DEFAULTS.showDirectionBlips ? 1 : 0) !== 0;
-    config.showSearchLocation = updateConfigValue("blips", "show_search_location", DEFAULTS.showSearchLocation ? 1 : 0) !== 0;
-    config.showSearchArea = updateConfigValue("blips", "show_search_area", DEFAULTS.showSearchArea ? 1 : 0) !== 0;
-    config.searchAreaMaxBlips = clamp(updateConfigValue("blips", "search_area_max_blips", DEFAULTS.searchAreaMaxBlips), 6, 12);
-    config.searchAreaSweep = updateConfigValue("blips", "search_area_sweep", DEFAULTS.searchAreaSweep ? 1 : 0) !== 0;
-    config.searchAreaSweepIntervalMs = clamp(updateConfigValue("blips", "search_area_sweep_interval_ms", DEFAULTS.searchAreaSweepIntervalMs), 300, 2000);
-    config.searchLocationScale = clamp(updateConfigValue("blips", "search_location_scale", DEFAULTS.searchLocationScale), 1, 3);
-    config.directionMarkerDistanceM = clamp(updateConfigValue("blips", "direction_marker_distance_m", DEFAULTS.directionMarkerDistanceM), 3, 40);
+    config.showDirectionBlips = updateConfigValue("blips", "show_direction_blips", DEFAULTS.showDirectionBlips ? 1 : 0) !== 0;    config.directionMarkerDistanceM = clamp(updateConfigValue("blips", "direction_marker_distance_m", DEFAULTS.directionMarkerDistanceM), 3, 40);
     config.directionUpdateDistanceM = clamp(updateConfigValue("blips", "direction_update_distance_m", DEFAULTS.directionUpdateDistanceM), 3, 30);
     config.directionUpdateIntervalMs = clamp(updateConfigValue("blips", "direction_update_interval_ms", DEFAULTS.directionUpdateIntervalMs), 250, 5000);
     config.nativeBlipUpdateDistanceM = clamp(updateConfigValue("blips", "native_blip_update_distance_m", DEFAULTS.nativeBlipUpdateDistanceM), 2, 30);

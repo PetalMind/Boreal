@@ -59,6 +59,15 @@ nonisolated enum GTASADefinitiveEditionAdapter {
         "Gameface/Content/Paks/~mods/\(relativePath)"
     }
 
+    static func introMovieDestinationPath(for filename: String) -> String {
+        "Gameface/Content/Movies/1080/\(filename)"
+    }
+
+    static let introMovieNames: Set<String> = [
+        "gta_sa_rstar_stinger_final_1920x1080.mp4",
+        "gta_sa_credits_final_1920x1080.mp4"
+    ]
+
     static func cleoDestinationPath(for filename: String) -> String {
         let destinationName: String
         if filename.lowercased().hasSuffix(".js"), !filename.lowercased().hasSuffix("[fs].js") {
@@ -87,40 +96,69 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
     var adapter: ModGameAdapter { .gtaSanAndreasDefinitiveEdition }
 
     func inspect(archive: URL, gameID: UUID) throws -> ModInstallPreview {
-        let format = try archiveSupport.archiveFormat(for: archive)
+        let isLoosePak = archive.pathExtension.caseInsensitiveCompare("pak") == .orderedSame
+        let format: ModArchiveFormat = isLoosePak
+            ? .loosePak
+            : try archiveSupport.archiveFormat(for: archive)
         let pendingRoot = gameURL(for: gameID).appending(path: "Archives/.pending", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: pendingRoot, withIntermediateDirectories: true)
         let pendingURL = pendingRoot.appending(path: UUID().uuidString + "-" + archive.lastPathComponent)
         try FileManager.default.copyItem(at: archive, to: pendingURL)
 
         do {
-            let extracted = try archiveSupport.extract(pendingURL, format: format)
-            defer { try? FileManager.default.removeItem(at: extracted) }
-            let files = try archiveSupport.contentFiles(in: extracted)
+            let extracted: URL?
+            let files: [URL]
+            if isLoosePak {
+                let values = try pendingURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                    throw ModManagerError.symbolicLinkNotAllowed(pendingURL)
+                }
+                extracted = nil
+                files = [pendingURL]
+            } else {
+                let directory = try archiveSupport.extract(pendingURL, format: format)
+                extracted = directory
+                files = try archiveSupport.contentFiles(in: directory)
+            }
+            defer {
+                if let extracted { try? FileManager.default.removeItem(at: extracted) }
+            }
             let pakFiles = files.filter { $0.pathExtension.caseInsensitiveCompare("pak") == .orderedSame }
+            let introMovieFiles = files.filter { isIntroMovieFile($0) }
             let cleoFiles = files.filter { isCleoFile($0) }
-            let useCleo = pakFiles.isEmpty && cleoFiles.contains {
+            let useIntroMovies = !isLoosePak && pakFiles.isEmpty && !introMovieFiles.isEmpty
+            let useCleo = pakFiles.isEmpty && !useIntroMovies && cleoFiles.contains {
                 $0.pathExtension.caseInsensitiveCompare("js") == .orderedSame
             }
-            guard !pakFiles.isEmpty || useCleo else {
+            guard !pakFiles.isEmpty || !introMovieFiles.isEmpty || useCleo else {
                 throw ModManagerError.deploymentFailed(
-                    "The archive must contain an Unreal Engine .pak file or a CLEO Redux .js script."
+                    "The archive must contain an Unreal Engine .pak file, one of the supported intro movies, or a CLEO Redux .js script."
                 )
             }
-            let selectedFiles = useCleo ? cleoFiles : pakFiles
+            let selectedFiles = useCleo ? cleoFiles : (useIntroMovies ? introMovieFiles : pakFiles)
             let ignoredFiles = files.count - selectedFiles.count
             var warnings = [
                 useCleo
                     ? "CLEO Redux JavaScript files will be installed into Gameface/Binaries/Win64/CLEO."
-                    : "Unreal Engine .pak files will be installed into Gameface/Content/Paks/~mods."
+                    : (useIntroMovies
+                        ? "The supported intro movies will be installed directly into Gameface/Content/Movies/1080 and backed up by Boreal."
+                        : "Unreal Engine .pak files will be installed into Gameface/Content/Paks/~mods.")
             ]
             if ignoredFiles > 0 {
                 warnings.append("\(ignoredFiles) unrelated file(s) will not be installed.")
             }
             let relativeNames = try selectedFiles.map {
-                useCleo
+                if isLoosePak {
+                    return try standalonePakRelativePath(archive.lastPathComponent)
+                }
+                guard let extracted else {
+                    throw ModManagerError.deploymentFailed("The PAK archive extraction context is unavailable.")
+                }
+                return useCleo
                     ? try cleoRelativePath($0, extracted: extracted)
-                    : try pakRelativePath($0, extracted: extracted)
+                    : (useIntroMovies
+                        ? try introMovieRelativePath($0, extracted: extracted)
+                        : try pakRelativePath($0, extracted: extracted))
             }
             guard Set(relativeNames.map { $0.lowercased() }).count == relativeNames.count else {
                 throw ModManagerError.duplicatePath("Two files have the same destination filename.")
@@ -133,7 +171,9 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
                 format: format,
                 detectedRoot: useCleo
                     ? "Gameface/Binaries/Win64/CLEO"
-                    : "Gameface/Content/Paks/~mods",
+                    : (useIntroMovies
+                        ? "Gameface/Content/Movies/1080"
+                        : "Gameface/Content/Paks/~mods"),
                 fileCount: selectedFiles.count,
                 pluginCount: useCleo
                     ? selectedFiles.filter { $0.pathExtension.caseInsensitiveCompare("js") == .orderedSame }.count
@@ -179,7 +219,9 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
         let profile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: resolvedProfileID))
         let deployment = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json")))
             ?? .empty(gameID: gameID)
-        var mods = profile?.mods ?? scanManifests(in: gameDirectory)
+        let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
+        let discoveredMods = scanExternalMods(in: gameRoot, deployment: deployment)
+        var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
         mods.sort {
             $0.priority == $1.priority
                 ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -214,18 +256,40 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
             throw ModManagerError.deploymentFailed("This archive cannot be installed automatically.")
         }
         let fileManager = FileManager.default
-        let extracted = try archiveSupport.extract(preview.archiveURL, format: try archiveSupport.archiveFormat(for: preview.archiveURL))
-        defer { try? fileManager.removeItem(at: extracted) }
-        let allFiles = try archiveSupport.contentFiles(in: extracted)
+        let isLoosePak = preview.format == .loosePak
+        let extracted: URL?
+        let allFiles: [URL]
+        if isLoosePak {
+            let values = try preview.archiveURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw ModManagerError.symbolicLinkNotAllowed(preview.archiveURL)
+            }
+            extracted = nil
+            allFiles = [preview.archiveURL]
+        } else {
+            let directory = try archiveSupport.extract(
+                preview.archiveURL,
+                format: try archiveSupport.archiveFormat(for: preview.archiveURL)
+            )
+            extracted = directory
+            allFiles = try archiveSupport.contentFiles(in: directory)
+        }
+        defer {
+            if let extracted { try? fileManager.removeItem(at: extracted) }
+        }
         let pakFiles = allFiles.filter { $0.pathExtension.caseInsensitiveCompare("pak") == .orderedSame }
+        let introMovieFiles = allFiles.filter { isIntroMovieFile($0) }
         let cleoFiles = allFiles.filter { isCleoFile($0) }
         let useCleo = preview.contentType == .cleo
-        let sourceFiles = useCleo ? cleoFiles : pakFiles
+        let useIntroMovies = !isLoosePak && !useCleo && pakFiles.isEmpty && !introMovieFiles.isEmpty
+        let sourceFiles = useCleo ? cleoFiles : (useIntroMovies ? introMovieFiles : pakFiles)
         guard !sourceFiles.isEmpty else {
             throw ModManagerError.deploymentFailed(
                 useCleo
                     ? "This archive does not contain CLEO Redux files."
-                    : "This archive does not contain an Unreal Engine .pak file."
+                    : (useIntroMovies
+                        ? "This archive does not contain supported intro movies."
+                        : "This archive does not contain an Unreal Engine .pak file.")
             )
         }
 
@@ -241,9 +305,19 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
             var files: [ModFile] = []
             var seen = Set<String>()
             for source in sourceFiles {
-                let relative = useCleo
-                    ? try cleoRelativePath(source, extracted: extracted)
-                    : try pakRelativePath(source, extracted: extracted)
+                let relative: String
+                if isLoosePak {
+                    relative = try standalonePakRelativePath(preview.archiveName)
+                } else {
+                    guard let extracted else {
+                        throw ModManagerError.deploymentFailed("The PAK archive extraction context is unavailable.")
+                    }
+                    relative = useCleo
+                        ? try cleoRelativePath(source, extracted: extracted)
+                        : (useIntroMovies
+                            ? try introMovieRelativePath(source, extracted: extracted)
+                            : try pakRelativePath(source, extracted: extracted))
+                }
                 let key = relative.lowercased()
                 guard seen.insert(key).inserted else { throw ModManagerError.duplicatePath(relative) }
                 let values = try source.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
@@ -322,7 +396,7 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
             ModProfile(gameID: gameID, name: profileName, mods: normalizedMods, plugins: [], updatedAt: .now),
             at: profileURL(for: gameID, profileID: profileID)
         )
-        for mod in normalizedMods {
+        for mod in normalizedMods where !mod.isExternallyDetected {
             try saveJSON(mod, at: append("\(mod.stagingRelativePath)/manifest.json", to: gameDirectory))
         }
     }
@@ -340,7 +414,7 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
         let resolved = try resolvedFiles(for: state.mods)
         try validateManagedFiles(old.files, gameRoot: gameRoot)
         let desiredHashes = resolved.values.reduce(into: [String: String]()) { result, resolvedFile in
-            result[resolvedFile.destination.lowercased()] = resolvedFile.file.sha256
+            result[ExternalModDiscovery.normalizedPath(resolvedFile.destination)] = resolvedFile.file.sha256
         }
         try preflightExternalChanges(old.files, desiredHashes: desiredHashes, gameRoot: gameRoot)
 
@@ -484,7 +558,7 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
     }
 
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
-        guard let mod = state.mods.first(where: { $0.id == modID }) else { return state }
+        guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
         let fileManager = FileManager.default
         if let archive = mod.archiveRelativePath {
@@ -607,6 +681,52 @@ private extension GTASADefinitiveEditionModManager {
             .sorted { $0.priority < $1.priority }
     }
 
+    private func scanExternalMods(in gameRoot: URL?, deployment: ModDeploymentManifest) -> [InstalledMod] {
+        guard let gameRoot else { return [] }
+        let managedPaths = Set(
+            deployment.files.flatMap { key, entry in [key, entry.path] }
+                .map(ExternalModDiscovery.normalizedPath)
+        )
+        var result: [InstalledMod] = []
+
+        let paksRoot = GTASADefinitiveEditionAdapter.managedPaksRoot(in: gameRoot)
+        if let files = try? archiveSupport.contentFiles(in: paksRoot) {
+            for file in files where file.pathExtension.caseInsensitiveCompare("pak") == .orderedSame {
+                guard let relative = ExternalModDiscovery.relativePath(of: file, from: gameRoot),
+                      !managedPaths.contains(ExternalModDiscovery.normalizedPath(relative)) else { continue }
+                if let mod = ExternalModDiscovery.makeMod(
+                    adapter: adapter,
+                    name: file.deletingPathExtension().lastPathComponent,
+                    detectionKey: relative,
+                    files: [file],
+                    relativeTo: paksRoot,
+                    contentType: .unrealPak
+                ) {
+                    result.append(mod)
+                }
+            }
+        }
+
+        let cleoRoot = gameRoot.appending(path: "Gameface/Binaries/Win64/CLEO", directoryHint: .isDirectory)
+        if let files = try? archiveSupport.contentFiles(in: cleoRoot) {
+            for file in files where isCleoFile(file) {
+                guard let relative = ExternalModDiscovery.relativePath(of: file, from: gameRoot),
+                      !managedPaths.contains(ExternalModDiscovery.normalizedPath(relative)) else { continue }
+                if let mod = ExternalModDiscovery.makeMod(
+                    adapter: adapter,
+                    name: "CLEO — \(file.deletingPathExtension().lastPathComponent)",
+                    detectionKey: relative,
+                    files: [file],
+                    relativeTo: cleoRoot,
+                    contentType: .cleo
+                ) {
+                    result.append(mod)
+                }
+            }
+        }
+        return result
+    }
+
     func resolvedFiles(for mods: [InstalledMod]) throws -> [String: ResolvedFile] {
         var result: [String: ResolvedFile] = [:]
         for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled {
@@ -622,10 +742,16 @@ private extension GTASADefinitiveEditionModManager {
                     }
                     destination = GTASADefinitiveEditionAdapter.cleoDestinationPath(for: file.relativePath)
                 } else {
-                    guard file.relativePath.lowercased().hasSuffix(".pak") else {
-                        throw ModManagerError.invalidRelativePath(file.relativePath)
+                    if isIntroMovieFileName(file.relativePath) {
+                        destination = GTASADefinitiveEditionAdapter.introMovieDestinationPath(
+                            for: file.relativePath
+                        )
+                    } else {
+                        guard file.relativePath.lowercased().hasSuffix(".pak") else {
+                            throw ModManagerError.invalidRelativePath(file.relativePath)
+                        }
+                        destination = GTASADefinitiveEditionAdapter.destinationPath(for: file.relativePath)
                     }
-                    destination = GTASADefinitiveEditionAdapter.destinationPath(for: file.relativePath)
                 }
                 result[destination.lowercased()] = ResolvedFile(destination: destination, mod: mod, file: file)
             }
@@ -660,7 +786,7 @@ private extension GTASADefinitiveEditionModManager {
                 // already placed the exact file selected by the current
                 // profile. It is safe to reconcile that state during this
                 // deployment; arbitrary third-party changes remain blocked.
-                if desiredHashes[entry.path.lowercased()] == currentHash { continue }
+                if desiredHashes[ExternalModDiscovery.normalizedPath(entry.path)] == currentHash { continue }
                 throw ModManagerError.externalFileChanged(entry.path)
             }
         }
@@ -710,6 +836,26 @@ private extension GTASADefinitiveEditionModManager {
         return name
     }
 
+    func standalonePakRelativePath(_ name: String) throws -> String {
+        let filename = URL(fileURLWithPath: name).lastPathComponent
+        guard filename == name,
+              !filename.isEmpty,
+              filename.lowercased().hasSuffix(".pak"),
+              archiveSupport.isSafeRelativePath(filename) else {
+            throw ModManagerError.invalidRelativePath(name)
+        }
+        return filename
+    }
+
+    func introMovieRelativePath(_ source: URL, extracted: URL) throws -> String {
+        _ = try archiveSupport.relativePath(of: source, from: extracted)
+        let name = source.lastPathComponent
+        guard isIntroMovieFileName(name) else {
+            throw ModManagerError.invalidRelativePath(name)
+        }
+        return name
+    }
+
     func cleoRelativePath(_ source: URL, extracted: URL) throws -> String {
         _ = try archiveSupport.relativePath(of: source, from: extracted)
         let name = source.lastPathComponent
@@ -725,6 +871,14 @@ private extension GTASADefinitiveEditionModManager {
 
     func isCleoFileName(_ name: String) -> Bool {
         ["js", "ini", "cfg", "txt"].contains(URL(fileURLWithPath: name).pathExtension.lowercased())
+    }
+
+    func isIntroMovieFile(_ url: URL) -> Bool {
+        isIntroMovieFileName(url.lastPathComponent)
+    }
+
+    func isIntroMovieFileName(_ name: String) -> Bool {
+        GTASADefinitiveEditionAdapter.introMovieNames.contains(name.lowercased())
     }
 
     func isModStorageReferenced(

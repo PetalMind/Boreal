@@ -283,7 +283,9 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
         let profile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: resolvedProfileID))
         let deployment = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json"))) ?? .empty(gameID: gameID)
-        var mods = profile?.mods ?? scanManifests(in: gameDirectory)
+        let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
+        let discoveredMods = scanExternalMods(in: gameRoot, deployment: deployment)
+        var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
         mods.sort {
             $0.priority == $1.priority
                 ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -420,7 +422,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
             updatedAt: .now
         )
         try saveJSON(profile, at: profileURL(for: gameID, profileID: profileID))
-        for mod in normalizedMods {
+        for mod in normalizedMods where !mod.isExternallyDetected {
             try saveJSON(mod, at: append("\(mod.stagingRelativePath)/manifest.json", to: gameDirectory))
         }
     }
@@ -585,7 +587,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
     }
 
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
-        guard let mod = state.mods.first(where: { $0.id == modID }) else { return state }
+        guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
         let fileManager = FileManager.default
         if let archive = mod.archiveRelativePath {
@@ -785,6 +787,8 @@ extension GTASAModManager {
             case .sevenZip, .rar:
                 guard let tool = sevenZipTool() else { throw ModManagerError.archiveToolUnavailable(format) }
                 _ = try run(tool, arguments: ["x", "-y", archive.path, "-o\(temporary.path)"])
+            case .loosePak:
+                throw ModManagerError.archiveToolUnavailable(format)
             }
             _ = try contentFiles(in: temporary)
             return temporary
@@ -811,6 +815,8 @@ extension GTASAModManager {
                 guard !value.isEmpty, value != archive.lastPathComponent, listedPath != archivePath else { return nil }
                 return value
             }
+        case .loosePak:
+            throw ModManagerError.archiveToolUnavailable(format)
         }
     }
 
@@ -841,6 +847,77 @@ extension GTASAModManager {
         let staging = gameDirectory.appending(path: "Staging", directoryHint: .isDirectory)
         guard let children = try? FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
         return children.compactMap { try? read(InstalledMod.self, at: $0.appending(path: "manifest.json")) }.sorted { $0.priority < $1.priority }
+    }
+
+    private func scanExternalMods(in gameRoot: URL?, deployment: ModDeploymentManifest) -> [InstalledMod] {
+        guard let gameRoot else { return [] }
+        let fileManager = FileManager.default
+        let managedPaths = Set(deployment.files.values.map { $0.path.lowercased() })
+        let modloaderRoot = gameRoot.appending(path: "modloader", directoryHint: .isDirectory)
+        var result: [InstalledMod] = []
+
+        if let children = try? fileManager.contentsOfDirectory(
+            at: modloaderRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for child in children where (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                let lowercased = child.lastPathComponent.lowercased()
+                guard ![".data", ".profiles", "boreal"].contains(lowercased),
+                      let files = try? contentFiles(in: child) else { continue }
+                let classified = GTASAModLoaderAdapter.classify(files: files)
+                if let mod = ExternalModDiscovery.makeMod(
+                    adapter: adapter,
+                    name: child.lastPathComponent,
+                    detectionKey: "modloader/\(child.lastPathComponent)",
+                    files: files,
+                    relativeTo: child,
+                    contentType: classified.0,
+                    requirements: classified.2
+                ) {
+                    result.append(mod)
+                }
+            }
+        }
+
+        var rootFiles: [URL] = []
+        if let children = try? fileManager.contentsOfDirectory(
+            at: gameRoot,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for child in children {
+                if (try? child.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                    let extensionName = child.pathExtension.lowercased()
+                    guard ["asi", "cs", "cleo"].contains(extensionName),
+                          !GTASAModLoaderAdapter.rootOverlayFiles.contains(child.lastPathComponent.lowercased()),
+                          !managedPaths.contains(child.lastPathComponent.lowercased()) else { continue }
+                    rootFiles.append(child)
+                } else if (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                          ["scripts", "cleo"].contains(child.lastPathComponent.lowercased()),
+                          let files = try? contentFiles(in: child) {
+                    rootFiles.append(contentsOf: files)
+                }
+            }
+        }
+        rootFiles = rootFiles.filter {
+            ExternalModDiscovery.relativePath(of: $0, from: gameRoot).map { !managedPaths.contains($0.lowercased()) } ?? false
+        }
+        if !rootFiles.isEmpty {
+            let classified = GTASAModLoaderAdapter.classify(files: rootFiles)
+            if let mod = ExternalModDiscovery.makeMod(
+                adapter: adapter,
+                name: "External GTA San Andreas files",
+                detectionKey: "root-overlay",
+                files: rootFiles,
+                relativeTo: gameRoot,
+                contentType: classified.0,
+                requirements: classified.2
+            ) {
+                result.append(mod)
+            }
+        }
+        return result
     }
 
     func resolvedFiles(for mods: [InstalledMod], gameDirectory: URL) throws -> [String: ResolvedFile] {

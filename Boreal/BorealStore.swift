@@ -2090,12 +2090,23 @@ final class BorealStore {
 
     func setModEnabled(_ enabled: Bool, modID: UUID, for game: StoreLibraryGame) {
         guard var state = modStates[game.id], let index = state.mods.firstIndex(where: { $0.id == modID }) else { return }
+        guard !state.mods[index].isExternallyDetected else { return }
         state.mods[index].enabled = enabled
+        persistModState(state, for: game)
+    }
+
+    func setModVersion(_ version: String?, modID: UUID, for game: StoreLibraryGame) {
+        guard var state = modStates[game.id], let index = state.mods.firstIndex(where: { $0.id == modID }) else { return }
+        guard !state.mods[index].isExternallyDetected else { return }
+
+        let normalizedVersion = version?.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.mods[index].version = normalizedVersion?.isEmpty == true ? nil : normalizedVersion
         persistModState(state, for: game)
     }
 
     func removeMod(_ modID: UUID, for game: StoreLibraryGame) {
         guard let state = modStates[game.id],
+              state.mods.first(where: { $0.id == modID })?.isExternallyDetected != true,
               let context = modGameContext(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let manager = modManager(for: game)
@@ -2123,6 +2134,7 @@ final class BorealStore {
     func moveMod(from offsets: IndexSet, to destination: Int, for game: StoreLibraryGame) {
         guard var state = modStates[game.id] else { return }
         var mods = state.mods.sorted { $0.priority < $1.priority }
+        guard !offsets.contains(where: { mods.indices.contains($0) && mods[$0].isExternallyDetected }) else { return }
         mods = reordered(mods, from: offsets, to: destination)
         for index in mods.indices { mods[index].priority = index }
         state.mods = mods

@@ -164,7 +164,7 @@ struct GameArtworkView: View {
         if let image = localImage ?? remoteImage {
             renderedArtwork(image)
         } else if remoteURL != nil && !remoteLoadFinished {
-            placeholder.overlay { ProgressView().tint(.white) }
+            placeholder.overlay { BorealArtworkLoadingIndicator() }
         } else {
             placeholder.overlay {
                 if remoteURL != nil {
@@ -273,6 +273,21 @@ struct GameArtworkView: View {
             Text(game.provider.rawValue.uppercased()).font(.caption2).fontWeight(.bold).tracking(1.4)
         }
         .foregroundStyle(.white.opacity(0.9))
+    }
+}
+
+private struct BorealArtworkLoadingIndicator: View {
+    @State private var isAnimating = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0.12, to: 0.86)
+            .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+            .frame(width: 18, height: 18)
+            .rotationEffect(.degrees(isAnimating ? 360 : 0))
+            .animation(.linear(duration: 0.85).repeatForever(autoreverses: false), value: isAnimating)
+            .onAppear { isAnimating = true }
+            .accessibilityLabel("Loading artwork")
     }
 }
 

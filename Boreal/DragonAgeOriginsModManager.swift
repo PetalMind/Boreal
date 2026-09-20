@@ -210,7 +210,13 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         let profile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: resolvedProfileID))
         let deployment = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json")))
             ?? .empty(gameID: gameID)
-        var mods = profile?.mods ?? scanManifests(in: gameDirectory)
+        let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
+        let discoveredMods = scanExternalMods(
+            gameRoot: gameRoot,
+            pluginsFile: pluginsFile,
+            deployment: deployment
+        )
+        var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
         mods.sort {
             $0.priority == $1.priority
                 ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -351,7 +357,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
             ModProfile(gameID: gameID, name: profileName, mods: normalizedMods, plugins: [], updatedAt: .now),
             at: profileURL(for: gameID, profileID: profileID)
         )
-        for mod in normalizedMods {
+        for mod in normalizedMods where !mod.isExternallyDetected {
             try saveJSON(mod, at: append("\(mod.stagingRelativePath)/manifest.json", to: gameDirectory))
         }
     }
@@ -596,7 +602,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
     }
 
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
-        guard let mod = state.mods.first(where: { $0.id == modID }) else { return state }
+        guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
         let fileManager = FileManager.default
         var next = state
@@ -860,7 +866,7 @@ private extension DragonAgeOriginsModManager {
 
     func resolvedFiles(for mods: [InstalledMod], gameDirectory: URL) throws -> [String: ResolvedFile] {
         var result: [String: ResolvedFile] = [:]
-        for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled {
+        for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled && !mod.isExternallyDetected {
             guard mod.deployStrategy == .dragonAgeOverride || mod.deployStrategy == .dragonAgeDazip else {
                 throw ModManagerError.deploymentFailed("The Dragon Age profile contains a mod with an unsupported deployment strategy.")
             }
@@ -894,7 +900,7 @@ private extension DragonAgeOriginsModManager {
     func activeAddInItems(for mods: [InstalledMod], gameDirectory: URL) throws -> [(uid: String, xml: String)] {
         var result: [(uid: String, xml: String)] = []
         var seen = Set<String>()
-        for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled && mod.deployStrategy == .dragonAgeDazip {
+        for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled && !mod.isExternallyDetected && mod.deployStrategy == .dragonAgeDazip {
             let manifest = append("\(mod.stagingRelativePath)/.boreal/Manifest.xml", to: gameDirectory)
             let items = try addInItems(from: manifest)
             guard !items.isEmpty else { throw ModManagerError.dragonAgeManifestUnavailable }
@@ -1086,6 +1092,8 @@ private extension DragonAgeOriginsModManager {
             case .sevenZip, .rar:
                 guard let tool = sevenZipTool() else { throw ModManagerError.archiveToolUnavailable(format) }
                 _ = try run(tool, arguments: ["x", "-y", archive.path, "-o\(temporary.path)"])
+            case .loosePak:
+                throw ModManagerError.archiveToolUnavailable(format)
             }
             _ = try contentFiles(in: temporary)
             return temporary
@@ -1112,6 +1120,8 @@ private extension DragonAgeOriginsModManager {
                 guard !value.isEmpty, value != archive.lastPathComponent, listedPath != archivePath else { return nil }
                 return value
             }
+        case .loosePak:
+            throw ModManagerError.archiveToolUnavailable(format)
         }
     }
 
@@ -1280,6 +1290,31 @@ private extension DragonAgeOriginsModManager {
         ) else { return [] }
         return children.compactMap { try? read(InstalledMod.self, at: $0.appending(path: "manifest.json")) }
             .sorted { $0.priority < $1.priority }
+    }
+
+    private func scanExternalMods(
+        gameRoot: URL?,
+        pluginsFile: URL?,
+        deployment: ModDeploymentManifest
+    ) -> [InstalledMod] {
+        guard let userDataRoot = userDataRoot(gameRoot: gameRoot, pluginsFile: pluginsFile) else { return [] }
+        let overrideRoot = userDataRoot.appending(path: "packages/core/override", directoryHint: .isDirectory)
+        let managedPaths = Set(deployment.files.values.map { $0.path.lowercased() })
+        guard let files = try? contentFiles(in: overrideRoot) else { return [] }
+        let externalFiles = files.filter {
+            guard let relative = ExternalModDiscovery.relativePath(of: $0, from: userDataRoot) else { return false }
+            return !managedPaths.contains(relative.lowercased())
+        }
+        guard !externalFiles.isEmpty,
+              let mod = ExternalModDiscovery.makeMod(
+                  adapter: adapter,
+                  name: "External Dragon Age: Origins override files",
+                  detectionKey: "packages/core/override",
+                  files: externalFiles,
+                  relativeTo: overrideRoot,
+                  contentType: .dragonAgeOverride
+              ) else { return [] }
+        return [mod]
     }
 
     func read<T: Decodable>(_ type: T.Type, at url: URL) throws -> T? {
