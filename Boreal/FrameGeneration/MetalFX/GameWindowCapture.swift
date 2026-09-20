@@ -1,5 +1,6 @@
 import CoreMedia
 import CoreVideo
+import Darwin
 import Foundation
 import Metal
 import ScreenCaptureKit
@@ -18,6 +19,12 @@ final class GameWindowCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var configuration: SCStreamConfiguration?
     private var nextFrameSequence: UInt64 = 0
     private var captureEpoch: UInt64 = 0
+
+    private static let machTimebase: mach_timebase_info_data_t = {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        return timebase
+    }()
 
     init(device: MTLDevice, frameHandler: @escaping FrameHandler, errorHandler: @escaping ErrorHandler) {
         self.device = device
@@ -129,7 +136,7 @@ final class GameWindowCapture: NSObject, SCStreamOutput, SCStreamDelegate {
                 pixelBuffer: pixelBuffer,
                 metalTextureReference: metalTextureReference,
                 metalTextureCache: textureCache,
-                presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+                presentationTime: presentationTime(for: sampleBuffer),
                 sequence: sequence,
                 captureEpoch: epoch
             )
@@ -154,6 +161,54 @@ final class GameWindowCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         configuration.capturesAudio = false
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 240)
         return configuration
+    }
+
+    private func presentationTime(for sampleBuffer: CMSampleBuffer) -> CMTime {
+        if let displayTime = displayTime(from: sampleBuffer), displayTime > 0 {
+            return CMTime(
+                seconds: Self.machAbsoluteTimeToSeconds(displayTime),
+                preferredTimescale: 1_000_000_000
+            )
+        }
+
+        let sampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if sampleTime.isValid,
+           sampleTime.isNumeric,
+           sampleTime.seconds.isFinite,
+           sampleTime.seconds > 0 {
+            return sampleTime
+        }
+
+        // ScreenCaptureKit can deliver a valid image with an unusable CMSampleBuffer
+        // presentation timestamp during a window-server transition. The pipeline
+        // needs a monotonic source clock to keep pairing frames; systemUptime is
+        // monotonic and remains valid while the game window is being recreated.
+        return CMTime(
+            seconds: ProcessInfo.processInfo.systemUptime,
+            preferredTimescale: 1_000_000_000
+        )
+    }
+
+    private func displayTime(from sampleBuffer: CMSampleBuffer) -> UInt64? {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[AnyHashable: Any]],
+              let rawValue = attachments.first?[SCStreamFrameInfo.displayTime] else {
+            return nil
+        }
+
+        if let number = rawValue as? NSNumber {
+            return number.uint64Value
+        }
+        return rawValue as? UInt64
+    }
+
+    private static func machAbsoluteTimeToSeconds(_ value: UInt64) -> Double {
+        let timebase = machTimebase
+        return Double(value) * Double(timebase.numer)
+            / Double(timebase.denom)
+            / 1_000_000_000
     }
 
     private func withStateLock<Result>(_ body: () -> Result) -> Result {

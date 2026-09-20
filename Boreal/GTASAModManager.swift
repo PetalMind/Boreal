@@ -177,11 +177,21 @@ nonisolated enum GTASAModLoaderAdapter {
         let hasCore = names.contains(where: rootOverlayFiles.contains)
         let hasRootOverlay = hasCore || names.contains(where: { $0 == "gta_sa.exe" || $0 == "gta-sa.exe" })
         let hasASI = extensions.contains("asi")
-        let hasCLEO = extensions.contains("cs") || extensions.contains("cleo")
+        let hasCLEOReduxScript = files.contains { file in
+            file.pathExtension.caseInsensitiveCompare("js") == .orderedSame
+                && file.pathComponents.contains {
+                    $0.caseInsensitiveCompare("CLEO") == .orderedSame
+                }
+        }
+        let hasCLEO = extensions.contains("cs") || extensions.contains("cleo") || hasCLEOReduxScript
         let requirements: [String] = {
             var result: [String] = []
             if hasASI || hasRootOverlay { result.append("ASI Loader") }
-            if hasCLEO { result.append("CLEO") }
+            if hasCLEOReduxScript {
+                result.append("CLEO Redux + CLEO Library (delegate mode)")
+            } else if hasCLEO {
+                result.append("CLEO")
+            }
             if !hasRootOverlay { result.append("GTA SA Mod Loader") }
             return result
         }()
@@ -930,7 +940,14 @@ extension GTASAModManager {
                 switch mod.deployStrategy {
                 case .rootOverlay:
                     target = file.relativePath
-                case .modLoader, .scripts, .cleo, .manual, .dragonAgeOverride, .dragonAgeDazip:
+                case .cleo:
+                    // CLEO archives commonly have a single top-level CLEO
+                    // directory. findPayloadRoot intentionally strips that
+                    // wrapper, so restore the runtime destination here.
+                    target = "modloader/Boreal/\(modDirectoryName(for: mod))/CLEO/\(file.relativePath)"
+                case .scripts:
+                    target = "modloader/Boreal/\(modDirectoryName(for: mod))/scripts/\(file.relativePath)"
+                case .modLoader, .manual, .dragonAgeOverride, .dragonAgeDazip:
                     target = "modloader/Boreal/\(modDirectoryName(for: mod))/\(file.relativePath)"
                 case .unrealPaks:
                     continue

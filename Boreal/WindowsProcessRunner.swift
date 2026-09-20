@@ -179,7 +179,9 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             executable: executable,
             arguments: arguments,
             environment: [:],
-            workingDirectory: executable.deletingLastPathComponent()
+            workingDirectory: executable.deletingLastPathComponent(),
+            processExecutableName: executable.lastPathComponent,
+            processExecutablePath: executable.standardizedFileURL.path
         )
         return try await run(plan: plan, environment: environment, runtime: runtime)
     }
@@ -361,9 +363,9 @@ actor WindowsProcessRunner: WindowsProcessRunning {
                 startedAt: receipt.startedAt,
                 stdoutLog: receipt.stdoutLog,
                 stderrLog: receipt.stderrLog,
-                sessionScope: plan.sessionScope,
-                processExecutableName: plan.processExecutableName,
-                processExecutablePath: plan.processExecutablePath
+                sessionScope: launchPlan.sessionScope,
+                processExecutableName: launchPlan.processExecutableName,
+                processExecutablePath: launchPlan.processExecutablePath
             )
         } catch {
             if let directDrawRestoration { try? Heroes3DirectDrawCompatibility.restore(directDrawRestoration) }
@@ -557,7 +559,10 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             return []
         }
 
-        let executableName = session.processExecutableName?.lowercased()
+        let executableName = (
+            session.processExecutableName
+            ?? session.processExecutablePath.map { URL(fileURLWithPath: $0).lastPathComponent }
+        )?.lowercased()
         let executablePathHints = processPathHints(session.processExecutablePath, prefixURL: environment.prefixURL)
         return output.split(whereSeparator: \.isNewline).compactMap { line in
             let fields = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)

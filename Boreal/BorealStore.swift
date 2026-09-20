@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import os
 
 private actor StoreSizeEstimateGate {
     private let limit: Int
@@ -108,6 +109,7 @@ final class BorealStore {
     private let gtaDefinitiveEditionModManager: GTASADefinitiveEditionModManager
     private let dragonAgeOriginsModManager: DragonAgeOriginsModManager
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
+    private let frameGenerationLogger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGenerationLaunch")
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
     /// Developer-mode diagnostics: the last immutable plan prepared for each
     /// application. It is not used as a mutable process command afterward.
@@ -115,6 +117,7 @@ final class BorealStore {
     private var performanceLogURLs: [UUID: URL] = [:]
     private var performanceProcessIDs: [UUID: [Int32]] = [:]
     private var performanceProcessTasks: [UUID: Task<Void, Never>] = [:]
+    private var frameGenerationStartTasks: [UUID: Task<Void, Never>] = [:]
     private var observedGameProcesses: Set<UUID> = []
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
@@ -1814,6 +1817,12 @@ final class BorealStore {
         performanceProcessTasks[appID] = nil
         performanceProcessIDs[appID] = nil
         observedGameProcesses.remove(appID)
+        stopFrameGenerationStart(for: appID)
+    }
+
+    private func stopFrameGenerationStart(for appID: UUID) {
+        frameGenerationStartTasks[appID]?.cancel()
+        frameGenerationStartTasks[appID] = nil
     }
 
     func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
@@ -6122,7 +6131,8 @@ final class BorealStore {
         let candidates = applications.compactMap { application -> (UUID, URL, URL)? in
             guard !application.isSteamRuntimeHost,
                   !application.isInstallerOnly,
-                  !application.hasCustomLaunchExecutable else { return nil }
+                  (!application.hasCustomLaunchExecutable
+                      || isKnownGTASanAndreasDefinitiveEdition(application)) else { return nil }
             let primary = URL(fileURLWithPath: application.executablePath).standardizedFileURL
             return (application.id, primary, auxiliarySearchRoot(for: application))
         }
@@ -6140,10 +6150,22 @@ final class BorealStore {
         for (applicationID, executable) in replacements {
             guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { continue }
             applications[index].executablePath = executable.path
+            applications[index].usesCustomLaunchExecutable = false
             applications[index].auxiliaryExecutables = nil
             applications[index].lastResult = "Direct game executable selected: \(executable.lastPathComponent)"
         }
         save()
+    }
+
+    private func isKnownGTASanAndreasDefinitiveEdition(_ application: WindowsApplication) -> Bool {
+        if application.storeProvider == .steam,
+           application.storeExternalID == GameLaunchCompatibility.gtaSanAndreasDefinitiveEditionSteamAppID {
+            return true
+        }
+        let normalizedName = application.name.lowercased()
+        return normalizedName.contains("grand theft auto")
+            && normalizedName.contains("san andreas")
+            && normalizedName.contains("definitive")
     }
 
     private func runAuxiliaryExecutableAsync(_ requestedAction: AuxiliaryExecutable, for applicationID: UUID) async {
@@ -6436,6 +6458,7 @@ final class BorealStore {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
             requestedStops.insert(id)
+            stopFrameGenerationStart(for: id)
             await FrameGenerationCoordinator.shared.stop(applicationID: id)
             var stopError: Error?
             if applications[index].usesSharedSteamGameSession {
@@ -6610,14 +6633,17 @@ final class BorealStore {
                 save()
             }
             let configuredExecutable = URL(fileURLWithPath: applications[index].executablePath)
-            let executable = applications[index].hasCustomLaunchExecutable
-                ? configuredExecutable
-                : ExecutableDiscovery.preferredLaunchExecutable(
+            let shouldPreferDirectExecutable = !applications[index].hasCustomLaunchExecutable
+                || isKnownGTASanAndreasDefinitiveEdition(applications[index])
+            let executable = shouldPreferDirectExecutable
+                ? ExecutableDiscovery.preferredLaunchExecutable(
                     for: configuredExecutable,
                     searchRoot: auxiliarySearchRoot(for: applications[index])
                 )
+                : configuredExecutable
             if executable != configuredExecutable {
                 applications[index].executablePath = executable.path
+                applications[index].usesCustomLaunchExecutable = false
                 applications[index].auxiliaryExecutables = nil
                 applications[index].lastResult = "Using direct game executable \(executable.lastPathComponent)"
                 save()
@@ -6846,6 +6872,12 @@ final class BorealStore {
                     to: configuredPlan,
                     application: applications[index]
                 )
+                // The process session must identify the actual game binary,
+                // not the Wine wrapper. Frame Generation and the performance
+                // overlay use this expectation to reject launcher/helper
+                // processes from the same Wine prefix.
+                configuredPlan.processExecutableName = configuredPlan.executable.lastPathComponent
+                configuredPlan.processExecutablePath = configuredPlan.executable.standardizedFileURL.path
                 let launchPlan = await makeLaunchPlan(
                     configuredPlan,
                     applicationID: applications[index].id,
@@ -7300,12 +7332,80 @@ final class BorealStore {
         session: WindowsProcessSession,
         profile: WineCompatibilityProfile
     ) {
-        guard let application = application(id: appID), !application.isInstallerOnly else { return }
-        FrameGenerationCoordinator.shared.start(
-            applicationID: appID,
-            gamePID: session.launcherPID,
-            configuration: profile.frameGeneration
+        guard let application = application(id: appID) else {
+            frameGenerationLogger.error("Frame Generation start skipped: application not found; appID=\(appID.uuidString, privacy: .public)")
+            return
+        }
+        guard !application.isInstallerOnly else {
+            frameGenerationLogger.info("Frame Generation start skipped for installer-only application; appID=\(appID.uuidString, privacy: .public)")
+            return
+        }
+
+        let configuration = profile.frameGeneration
+        frameGenerationLogger.info(
+            "Frame Generation launch requested; appID=\(appID.uuidString, privacy: .public), enabled=\(configuration.enabled, privacy: .public), backend=\(configuration.backend.rawValue, privacy: .public), sessionPID=\(session.launcherPID, privacy: .public), expectedProcess=\(session.processExecutableName ?? "nil", privacy: .public), expectedPath=\(session.processExecutablePath ?? "nil", privacy: .public)"
         )
+
+        stopFrameGenerationStart(for: appID)
+        guard configuration.enabled,
+              configuration.backend != .off,
+              let environment = activeEnvironments[appID],
+              let runtime = activeRuntimes[appID] else {
+            // Retire a previous provider without attempting to resolve a
+            // capture window from the launcher PID.
+            frameGenerationLogger.error("Frame Generation start skipped: disabled or runtime/environment unavailable; appID=\(appID.uuidString, privacy: .public)")
+            FrameGenerationCoordinator.shared.requestStop(applicationID: appID)
+            return
+        }
+
+        let processRunner = services.processRunner
+        frameGenerationStartTasks[appID] = Task { @MainActor [weak self] in
+            // The launch session can initially contain only a Wine wrapper or
+            // a store launcher. Wait for the process that matches the actual
+            // game executable before resolving the capture window.
+            var lastProcessIDs: [Int32] = []
+            for attempt in 0..<80 {
+                guard !Task.isCancelled else { return }
+                let gameProcessIDs = await processRunner.gameProcessIDs(
+                    session: session,
+                    environment: environment,
+                    runtime: runtime
+                )
+                guard !Task.isCancelled else { return }
+                if gameProcessIDs != lastProcessIDs {
+                    lastProcessIDs = gameProcessIDs
+                    let processList = gameProcessIDs.map(String.init).joined(separator: ",")
+                    self?.frameGenerationLogger.info(
+                        "Frame Generation game-process discovery changed; appID=\(appID.uuidString, privacy: .public), attempt=\(attempt, privacy: .public), pids=\(processList.isEmpty ? "none" : processList, privacy: .public)"
+                    )
+                }
+                if let gamePID = gameProcessIDs.first {
+                    guard let self,
+                          self.activeSessions[appID]?.id == session.id,
+                          self.applications.first(where: { $0.id == appID })?.status == .running else {
+                        self?.frameGenerationLogger.error("Frame Generation start cancelled: launch session is no longer active; appID=\(appID.uuidString, privacy: .public), pid=\(gamePID, privacy: .public)")
+                        return
+                    }
+                    self.frameGenerationStartTasks[appID] = nil
+                    self.frameGenerationLogger.info(
+                        "Starting Frame Generation coordinator with game PID; appID=\(appID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public)"
+                    )
+                    FrameGenerationCoordinator.shared.start(
+                        applicationID: appID,
+                        gamePID: gamePID,
+                        configuration: configuration
+                    )
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            if !Task.isCancelled {
+                self?.frameGenerationStartTasks[appID] = nil
+                self?.frameGenerationLogger.error(
+                    "Frame Generation start timed out waiting for the expected game process; appID=\(appID.uuidString, privacy: .public), expectedProcess=\(session.processExecutableName ?? "nil", privacy: .public), expectedPath=\(session.processExecutablePath ?? "nil", privacy: .public)"
+                )
+            }
+        }
     }
 
     private func scheduleCloudSaveUpload(appID: UUID) {

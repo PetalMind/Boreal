@@ -247,6 +247,7 @@
 				"component_destination=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GraphicsComponents\"",
 				"mkdir -p \"${component_destination}\"",
 				"/bin/cp -R \"${component_source}/.\" \"${component_destination}/\"",
+				"/bin/chmod -R u+rwX \"${component_destination}\"",
 				"",
 			);
 		};

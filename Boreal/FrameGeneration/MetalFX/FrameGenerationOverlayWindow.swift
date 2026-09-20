@@ -1,31 +1,49 @@
 import AppKit
 import Metal
+import os
 @preconcurrency import QuartzCore
 
 @MainActor
 final class FrameGenerationOverlayWindow {
-    private let panel: NSPanel
+    private let panel: FrameGenerationOverlayPanel
     private let metalView: FrameGenerationMetalView
     private let hudView: FrameGenerationHUDView
 
     init(frame: CGRect, pixelWidth: Int, pixelHeight: Int, device: MTLDevice) throws {
         metalView = FrameGenerationMetalView(frame: .zero)
         hudView = FrameGenerationHUDView(frame: .zero)
-        panel = NSPanel(
+        panel = FrameGenerationOverlayPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        // This window presents the generated image, but it must never become
+        // the active/key window. Otherwise the full-screen MetalFX surface
+        // steals keyboard focus from the Wine game even though mouse events
+        // are configured to pass through it.
         panel.isOpaque = true
         panel.backgroundColor = .black
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
+        // This surface is output-only. It must never enter AppKit's key-window
+        // negotiation, even briefly while the game is entering fullscreen.
         panel.becomesKeyOnlyIfNeeded = false
         panel.isFloatingPanel = true
+        // A shielding-level window sits above the normal event routing stack.
+        // A floating auxiliary window is sufficient for presentation and lets
+        // the game remain the frontmost input owner.
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.collectionBehavior = [
+            .canJoinAllApplications,
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .stationary,
+            .ignoresCycle,
+        ]
+        panel.worksWhenModal = true
+        panel.sharingType = .none
         panel.contentView = metalView
         // On macOS CAMetalLayer has no default device. Set it before the
         // CAMetalDisplayLink asks the layer for its first drawable.
@@ -44,8 +62,18 @@ final class FrameGenerationOverlayWindow {
 
     var metalLayer: CAMetalLayer { metalView.metalLayer }
 
-    func show() {
+    func show(focusProcessID: pid_t) {
         panel.orderFrontRegardless()
+        panel.resignKey()
+
+        // Ordering a window from Boreal can leave Boreal as the active macOS
+        // application even when the panel is non-activating. Return focus to
+        // the process that owns the captured game window so keyboard and mouse
+        // input continue to reach Wine.
+        NSApp.deactivate()
+        if let gameApplication = NSRunningApplication(processIdentifier: focusProcessID) {
+            gameApplication.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+        }
     }
 
     func updateGeometry(frame: CGRect, pixelWidth: Int, pixelHeight: Int) {
@@ -76,6 +104,12 @@ final class FrameGenerationOverlayWindow {
         panel.orderOut(nil)
         panel.close()
     }
+}
+
+@MainActor
+private final class FrameGenerationOverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
 @MainActor
@@ -199,6 +233,7 @@ private final class FrameGenerationMetalView: NSView {
 nonisolated final class FrameGenerationRenderer: @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let inFlightSemaphore = DispatchSemaphore(value: 3)
+    private let logger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGeneration")
 
     init(commandQueue: MTLCommandQueue) {
         self.commandQueue = commandQueue
@@ -209,6 +244,23 @@ nonisolated final class FrameGenerationRenderer: @unchecked Sendable {
         drawable: CAMetalDrawable,
         completion: @escaping @Sendable (_ succeeded: Bool) -> Void
     ) -> Bool {
+        let drawableTexture = drawable.texture
+        guard texture.width == drawableTexture.width,
+              texture.height == drawableTexture.height,
+              texture.pixelFormat == drawableTexture.pixelFormat else {
+            logger.error(
+                "Skipping MetalFX presentation with incompatible drawable; source=\(texture.width, privacy: .public)x\(texture.height, privacy: .public)/\(String(describing: texture.pixelFormat), privacy: .public), drawable=\(drawableTexture.width, privacy: .public)x\(drawableTexture.height, privacy: .public)/\(String(describing: drawableTexture.pixelFormat), privacy: .public)"
+            )
+            // CAMetalLayer can hand out one drawable from the previous
+            // geometry epoch while the game/capture window is resizing. Do
+            // not call copyFromTexture here: Metal asserts on a size or
+            // format mismatch and terminates the whole Boreal process.
+            drawable.layer.drawableSize = CGSize(
+                width: texture.width,
+                height: texture.height
+            )
+            return false
+        }
         guard inFlightSemaphore.wait(timeout: .now()) == .success else {
             return false
         }

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 @MainActor
 @Observable
@@ -10,6 +11,7 @@ final class FrameGenerationCoordinator {
     private(set) var statisticsByApplication: [UUID: FrameGenerationStatistics] = [:]
     private var providers: [UUID: any FrameGenerationProvider] = [:]
     private var statisticsTasks: [UUID: Task<Void, Never>] = [:]
+    private let logger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGenerationCoordinator")
 
     private init() {}
 
@@ -18,8 +20,12 @@ final class FrameGenerationCoordinator {
         gamePID: pid_t,
         configuration: FrameGenerationRuntimeConfiguration
     ) {
+        logger.info(
+            "Frame Generation coordinator start requested; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public), backend=\(configuration.backend.rawValue, privacy: .public)"
+        )
         retireProvider(for: applicationID)
         guard configuration.enabled, configuration.backend != .off else {
+            logger.info("Frame Generation coordinator inactive because configuration is disabled; appID=\(applicationID.uuidString, privacy: .public)")
             states[applicationID] = .inactive
             return
         }
@@ -49,7 +55,7 @@ final class FrameGenerationCoordinator {
             }
         }
 
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             do {
                 try await provider.start(gamePID: gamePID, configuration: configuration)
                 guard let self else {
@@ -61,6 +67,7 @@ final class FrameGenerationCoordinator {
                     return
                 }
                 self.states[applicationID] = .running
+                self.logger.info("Frame Generation provider is running; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public)")
             } catch {
                 guard let self else {
                     await provider.stop()
@@ -71,6 +78,9 @@ final class FrameGenerationCoordinator {
                     return
                 }
                 self.states[applicationID] = self.state(for: error)
+                self.logger.error(
+                    "Frame Generation provider failed to start; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
+                )
                 self.statisticsTasks[applicationID]?.cancel()
                 self.statisticsTasks[applicationID] = nil
                 self.providers[applicationID] = nil
@@ -117,6 +127,9 @@ final class FrameGenerationCoordinator {
 
     private func handleRuntimeError(_ error: Error, applicationID: UUID) {
         guard let provider = providers.removeValue(forKey: applicationID) else { return }
+        logger.error(
+            "Frame Generation provider reported a runtime error; appID=\(applicationID.uuidString, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
+        )
         statisticsTasks[applicationID]?.cancel()
         statisticsTasks[applicationID] = nil
         states[applicationID] = state(for: error)

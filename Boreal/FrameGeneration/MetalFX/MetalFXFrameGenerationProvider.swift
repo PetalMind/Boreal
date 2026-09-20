@@ -17,9 +17,13 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
     private var timingController: FrameGenerationTimingController?
     private var geometryTask: Task<Void, Never>?
     private var statisticsTask: Task<Void, Never>?
+    private var captureRecoveryTask: Task<Void, Never>?
     private var latestStatistics = FrameGenerationStatistics()
     private var gamePID: pid_t?
     private var resolvedWindow: ResolvedGameWindow?
+    private var isStopping = true
+    private var providerIsRunning = false
+    private var captureReconfigurationInFlight = false
 
     func capabilities() -> FrameGenerationCapabilities {
         MetalFXFrameGenerationSupport.capabilities()
@@ -27,6 +31,11 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
 
     func start(gamePID: pid_t, configuration: FrameGenerationRuntimeConfiguration) async throws {
         await stop()
+        isStopping = false
+        providerIsRunning = false
+        logger.info(
+            "MetalFX provider start entered; game PID: \(gamePID, privacy: .public), enabled: \(configuration.enabled, privacy: .public), backend: \(configuration.backend.rawValue, privacy: .public)"
+        )
         guard configuration.enabled, configuration.backend == .metalFX else { return }
 
         if MotionVectorDiagnostic.isEnabled {
@@ -77,10 +86,16 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
             },
             errorHandler: { [weak self] error in
                 Task { @MainActor [weak self] in
-                    self?.handleRuntimeError(error)
+                    self?.handleCaptureStreamError(error)
                 }
             }
         )
+
+        self.capture = capture
+        self.pipeline = pipeline
+        self.overlay = overlay
+        self.gamePID = gamePID
+        self.resolvedWindow = resolved
 
         do {
             let captureEpoch = try await capture.start(
@@ -108,16 +123,12 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
                     }
                 }
             )
-            overlay.show()
+            overlay.show(focusProcessID: resolved.processID)
             overlay.setDisplaySyncEnabled(configuration.verticalSyncEnabled)
             controller.start()
 
-            self.capture = capture
-            self.pipeline = pipeline
-            self.overlay = overlay
             self.timingController = controller
-            self.gamePID = gamePID
-            self.resolvedWindow = resolved
+            providerIsRunning = true
             overlay.setStatisticsVisible(configuration.showStatistics)
             startGeometryTracking()
             startStatisticsTracking(pipeline: pipeline)
@@ -126,11 +137,16 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
             await capture.stop()
             await pipeline.stop()
             overlay.close()
+            clearResources()
             throw mapStartError(error)
         }
     }
 
     func stop() async {
+        isStopping = true
+        providerIsRunning = false
+        captureRecoveryTask?.cancel()
+        captureRecoveryTask = nil
         geometryTask?.cancel()
         statisticsTask?.cancel()
         geometryTask = nil
@@ -146,6 +162,7 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
         gamePID = nil
         resolvedWindow = nil
         latestStatistics = FrameGenerationStatistics()
+        captureReconfigurationInFlight = false
         logger.info("Stopped MetalFX provider")
     }
 
@@ -169,53 +186,137 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
     }
 
     private func updateGeometry(_ resolved: ResolvedGameWindow) async {
-        guard let previous = resolvedWindow,
-              let overlay,
-              let capture,
-              let pipeline else { return }
-        resolvedWindow = resolved
+        guard let previous = resolvedWindow else { return }
+
+        let windowChanged = previous.windowID != resolved.windowID || previous.processID != resolved.processID
+        let dimensionsChanged = previous.pixelWidth != resolved.pixelWidth
+            || previous.pixelHeight != resolved.pixelHeight
+        guard windowChanged || dimensionsChanged else { return }
+
+        do {
+            try await restartCapture(
+                resolved: resolved,
+                reason: windowChanged ? .windowChanged : .resize
+            )
+            if windowChanged {
+                logger.info("Frame Generation capture restarted for a new game window")
+            } else {
+                logger.info("Frame Generation resized to \(resolved.pixelWidth, privacy: .public)x\(resolved.pixelHeight, privacy: .public)")
+            }
+        } catch {
+            logger.error("Frame Generation geometry update failed; scheduling capture recovery: \(error.localizedDescription, privacy: .public)")
+            scheduleCaptureRecovery()
+        }
+    }
+
+    private func restartCapture(
+        resolved: ResolvedGameWindow,
+        reason: TemporalResetReason
+    ) async throws {
+        while captureReconfigurationInFlight {
+            try await Task.sleep(for: .milliseconds(50))
+            guard !isStopping else {
+                throw FrameGenerationError.captureFailed("Frame generation is stopping.")
+            }
+        }
+
+        guard let capture, let pipeline, let overlay else {
+            throw FrameGenerationError.captureFailed("Frame generation resources are unavailable.")
+        }
+
+        captureReconfigurationInFlight = true
+        defer { captureReconfigurationInFlight = false }
+
+        // Stop the old stream before rebuilding MetalFX resources. This prevents
+        // frames from the old window or dimensions from entering the new epoch.
+        await pipeline.invalidateCaptureEpoch(reason: reason)
+        guard !isStopping else { return }
+        await capture.stop()
+        guard !isStopping else { return }
+        try await pipeline.resizeIfNeeded(width: resolved.pixelWidth, height: resolved.pixelHeight)
+        guard !isStopping else { return }
+        let captureEpoch = try await capture.start(
+            window: resolved.window,
+            width: resolved.pixelWidth,
+            height: resolved.pixelHeight
+        )
+        guard !isStopping else {
+            await capture.stop()
+            return
+        }
+        await pipeline.acceptCaptureEpoch(captureEpoch)
         overlay.updateGeometry(
             frame: resolved.frame,
             pixelWidth: resolved.pixelWidth,
             pixelHeight: resolved.pixelHeight
         )
+        resolvedWindow = resolved
+    }
 
-        let windowChanged = previous.windowID != resolved.windowID || previous.processID != resolved.processID
-        if windowChanged {
-            do {
-                await pipeline.invalidateCaptureEpoch(reason: .windowChanged)
-                await capture.stop()
-                let captureEpoch = try await capture.start(
-                    window: resolved.window,
-                    width: resolved.pixelWidth,
-                    height: resolved.pixelHeight
-                )
-                await pipeline.acceptCaptureEpoch(captureEpoch)
-                logger.info("Frame Generation capture restarted for a new game window")
-            } catch {
-                handleRuntimeError(error)
-            }
+    private func handleCaptureStreamError(_ error: Error) {
+        guard !isStopping, providerIsRunning else { return }
+        if isPermanentCaptureError(error) {
+            handleRuntimeError(error)
             return
         }
 
-        guard previous.pixelWidth != resolved.pixelWidth || previous.pixelHeight != resolved.pixelHeight else { return }
-        do {
-            // Do not let frames from the old and new capture dimensions meet
-            // in one temporal pair. Stop the stream before rebuilding all
-            // MetalFX resources, then start it again with a fresh sequence.
-            await pipeline.invalidateCaptureEpoch()
-            await capture.stop()
-            try await pipeline.resizeIfNeeded(width: resolved.pixelWidth, height: resolved.pixelHeight)
-            let captureEpoch = try await capture.start(
-                window: resolved.window,
-                width: resolved.pixelWidth,
-                height: resolved.pixelHeight
-            )
-            await pipeline.acceptCaptureEpoch(captureEpoch)
-            logger.info("Frame Generation resized to \(resolved.pixelWidth, privacy: .public)x\(resolved.pixelHeight, privacy: .public)")
-        } catch {
-            handleRuntimeError(error)
+        logger.error("Frame Generation capture stream stopped; scheduling recovery: \(error.localizedDescription, privacy: .public)")
+        scheduleCaptureRecovery()
+    }
+
+    private func scheduleCaptureRecovery() {
+        guard !isStopping, providerIsRunning, captureRecoveryTask == nil else { return }
+        captureRecoveryTask = Task { [weak self] in
+            await self?.recoverCapture()
         }
+    }
+
+    private func recoverCapture() async {
+        defer { captureRecoveryTask = nil }
+        guard let gamePID else { return }
+
+        let retryDelays: [Duration] = [
+            .milliseconds(100),
+            .milliseconds(250),
+            .milliseconds(500),
+            .seconds(1),
+            .seconds(2),
+            .seconds(3),
+            .seconds(4),
+            .seconds(5)
+        ]
+
+        for (index, delay) in retryDelays.enumerated() {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, !isStopping, providerIsRunning else { return }
+
+            do {
+                let resolved = try await GameWindowResolver.resolve(
+                    gamePID: gamePID,
+                    timeout: .seconds(2)
+                )
+                try await restartCapture(resolved: resolved, reason: .captureRestart)
+                logger.info("Frame Generation capture recovered on attempt \(index + 1, privacy: .public)")
+                return
+            } catch {
+                logger.error("Frame Generation capture recovery attempt \(index + 1, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        guard !Task.isCancelled, !isStopping else { return }
+        handleRuntimeError(
+            FrameGenerationError.captureFailed(
+                "ScreenCaptureKit did not recover the game window after a capture interruption."
+            )
+        )
+    }
+
+    private func isPermanentCaptureError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == SCStreamErrorDomain else { return false }
+        return nsError.code == -3801
+            || nsError.code == -3803
+            || nsError.code == -3817
     }
 
     private func startStatisticsTracking(pipeline: MetalFXFrameGenerationPipeline) {
@@ -235,6 +336,24 @@ final class MetalFXFrameGenerationProvider: FrameGenerationProvider {
         logger.error("Frame Generation error: \(error.localizedDescription, privacy: .public)")
         runtimeErrorHandler?(error)
         Task { [weak self] in await self?.stop() }
+    }
+
+    private func clearResources() {
+        geometryTask?.cancel()
+        statisticsTask?.cancel()
+        captureRecoveryTask?.cancel()
+        geometryTask = nil
+        statisticsTask = nil
+        captureRecoveryTask = nil
+        captureReconfigurationInFlight = false
+        timingController?.stop()
+        timingController = nil
+        capture = nil
+        pipeline = nil
+        overlay = nil
+        gamePID = nil
+        resolvedWindow = nil
+        providerIsRunning = false
     }
 
     private func mapStartError(_ error: Error) -> Error {
