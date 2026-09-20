@@ -1427,8 +1427,9 @@ struct StoreGameDetailView: View {
         let providerSeconds = TimeInterval(currentGame.playtimeMinutes * 60)
         let activeSeconds = store.activePlaySessionElapsed(for: currentGame) ?? 0
         let completedMeasuredSeconds = currentGame.completedPlaySessions.reduce(0) { $0 + $1.duration }
-        let totalSeconds = activeSeconds > 0
-            ? max(providerSeconds, completedMeasuredSeconds) + activeSeconds
+        let recordedActiveSeconds = activeSeconds >= GamePlaySession.minimumRecordedDuration ? activeSeconds : 0
+        let totalSeconds = recordedActiveSeconds > 0
+            ? max(providerSeconds, completedMeasuredSeconds) + recordedActiveSeconds
             : max(providerSeconds, currentGame.measuredPlaytime)
         guard totalSeconds > 0 else { return String(localized: .Library.notPlayed) }
         return formatDuration(totalSeconds)
@@ -1780,7 +1781,7 @@ struct StoreGameDetailView: View {
         if var active = currentGame.activePlaySession,
            let elapsed = store.activePlaySessionElapsed(for: currentGame) {
             active.measuredDurationSeconds = elapsed
-            sessions.append(active)
+            if active.meetsRecordingMinimum { sessions.append(active) }
         }
         return sessions
     }

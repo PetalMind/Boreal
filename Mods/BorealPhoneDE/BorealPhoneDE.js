@@ -215,6 +215,8 @@ function handleInput(now) {
     handleHomeInput();
   } else if (phoneView === "radio") {
     handleRadioInput(now);
+  } else if (phoneView === "cheats") {
+    handleCheatInput(now);
   } else {
     handleArmoryInput(now);
   }
@@ -603,10 +605,11 @@ function renderPhone(now) {
       phoneView === "home" || phoneView === "radio" ? 0.64 : 0.44, 255, 255, 255, 255, false);
     if (phoneView === "home") renderHomeView();
     else if (phoneView === "radio") renderRadioView();
+    else if (phoneView === "cheats") renderCheatView();
     else renderArmoryView();
     drawHudRect(SCREEN_X + SCREEN_W / 2, SCREEN_Y + SCREEN_H - 0.040,
       SCREEN_W, 0.080, 12, 13, 19, 255);
-    drawText(phoneView === "home" ? "BPHHELP" : phoneView === "radio" ? "BPHBACK" : "BPHSHOP",
+    drawText(phoneView === "home" ? "BPHHELP" : phoneView === "radio" ? "BPHBACK" : phoneView === "cheats" ? "BPHSHELLP" : "BPHSHOP",
       SCREEN_X + SCREEN_W / 2, SCREEN_Y + SCREEN_H - 0.056,
       0.29, 207, 214, 229, 255, true);
     if (statusText && now < statusUntil) {
@@ -628,9 +631,11 @@ function renderHomeView() {
   drawText("BPHSAVE", ROW_X + 0.042, SCREEN_Y + 0.333, 0.33, 244, 247, 252, 255, true);
   drawText("BPHRADI", ROW_X + ROW_W - 0.042, SCREEN_Y + 0.333, 0.33, 244, 247, 252, 255, true);
   drawAppTile(2, ROW_X + 0.042, SCREEN_Y + 0.465, [205, 132, 27]);
-  drawAppTile(3, ROW_X + ROW_W - 0.042, SCREEN_Y + 0.465, [65, 70, 88]);
+  drawAppTile(3, SCREEN_X + SCREEN_W / 2, SCREEN_Y + 0.465, [210, 72, 68]);
+  drawAppTile(4, ROW_X + ROW_W - 0.042, SCREEN_Y + 0.465, [65, 70, 88]);
   drawText("BPHARMS", ROW_X + 0.042, SCREEN_Y + 0.533, 0.29, 244, 247, 252, 255, true);
-  drawText("BPHQUIT", ROW_X + ROW_W - 0.042, SCREEN_Y + 0.533, 0.33, 244, 247, 252, 255, true);
+  drawText("BPHCHEAT", SCREEN_X + SCREEN_W / 2, SCREEN_Y + 0.533, 0.27, 244, 247, 252, 255, true);
+  drawText("BPHQUIT", ROW_X + ROW_W - 0.042, SCREEN_Y + 0.533, 0.29, 244, 247, 252, 255, true);
 }
 
 function drawAppTile(index, x, y, color) {
@@ -657,6 +662,12 @@ function drawAppTile(index, x, y, color) {
     drawHudRect(x + 0.014, y - 0.027, 0.010, 0.022, 255, 255, 255, 255);
     drawHudRect(x, y + 0.001, 0.028, 0.005, ...color, 255);
     drawHudRect(x, y + 0.017, 0.028, 0.005, ...color, 255);
+  } else if (index === 3) {
+    drawHudRect(x - 0.018, y, 0.006, 0.046, 255, 255, 255, 255);
+    drawHudRect(x + 0.018, y, 0.006, 0.046, 255, 255, 255, 255);
+    drawHudRect(x, y - 0.021, 0.043, 0.006, 255, 255, 255, 255);
+    drawHudRect(x, y + 0.021, 0.043, 0.006, 255, 255, 255, 255);
+    drawHudRect(x, y, 0.006, 0.047, 255, 255, 255, 255);
   } else {
     drawHudRect(x - 0.012, y, 0.005, 0.059, 255, 255, 255, 255);
     drawHudRect(x + 0.004, y - 0.027, 0.032, 0.005, 255, 255, 255, 255);
@@ -711,6 +722,15 @@ function renderArmoryView() {
   }
 }
 
+function renderCheatView() {
+  drawText("BPHCHEATINFO", ROW_X, SCREEN_Y + 0.126, 0.30, 255, 126, 126, 255, false);
+  drawHudRect(ROW_X + ROW_W / 2, SCREEN_Y + 0.245, ROW_W, 0.104,
+    missionWasActive ? 160 : 46, missionWasActive ? 45 : 46, missionWasActive ? 45 : 60, 255);
+  drawText("BPHFINISH", ROW_X + 0.012, SCREEN_Y + 0.211, 0.36, 255, 255, 255, 255, false);
+  drawText("BPHMISSIONSTATE", ROW_X + 0.012, SCREEN_Y + 0.277, 0.27,
+    missionWasActive ? 255 : 190, missionWasActive ? 207 : 195, missionWasActive ? 207 : 210, 255, false);
+}
+
 function updateTextStore(now) {
   if (typeof FxtStore === "undefined" || !FxtStore || typeof FxtStore.insert !== "function") {
     if (!textStoreFailureLogged) {
@@ -721,7 +741,7 @@ function updateTextStore(now) {
   }
 
   try {
-    putText("BPHNTTL", phoneView === "home" ? "TELEFON" : phoneView === "radio" ? "RADIO" : "ZBROJOWNIA");
+    putText("BPHNTTL", phoneView === "home" ? "TELEFON" : phoneView === "radio" ? "RADIO" : phoneView === "cheats" ? "CHEATY" : "ZBROJOWNIA");
     putText("BPHINFO", "bOS / PERSONAL");
     putText("BPHSUB", "TWOJE APLIKACJE");
     putText("BPHHELP", "ENTER: WYBIERZ~n~F8 / ESC: ZAMKNIJ");
@@ -730,8 +750,13 @@ function updateTextStore(now) {
     putText("BPHRADI", "RADIO");
     putText("BPHQUIT", "ZAMKNIJ");
     putText("BPHARMS", "ZBROJOWNIA");
+    putText("BPHCHEAT", "CHEATY");
     putText("BPHRADT", "RADIO W POJEZDZIE");
     putText("BPHSHOP", phoneView === "confirm" ? "ENTER: KUP~n~ESC: ANULUJ" : "ENTER: WYBIERZ~n~ESC: POWROT");
+    putText("BPHCHEATINFO", "NARZEDZIA MISJI");
+    putText("BPHFINISH", "UKONCZ MISJE");
+    putText("BPHMISSIONSTATE", missionWasActive ? "AKTYWNA - ENTER ABY ZAKONCZYC" : "BRAK AKTYWNEJ MISJI");
+    putText("BPHSHELLP", "ENTER: WYKONAJ~n~ESC: POWROT");
     if (phoneView !== "home" && phoneView !== "radio") {
       const money = wallet();
       putText("BPHCASH", money === null ? "SALDO NIEDOSTEPNE" : "SALDO: $" + money);

@@ -1107,17 +1107,18 @@ nonisolated struct BorealStorageSnapshot: Sendable {
         let installations = canonicalInstallations.isEmpty
             ? InstallationMigration.fromLegacy(applications: applications, storeGames: storeGames, layout: layout)
             : canonicalInstallations
+        let persistedGames = storeGames.map { $0.normalizedActivity() }
 
         library = LibraryDatabase(
             schemaVersion: BorealStorageSchema.current,
             applications: applications.map { LibraryApplicationRecord($0, layout: layout) },
-            games: storeGames.map(LibraryGameRecord.init),
+            games: persistedGames.map(LibraryGameRecord.init),
             installations: installations
         )
         favorites = FavoritesDatabase(schemaVersion: BorealStorageSchema.current, keys: favoriteKeys.sorted())
         sessions = SessionsDatabase(
             schemaVersion: BorealStorageSchema.current,
-            records: storeGames.map {
+            records: persistedGames.map {
                 SessionsDatabase.Record(
                     gameID: $0.id,
                     playtimeMinutes: $0.playtimeMinutes,
@@ -1178,6 +1179,7 @@ nonisolated enum BorealStorageLoader {
                 games[index].lastPlayed = record.lastPlayed
                 games[index].borealPlaytimeSeconds = record.borealPlaytimeSeconds
                 games[index].playSessions = record.sessions
+                games[index] = games[index].normalizedActivity()
             }
         }
 

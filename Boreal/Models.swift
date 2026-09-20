@@ -794,6 +794,8 @@ nonisolated struct StoreVideo: Codable, Hashable, Sendable, Identifiable {
 }
 
 nonisolated struct GamePlaySession: Identifiable, Codable, Hashable, Sendable {
+    static let minimumRecordedDuration: TimeInterval = 5 * 60
+
     var id = UUID()
     var startedAt: Date
     var endedAt: Date?
@@ -808,6 +810,7 @@ nonisolated struct GamePlaySession: Identifiable, Codable, Hashable, Sendable {
         guard let endedAt else { return 0 }
         return max(0, endedAt.timeIntervalSince(startedAt))
     }
+    var meetsRecordingMinimum: Bool { duration >= Self.minimumRecordedDuration }
 
     mutating func checkpoint(elapsed: TimeInterval, at date: Date) {
         measuredDurationSeconds = duration + max(0, elapsed)
@@ -839,7 +842,7 @@ nonisolated struct GameActivityStatistics: Hashable, Sendable {
         calendar: Calendar = .autoupdatingCurrent,
         heatmapDayCount: Int = 84
     ) {
-        let validSessions = sessions.filter { $0.duration > 0 }
+        let validSessions = sessions.filter(\.meetsRecordingMinimum)
         let thisWeekInterval = calendar.dateInterval(of: .weekOfYear, for: now)
         let lastWeekDate = thisWeekInterval?.start.addingTimeInterval(-1)
         let lastWeekInterval = lastWeekDate.flatMap { calendar.dateInterval(of: .weekOfYear, for: $0) }
@@ -947,7 +950,9 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     var resolvedPlaySessions: [GamePlaySession] {
         (playSessions ?? []).sorted { $0.startedAt > $1.startedAt }
     }
-    var completedPlaySessions: [GamePlaySession] { resolvedPlaySessions.filter { !$0.isActive } }
+    var completedPlaySessions: [GamePlaySession] {
+        resolvedPlaySessions.filter { !$0.isActive && $0.meetsRecordingMinimum }
+    }
     var activePlaySession: GamePlaySession? { resolvedPlaySessions.first(where: \.isActive) }
 
     mutating func appendPlaySession(_ session: GamePlaySession) {
@@ -957,17 +962,44 @@ nonisolated struct StoreLibraryGame: Identifiable, Codable, Hashable, Sendable {
     }
 
     mutating func updatePlaySession(_ session: GamePlaySession) {
-        guard var recordedSessions = playSessions,
-              let index = recordedSessions.firstIndex(where: { $0.id == session.id }) else { return }
-        recordedSessions[index] = session
-        playSessions = recordedSessions
-        borealPlaytimeSeconds = recordedSessions.reduce(0) { $0 + $1.duration }
-        if let endedAt = session.endedAt { lastPlayed = endedAt }
+        guard var allSessions = playSessions,
+              let index = allSessions.firstIndex(where: { $0.id == session.id }) else { return }
+        allSessions[index] = session
+        playSessions = allSessions
+        let recordedSessions = allSessions.filter(\.meetsRecordingMinimum)
+        borealPlaytimeSeconds = recordedSessions.isEmpty ? nil : recordedSessions.reduce(0) { $0 + $1.duration }
+        if session.endedAt != nil, session.meetsRecordingMinimum, let endedAt = session.endedAt {
+            lastPlayed = endedAt
+        }
+    }
+
+    mutating func removePlaySession(id: UUID) {
+        guard var recordedSessions = playSessions else { return }
+        let originalCount = recordedSessions.count
+        recordedSessions.removeAll { $0.id == id }
+        guard recordedSessions.count != originalCount else { return }
+        playSessions = recordedSessions.isEmpty ? nil : recordedSessions
+        let recordableSessions = recordedSessions.filter(\.meetsRecordingMinimum)
+        borealPlaytimeSeconds = recordableSessions.isEmpty ? nil : recordableSessions.reduce(0) { $0 + $1.duration }
+    }
+
+    /// Removes completed sessions that do not represent meaningful activity
+    /// while retaining an unfinished session for process recovery.
+    func normalizedActivity() -> StoreLibraryGame {
+        var normalized = self
+        let sessions = (playSessions ?? []).filter { $0.isActive || $0.meetsRecordingMinimum }
+        normalized.playSessions = sessions.isEmpty ? nil : sessions
+        let recordedSessions = sessions.filter(\.meetsRecordingMinimum)
+        normalized.borealPlaytimeSeconds = recordedSessions.isEmpty
+            ? nil
+            : recordedSessions.reduce(0) { $0 + $1.duration }
+        return normalized
     }
 
     mutating func preserveMeasuredActivity(from existing: StoreLibraryGame) {
-        borealPlaytimeSeconds = existing.borealPlaytimeSeconds
-        playSessions = existing.playSessions
+        let existingActivity = existing.normalizedActivity()
+        borealPlaytimeSeconds = existingActivity.borealPlaytimeSeconds
+        playSessions = existingActivity.playSessions
         playtimeMinutes = max(playtimeMinutes, existing.playtimeMinutes)
         if let existingLastPlayed = existing.lastPlayed {
             lastPlayed = max(lastPlayed ?? .distantPast, existingLastPlayed)

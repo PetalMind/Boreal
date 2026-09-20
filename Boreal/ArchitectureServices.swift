@@ -618,6 +618,10 @@ nonisolated struct ActivityService: Sendable {
               let gameIndex = games.firstIndex(where: { $0.provider == provider && $0.externalID == externalID }),
               var session = sessionID.flatMap({ id in games[gameIndex].playSessions?.first(where: { $0.id == id }) }) ?? games[gameIndex].activePlaySession else { return }
         session.finish(at: date)
-        games[gameIndex].updatePlaySession(session)
+        if session.meetsRecordingMinimum {
+            games[gameIndex].updatePlaySession(session)
+        } else {
+            games[gameIndex].removePlaySession(id: session.id)
+        }
     }
 }

@@ -5724,7 +5724,7 @@ final class BorealStore {
         if usesLayeredStorage {
             BorealStorageLoader.migrateLegacyEnvironments(state.environments, to: storageLayout)
         }
-        let persistedGames = state.storeGames ?? []
+        let persistedGames = (state.storeGames ?? []).map { $0.normalizedActivity() }
         installations = InstallationMigration.fromLegacy(
             applications: applications,
             storeGames: persistedGames,
@@ -7439,7 +7439,7 @@ final class BorealStore {
         if usesLayeredStorage {
             let snapshot = BorealStorageSnapshot(
                 applications: applications,
-                storeGames: storeGames,
+                storeGames: storeGames.map { $0.normalizedActivity() },
                 favoriteKeys: favoriteKeys,
                 storeDownloads: storeDownloadRecords,
                 lastAutomaticLibraryRefreshAt: lastAutomaticLibraryRefreshAt,

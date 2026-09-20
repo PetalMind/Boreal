@@ -9,6 +9,7 @@ Po naciśnięciu `F8` otwiera telefonowy interfejs HUD z:
   gracz jest w pojeździe;
 - **ZBROJOWNIA** — kategorie broni i kamizelka, saldo postaci, ceny oraz
   ekran potwierdzenia zakupu;
+- **CHEATY** — narzędzia misji, obecnie `UKOŃCZ MISJĘ`;
 - **ZAMKNIJ** — zamyka telefon.
 
 Interfejs jest inspirowany telefonem z Watch Dogs 2: ciemna obudowa,
@@ -51,6 +52,19 @@ Model broni jest ładowany przed pobraniem pieniędzy. Po dostawie skrypt
 odczytuje ekwipunek; w razie błędu próbuje przywrócić poprzednią broń i saldo.
 Niepotwierdzony stan powoduje blokadę dalszych zakupów i komunikat o logu CLEO.
 Zamknięcie telefonu podczas ładowania anuluje zakup bez pobrania pieniędzy.
+
+## Cheaty
+
+W kafelku `CHEATY` dostępna jest opcja `UKOŃCZ MISJĘ`. Przed otwarciem
+telefonu skrypt sprawdza, czy gracz może rozpocząć nową misję. Jeżeli nie,
+uznaje to za aktywną misję, wywołuje jej standardowe zakończenie, rejestruje
+misję jako zaliczoną i odtwarza dźwięk sukcesu.
+
+SA:DE/CLEO Redux nie udostępnia nazwy bieżącej misji ani uniwersalnego
+callbacku „success” dla każdego skryptu. Dlatego opcja jest kompatybilnością
+best-effort: misje z własnymi warunkami, etapami lub nietypowym cleanupem mogą
+nie zapisać pełnego postępu mimo komunikatu sukcesu. Opcja działa wyłącznie,
+gdy misja była aktywna przed otwarciem telefonu.
 
 ## Radio poza pojazdem — ograniczenie
 
