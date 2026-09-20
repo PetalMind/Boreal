@@ -1,16 +1,14 @@
-import AppKit
 import Foundation
 import SwiftUI
 
 struct FrameGenerationStatusView: View {
     let applicationID: UUID
-    let showsStatistics: Bool
 
     @State private var coordinator = FrameGenerationCoordinator.shared
 
     var body: some View {
         let state = coordinator.state(for: applicationID)
-        let statistics = coordinator.statistics(for: applicationID)
+        let evidence = coordinator.runtimeEvidence(for: applicationID)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -24,48 +22,57 @@ struct FrameGenerationStatusView: View {
                     .foregroundStyle(tint(for: state))
             }
 
+            Text("OptiFG · FSR Frame Generation")
+                .font(.subheadline.weight(.medium))
+            Text("Runs inside the game's DX12 process. The real game window remains the only presentation and input surface.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             switch state {
-            case .running:
-                if showsStatistics {
-                    HStack(spacing: 18) {
-                        metric("Input", value: statistics.inputFPS, symbol: "arrow.down")
-                        metric("Generated", value: statistics.generatedFPS, symbol: "sparkles")
-                        metric("Output", value: statistics.outputFPS, symbol: "arrow.up")
-                    }
-                    if statistics.droppedInputFrames > 0 || statistics.skippedGeneratedFrames > 0 {
-                        Text("Dropped \(statistics.droppedInputFrames) input · skipped \(statistics.skippedGeneratedFrames) generated")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(String(format: "Average generation %.1f ms", statistics.averageGenerationTimeMS))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Active. Performance statistics are hidden in this game's settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            case .preparing:
-                Text("Resolving the game window and preparing the MetalFX pipeline…")
+            case .active, .frameGenerationAvailable:
+                Text("OptiScaler reported a usable frame-generation path.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            case .unavailable(let reason), .failed(let reason):
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(reason, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    if isScreenCapturePermissionReason(reason) {
-                        Button("Open Screen Recording Settings") {
-                            openScreenRecordingSettings()
-                        }
-                        .buttonStyle(.link)
-                        .font(.caption.weight(.semibold))
-                    }
-                }
+            case .optiFGInitialized:
+                Text("OptiFG initialized; waiting for active frame-generation work from the game.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .preparing:
+                Text("Preparing the in-process OptiScaler backend…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .injected:
+                Text("OptiScaler is injected; waiting for the game's upscaler and frame-generation initialization.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .waitingForUpscaler:
+                Text("OptiFG is waiting for compatible temporal upscaler input.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .degraded(let reason), .failed(let reason):
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             case .inactive:
                 Text("Inactive")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let evidence {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Runtime evidence")
+                        .font(.caption.weight(.semibold))
+                    Text("Install: \(evidence.installation.displayName) · Process: \(evidence.process.displayName) · Log: \(evidence.log.displayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let detail = evidence.detail {
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
             }
         }
         .padding(14)
@@ -73,22 +80,16 @@ struct FrameGenerationStatusView: View {
         .overlay { RoundedRectangle(cornerRadius: 12).stroke(.separator.opacity(0.55)) }
     }
 
-    private func metric(_ title: String, value: Double, symbol: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Label(title, systemImage: symbol)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(String(format: "%.0f FPS", value))
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-        }
-    }
-
     private func label(for state: FrameGenerationState) -> String {
         switch state {
         case .inactive: "Off"
         case .preparing: "Preparing"
-        case .running: "Running"
-        case .unavailable: "Unavailable"
+        case .injected: "Injected"
+        case .waitingForUpscaler: "Waiting"
+        case .frameGenerationAvailable: "Ready"
+        case .optiFGInitialized: "Initialized"
+        case .active: "Active"
+        case .degraded: "Degraded"
         case .failed: "Failed"
         }
     }
@@ -96,20 +97,9 @@ struct FrameGenerationStatusView: View {
     private func tint(for state: FrameGenerationState) -> Color {
         switch state {
         case .inactive: .secondary
-        case .preparing: .orange
-        case .running: .green
-        case .unavailable, .failed: .orange
+        case .preparing, .injected, .waitingForUpscaler, .optiFGInitialized, .degraded: .orange
+        case .frameGenerationAvailable, .active: .green
+        case .failed: .red
         }
-    }
-
-    private func isScreenCapturePermissionReason(_ reason: String) -> Bool {
-        reason == FrameGenerationError.screenCapturePermissionDenied.localizedDescription
-    }
-
-    private func openScreenRecordingSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
-            return
-        }
-        NSWorkspace.shared.open(url)
     }
 }

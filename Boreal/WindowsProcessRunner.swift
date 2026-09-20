@@ -307,6 +307,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             }
             processEnvironment["WINEDLLOVERRIDES"] = (preserved + nativeDLLs.sorted().map { "\($0)=n,b" }).joined(separator: ";")
         }
+        if let temporalPlan = launchPlan.temporalUpscalingPlan,
+           temporalPlan.effective == .optiScaler,
+           temporalPlan.requested.optiScaler.enabled {
+            let gameExecutable = launchPlan.processExecutablePath.map(URL.init(fileURLWithPath:))
+                ?? launchPlan.executable
+            OptiScalerProxyResolver.applyWineOverride(
+                to: &processEnvironment,
+                gameExecutable: gameExecutable,
+                strategy: temporalPlan.requested.optiScaler.proxyStrategy
+            )
+        }
         if environment.configuration.graphicsConfiguration.resolvedBackend(runtime: runtime, architecture: prefixArchitecture) == .dxvk,
            plan.executable.lastPathComponent.caseInsensitiveCompare("Darksiders2.exe") == .orderedSame {
             let configuration = environment.rootURL.appending(path: "Darksiders2-dxvk.conf")

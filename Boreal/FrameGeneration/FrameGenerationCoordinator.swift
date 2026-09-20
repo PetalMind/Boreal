@@ -8,56 +8,59 @@ final class FrameGenerationCoordinator {
     static let shared = FrameGenerationCoordinator()
 
     private(set) var states: [UUID: FrameGenerationState] = [:]
-    private(set) var statisticsByApplication: [UUID: FrameGenerationStatistics] = [:]
+    private(set) var runtimeEvidenceByApplication: [UUID: FrameGenerationRuntimeEvidence] = [:]
     private var providers: [UUID: any FrameGenerationProvider] = [:]
-    private var statisticsTasks: [UUID: Task<Void, Never>] = [:]
     private let logger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGenerationCoordinator")
 
     private init() {}
 
     func start(
         applicationID: UUID,
-        gamePID: pid_t,
-        configuration: FrameGenerationRuntimeConfiguration
+        gamePID: pid_t?,
+        gameRoot: URL,
+        executable: URL,
+        configuration: OptiScalerConfiguration
     ) {
         logger.info(
-            "Frame Generation coordinator start requested; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public), backend=\(configuration.backend.rawValue, privacy: .public)"
+            "In-process Frame Generation start requested; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID ?? 0, privacy: .public), backend=optiScaler, executable=\(executable.path, privacy: .public)"
         )
         retireProvider(for: applicationID)
-        guard configuration.enabled, configuration.backend != .off else {
-            logger.info("Frame Generation coordinator inactive because configuration is disabled; appID=\(applicationID.uuidString, privacy: .public)")
+
+        guard configuration.enabled, configuration.frameGeneration.mode == .optiFG else {
             states[applicationID] = .inactive
             return
         }
 
-        let provider: any FrameGenerationProvider
-        switch configuration.backend {
-        case .off:
-            states[applicationID] = .inactive
-            return
-        case .metalFX:
-            provider = MetalFXFrameGenerationProvider()
-        }
-
+        let provider = OptiScalerFrameGenerationProvider()
+        let providerToken = ObjectIdentifier(provider)
         providers[applicationID] = provider
         states[applicationID] = .preparing
+        runtimeEvidenceByApplication[applicationID] = nil
         provider.runtimeErrorHandler = { [weak self] error in
             Task { @MainActor [weak self] in
                 self?.handleRuntimeError(error, applicationID: applicationID)
             }
         }
-        statisticsTasks[applicationID]?.cancel()
-        statisticsTasks[applicationID] = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled, let self else { return }
-                self.statisticsByApplication[applicationID] = provider.statistics()
+        provider.runtimeEvidenceHandler = { [weak self] evidence in
+            Task { @MainActor [weak self] in
+                guard let self, self.isCurrent(providerToken, for: applicationID) else { return }
+                self.runtimeEvidenceByApplication[applicationID] = evidence
             }
         }
-
+        provider.stateHandler = { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self, self.isCurrent(providerToken, for: applicationID) else { return }
+                self.states[applicationID] = state
+            }
+        }
         Task { @MainActor [weak self] in
             do {
-                try await provider.start(gamePID: gamePID, configuration: configuration)
+                try await provider.start(
+                    gamePID: gamePID,
+                    gameRoot: gameRoot,
+                    executable: executable,
+                    configuration: configuration
+                )
                 guard let self else {
                     await provider.stop()
                     return
@@ -66,8 +69,10 @@ final class FrameGenerationCoordinator {
                     await provider.stop()
                     return
                 }
-                self.states[applicationID] = .running
-                self.logger.info("Frame Generation provider is running; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public)")
+                self.states[applicationID] = .injected
+                self.logger.info(
+                    "OptiScaler Frame Generation monitor is running; appID=\(applicationID.uuidString, privacy: .public)"
+                )
             } catch {
                 guard let self else {
                     await provider.stop()
@@ -77,12 +82,10 @@ final class FrameGenerationCoordinator {
                     await provider.stop()
                     return
                 }
-                self.states[applicationID] = self.state(for: error)
+                self.states[applicationID] = .failed(error.localizedDescription)
                 self.logger.error(
-                    "Frame Generation provider failed to start; appID=\(applicationID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
+                    "OptiScaler Frame Generation failed to start; appID=\(applicationID.uuidString, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
                 )
-                self.statisticsTasks[applicationID]?.cancel()
-                self.statisticsTasks[applicationID] = nil
                 self.providers[applicationID] = nil
                 await provider.stop()
             }
@@ -94,9 +97,10 @@ final class FrameGenerationCoordinator {
         await provider.stop()
     }
 
-    /// Synchronous lifecycle boundary for callers that cannot await while they
-    /// are finalizing a process session. The provider is detached immediately;
-    /// its asynchronous resources are released in the background.
+    func updateGamePIDs(applicationID: UUID, gamePIDs: [Int32]) {
+        providers[applicationID]?.updateGamePIDs(gamePIDs)
+    }
+
     func requestStop(applicationID: UUID) {
         guard let provider = detachProvider(for: applicationID) else { return }
         Task { await provider.stop() }
@@ -112,17 +116,12 @@ final class FrameGenerationCoordinator {
         states[applicationID] ?? .inactive
     }
 
-    func statistics(for applicationID: UUID) -> FrameGenerationStatistics {
-        statisticsByApplication[applicationID] ?? FrameGenerationStatistics()
+    func runtimeEvidence(for applicationID: UUID) -> FrameGenerationRuntimeEvidence? {
+        runtimeEvidenceByApplication[applicationID]
     }
 
-    func capabilities(for backend: FrameGenerationBackend) -> FrameGenerationCapabilities {
-        switch backend {
-        case .off:
-            FrameGenerationCapabilities(isSupported: true, reason: nil)
-        case .metalFX:
-            MetalFXFrameGenerationSupport.capabilities()
-        }
+    func capabilities() -> FrameGenerationCapabilities {
+        OptiScalerFrameGenerationProvider().capabilities()
     }
 
     private func handleRuntimeError(_ error: Error, applicationID: UUID) {
@@ -130,10 +129,8 @@ final class FrameGenerationCoordinator {
         logger.error(
             "Frame Generation provider reported a runtime error; appID=\(applicationID.uuidString, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
         )
-        statisticsTasks[applicationID]?.cancel()
-        statisticsTasks[applicationID] = nil
-        states[applicationID] = state(for: error)
-        statisticsByApplication[applicationID] = nil
+        states[applicationID] = .failed(error.localizedDescription)
+        runtimeEvidenceByApplication[applicationID] = nil
         Task { await provider.stop() }
     }
 
@@ -143,11 +140,9 @@ final class FrameGenerationCoordinator {
     }
 
     private func detachProvider(for applicationID: UUID) -> (any FrameGenerationProvider)? {
-        statisticsTasks[applicationID]?.cancel()
-        statisticsTasks[applicationID] = nil
         let provider = providers.removeValue(forKey: applicationID)
         states[applicationID] = .inactive
-        statisticsByApplication[applicationID] = nil
+        runtimeEvidenceByApplication[applicationID] = nil
         return provider
     }
 
@@ -156,17 +151,8 @@ final class FrameGenerationCoordinator {
         return (current as AnyObject) === (provider as AnyObject)
     }
 
-    private func state(for error: Error) -> FrameGenerationState {
-        switch error {
-        case FrameGenerationError.unsupportedHardware,
-             FrameGenerationError.unsupportedOS,
-             FrameGenerationError.screenCapturePermissionDenied,
-             FrameGenerationError.metalDeviceUnavailable,
-             FrameGenerationError.gameWindowNotFound,
-             FrameGenerationError.motionEstimatorUnavailable:
-            return .unavailable(error.localizedDescription)
-        default:
-            return .failed(error.localizedDescription)
-        }
+    private func isCurrent(_ providerToken: ObjectIdentifier, for applicationID: UUID) -> Bool {
+        guard let current = providers[applicationID] else { return false }
+        return ObjectIdentifier(current as AnyObject) == providerToken
     }
 }

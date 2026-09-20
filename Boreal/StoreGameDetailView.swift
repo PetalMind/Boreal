@@ -2080,11 +2080,10 @@ struct StoreGameDetailView: View {
             }
             if let application = linkedApplication,
                !application.isInstallerOnly,
-               store.compatibilityProfile(for: application).frameGeneration.enabled
+               store.compatibilityProfile(for: application).temporalUpscaling.optiScaler.frameGenerationEnabled
             {
                 FrameGenerationStatusView(
-                    applicationID: application.id,
-                    showsStatistics: store.compatibilityProfile(for: application).frameGeneration.showStatistics
+                    applicationID: application.id
                 )
             }
             detailCard(.Library.actionsTitle, symbol: "ellipsis") {

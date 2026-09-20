@@ -395,69 +395,59 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var frameGenerationSection: some View {
-        let capabilities = FrameGenerationCoordinator.shared.capabilities(for: profile.frameGeneration.backend)
+        let plan = temporalInspector?.temporalPlan
+        let optiInstalled = temporalInspector?.optiScaler.installed == true
         return CompatibilitySettingsSection(
             title: "Frame generation",
-            subtitle: "Capture the game window and generate one intermediate frame between two real frames.",
+            subtitle: "OptiFG runs inside the game's DirectX 12 process; Boreal does not capture the window or create an overlay.",
             symbol: "sparkles.rectangle.stack",
             tint: .purple
         ) {
             CompatibilityToggleRow(
                 title: "Frame generation",
-                detail: "Runs in a separate click-through overlay and does not modify the game's Wine renderer.",
-                isOn: $profile.frameGeneration.enabled,
-                disabled: profile.frameGeneration.backend == .off || !capabilities.isSupported
+                detail: "Injects OptiScaler per game and uses the real game window for presentation, focus, and input.",
+                isOn: optiScalerFrameGenerationBinding,
+                disabled: !optiInstalled
             )
             CompatibilityPickerRow(
                 title: "Technology",
-                detail: "Only capabilities available in this build are listed."
+                detail: "The first managed backend supports OptiFG with FSR Frame Generation."
             ) {
-                Picker("Technology", selection: $profile.frameGeneration.backend) {
-                    ForEach(FrameGenerationBackend.allCases) { backend in
-                        Text(backend.displayName).tag(backend)
+                Text("OptiFG — FSR Frame Generation")
+                    .font(.caption.weight(.medium))
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            CompatibilityPickerRow(
+                title: "Input",
+                detail: "Automatic selects the temporal upscaler input required by OptiFG."
+            ) {
+                Text(profile.temporalUpscaling.optiScaler.frameGeneration.input.displayName)
+                    .font(.caption.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            CompatibilityPickerRow(
+                title: "HUD handling",
+                detail: "HUD-less resource detection is game-dependent."
+            ) {
+                Picker("HUD handling", selection: $profile.temporalUpscaling.optiScaler.frameGeneration.hudHandling) {
+                    ForEach(OptiScalerHUDHandling.allCases) { handling in
+                        Text(handling.displayName).tag(handling)
                     }
                 }
                 .labelsHidden()
             }
-            CompatibilityPickerRow(
-                title: "Target frame rate",
-                detail: "Automatic follows the active display and capture cadence."
-            ) {
-                Picker("Target frame rate", selection: $profile.frameGeneration.targetFPS) {
-                    Text("Automatic").tag(Optional<Int>.none)
-                }
-                .labelsHidden()
-                .disabled(!profile.frameGeneration.enabled)
-            }
-            CompatibilityToggleRow(
-                title: "Low latency",
-                detail: "Prefer the newest captured frame when the GPU queue is busy.",
-                isOn: $profile.frameGeneration.lowLatencyModeEnabled,
-                disabled: !profile.frameGeneration.enabled
+            CompatibilityUpscalingRow(
+                title: "Status",
+                detail: plan?.compatibility.label ?? String(localized: "Analyzing selected runtime…"),
+                status: temporalStatus(plan?.compatibility),
+                explanation: plan?.reason ?? String(localized: "Select and install a compiled OptiScaler component for this game.")
             )
-            CompatibilityToggleRow(
-                title: "Vertical sync",
-                detail: "Pace presentation using the display link for the selected display.",
-                isOn: $profile.frameGeneration.verticalSyncEnabled,
-                disabled: !profile.frameGeneration.enabled
-            )
-            CompatibilityToggleRow(
-                title: "Performance statistics",
-                detail: "Show input, generated, and output frame rates while the game is running.",
-                isOn: $profile.frameGeneration.showStatistics,
-                disabled: !profile.frameGeneration.enabled
-            )
-            if profile.frameGeneration.backend == .metalFX && !capabilities.isSupported {
+            if let plan, case .unsupported = plan.compatibility {
                 CompatibilityCallout(
-                    text: capabilities.reason ?? String(localized: "MetalFX frame generation is unavailable on this Mac."),
+                    text: plan.reason,
                     symbol: "exclamationmark.triangle.fill",
                     tint: .orange
-                )
-            } else if profile.frameGeneration.enabled && !profile.overlayCompatibleFullscreen {
-                CompatibilityCallout(
-                    text: String(localized: "For the independent overlay to stay aligned, Borderless / Virtual desktop launch is recommended."),
-                    symbol: "rectangle.on.rectangle",
-                    tint: .blue
                 )
             }
         }
@@ -867,6 +857,25 @@ struct WineCompatibilityConfigurator: View {
             set: {
                 profile.temporalUpscaling.mode = $0
                 profile.upscalingBridge = $0 == .metalFXBridge ? .ngxToMetalFX : .none
+            }
+        )
+    }
+
+    private var optiScalerFrameGenerationEnabled: Bool {
+        profile.temporalUpscaling.optiScaler.frameGenerationEnabled
+    }
+
+    private var optiScalerFrameGenerationBinding: Binding<Bool> {
+        Binding(
+            get: { optiScalerFrameGenerationEnabled },
+            set: { enabled in
+                profile.temporalUpscaling.optiScaler.enabled = enabled || profile.temporalUpscaling.optiScaler.enabled
+                profile.temporalUpscaling.optiScaler.frameGeneration.mode = enabled ? .optiFG : .disabled
+                if enabled {
+                    profile.temporalUpscaling.mode = .optiScaler
+                } else if profile.temporalUpscaling.mode == .optiScaler {
+                    profile.temporalUpscaling.mode = .automatic
+                }
             }
         )
     }
@@ -1677,6 +1686,11 @@ private struct ComponentsAndPatchesView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(application.status == .running || application.status.isBusy)
+                Button("Remove", systemImage: "trash") {
+                    Task { await store.removeOptiScalerFromGame(for: application.id); refreshInspector() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(application.status == .running || application.status.isBusy)
             }
         }
     }
@@ -1693,6 +1707,15 @@ private struct ComponentsAndPatchesView: View {
             InspectorValueRow(title: "DLSSTweaks", value: inspector.dlsstweaks.version ?? String(localized: "Not installed"))
             InspectorValueRow(title: "DLSSTweaks controls", value: inspector.dlsstweaksCapabilities?.supportedControls.map(\.rawValue).sorted().joined(separator: ", ") ?? String(localized: "Not declared by component"))
             InspectorValueRow(title: "OptiScaler", value: inspector.optiScaler.version ?? String(localized: "Not installed"))
+            InspectorValueRow(title: "OptiScaler proxy", value: inspector.optiScalerProxy.selectedName ?? String(localized: "Unavailable"))
+            ForEach(inspector.optiScalerProxy.candidates, id: \.name) { candidate in
+                if !candidate.isAvailable {
+                    Text("\(candidate.name): \(candidate.detail)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
             InspectorValueRow(title: "MetalFX bridge", value: inspector.metalFX.available ? String(localized: "Available in runtime") : String(localized: "Unsupported / not detected"))
             InspectorValueRow(title: "Graphics stack", value: inspector.graphicsStack.backend.displayName)
             InspectorValueRow(title: "Runtime", value: inspector.runtimeDescription)

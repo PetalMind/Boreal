@@ -462,9 +462,6 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     /// Requested temporal path. `upscalingBridge` remains as a compatibility
     /// field for profiles written by older Boreal versions.
     var temporalUpscaling: TemporalUpscalingConfiguration = .default
-    /// Frame generation is a host-side enhancement. It is deliberately kept
-    /// separate from the Wine renderer and is disabled for new profiles.
-    var frameGeneration: FrameGenerationRuntimeConfiguration = .default
     var overlayCompatibleFullscreen = true
     /// Selected CoreGraphics display ID for the Wine desktop; nil follows the main display.
     var overlayDisplayID: UInt32? = nil
@@ -477,7 +474,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
-        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, frameGeneration, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
+        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
         case disableSteamInputEquivalent, forceXInput, launchArguments, runtimeIDOverride, requiredDependencies
     }
 
@@ -543,7 +540,6 @@ extension WineCompatibilityProfile {
         } else {
             self.temporalUpscaling = .default
         }
-        frameGeneration = try values.decodeIfPresent(FrameGenerationRuntimeConfiguration.self, forKey: .frameGeneration) ?? .default
         overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? true
         overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
         debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false

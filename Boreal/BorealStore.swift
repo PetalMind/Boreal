@@ -117,7 +117,6 @@ final class BorealStore {
     private var performanceLogURLs: [UUID: URL] = [:]
     private var performanceProcessIDs: [UUID: [Int32]] = [:]
     private var performanceProcessTasks: [UUID: Task<Void, Never>] = [:]
-    private var frameGenerationStartTasks: [UUID: Task<Void, Never>] = [:]
     private var observedGameProcesses: Set<UUID> = []
     private var activeEnvironments: [UUID: ManagedBorealEnvironment] = [:]
     private var activeRuntimes: [UUID: InstalledRuntime] = [:]
@@ -832,16 +831,29 @@ final class BorealStore {
         let plan = lastLaunchPlans[applicationID]
         let diagnosis = lastLaunchDiagnoses[applicationID]
         let configuration = await services.advancedConfigurationStore.configuration(for: applicationID)
-        let hostFrameGenerationConfiguration = compatibilityProfile(for: application).frameGeneration
         let temporalInspector = await temporalUpscalingInspector(for: applicationID)
+        let frameGenerationRuntimeEvidence: Any = FrameGenerationCoordinator.shared.runtimeEvidence(for: applicationID).map {
+            [
+                "installation": $0.installation.rawValue,
+                "process": $0.process.rawValue,
+                "log": $0.log.rawValue,
+                "detail": $0.detail ?? NSNull()
+            ] as [String: Any]
+        } ?? NSNull()
         let optiScalerConfiguration: Any
         if let temporalInspector {
             let value = temporalInspector.temporalPlan.requested.optiScaler
             optiScalerConfiguration = [
                 "enabled": value.enabled,
+                "componentVersion": value.componentVersion ?? NSNull(),
                 "inputAPI": value.inputAPI?.rawValue ?? NSNull(),
                 "outputUpscaler": value.outputUpscaler?.rawValue ?? NSNull(),
                 "frameGeneration": value.frameGeneration.mode.rawValue,
+                "frameGenerationInput": value.frameGeneration.input.rawValue,
+                "frameGenerationOutput": value.frameGeneration.output.rawValue,
+                "hudHandling": value.frameGeneration.hudHandling.rawValue,
+                "debugView": value.frameGeneration.debugView,
+                "loggingEnabled": value.frameGeneration.loggingEnabled,
                 "proxyStrategy": value.proxyStrategy.displayName
             ] as [String: Any]
         } else {
@@ -909,6 +921,29 @@ final class BorealStore {
                 "requiredDLLs": inspector.metalFX.requiredDLLs
             ]
         }
+        let optiScalerLog = inspectorDictionary { inspector in
+            guard let logURL = OptiScalerLogLocator.existingLog(gameRoot: inspector.game.gameRoot),
+                  let data = try? Data(contentsOf: logURL) else {
+                return [
+                    "available": false,
+                    "state": "missing"
+                ]
+            }
+            let state: String = switch OptiScalerLogParser.state(for: data) {
+            case .noLog: "unclassified"
+            case .waitingForUpscaler: "waitingForUpscaler"
+            case .available: "available"
+            case .initialized: "initialized"
+            case .active: "active"
+            case .degraded: "degraded"
+            }
+            return [
+                "available": true,
+                "path": redactedPath(logURL.path),
+                "state": state,
+                "tail": String(data: Data(data.suffix(8 * 1024)), encoding: .utf8) ?? ""
+            ]
+        }
         let ngxDebugIndicator = inspectorDictionary { inspector in
             [
                 "available": inspector.ngxDebugIndicator.available,
@@ -953,6 +988,8 @@ final class BorealStore {
         payload["dlsstweaks"] = dlsstweaks
         payload["dlsstweaksConfiguration"] = dlsstweaksConfiguration
         payload["optiScaler"] = optiScaler
+        payload["optiScalerLog"] = optiScalerLog
+        payload["frameGenerationRuntimeEvidence"] = frameGenerationRuntimeEvidence
         payload["optiScalerConfiguration"] = optiScalerConfiguration
         payload["temporalComponentVersions"] = temporalInspector?.temporalPlan.componentVersions ?? [:]
         payload["metalFXCapability"] = metalFXCapability
@@ -961,14 +998,27 @@ final class BorealStore {
         payload["temporalCompatibilityReason"] = temporalInspector?.temporalPlan.reason ?? NSNull()
         payload["temporalInjectionSafety"] = temporalInspector?.temporalPlan.injectionSafety.rawValue ?? NSNull()
         payload["temporalProxyStrategy"] = temporalInspector?.temporalPlan.proxyStrategy.displayName ?? NSNull()
+        payload["optiScalerProxy"] = temporalInspector.map { proxy in
+            [
+                "selected": proxy.optiScalerProxy.selectedName ?? NSNull(),
+                "candidates": proxy.optiScalerProxy.candidates.map {
+                    [
+                        "name": $0.name,
+                        "classification": $0.classification?.rawValue ?? NSNull(),
+                        "available": $0.isAvailable,
+                        "detail": $0.detail
+                    ] as [String: Any]
+                }
+            ] as [String: Any]
+        } ?? NSNull()
         payload["frameGeneration"] = temporalInspector?.game.frameGeneration.support.rawValue ?? NSNull()
-        payload["hostFrameGenerationConfiguration"] = [
-            "enabled": hostFrameGenerationConfiguration.enabled,
-            "backend": hostFrameGenerationConfiguration.backend.rawValue,
-            "targetFPS": hostFrameGenerationConfiguration.targetFPS ?? NSNull(),
-            "verticalSyncEnabled": hostFrameGenerationConfiguration.verticalSyncEnabled,
-            "lowLatencyModeEnabled": hostFrameGenerationConfiguration.lowLatencyModeEnabled,
-            "showStatistics": hostFrameGenerationConfiguration.showStatistics
+        payload["optiScalerFrameGenerationConfiguration"] = [
+            "enabled": temporalInspector?.temporalPlan.requested.optiScaler.frameGenerationEnabled ?? false,
+            "input": temporalInspector?.temporalPlan.requested.optiScaler.frameGeneration.input.rawValue ?? NSNull(),
+            "output": temporalInspector?.temporalPlan.requested.optiScaler.frameGeneration.output.rawValue ?? NSNull(),
+            "hudHandling": temporalInspector?.temporalPlan.requested.optiScaler.frameGeneration.hudHandling.rawValue ?? NSNull(),
+            "debugView": temporalInspector?.temporalPlan.requested.optiScaler.frameGeneration.debugView ?? false,
+            "loggingEnabled": temporalInspector?.temporalPlan.requested.optiScaler.frameGeneration.loggingEnabled ?? false
         ] as [String: Any]
         payload["ngxDebugIndicator"] = ngxDebugIndicator
         payload["temporalConfigurationFingerprint"] = plan?.configurationFingerprint ?? NSNull()
@@ -1799,6 +1849,10 @@ final class BorealStore {
                 )
                 guard !Task.isCancelled else { return }
                 self.performanceProcessIDs[appID] = ids
+                FrameGenerationCoordinator.shared.updateGamePIDs(
+                    applicationID: appID,
+                    gamePIDs: ids
+                )
                 if !ids.isEmpty,
                    let processName = session.processExecutableName,
                    self.observedGameProcesses.insert(appID).inserted,
@@ -1817,12 +1871,6 @@ final class BorealStore {
         performanceProcessTasks[appID] = nil
         performanceProcessIDs[appID] = nil
         observedGameProcesses.remove(appID)
-        stopFrameGenerationStart(for: appID)
-    }
-
-    private func stopFrameGenerationStart(for appID: UUID) {
-        frameGenerationStartTasks[appID]?.cancel()
-        frameGenerationStartTasks[appID] = nil
     }
 
     func refreshSteamMetadataIfNeeded(for game: StoreLibraryGame) {
@@ -3879,7 +3927,7 @@ final class BorealStore {
         let componentReferences = await Task.detached(priority: .utility) {
             (
                 temporalComponentStore.reference(for: .dlsstweaks),
-                temporalComponentStore.reference(for: .optiScaler)
+                temporalComponentStore.reference(for: .optiScaler, version: temporalConfiguration.optiScaler.componentVersion)
             )
         }.value
         let temporalPlan = TemporalUpscalingResolutionEngine.resolve(
@@ -3890,8 +3938,20 @@ final class BorealStore {
             metalFX: metalFX,
             dlsstweaks: componentReferences.0,
             optiScaler: componentReferences.1,
-            applicationID: applicationID
+            applicationID: applicationID,
+            graphicsAPI: resolvedAPI,
+            executableArchitecture: WindowsExecutableArchitecture.inspect(
+                launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) } ?? launchWindowsPlan.executable
+            )
         )
+        if temporalPlan.effective == .optiScaler {
+            let executable = launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) }
+                ?? launchWindowsPlan.executable
+            _ = try? await services.optiScalerManager.reconfigure(
+                gameRoot: executable.deletingLastPathComponent().standardizedFileURL,
+                configuration: temporalPlan.requested.optiScaler
+            )
+        }
         temporalWindowsPlan.temporalUpscalingPlan = temporalPlan
         temporalWindowsPlan.configurationFingerprint = ConfigurationFingerprint.make(
             runtimeFingerprint: "\(runtime.id):\(runtime.wineVersion)",
@@ -6458,7 +6518,6 @@ final class BorealStore {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
             requestedStops.insert(id)
-            stopFrameGenerationStart(for: id)
             await FrameGenerationCoordinator.shared.stop(applicationID: id)
             var stopError: Error?
             if applications[index].usesSharedSteamGameSession {
@@ -6917,7 +6976,6 @@ final class BorealStore {
             startPerformanceProcessTracking(session: session, environment: managed, runtime: runtime, appID: id)
             startFrameGeneration(
                 appID: id,
-                session: session,
                 profile: profile
             )
             monitorLauncher(session: session, appID: id)
@@ -7222,7 +7280,7 @@ final class BorealStore {
                     activeSessions[appID] = recoveredSession
                     performanceLogURLs[appID] = recoveredSession.stderrLog
                     startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
-                    startFrameGeneration(appID: appID, session: recoveredSession, profile: compatibilityProfile(for: app))
+                    startFrameGeneration(appID: appID, profile: compatibilityProfile(for: app))
                 }
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 executionStates[appID] = .running
@@ -7246,7 +7304,7 @@ final class BorealStore {
                 activeSessions[appID] = recoveredSession
                 performanceLogURLs[appID] = recoveredSession.stderrLog
                 startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
-                startFrameGeneration(appID: appID, session: recoveredSession, profile: compatibilityProfile(for: app))
+                startFrameGeneration(appID: appID, profile: compatibilityProfile(for: app))
                 environmentSessionStates[managed.id] = .active
                 if let index = applications.firstIndex(where: { $0.id == appID }) { applications[index].status = .running }
                 executionStates[appID] = .running
@@ -7329,7 +7387,6 @@ final class BorealStore {
 
     private func startFrameGeneration(
         appID: UUID,
-        session: WindowsProcessSession,
         profile: WineCompatibilityProfile
     ) {
         guard let application = application(id: appID) else {
@@ -7341,71 +7398,33 @@ final class BorealStore {
             return
         }
 
-        let configuration = profile.frameGeneration
+        let configuration = profile.temporalUpscaling.optiScaler
         frameGenerationLogger.info(
-            "Frame Generation launch requested; appID=\(appID.uuidString, privacy: .public), enabled=\(configuration.enabled, privacy: .public), backend=\(configuration.backend.rawValue, privacy: .public), sessionPID=\(session.launcherPID, privacy: .public), expectedProcess=\(session.processExecutableName ?? "nil", privacy: .public), expectedPath=\(session.processExecutablePath ?? "nil", privacy: .public)"
+            "In-process Frame Generation launch requested; appID=\(appID.uuidString, privacy: .public), enabled=\(configuration.frameGenerationEnabled, privacy: .public), input=\(configuration.frameGeneration.input.rawValue, privacy: .public), output=\(configuration.frameGeneration.output.rawValue, privacy: .public)"
         )
 
-        stopFrameGenerationStart(for: appID)
-        guard configuration.enabled,
-              configuration.backend != .off,
-              let environment = activeEnvironments[appID],
-              let runtime = activeRuntimes[appID] else {
-            // Retire a previous provider without attempting to resolve a
-            // capture window from the launcher PID.
-            frameGenerationLogger.error("Frame Generation start skipped: disabled or runtime/environment unavailable; appID=\(appID.uuidString, privacy: .public)")
+        guard configuration.frameGenerationEnabled,
+              let launchPlan = lastLaunchPlans[appID],
+              launchPlan.temporalUpscalingPlan?.effective == .optiScaler else {
+            frameGenerationLogger.info("In-process Frame Generation is disabled or no launch plan is available; appID=\(appID.uuidString, privacy: .public)")
             FrameGenerationCoordinator.shared.requestStop(applicationID: appID)
             return
         }
 
-        let processRunner = services.processRunner
-        frameGenerationStartTasks[appID] = Task { @MainActor [weak self] in
-            // The launch session can initially contain only a Wine wrapper or
-            // a store launcher. Wait for the process that matches the actual
-            // game executable before resolving the capture window.
-            var lastProcessIDs: [Int32] = []
-            for attempt in 0..<80 {
-                guard !Task.isCancelled else { return }
-                let gameProcessIDs = await processRunner.gameProcessIDs(
-                    session: session,
-                    environment: environment,
-                    runtime: runtime
-                )
-                guard !Task.isCancelled else { return }
-                if gameProcessIDs != lastProcessIDs {
-                    lastProcessIDs = gameProcessIDs
-                    let processList = gameProcessIDs.map(String.init).joined(separator: ",")
-                    self?.frameGenerationLogger.info(
-                        "Frame Generation game-process discovery changed; appID=\(appID.uuidString, privacy: .public), attempt=\(attempt, privacy: .public), pids=\(processList.isEmpty ? "none" : processList, privacy: .public)"
-                    )
-                }
-                if let gamePID = gameProcessIDs.first {
-                    guard let self,
-                          self.activeSessions[appID]?.id == session.id,
-                          self.applications.first(where: { $0.id == appID })?.status == .running else {
-                        self?.frameGenerationLogger.error("Frame Generation start cancelled: launch session is no longer active; appID=\(appID.uuidString, privacy: .public), pid=\(gamePID, privacy: .public)")
-                        return
-                    }
-                    self.frameGenerationStartTasks[appID] = nil
-                    self.frameGenerationLogger.info(
-                        "Starting Frame Generation coordinator with game PID; appID=\(appID.uuidString, privacy: .public), gamePID=\(gamePID, privacy: .public)"
-                    )
-                    FrameGenerationCoordinator.shared.start(
-                        applicationID: appID,
-                        gamePID: gamePID,
-                        configuration: configuration
-                    )
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-            if !Task.isCancelled {
-                self?.frameGenerationStartTasks[appID] = nil
-                self?.frameGenerationLogger.error(
-                    "Frame Generation start timed out waiting for the expected game process; appID=\(appID.uuidString, privacy: .public), expectedProcess=\(session.processExecutableName ?? "nil", privacy: .public), expectedPath=\(session.processExecutablePath ?? "nil", privacy: .public)"
-                )
-            }
+        let executable = launchPlan.processExecutablePath.map { URL(fileURLWithPath: $0) } ?? launchPlan.executable
+        let gameRoot = executable.deletingLastPathComponent().standardizedFileURL
+        guard !OptiScalerRecoveryManager.shouldDisable(gameRoot: gameRoot) else {
+            frameGenerationLogger.error("OptiFG remains disabled by crash-loop protection; appID=\(appID.uuidString, privacy: .public)")
+            FrameGenerationCoordinator.shared.requestStop(applicationID: appID)
+            return
         }
+        FrameGenerationCoordinator.shared.start(
+            applicationID: appID,
+            gamePID: activeSessions[appID]?.launcherPID,
+            gameRoot: gameRoot,
+            executable: executable,
+            configuration: configuration
+        )
     }
 
     private func scheduleCloudSaveUpload(appID: UUID) {
@@ -8138,7 +8157,9 @@ final class BorealStore {
             temporalConfiguration.mode = .metalFXBridge
         }
         let dlsstweaks = await services.dlsstweaksManager.installedReference()
-        let optiScaler = await services.optiScalerManager.installedReference()
+        let optiScaler = await services.optiScalerManager.installedReference(
+            version: temporalConfiguration.optiScaler.componentVersion
+        )
         let dlsstweaksCapabilities: DLSSTweaksCapabilities? = if let dlsstweaks {
             // The manager exposes only controls declared by this exact
             // component version; no release-wide assumptions are made here.
@@ -8158,7 +8179,17 @@ final class BorealStore {
             metalFX: metalFX,
             dlsstweaks: dlsstweaks,
             optiScaler: optiScaler,
-            applicationID: applicationID
+            applicationID: applicationID,
+            graphicsAPI: profile.graphicsAPI ?? GraphicsAPIDetector.detect(executable: executable) ?? .automatic,
+            executableArchitecture: WindowsExecutableArchitecture.inspect(executable)
+        )
+        let graphicsExecutable = OptiScalerProxyResolver.resolveExecutable(
+            gameRoot: gameRoot,
+            preferred: executable
+        )
+        let optiScalerProxy = OptiScalerProxyResolver.inspect(
+            gameExecutable: graphicsExecutable,
+            strategy: temporalConfiguration.optiScaler.proxyStrategy
         )
         let dlssRuntime = await services.dlssRuntimeManager.detect(in: gameRoot)
         let ngxIndicator = await services.environmentManager.ngxDebugIndicatorState(in: managed, runtime: runtime)
@@ -8170,6 +8201,7 @@ final class BorealStore {
             dlsstweaks: TemporalComponentStatus(reference: dlsstweaks),
             dlsstweaksCapabilities: dlsstweaksCapabilities,
             optiScaler: TemporalComponentStatus(reference: optiScaler),
+            optiScalerProxy: optiScalerProxy,
             metalFX: metalFX,
             temporalPlan: plan,
             graphicsStack: graphics,
@@ -8289,24 +8321,35 @@ final class BorealStore {
               !application.status.isBusy else { return }
         runtimeOperationDetail = "Backing up game files and installing OptiScaler next to the game executable…"
         defer { runtimeOperationDetail = nil }
-        let gameRoot = temporalGameRoot(for: application)
-        let executable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
+        let requestedGameRoot = temporalGameRoot(for: application)
+        let requestedExecutable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
             ?? URL(fileURLWithPath: application.executablePath)
+        let executable = OptiScalerProxyResolver.resolveExecutable(
+            gameRoot: requestedGameRoot,
+            preferred: requestedExecutable
+        )
+        let gameRoot = executable.deletingLastPathComponent().standardizedFileURL
+        // Explicit reinstall/reconfigure is the user-visible "Try again"
+        // action after crash-loop protection has disabled this game.
+        OptiScalerRecoveryManager.reset(gameRoot: gameRoot)
         let game = await services.gameUpscalerAnalyzer.analyze(gameRoot: gameRoot, executable: executable)
         let profile = compatibilityProfile(for: application)
         var configuration = profile.temporalUpscaling.optiScaler
         configuration.enabled = true
+        configuration.componentVersion = reference.version
         do {
             let receipt = try await services.optiScalerManager.inject(
                 reference: reference,
                 configuration: configuration,
                 gameRoot: gameRoot,
+                gameExecutable: executable,
                 applicationID: applicationID,
                 targetArchitecture: WindowsExecutableArchitecture.inspect(executable),
                 antiCheat: game.antiCheat,
                 confirmUnknownInjectionPolicy: confirmUnknownPolicy
             )
             if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                configuration.proxyStrategy = receipt.proxyName.map(ProxyDLLStrategy.named) ?? configuration.proxyStrategy
                 applications[index].compatibilityProfile?.temporalUpscaling.mode = .optiScaler
                 applications[index].compatibilityProfile?.temporalUpscaling.optiScaler = configuration
                 applications[index].lastResult = "OptiScaler \(reference.version) injected with receipt \(receipt.id.uuidString.prefix(8))"
@@ -8315,6 +8358,40 @@ final class BorealStore {
             }
         } catch {
             present(error, title: "OptiScaler couldn’t be injected", stage: "Backing up game files and applying the managed DLL transaction")
+        }
+    }
+
+    func removeOptiScalerFromGame(for applicationID: UUID) async {
+        guard let application = applications.first(where: { $0.id == applicationID }),
+              application.status != .running,
+              !application.status.isBusy else { return }
+        let requestedGameRoot = temporalGameRoot(for: application)
+        let requestedExecutable = lastLaunchPlans[applicationID]?.processExecutablePath.map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: application.executablePath)
+        let executable = OptiScalerProxyResolver.resolveExecutable(
+            gameRoot: requestedGameRoot,
+            preferred: requestedExecutable
+        )
+        let gameRoot = executable.deletingLastPathComponent().standardizedFileURL
+        do {
+            let restored = try await services.optiScalerManager.restoreManagedInstallations(gameRoot: gameRoot)
+            OptiScalerRecoveryManager.reset(gameRoot: gameRoot)
+            if let index = applications.firstIndex(where: { $0.id == applicationID }) {
+                applications[index].compatibilityProfile?.temporalUpscaling.optiScaler.enabled = false
+                applications[index].compatibilityProfile?.temporalUpscaling.optiScaler.componentVersion = nil
+                applications[index].compatibilityProfile?.temporalUpscaling.optiScaler.proxyStrategy = .automatic
+                applications[index].compatibilityProfile?.temporalUpscaling.optiScaler.frameGeneration.mode = .disabled
+                if applications[index].compatibilityProfile?.temporalUpscaling.mode == .optiScaler {
+                    applications[index].compatibilityProfile?.temporalUpscaling.mode = .automatic
+                }
+                applications[index].lastResult = restored
+                    ? "OptiScaler was removed from the game and the original files were restored"
+                    : "OptiScaler was already absent from the game"
+                applications[index].lastErrorDetail = nil
+                save()
+            }
+        } catch {
+            present(error, title: "OptiScaler couldn’t be removed", stage: "Restoring the protected original game files")
         }
     }
 

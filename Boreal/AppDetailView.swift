@@ -113,11 +113,10 @@ struct AppDetailView: View {
                 if app.status == .needsAttention { attentionCard }
 
                 if !app.isInstallerOnly,
-                   store.compatibilityProfile(for: app).frameGeneration.enabled
+                   store.compatibilityProfile(for: app).temporalUpscaling.optiScaler.frameGenerationEnabled
                 {
                     FrameGenerationStatusView(
-                        applicationID: app.id,
-                        showsStatistics: store.compatibilityProfile(for: app).frameGeneration.showStatistics
+                        applicationID: app.id
                     )
                 }
 

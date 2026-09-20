@@ -641,8 +641,97 @@ nonisolated enum FrameGenerationMode: String, Codable, CaseIterable, Sendable, H
     var id: String { rawValue }
 }
 
+nonisolated enum OptiScalerFGInput: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case nativeDLSSG
+    case nativeFSR31
+    case nativeFSR30
+    case optiFG
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .nativeDLSSG: "Native DLSS-G"
+        case .nativeFSR31: "Native FSR 3.1"
+        case .nativeFSR30: "Native FSR 3.0"
+        case .optiFG: "OptiFG / Upscaler"
+        }
+    }
+
+    var iniValue: String {
+        switch self {
+        case .automatic, .optiFG: "upscaler"
+        case .nativeDLSSG: "dlssg"
+        case .nativeFSR31: "fsrfg"
+        case .nativeFSR30: "fsrfg30"
+        }
+    }
+}
+
+nonisolated enum OptiScalerFGOutput: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case fsr
+    case xeFG
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .fsr: "FSR Frame Generation"
+        case .xeFG: "XeFG"
+        }
+    }
+
+    var iniValue: String {
+        switch self {
+        case .automatic, .fsr: "fsrfg"
+        case .xeFG: "xefg"
+        }
+    }
+}
+
+nonisolated enum OptiScalerHUDHandling: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case off
+    case compatibility
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .off: "Off"
+        case .compatibility: "Compatibility"
+        }
+    }
+}
+
 nonisolated struct FrameGenerationConfiguration: Codable, Sendable, Hashable {
     var mode: FrameGenerationMode = .disabled
+    var input: OptiScalerFGInput = .automatic
+    var output: OptiScalerFGOutput = .fsr
+    var hudHandling: OptiScalerHUDHandling = .automatic
+    var debugView = false
+    var loggingEnabled = true
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, input, output, hudHandling, debugView, loggingEnabled
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try values.decodeIfPresent(FrameGenerationMode.self, forKey: .mode) ?? .disabled
+        input = try values.decodeIfPresent(OptiScalerFGInput.self, forKey: .input) ?? .automatic
+        output = try values.decodeIfPresent(OptiScalerFGOutput.self, forKey: .output) ?? .fsr
+        hudHandling = try values.decodeIfPresent(OptiScalerHUDHandling.self, forKey: .hudHandling) ?? .automatic
+        debugView = try values.decodeIfPresent(Bool.self, forKey: .debugView) ?? false
+        loggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .loggingEnabled) ?? true
+    }
 }
 
 nonisolated enum DLSSTweaksControl: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
@@ -739,10 +828,31 @@ nonisolated enum ProxyDLLStrategy: Codable, Sendable, Hashable {
 
 nonisolated struct OptiScalerConfiguration: Codable, Sendable, Hashable {
     var enabled = false
+    var componentVersion: String?
     var inputAPI: GraphicsAPI?
     var outputUpscaler: TemporalUpscalerOutput?
     var frameGeneration = FrameGenerationConfiguration()
     var proxyStrategy: ProxyDLLStrategy = .automatic
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, componentVersion, inputAPI, outputUpscaler, frameGeneration, proxyStrategy
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        componentVersion = try values.decodeIfPresent(String.self, forKey: .componentVersion)
+        inputAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .inputAPI)
+        outputUpscaler = try values.decodeIfPresent(TemporalUpscalerOutput.self, forKey: .outputUpscaler)
+        frameGeneration = try values.decodeIfPresent(FrameGenerationConfiguration.self, forKey: .frameGeneration) ?? FrameGenerationConfiguration()
+        proxyStrategy = try values.decodeIfPresent(ProxyDLLStrategy.self, forKey: .proxyStrategy) ?? .automatic
+    }
+
+    var frameGenerationEnabled: Bool {
+        enabled && frameGeneration.mode == .optiFG
+    }
 }
 
 nonisolated struct TemporalUpscalingConfiguration: Codable, Sendable, Hashable {
@@ -869,9 +979,15 @@ nonisolated struct TemporalUpscalingPlan: Codable, Sendable, Hashable {
             "dlsstweaks.autoExposure=\(dlsstweaks.autoExposureOverride)",
             "dlsstweaks.debugIndicator=\(dlsstweaks.debugIndicatorEnabled)",
             "optiscaler.enabled=\(optiScaler.enabled)",
+            "optiscaler.component=\(optiScaler.componentVersion ?? "latest")",
             "optiscaler.input=\(optiScaler.inputAPI?.rawValue ?? "automatic")",
             "optiscaler.output=\(optiScaler.outputUpscaler?.rawValue ?? "native")",
             "optiscaler.fg=\(optiScaler.frameGeneration.mode.rawValue)",
+            "optiscaler.fgInput=\(optiScaler.frameGeneration.input.rawValue)",
+            "optiscaler.fgOutput=\(optiScaler.frameGeneration.output.rawValue)",
+            "optiscaler.hud=\(optiScaler.frameGeneration.hudHandling.rawValue)",
+            "optiscaler.debugView=\(optiScaler.frameGeneration.debugView)",
+            "optiscaler.logging=\(optiScaler.frameGeneration.loggingEnabled)",
             "optiscaler.proxy=\(optiScaler.proxyStrategy.displayName)"
         ]
         return fingerprintSegments.joined(separator: ";")
@@ -1028,7 +1144,9 @@ nonisolated enum TemporalUpscalingResolutionEngine {
         metalFX: MetalFXBridgeCapabilities,
         dlsstweaks: TemporalComponentReference?,
         optiScaler: TemporalComponentReference?,
-        applicationID: UUID = UUID()
+        applicationID: UUID = UUID(),
+        graphicsAPI: GraphicsAPI = .automatic,
+        executableArchitecture: WindowsExecutableArchitecture = .unknown
     ) -> TemporalUpscalingPlan {
         let injectionSafety: DLLInjectionSafety = if game.antiCheat.detected {
             .blockedAntiCheat
@@ -1118,11 +1236,32 @@ nonisolated enum TemporalUpscalingResolutionEngine {
                 guard [.d3dMetal, .dxmt, .dxvk, .vkd3d].contains(graphicsStack.backend) else {
                     return unavailable("OptiScaler requires a Direct3D translation stack with a detected temporal interface.")
                 }
+                if configuration.optiScaler.frameGeneration.mode == .optiFG {
+                    guard [.automatic, .fsr].contains(configuration.optiScaler.frameGeneration.output) else {
+                        return unavailable("XeFG output is not part of the supported OptiFG deployment yet. Select FSR Frame Generation.")
+                    }
+                    guard graphicsAPI == .directX12 else {
+                        return unavailable("OptiFG requires a DirectX 12 game renderer.")
+                    }
+                    guard executableArchitecture == .unknown || executableArchitecture == .x86_64 else {
+                        return unavailable("OptiFG requires an x86_64 game executable.")
+                    }
+                    guard [.d3dMetal, .vkd3d].contains(graphicsStack.backend) else {
+                        return unavailable("OptiFG is currently available only through D3DMetal or VKD3D-Proton.")
+                    }
+                }
                 guard injectionSafety != .blockedAntiCheat else { return unavailable(safetyDetail) }
+                let compatibility: TemporalBridgeCompatibility = if configuration.optiScaler.frameGeneration.mode == .optiFG {
+                    graphicsStack.backend == .d3dMetal
+                        ? .experimental(reason: "OptiFG is loaded inside the DX12 process through D3DMetal; this renderer path is experimental on macOS.")
+                        : .candidate(reason: "OptiFG is loaded inside the DX12 process through VKD3D-Proton; the backend is supported, but this game's runtime behavior remains unverified.")
+                } else {
+                    .experimental(reason: "OptiScaler has not been live verified for this game, renderer and macOS runtime.")
+                }
                 return TemporalUpscalingPlan(
                     requested: configuration,
                     available: true,
-                    compatibility: .experimental(reason: "OptiScaler has not been live verified for this game, renderer and macOS runtime."),
+                    compatibility: compatibility,
                     effective: .optiScaler,
                     reason: "OptiScaler is available after explicit installation; launch injection still requires user confirmation.",
                     injectionSafety: injectionSafety,
@@ -1187,7 +1326,9 @@ actor TemporalUpscalingResolver {
         metalFX: MetalFXBridgeCapabilities,
         dlsstweaks: TemporalComponentReference?,
         optiScaler: TemporalComponentReference?,
-        applicationID: UUID
+        applicationID: UUID,
+        graphicsAPI: GraphicsAPI = .automatic,
+        executableArchitecture: WindowsExecutableArchitecture = .unknown
     ) -> TemporalUpscalingPlan {
         TemporalUpscalingResolutionEngine.resolve(
             game: game,
@@ -1197,7 +1338,9 @@ actor TemporalUpscalingResolver {
             metalFX: metalFX,
             dlsstweaks: dlsstweaks,
             optiScaler: optiScaler,
-            applicationID: applicationID
+            applicationID: applicationID,
+            graphicsAPI: graphicsAPI,
+            executableArchitecture: executableArchitecture
         )
     }
 }
@@ -1597,10 +1740,80 @@ actor OptiScalerManager {
 
     func validate(_ reference: TemporalComponentReference) -> Bool { store.contains(reference) }
 
+    /// Applies changed Boreal settings to the already installed OptiScaler
+    /// transaction without replacing its proxy or losing the original INI.
+    /// Launch-plan creation calls this just before a game starts, so changing
+    /// the per-game settings does not require copying DLLs again.
+    func reconfigure(
+        gameRoot: URL,
+        configuration: OptiScalerConfiguration
+    ) throws -> Bool {
+        let root = gameRoot.standardizedFileURL
+        let injections = root.appending(path: ".boreal-temporal-upscaling/injections", directoryHint: .isDirectory)
+        let decoder = TemporalComponentSecurity.makeDecoder()
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: injections,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return false }
+        guard let entry = entries.compactMap({ entry -> (ManagedInjectionReceipt, URL)? in
+            guard let data = try? Data(contentsOf: entry.appending(path: "receipt.json")),
+                  let receipt = try? decoder.decode(ManagedInjectionReceipt.self, from: data),
+                  receipt.bridgeID == "optiscaler",
+                  receipt.gameRootPath == root.path else { return nil }
+            return (receipt, entry)
+        }).max(by: { $0.0.createdAt < $1.0.createdAt }) else { return false }
+
+        let target = root.appending(path: "OptiScaler.ini")
+        guard let file = entry.0.replacedFiles.first(where: {
+            $0.relativePath.caseInsensitiveCompare("OptiScaler.ini") == .orderedSame
+        }) else { return false }
+        guard FileManager.default.fileExists(atPath: target.path),
+              let expected = file.replacementSHA256,
+              (try? RuntimeSecurity.sha256(of: target)) == expected else {
+            throw TemporalInjectionError.modifiedManagedFile(target)
+        }
+
+        let generated = OptiScalerConfigurationWriter.render(
+            template: try Data(contentsOf: target),
+            configuration: configuration
+        )
+        try generated.write(to: target, options: .atomic)
+        let updatedFiles = entry.0.replacedFiles.map { item in
+            guard item.relativePath.caseInsensitiveCompare("OptiScaler.ini") == .orderedSame else { return item }
+            return ReplacedFileReceipt(
+                relativePath: item.relativePath,
+                originalExisted: item.originalExisted,
+                backupRelativePath: item.backupRelativePath,
+                originalSHA256: item.originalSHA256,
+                replacementSHA256: RuntimeSecurity.sha256(data: generated),
+                originalPermissions: item.originalPermissions
+            )
+        }
+        let updatedReceipt = ManagedInjectionReceipt(
+            id: entry.0.id,
+            applicationID: entry.0.applicationID,
+            bridgeID: entry.0.bridgeID,
+            componentVersion: entry.0.componentVersion,
+            createdFiles: entry.0.createdFiles,
+            createdDirectories: entry.0.createdDirectories,
+            replacedFiles: updatedFiles,
+            configurationFingerprint: makeConfigurationFingerprint(configuration),
+            createdAt: entry.0.createdAt,
+            gameRootPath: entry.0.gameRootPath,
+            previousConfigurationValues: entry.0.previousConfigurationValues,
+            proxyName: entry.0.proxyName
+        )
+        try TemporalComponentSecurity.makeEncoder()
+            .encode(updatedReceipt)
+            .write(to: entry.1.appending(path: "receipt.json"), options: .atomic)
+        return true
+    }
+
     func inject(
         reference: TemporalComponentReference,
         configuration: OptiScalerConfiguration,
         gameRoot: URL,
+        gameExecutable: URL? = nil,
         applicationID: UUID,
         targetArchitecture: WindowsExecutableArchitecture = .unknown,
         antiCheat: AntiCheatDetection = .unknown,
@@ -1613,20 +1826,49 @@ actor OptiScalerManager {
         if antiCheat.detected { throw TemporalInjectionError.antiCheatDetected }
         if !confirmUnknownInjectionPolicy { throw TemporalInjectionError.confirmationRequired }
         let manifest = try injectionManifest(for: reference)
+        let executable = gameExecutable ?? ((try? FileManager.default.contentsOfDirectory(
+            at: gameRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))?.first(where: { $0.pathExtension.caseInsensitiveCompare("exe") == .orderedSame })
+            ?? gameRoot.appending(path: "game.exe"))
+        guard let proxy = OptiScalerProxyResolver.resolve(
+            gameExecutable: executable,
+            strategy: configuration.proxyStrategy
+        ) else {
+            throw TemporalInjectionError.componentUnavailable(
+                "No safe OptiScaler proxy DLL name is available next to the actual game executable. Existing third-party DLLs were left untouched."
+            )
+        }
+        let componentRoot = store.componentURL(.optiScaler, version: reference.version)
+        let templateURL = componentRoot.appending(path: "OptiScaler.ini")
+        let targetConfigurationURL = gameRoot.appending(path: "OptiScaler.ini")
+        let existingConfigurationData = try? Data(contentsOf: targetConfigurationURL)
+        let templateData = existingConfigurationData
+            ?? (try? Data(contentsOf: templateURL))
+        let generatedConfiguration = OptiScalerConfigurationWriter.render(
+            template: templateData,
+            configuration: configuration
+        )
+        var installationConfiguration = configuration
+        installationConfiguration.proxyStrategy = .named(proxy.name)
+        let injectionFiles = manifest.files.filter {
+            $0.caseInsensitiveCompare("OptiScaler.ini") != .orderedSame
+        }
         return try TemporalComponentInjection.inject(
-            componentRoot: store.componentURL(.optiScaler, version: reference.version),
+            componentRoot: componentRoot,
             reference: reference,
-            relativeFiles: manifest.files,
+            relativeFiles: injectionFiles,
+            additionalFiles: ["OptiScaler.ini": generatedConfiguration],
             gameRoot: gameRoot,
             applicationID: applicationID,
             bridgeID: "optiscaler",
             targetArchitecture: targetArchitecture,
             antiCheat: antiCheat,
             confirmUnknownInjectionPolicy: confirmUnknownInjectionPolicy,
-            proxyStrategy: configuration.proxyStrategy == .automatic
-                ? manifest.proxyStrategy ?? .automatic
-                : configuration.proxyStrategy,
-            configurationFingerprint: makeConfigurationFingerprint(configuration)
+            proxyStrategy: .named(proxy.name),
+            configurationFingerprint: makeConfigurationFingerprint(installationConfiguration),
+            previousConfigurationValues: existingConfigurationData.map { OptiScalerConfigurationWriter.managedValues(from: $0) }
         )
     }
 
@@ -1634,9 +1876,31 @@ actor OptiScalerManager {
         try TemporalComponentInjection.restore(receipt, gameRoot: gameRoot)
     }
 
+    func restoreManagedInstallations(gameRoot: URL) throws -> Bool {
+        let root = gameRoot.standardizedFileURL
+        let injections = root.appending(path: ".boreal-temporal-upscaling/injections", directoryHint: .isDirectory)
+        let decoder = TemporalComponentSecurity.makeDecoder()
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: injections,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return false }
+        let receipts = entries.compactMap { entry -> ManagedInjectionReceipt? in
+            guard let data = try? Data(contentsOf: entry.appending(path: "receipt.json")),
+                  let receipt = try? decoder.decode(ManagedInjectionReceipt.self, from: data),
+                  receipt.bridgeID == "optiscaler",
+                  receipt.gameRootPath == root.path else { return nil }
+            return receipt
+        }.sorted { $0.createdAt > $1.createdAt }
+        for receipt in receipts {
+            try TemporalComponentInjection.restore(receipt, gameRoot: root)
+        }
+        return !receipts.isEmpty
+    }
+
     private func makeConfigurationFingerprint(_ configuration: OptiScalerConfiguration) -> String {
         [
             "enabled=\(configuration.enabled)",
+            "component=\(configuration.componentVersion ?? "latest")",
             "input=\(configuration.inputAPI?.rawValue ?? "automatic")",
             "output=\(configuration.outputUpscaler?.rawValue ?? "native")",
             "fg=\(configuration.frameGeneration.mode.rawValue)",
@@ -1672,10 +1936,12 @@ nonisolated struct ManagedInjectionReceipt: Codable, Identifiable, Sendable, Has
     let configurationFingerprint: String
     let createdAt: Date
     let gameRootPath: String
+    let previousConfigurationValues: [String: String]?
+    let proxyName: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, applicationID, bridgeID, componentVersion, createdFiles, createdDirectories
-        case replacedFiles, configurationFingerprint, createdAt, gameRootPath
+        case replacedFiles, configurationFingerprint, createdAt, gameRootPath, previousConfigurationValues, proxyName
     }
 
     init(
@@ -1688,7 +1954,9 @@ nonisolated struct ManagedInjectionReceipt: Codable, Identifiable, Sendable, Has
         replacedFiles: [ReplacedFileReceipt],
         configurationFingerprint: String,
         createdAt: Date,
-        gameRootPath: String
+        gameRootPath: String,
+        previousConfigurationValues: [String: String]? = nil,
+        proxyName: String? = nil
     ) {
         self.id = id
         self.applicationID = applicationID
@@ -1700,6 +1968,8 @@ nonisolated struct ManagedInjectionReceipt: Codable, Identifiable, Sendable, Has
         self.configurationFingerprint = configurationFingerprint
         self.createdAt = createdAt
         self.gameRootPath = gameRootPath
+        self.previousConfigurationValues = previousConfigurationValues
+        self.proxyName = proxyName
     }
 
     init(from decoder: Decoder) throws {
@@ -1714,6 +1984,8 @@ nonisolated struct ManagedInjectionReceipt: Codable, Identifiable, Sendable, Has
         configurationFingerprint = try values.decode(String.self, forKey: .configurationFingerprint)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         gameRootPath = try values.decode(String.self, forKey: .gameRootPath)
+        previousConfigurationValues = try values.decodeIfPresent([String: String].self, forKey: .previousConfigurationValues)
+        proxyName = try values.decodeIfPresent(String.self, forKey: .proxyName)
     }
 }
 
@@ -1735,6 +2007,7 @@ nonisolated enum TemporalComponentInjection {
         componentRoot: URL,
         reference: TemporalComponentReference,
         relativeFiles: [String],
+        additionalFiles: [String: Data] = [:],
         gameRoot: URL,
         applicationID: UUID,
         bridgeID: String,
@@ -1742,7 +2015,8 @@ nonisolated enum TemporalComponentInjection {
         antiCheat: AntiCheatDetection,
         confirmUnknownInjectionPolicy: Bool,
         proxyStrategy: ProxyDLLStrategy,
-        configurationFingerprint: String
+        configurationFingerprint: String,
+        previousConfigurationValues: [String: String]? = nil
     ) throws -> ManagedInjectionReceipt {
         guard !relativeFiles.isEmpty,
               relativeFiles.allSatisfy({
@@ -1778,14 +2052,19 @@ nonisolated enum TemporalComponentInjection {
         var destinations = Set<String>()
         var destinationNames = Set<String>()
         do {
-            for relativeSource in relativeFiles {
+            let entries: [(path: String, data: Data?)] = relativeFiles.map { ($0, nil) }
+                + additionalFiles.map { ($0.key, $0.value) }.sorted { $0.0 < $1.0 }
+            for entry in entries {
+                let relativeSource = entry.path
                 let source = componentRoot.appending(path: relativeSource)
-                guard fileManager.isReadableFile(atPath: source.path),
+                guard entry.data != nil || fileManager.isReadableFile(atPath: source.path),
                       destinations.insert(relativeSource).inserted else {
                     throw TemporalInjectionError.componentUnavailable(relativeSource)
                 }
                 let sourceName = URL(fileURLWithPath: relativeSource).lastPathComponent
-                let destinationName: String = if case .named(let proxy) = proxyStrategy,
+                let destinationName: String = if entry.data != nil {
+                    relativeSource
+                } else if case .named(let proxy) = proxyStrategy,
                                                  sourceName.lowercased() == "optiscaler.dll" {
                     proxy
                 } else if bridgeID == "optiscaler" {
@@ -1801,10 +2080,12 @@ nonisolated enum TemporalComponentInjection {
                 }
                 let destination = root.appending(path: destinationName)
                 let sourceValues = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                guard sourceValues.isRegularFile == true, sourceValues.isSymbolicLink != true else {
-                    throw TemporalInjectionError.componentUnavailable(relativeSource)
+                if entry.data == nil {
+                    guard sourceValues.isRegularFile == true, sourceValues.isSymbolicLink != true else {
+                        throw TemporalInjectionError.componentUnavailable(relativeSource)
+                    }
                 }
-                if targetArchitecture != .unknown, source.pathExtension.lowercased() == "dll" {
+                if entry.data == nil, targetArchitecture != .unknown, source.pathExtension.lowercased() == "dll" {
                     let architecture = WindowsPEInspection.inspect(source).architecture
                     if architecture != .unknown, architecture != targetArchitecture {
                         throw TemporalInjectionError.wrongArchitecture(source)
@@ -1826,7 +2107,12 @@ nonisolated enum TemporalComponentInjection {
                     }
                 }
 
-                let replacementSHA = try RuntimeSecurity.sha256(of: source)
+                let replacementData = try entry.data ?? Data(contentsOf: source)
+                let replacementSHA: String = if let data = entry.data {
+                    RuntimeSecurity.sha256(data: data)
+                } else {
+                    try RuntimeSecurity.sha256(of: source)
+                }
                 let backupPath = backupRoot.appending(path: destinationName)
                 var originalSHA: String?
                 var originalPermissions: Int?
@@ -1845,7 +2131,7 @@ nonisolated enum TemporalComponentInjection {
                     fileManager: fileManager,
                     createdDirectories: &createdDirectories
                 )
-                try Data(contentsOf: source).write(to: destination, options: .atomic)
+                try replacementData.write(to: destination, options: .atomic)
                 replaced.append(ReplacedFileReceipt(
                     relativePath: destinationName,
                     originalExisted: targetValues.isRegularFile == true,
@@ -1858,6 +2144,10 @@ nonisolated enum TemporalComponentInjection {
                 ))
             }
 
+            let installedProxyName: String? = switch proxyStrategy {
+            case .automatic: nil
+            case .named(let proxy): proxy
+            }
             let receipt = ManagedInjectionReceipt(
                 id: receiptID,
                 applicationID: applicationID,
@@ -1868,7 +2158,9 @@ nonisolated enum TemporalComponentInjection {
                 replacedFiles: replaced.sorted { $0.relativePath < $1.relativePath },
                 configurationFingerprint: configurationFingerprint,
                 createdAt: Date(),
-                gameRootPath: root.path
+                gameRootPath: root.path,
+                previousConfigurationValues: previousConfigurationValues,
+                proxyName: installedProxyName
             )
             try TemporalComponentSecurity.makeEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
             return receipt
@@ -2443,6 +2735,7 @@ nonisolated struct TemporalUpscalingInspectorSnapshot: Sendable, Hashable {
     let dlsstweaks: TemporalComponentStatus
     let dlsstweaksCapabilities: DLSSTweaksCapabilities?
     let optiScaler: TemporalComponentStatus
+    let optiScalerProxy: OptiScalerProxyInspection
     let metalFX: MetalFXBridgeCapabilities
     let temporalPlan: TemporalUpscalingPlan
     let graphicsStack: GraphicsStack
