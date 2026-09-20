@@ -1,4 +1,4 @@
-# Analiza kamery jazdy — v37
+# Analiza kamery jazdy — v40
 
 ## Model jazdy a odbiór przez kamerę
 
@@ -86,7 +86,13 @@ Dalsze klatki pieszo nie wywołują zapisu kamery.
 INI v2 ma wyłącznie sekcje jazdy. Wszystkie nowe opcje są czytane przez skrypt,
 ograniczane do dopuszczalnych zakresów i mają zgodne wartości domyślne.
 Starszy schemat zostaje odrzucony z komunikatem; obowiązują wtedy domyślne
-wartości v37. F11 zastępuje konfigurację dopiero po zbudowaniu całego kandydata.
+wartości v40. F11 zastępuje konfigurację dopiero po zbudowaniu całego kandydata.
+
+Przy wyjściu z auta poprzednia sesja kamery jest rozpoznawana niezależnie od
+chwilowego zaniku uchwytu pojazdu. Skrypt odrzuca również przejściowy wektor
+gracza `(0,0,0)`, a po utracie kamery pojazdu wykonuje `RESTORE_CAMERA_JUMPCUT`
+oraz `SET_CAMERA_BEHIND_PLAYER`. Dzięki temu natywna kamera pieszego nie
+dziedziczy stałej pozycji kamery samochodu podczas animacji drzwi.
 
 ## Granica walidacji
 

@@ -1,10 +1,12 @@
-Adaptive Driving Camera DE — v37, tylko pojazdy
-Build: ATC-DE-20260920-37-driving-only
+Adaptive Driving Camera DE — v40, tylko pojazdy
+Build: ATC-DE-20260920-40-pedestrian-behind-player-guard
 
 Gotowa paczka: AdaptiveThirdPersonCameraDE.zip
 Nowy preset: AdaptiveThirdPersonCamera.ini, config_version=2.
 
 Usunięto zmiany kamery pieszej, FOV chodzenia i celowania oraz ich ustawienia.
+Po wyjściu z auta mod jawnie oddaje kamerę za pieszym, aby przejście z kamery
+pojazdu nie interpolowało przez nieprawidłową pozycję pod mapą.
 Nowa kamera jazdy ma spójny kierunek skrętu, ograniczone preview, płynniejsze
 czucie przyspieszenia, stabilniejszy pion i powrót za auto po rozglądaniu.
 

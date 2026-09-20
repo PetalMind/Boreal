@@ -15,7 +15,7 @@ if (HOST !== "sa_unreal") {
 const PLAYER_ID = 0;
 const CONFIG_PATH = "./AdaptiveThirdPersonCamera.ini";
 const CONFIG_VERSION = 2;
-const MOD_BUILD_ID = "ATC-DE-20260920-37-driving-only";
+const MOD_BUILD_ID = "ATC-DE-20260920-40-pedestrian-behind-player-guard";
 const VK_TOGGLE = 120; // F9.
 const VK_RELOAD = 122; // F11.
 const VK_CAMERA_DISTANCE = 116; // F5.
@@ -83,6 +83,9 @@ const CameraControl = {
 const COLLISION_EMERGENCY_GRACE_MS = 220;
 const VEHICLE_ANCHOR_ACQUIRE_MS = 120;
 const VEHICLE_ENTER_FALLBACK_MS = 1400;
+const PLAYER_ORIGIN_GLITCH_RADIUS = 0.75;
+const PLAYER_ORIGIN_CONTINUITY_GUARD_MS = 1800;
+const PLAYER_ORIGIN_CONTINUITY_DISTANCE = 25;
 const MANUAL_COLLISION_UPDATE_MS = 16;
 const SPRING_PATH_VALIDATION_MS = 33;
 const CAMERA_GROUND_CLEARANCE = 0.35;
@@ -308,6 +311,12 @@ let keyboardInputCapability = null;
 let cameraPoseDiagnosticLogged = false;
 let lastLayoutDiagnosticRevision = -1;
 let lastVehicleGeometryDiagnosticKey = null;
+let lastInvalidVehicleAnchorDiagnosticAt = 0;
+let lastInvalidPlayerAnchorDiagnosticAt = 0;
+let lastPedestrianRestoreDiagnosticAt = 0;
+let lastReliablePlayerPosition = null;
+let lastReliablePlayerPositionAt = 0;
+let pedestrianRestoreArmedUntil = 0;
 const cameraLayoutController = {
   layout: 1,
   observedNativeMode: null,
@@ -411,6 +420,7 @@ while (true) {
   ) {
     cameraLayoutController.resetInputState();
     releaseCamera();
+    pedestrianRestoreArmedUntil = 0;
     lastActorSample = null;
     continue;
   }
@@ -419,10 +429,35 @@ while (true) {
   const sample = readActorSample(actor, now);
   if (!sample) {
     cameraLayoutController.resetInputState();
-    releaseCamera();
+
+    // Losing the vehicle anchor while CJ is confirmed on foot is an ownership
+    // boundary, not merely a missing sample. On SA:DE a normal RESTORE_CAMERA
+    // can interpolate from the fixed vehicle camera through an invalid pose
+    // during the exit animation. RestoreJumpcut plus SetBehindPlayer returns
+    // ownership directly to the native pedestrian camera behind CJ.
+    const exitState = readPlayerVehicleState(actor);
+    const hadVehicleCameraSession = now <= pedestrianRestoreArmedUntil ||
+      !!lastActorSample?.vehicle || cameraApplied || vehicleFovOwned ||
+      vehicleSessionFov !== null || nativeMouseBridgeActive;
+    const confirmedPedestrianExit = hadVehicleCameraSession && exitState.isOnFoot;
+    releaseCamera(confirmedPedestrianExit);
+    if (confirmedPedestrianExit) pedestrianRestoreArmedUntil = 0;
+    if (confirmedPedestrianExit && now - lastPedestrianRestoreDiagnosticAt >= 500) {
+      lastPedestrianRestoreDiagnosticAt = now;
+      log(
+        "Adaptive Third-Person Camera vehicle -> onFoot; " +
+          "restored native pedestrian camera behind player with jumpcut."
+      );
+    }
     lastActorSample = null;
     continue;
   }
+
+  // Keep a short-lived exit latch even if the DE wrapper drops the vehicle
+  // handle one or two frames before IS_CHAR_ON_FOOT becomes authoritative.
+  // Without this latch the first bad frame can clear lastActorSample and the
+  // later confirmed on-foot frame would miss the jumpcut restoration.
+  pedestrianRestoreArmedUntil = now + 3000;
 
   // During the enter animation, and for a short period after the game first
   // reports DRIVING, keep the native camera in charge. This avoids anchoring
@@ -768,6 +803,38 @@ function restoreScriptCamera() {
   if (!invokeCameraMethod("Restore")) {
     safeNative("RESTORE_CAMERA");
   }
+}
+
+function restorePedestrianCameraBehindPlayer() {
+  if (invokeCameraMethod("SetBehindPlayer")) return true;
+  try {
+    native("SET_CAMERA_BEHIND_PLAYER");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function restoreScriptCameraJumpcut() {
+  invokeCameraMethod("PersistPos", false);
+  invokeCameraMethod("PersistTrack", false);
+  invokeCameraMethod("PersistFov", false);
+
+  let restored = false;
+  if (invokeCameraMethod("RestoreJumpcut")) {
+    restored = true;
+  } else {
+    try {
+      native("RESTORE_CAMERA_JUMPCUT");
+      restored = true;
+    } catch (_) {
+      // Older/partial definition sets may omit 02EB. The normal restore is a
+      // safe fallback; the explicit behind-player handoff remains authoritative.
+      restoreScriptCamera();
+    }
+  }
+
+  return restorePedestrianCameraBehindPlayer() || restored;
 }
 
 function getPlayerInCarCameraMode() {
@@ -1214,9 +1281,48 @@ function readActorSample(actor, now) {
   // or calculate a scripted pedestrian camera, regardless of legacy INI keys.
   if (!vehicle) return null;
 
-  const entity = vehicle || actor;
-  const position = getCoordinates(entity, !!vehicle);
-  if (!position) return null;
+  const entity = vehicle;
+  const actorPosition = getCoordinates(actor, false);
+  const previousReliablePlayerPosition = lastReliablePlayerPosition;
+  const previousReliablePlayerPositionAt = lastReliablePlayerPositionAt;
+  if (!isSanePlayerAnchor(
+    actorPosition,
+    previousReliablePlayerPosition,
+    previousReliablePlayerPositionAt,
+    now
+  )) {
+    if (now - lastInvalidPlayerAnchorDiagnosticAt >= 750) {
+      lastInvalidPlayerAnchorDiagnosticAt = now;
+      log(
+        "Adaptive Third-Person Camera rejected transient player origin during vehicle handoff" +
+          " actor=" + formatVector(actorPosition) +
+          " previous=" + formatVector(previousReliablePlayerPosition) +
+          " state=" + interactionState
+      );
+    }
+    return null;
+  }
+  lastReliablePlayerPosition = { x: actorPosition.x, y: actorPosition.y, z: actorPosition.z };
+  lastReliablePlayerPositionAt = now;
+
+  const position = getCoordinates(entity, true);
+  // SA:DE/CLEO can briefly keep the broad "in vehicle" state alive while the
+  // player is getting out. STORE_CAR_CHAR_IS_IN_NO_SAVE/getCarIsUsing may then
+  // expose an invalid/stale vehicle wrapper whose coordinates resolve to
+  // (0,0,0). Never let such a value become the scripted camera anchor: release
+  // ownership and allow GTA's pedestrian camera to take over instead.
+  if (!isSaneVehicleAnchor(position, actorPosition)) {
+    if (now - lastInvalidVehicleAnchorDiagnosticAt >= 750) {
+      lastInvalidVehicleAnchorDiagnosticAt = now;
+      log(
+        "Adaptive Third-Person Camera rejected stale vehicle anchor during handoff" +
+          " vehicle=" + formatVector(position) +
+          " actor=" + formatVector(actorPosition) +
+          " state=" + interactionState
+      );
+    }
+    return null;
+  }
 
   const kind = classifyVehicle(actor, vehicle);
   const heading = getEntityHeading(entity, !!vehicle);
@@ -2490,7 +2596,7 @@ function setScriptCameraPose(position, target) {
   }
 }
 
-function releaseCamera() {
+function releaseCamera(forcePedestrianJumpcut = false) {
   resetNativeVehicleTweak();
   const hadCameraControl =
     cameraApplied || vehicleFovOwned || fovProbe || nativeCameraFovActive;
@@ -2534,9 +2640,10 @@ function releaseCamera() {
   forwardCandidateSince = 0;
   airborneSince = 0;
   landingUntil = 0;
-  if (hadCameraControl) {
+  if (hadCameraControl || forcePedestrianJumpcut) {
     resetScriptCamera();
-    restoreScriptCamera();
+    if (forcePedestrianJumpcut) restoreScriptCameraJumpcut();
+    else restoreScriptCamera();
   }
   if (vehicleFovOwned && Number.isFinite(vehicleSessionFov)) {
     // One restoration only. Subsequent pedestrian frames issue no camera writes.
@@ -2713,10 +2820,63 @@ function getPlayerVehicle(actor, vehicleState = null) {
   try {
     if (actor && typeof actor.getCarIsUsing === "function") {
       const vehicle = actor.getCarIsUsing();
-      if (vehicle) return vehicle;
+      if (isUsableVehicleHandle(vehicle)) return vehicle;
     }
   } catch (_) {}
-  return toHandle(safeNative("STORE_CAR_CHAR_IS_IN_NO_SAVE", actor), Car);
+  const fallback = toHandle(safeNative("STORE_CAR_CHAR_IS_IN_NO_SAVE", actor), Car);
+  return isUsableVehicleHandle(fallback) ? fallback : null;
+}
+
+function isUsableVehicleHandle(vehicle) {
+  if (vehicle === null || vehicle === undefined || vehicle === false) return false;
+  if (typeof vehicle === "number") return Number.isFinite(vehicle) && vehicle > 0;
+
+  const identity = getEntityIdentity(vehicle);
+  // Some CLEO wrappers do not expose their script handle as a JS property. In
+  // that case coordinate/proximity validation in isSaneVehicleAnchor() remains
+  // authoritative. If an identity is exposed, zero/negative handles are never
+  // valid vehicle anchors.
+  return identity === null || identity > 0;
+}
+
+function isSanePlayerAnchor(position, previousPosition, previousAt, now) {
+  if (!isVector(position)) return false;
+
+  // Some DE/CLEO wrappers briefly return the zero vector for CJ during the
+  // vehicle -> pedestrian ownership handoff. If CJ was somewhere else a frame
+  // ago, (0,0,0) is a transient read failure and must never validate the car
+  // anchor. The short time window keeps genuine teleports compatible.
+  const nearOrigin = vectorLength(position) < PLAYER_ORIGIN_GLITCH_RADIUS;
+  if (nearOrigin && isVector(previousPosition)) {
+    const previousAwayFromOrigin = vectorLength(previousPosition) >=
+      PLAYER_ORIGIN_CONTINUITY_DISTANCE;
+    const recent = now - previousAt <= PLAYER_ORIGIN_CONTINUITY_GUARD_MS;
+    if (previousAwayFromOrigin && recent) return false;
+  }
+  return true;
+}
+
+function isSaneVehicleAnchor(vehiclePosition, actorPosition) {
+  if (!isVector(vehiclePosition)) return false;
+
+  // Exact/near world origin is the characteristic invalid-handle result that
+  // caused the camera to jump under the map after leaving a car. Do not reject
+  // a genuinely nearby origin position solely on coordinates; compare it with
+  // the player's ped position when that is available.
+  const vehicleNearOrigin = vectorLength(vehiclePosition) < 0.75;
+  if (isVector(actorPosition)) {
+    const actorNearOrigin = vectorLength(actorPosition) < 4;
+    if (vehicleNearOrigin && !actorNearOrigin) return false;
+
+    // While seated or during the door handoff, CJ must remain physically close
+    // to the occupied vehicle. A large separation means the returned vehicle is
+    // stale/unrelated and is unsafe as a camera anchor.
+    if (distanceBetween(vehiclePosition, actorPosition) > 30) return false;
+  } else if (vehicleNearOrigin) {
+    return false;
+  }
+
+  return true;
 }
 
 function classifyVehicle(actor, vehicle) {
@@ -3575,7 +3735,7 @@ function readConfigBool(section, key, fallback) {
 }
 
 function toHandle(value, Constructor) {
-  if (value === null || value === undefined || value === false || value === -1) return null;
+  if (value === null || value === undefined || value === false || value === -1 || value === 0) return null;
   if (typeof value === "object") return value;
   try {
     return new Constructor(value);

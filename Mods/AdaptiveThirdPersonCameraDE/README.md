@@ -1,11 +1,15 @@
-# Adaptive Driving Camera DE — v37
+# Adaptive Driving Camera DE — v40
 
 Kamera jazdy do **GTA San Andreas: The Definitive Edition**, inspirowana
-czytelnością prowadzenia z Watch Dogs 2. Build: `ATC-DE-20260920-37-driving-only`.
+czytelnością prowadzenia z Watch Dogs 2. Build: `ATC-DE-20260920-40-pedestrian-behind-player-guard`.
 
 Mod działa wyłącznie w pojeździe. Kamera chodzenia, biegania, stania i celowania
 pieszo pozostaje pod kontrolą GTA. Usunięto jej presety, ustawienia INI i efekty
 FOV; stary INI nie może ponownie włączyć tych zmian.
+
+Przy wyjściu z auta mod odrzuca przejściową pozycję `(0,0,0)` i jawnie ustawia
+kamerę za pieszym. Chroni to przed interpolacją z kamery pojazdu do
+nieprawidłowej pozycji pod mapą w SA:DE.
 
 ## Jazda
 
