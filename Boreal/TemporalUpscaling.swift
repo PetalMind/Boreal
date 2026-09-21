@@ -670,6 +670,18 @@ nonisolated enum OptiScalerFGInput: String, Codable, CaseIterable, Sendable, Has
     }
 }
 
+nonisolated enum OptiScalerUpscalerInput: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case dlss
+    case fsr22
+    case fsr31
+    case xess
+
+    var id: String { rawValue }
+
+    var iniValue: String { rawValue }
+}
+
 nonisolated enum OptiScalerFGOutput: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case automatic
     case fsr
@@ -830,12 +842,18 @@ nonisolated struct OptiScalerConfiguration: Codable, Sendable, Hashable {
     var enabled = false
     var componentVersion: String?
     var inputAPI: GraphicsAPI?
+    var upscalerInput: OptiScalerUpscalerInput = .automatic
     var outputUpscaler: TemporalUpscalerOutput?
     var frameGeneration = FrameGenerationConfiguration()
     var proxyStrategy: ProxyDLLStrategy = .automatic
+    /// Optional game-profile compatibility overrides. Nil preserves the
+    /// component's own defaults for games that do not need them.
+    var preserveSwapChain: Bool?
+    var skipResizeBuffers: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, componentVersion, inputAPI, outputUpscaler, frameGeneration, proxyStrategy
+        case enabled, componentVersion, inputAPI, upscalerInput, outputUpscaler, frameGeneration, proxyStrategy
+        case preserveSwapChain, skipResizeBuffers
     }
 
     init() {}
@@ -845,9 +863,12 @@ nonisolated struct OptiScalerConfiguration: Codable, Sendable, Hashable {
         enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         componentVersion = try values.decodeIfPresent(String.self, forKey: .componentVersion)
         inputAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .inputAPI)
+        upscalerInput = try values.decodeIfPresent(OptiScalerUpscalerInput.self, forKey: .upscalerInput) ?? .automatic
         outputUpscaler = try values.decodeIfPresent(TemporalUpscalerOutput.self, forKey: .outputUpscaler)
         frameGeneration = try values.decodeIfPresent(FrameGenerationConfiguration.self, forKey: .frameGeneration) ?? FrameGenerationConfiguration()
         proxyStrategy = try values.decodeIfPresent(ProxyDLLStrategy.self, forKey: .proxyStrategy) ?? .automatic
+        preserveSwapChain = try values.decodeIfPresent(Bool.self, forKey: .preserveSwapChain)
+        skipResizeBuffers = try values.decodeIfPresent(Bool.self, forKey: .skipResizeBuffers)
     }
 
     var frameGenerationEnabled: Bool {
@@ -1065,9 +1086,10 @@ nonisolated struct TemporalComponentInjectionManifest: Codable, Sendable, Hashab
 /// OptiScaler's release archive does not contain Boreal's internal
 /// `injection.json`. Its package layout is nevertheless well-defined: the
 /// compiled hook is named OptiScaler.dll, the configuration is OptiScaler.ini,
-/// and runtime payloads live in the OptiScaler/ directory. Build a manifest
-/// only from that narrow, known layout instead of treating every DLL in an
-/// arbitrary source tree as injectable.
+/// runtime payloads may live in the OptiScaler/ or D3D12_Optiscaler/ directory,
+/// and OptiPatcher is the explicitly supported plugin in plugins/. Build a
+/// manifest only from that narrow, known layout instead of treating every DLL
+/// in an arbitrary source tree as injectable.
 nonisolated enum OptiScalerComponentManifestFactory {
     private static let mainDLLNames: Set<String> = ["optiscaler.dll", "nvngx.dll"]
     private static let supportedExtensions: Set<String> = [
@@ -1086,7 +1108,11 @@ nonisolated enum OptiScalerComponentManifestFactory {
             guard supportedExtensions.contains(ext) else { return false }
             let isRootFile = components.count == 1
             let isOptiPayload = components.first.map { String($0).lowercased() } == "optiscaler"
-            return isRootFile || isOptiPayload
+            let isD3D12Payload = components.first.map { String($0).lowercased() } == "d3d12_optiscaler"
+            let isOptiPatcherPlugin = components.count == 2
+                && components.first.map { String($0).lowercased() } == "plugins"
+                && URL(fileURLWithPath: path).lastPathComponent.lowercased() == "optipatcher.asi"
+            return isRootFile || isOptiPayload || isD3D12Payload || isOptiPatcherPlugin
         }.sorted(by: pathOrder)
     }
 
@@ -1146,7 +1172,8 @@ nonisolated enum TemporalUpscalingResolutionEngine {
         optiScaler: TemporalComponentReference?,
         applicationID: UUID = UUID(),
         graphicsAPI: GraphicsAPI = .automatic,
-        executableArchitecture: WindowsExecutableArchitecture = .unknown
+        executableArchitecture: WindowsExecutableArchitecture = .unknown,
+        optiPatcherAvailable: Bool = false
     ) -> TemporalUpscalingPlan {
         let injectionSafety: DLLInjectionSafety = if game.antiCheat.detected {
             .blockedAntiCheat
@@ -1231,7 +1258,9 @@ nonisolated enum TemporalUpscalingResolutionEngine {
                 guard configuration.optiScaler.enabled else {
                     return unavailable("OptiScaler is installed but is not enabled for this game. Perform the explicit per-game injection first.")
                 }
-                guard game.hasTemporalInterface else { return unavailable("OptiScaler requires a detected DLSS, FSR 2+ or XeSS interface.") }
+                guard game.hasTemporalInterface || optiPatcherAvailable else {
+                    return unavailable("OptiScaler requires a detected DLSS, FSR 2+ or XeSS interface, or a supported OptiPatcher plugin.")
+                }
                 guard let optiScaler else { return unavailable("OptiScaler is not installed in Boreal's managed ComponentStore.") }
                 guard [.d3dMetal, .dxmt, .dxvk, .vkd3d].contains(graphicsStack.backend) else {
                     return unavailable("OptiScaler requires a Direct3D translation stack with a detected temporal interface.")
@@ -1328,7 +1357,8 @@ actor TemporalUpscalingResolver {
         optiScaler: TemporalComponentReference?,
         applicationID: UUID,
         graphicsAPI: GraphicsAPI = .automatic,
-        executableArchitecture: WindowsExecutableArchitecture = .unknown
+        executableArchitecture: WindowsExecutableArchitecture = .unknown,
+        optiPatcherAvailable: Bool = false
     ) -> TemporalUpscalingPlan {
         TemporalUpscalingResolutionEngine.resolve(
             game: game,
@@ -1340,7 +1370,8 @@ actor TemporalUpscalingResolver {
             optiScaler: optiScaler,
             applicationID: applicationID,
             graphicsAPI: graphicsAPI,
-            executableArchitecture: executableArchitecture
+            executableArchitecture: executableArchitecture,
+            optiPatcherAvailable: optiPatcherAvailable
         )
     }
 }
@@ -1902,9 +1933,12 @@ actor OptiScalerManager {
             "enabled=\(configuration.enabled)",
             "component=\(configuration.componentVersion ?? "latest")",
             "input=\(configuration.inputAPI?.rawValue ?? "automatic")",
+            "upscalerInput=\(configuration.upscalerInput.rawValue)",
             "output=\(configuration.outputUpscaler?.rawValue ?? "native")",
             "fg=\(configuration.frameGeneration.mode.rawValue)",
-            "proxy=\(configuration.proxyStrategy.displayName)"
+            "proxy=\(configuration.proxyStrategy.displayName)",
+            "preserveSwapChain=\(configuration.preserveSwapChain.map(String.init) ?? "auto")",
+            "skipResizeBuffers=\(configuration.skipResizeBuffers.map(String.init) ?? "auto")"
         ].joined(separator: "|")
     }
 
@@ -2695,6 +2729,11 @@ nonisolated struct TemporalComponentStatus: Sendable, Hashable {
     let sha256: String?
     let source: TemporalComponentSource?
     let licenseMetadata: String?
+    let requiredFiles: [String]
+
+    var includesOptiPatcher: Bool {
+        requiredFiles.contains { $0.caseInsensitiveCompare("plugins/OptiPatcher.asi") == .orderedSame }
+    }
 
     init(reference: TemporalComponentReference?) {
         installed = reference != nil
@@ -2702,6 +2741,7 @@ nonisolated struct TemporalComponentStatus: Sendable, Hashable {
         sha256 = reference?.sha256
         source = reference?.source
         licenseMetadata = reference?.licenseMetadata
+        requiredFiles = reference?.requiredFiles ?? []
     }
 
     init(installation: DLSSRuntimeInstallation?) {
@@ -2710,6 +2750,7 @@ nonisolated struct TemporalComponentStatus: Sendable, Hashable {
         sha256 = installation?.activeSHA256
         source = nil
         licenseMetadata = nil
+        requiredFiles = []
     }
 }
 

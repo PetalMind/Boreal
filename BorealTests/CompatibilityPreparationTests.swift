@@ -20,6 +20,28 @@ struct CompatibilityPreparationTests {
         #expect(analysis.executables.first(where: { $0.url.lastPathComponent == "Updater.exe" })?.role == .updater)
     }
 
+    @Test func automaticallyDetectsPhysXBehindASeparateLauncher() throws {
+        let root = try makeTemporaryDirectory("physx-launcher")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try makePE(at: root.appending(path: "GameLauncher.exe"), architecture: .x86)
+        let binaries = root.appending(path: "bin_ship", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: binaries, withIntermediateDirectories: true)
+        try makePE(
+            at: binaries.appending(path: "Game.exe"),
+            architecture: .x86,
+            imports: ["PhysXLoader.dll"]
+        )
+
+        let analysis = ExecutableCompatibilityAnalyzer.analyze(
+            root: root,
+            applicationName: "Game",
+            knownPrimary: root.appending(path: "GameLauncher.exe")
+        )
+        let dependencies = AutomaticRuntimeDependencyDetection.requiredDependencies(in: analysis)
+
+        #expect(dependencies.contains(.physX))
+    }
+
     @Test func runtimeConstraintsAllowMixedArchitecturesOnlyWithWoW64() {
         let runtime = makeRuntime(
             features: RuntimeFeatures(

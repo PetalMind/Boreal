@@ -100,7 +100,19 @@ nonisolated enum GameGraphicsProfiles {
                 GraphicsAPILaunchOption(api: .directX12, arguments: ["-dx12"])
             ],
             preferredBackend: .d3dMetal,
-            overlayCompatibleFullscreen: true
+            overlayCompatibleFullscreen: true,
+            // GTA SA:DE's OptiScaler compatibility path is documented with
+            // the DX12 proxy. Keep the global automatic resolver unchanged;
+            // this game-specific default avoids the DXGI loader path that
+            // has failed during startup on this title.
+            preferredOptiScalerProxy: "d3d12.dll",
+            // D3DMetal does not expose patchable ID3D12Device vtable methods;
+            // keeping HUD resource tracking enabled produces error 57 in
+            // every Present and prevents a stable OptiFG path.
+            preferredOptiScalerHUDHandling: .off,
+            preferredOptiScalerUpscalerInput: .dlss,
+            preferredOptiScalerPreserveSwapChain: true,
+            preferredOptiScalerSkipResizeBuffers: true
         ),
         GameGraphicsProfile(
             provider: .gog,
@@ -263,6 +275,46 @@ nonisolated enum GameGraphicsProfiles {
 
     static func profile(provider: GameLibraryProvider, externalID: String) -> GameGraphicsProfile? {
         builtIn.first { $0.provider == provider && $0.externalID == externalID }
+    }
+
+    static func preferredOptiScalerProxy(
+        provider: GameLibraryProvider?,
+        externalID: String?
+    ) -> String? {
+        guard let provider, let externalID else { return nil }
+        return profile(provider: provider, externalID: externalID)?.preferredOptiScalerProxy
+    }
+
+    static func preferredOptiScalerHUDHandling(
+        provider: GameLibraryProvider?,
+        externalID: String?
+    ) -> OptiScalerHUDHandling? {
+        guard let provider, let externalID else { return nil }
+        return profile(provider: provider, externalID: externalID)?.preferredOptiScalerHUDHandling
+    }
+
+    static func preferredOptiScalerUpscalerInput(
+        provider: GameLibraryProvider?,
+        externalID: String?
+    ) -> OptiScalerUpscalerInput? {
+        guard let provider, let externalID else { return nil }
+        return profile(provider: provider, externalID: externalID)?.preferredOptiScalerUpscalerInput
+    }
+
+    static func preferredOptiScalerPreserveSwapChain(
+        provider: GameLibraryProvider?,
+        externalID: String?
+    ) -> Bool? {
+        guard let provider, let externalID else { return nil }
+        return profile(provider: provider, externalID: externalID)?.preferredOptiScalerPreserveSwapChain
+    }
+
+    static func preferredOptiScalerSkipResizeBuffers(
+        provider: GameLibraryProvider?,
+        externalID: String?
+    ) -> Bool? {
+        guard let provider, let externalID else { return nil }
+        return profile(provider: provider, externalID: externalID)?.preferredOptiScalerSkipResizeBuffers
     }
 
     static func effectiveCompatibilityProfile(

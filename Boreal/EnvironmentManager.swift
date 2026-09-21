@@ -129,6 +129,11 @@ actor EnvironmentManager: EnvironmentManaging {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
         try validatePrefixMode(environment, runtime: runtime)
         let configuredEnvironment = try await applyConfiguration(environment, runtime: runtime)
+        for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
+            let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
+            guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
+            try await install(dependency, in: configuredEnvironment, runtime: runtime)
+        }
         try write(configuredEnvironment)
         return configuredEnvironment
     }

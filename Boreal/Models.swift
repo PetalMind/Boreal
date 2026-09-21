@@ -373,6 +373,21 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
     /// the explorer virtual desktop. When set, this value replaces a stale
     /// persisted overlay setting during profile resolution.
     var enforcedOverlayCompatibleFullscreen: Bool? = nil
+    /// Some DirectX 12 games require OptiScaler to sit on a specific proxy
+    /// DLL. The value is a game-profile default; an explicit per-game proxy
+    /// choice still takes precedence.
+    var preferredOptiScalerProxy: String? = nil
+    /// Some games need OptiFG's HUD fix enabled for a usable presentation.
+    /// This is a profile default; an explicit per-game choice still wins.
+    var preferredOptiScalerHUDHandling: OptiScalerHUDHandling? = nil
+    /// Some OptiPatcher-backed games expose DLSS only after the plugin is
+    /// loaded. Keep the OptiScaler input selection game-specific.
+    var preferredOptiScalerUpscalerInput: OptiScalerUpscalerInput? = nil
+    /// Some DX12 games recreate their swapchain during startup. These
+    /// OptiScaler settings keep the frame-generation context alive across
+    /// that resize sequence.
+    var preferredOptiScalerPreserveSwapChain: Bool? = nil
+    var preferredOptiScalerSkipResizeBuffers: Bool? = nil
     // Optional so profiles persisted by older Boreal versions remain
     // decodable. These values are merged into the launch plan only when the
     // selected compatibility backend matches the profile's intended backend.

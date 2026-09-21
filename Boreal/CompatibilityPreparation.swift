@@ -160,6 +160,18 @@ nonisolated enum ExecutableCompatibilityAnalyzer {
     }
 }
 
+nonisolated enum AutomaticRuntimeDependencyDetection {
+    static func requiredDependencies(in analysis: ExecutableAnalysis) -> Set<RuntimeDependency> {
+        var dependencies: Set<RuntimeDependency> = []
+        for executable in analysis.importantExecutables {
+            let required = RuntimeDependencyResolver.resolve(executableURL: executable.url)
+                .compactMap { entry in entry.value.0 == .required ? entry.key : nil }
+            dependencies.formUnion(required)
+        }
+        return dependencies
+    }
+}
+
 nonisolated struct RuntimeSelectionRequest: Sendable, Hashable {
     var architectures: [WindowsExecutableArchitecture]
     /// Nil means automatic prefix selection with WoW64 preferred.
@@ -256,11 +268,7 @@ nonisolated enum CompatibilityPreparationResolver {
         }
 
         var dependencies = Set(userProfile.requiredDependencies)
-        for executable in analysis.importantExecutables {
-            let required = RuntimeDependencyResolver.resolve(executableURL: executable.url)
-                .compactMap { entry in entry.value.0 == .required ? entry.key : nil }
-            dependencies.formUnion(required)
-        }
+        dependencies.formUnion(AutomaticRuntimeDependencyDetection.requiredDependencies(in: analysis))
 
         return ResolvedCompatibilityConfiguration(
             executable: primary.url,

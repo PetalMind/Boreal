@@ -5,9 +5,11 @@ nonisolated enum OptiScalerConfigurationWriter {
         guard let template,
               let source = String(data: template, encoding: .utf8) else { return [:] }
         let managedKeys: [String: Set<String>] = [
-            "FrameGen": ["enabled", "fginput", "fgoutput", "debugview"],
+            "Upscalers": ["dx12upscaler"],
+            "FrameGen": ["enabled", "fginput", "fgoutput", "debugview", "preserveswapchain", "skipresizebuffers"],
             "OptiFG": ["hudfix", "hudlimit"],
-            "Log": ["logtofile"]
+            "Log": ["logtofile"],
+            "Plugins": ["path", "loadasiplugins"]
         ]
         var section = ""
         var values: [String: String] = [:]
@@ -39,12 +41,18 @@ nonisolated enum OptiScalerConfigurationWriter {
         if lines.last == "" { lines.removeLast() }
 
         let frameGenerationEnabled = configuration.frameGenerationEnabled
-        let frameValues: [(String, String)] = [
+        var frameValues: [(String, String)] = [
             ("Enabled", frameGenerationEnabled ? "true" : "false"),
             ("FGInput", configuration.frameGeneration.input.iniValue),
             ("FGOutput", configuration.frameGeneration.output.iniValue),
             ("DebugView", configuration.frameGeneration.debugView ? "true" : "false")
         ]
+        if let preserveSwapChain = configuration.preserveSwapChain {
+            frameValues.append(("PreserveSwapChain", preserveSwapChain ? "true" : "false"))
+        }
+        if let skipResizeBuffers = configuration.skipResizeBuffers {
+            frameValues.append(("SkipResizeBuffers", skipResizeBuffers ? "true" : "false"))
+        }
         var optiFGValues: [(String, String)] = [
             ("HUDFix", hudFixValue(configuration.frameGeneration.hudHandling))
         ]
@@ -53,10 +61,20 @@ nonisolated enum OptiScalerConfigurationWriter {
         }
 
         upsert(section: "FrameGen", values: frameValues, in: &lines)
+        upsert(
+            section: "Upscalers",
+            values: [("Dx12Upscaler", configuration.upscalerInput.iniValue)],
+            in: &lines
+        )
         upsert(section: "OptiFG", values: optiFGValues, in: &lines)
         upsert(
             section: "Log",
             values: [("LogToFile", configuration.frameGeneration.loggingEnabled ? "true" : "false")],
+            in: &lines
+        )
+        upsert(
+            section: "Plugins",
+            values: [("Path", ".\\plugins"), ("LoadAsiPlugins", "true")],
             in: &lines
         )
         return Data((lines.joined(separator: "\n") + "\n").utf8)

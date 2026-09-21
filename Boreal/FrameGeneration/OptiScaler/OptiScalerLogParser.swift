@@ -31,6 +31,29 @@ nonisolated enum OptiScalerLogParser {
             return .degraded(failure.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
+        let lastContextCreation = lines.lastIndex(where: {
+            $0.contains("d3d12_createcontext") && $0.contains("created")
+        })
+        let lastMissingContext = lines.lastIndex(where: {
+            $0.contains("no fg context") || $0.contains("no frame generation context")
+        })
+        if let lastMissingContext,
+           lastContextCreation.map({ lastMissingContext > $0 }) ?? true {
+            return .degraded("FSR Frame Generation lost its DX12 context.")
+        }
+        if let lastContextCreation {
+            let afterContextCreation = lines.dropFirst(lastContextCreation + 1)
+            if afterContextCreation.contains(where: {
+                $0.contains("fghooks::fgpresent") || $0.contains("frame generation present")
+            }) {
+                return .active
+            }
+            return .initialized
+        }
+        if lines.contains(where: { $0.contains("device captured") && $0.contains("d3d12") }) {
+            return .available
+        }
+
         if lines.contains(where: {
             ($0.contains("framegen") || $0.contains("frame generation") || $0.contains("optifg"))
                 && $0.contains("active")

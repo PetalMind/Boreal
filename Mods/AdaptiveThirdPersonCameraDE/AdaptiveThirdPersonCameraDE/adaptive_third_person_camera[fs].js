@@ -15,7 +15,7 @@ if (HOST !== "sa_unreal") {
 const PLAYER_ID = 0;
 const CONFIG_PATH = "./AdaptiveThirdPersonCamera.ini";
 const CONFIG_VERSION = 2;
-const MOD_BUILD_ID = "ATC-DE-20260920-40-pedestrian-behind-player-guard";
+const MOD_BUILD_ID = "ATC-DE-20260921-41-frame-rate-independent-anchor";
 const VK_TOGGLE = 120; // F9.
 const VK_RELOAD = 122; // F11.
 const VK_CAMERA_DISTANCE = 116; // F5.
@@ -2429,7 +2429,14 @@ function stabilizeVehicleCameraAnchor(sample, dt) {
     y: direction.y * (sample.cameraSpeedMps || 0),
     z: sample.velocity?.z || 0,
   };
-  const velocityAlpha = lerp(0.62, 0.30, speedAmount);
+  // These gains are tuned as 60 FPS reference values, but the correction must
+  // cover the same amount of real time at every frame rate. Applying the raw
+  // value once per frame made the predictor react only half as often at 30 FPS,
+  // which showed up as visible catch-up steps at high vehicle speeds.
+  const velocityAlpha = frameRateIndependentAlpha(
+    lerp(0.62, 0.30, speedAmount),
+    frameDt
+  );
   vehicleVisualAnchorVelocity = lerpVector(
     vehicleVisualAnchorVelocity,
     measuredVelocity,
@@ -2452,7 +2459,10 @@ function stabilizeVehicleCameraAnchor(sample, dt) {
   // Smooth only the noisy per-frame anchor displacement. Prediction keeps the
   // camera travelling with the car, while residual correction prevents the
   // old high-speed "left behind then catch up" behaviour.
-  const correctionAlpha = lerp(0.92, 0.42, speedAmount);
+  const correctionAlpha = frameRateIndependentAlpha(
+    lerp(0.92, 0.42, speedAmount),
+    frameDt
+  );
   vehicleVisualAnchor = addVector(
     predicted,
     scaleVector(residual, correctionAlpha)

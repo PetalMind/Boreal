@@ -397,6 +397,7 @@ struct WineCompatibilityConfigurator: View {
     private var frameGenerationSection: some View {
         let plan = temporalInspector?.temporalPlan
         let optiInstalled = temporalInspector?.optiScaler.installed == true
+        let optiPatcherInstalled = temporalInspector?.optiScaler.includesOptiPatcher == true
         return CompatibilitySettingsSection(
             title: "Frame generation",
             subtitle: "OptiFG runs inside the game's DirectX 12 process; Boreal does not capture the window or create an overlay.",
@@ -441,11 +442,28 @@ struct WineCompatibilityConfigurator: View {
                 title: "Status",
                 detail: plan?.compatibility.label ?? String(localized: "Analyzing selected runtime…"),
                 status: temporalStatus(plan?.compatibility),
-                explanation: plan?.reason ?? String(localized: "Select and install a compiled OptiScaler component for this game.")
+                explanation: plan.map(frameGenerationPlanExplanation) ?? String(localized: "Select and install a compiled OptiScaler component for this game.")
             )
+            if !optiInstalled {
+                CompatibilityCallout(
+                    text: String(localized: "OptiFG requires a compiled OptiScaler.dll component. The OptiScaler project source folder cannot be injected as a runtime component."),
+                    symbol: "shippingbox",
+                    tint: .orange
+                )
+            }
+            if let game = temporalInspector?.game,
+               !game.hasTemporalInterface,
+               GameLaunchCompatibility.supportsDLSSUnlocker(for: application),
+               !optiPatcherInstalled {
+                CompatibilityCallout(
+                    text: String(localized: "GTA SA:DE requires the DLSS Unlocker/OptiPatcher input before OptiFG can be used."),
+                    symbol: "exclamationmark.triangle.fill",
+                    tint: .orange
+                )
+            }
             if let plan, case .unsupported = plan.compatibility {
                 CompatibilityCallout(
-                    text: plan.reason,
+                    text: frameGenerationPlanExplanation(plan),
                     symbol: "exclamationmark.triangle.fill",
                     tint: .orange
                 )
@@ -642,6 +660,11 @@ struct WineCompatibilityConfigurator: View {
     private var componentSummary: String {
         guard let inspector = temporalInspector else { return String(localized: "Analyzing components…") }
         let installed = [inspector.dlsstweaks, inspector.optiScaler, inspector.managedDLSSRuntime].filter(\.installed).count
+        if !inspector.optiScaler.installed {
+            return installed > 0
+                ? "\(installed) \(installed == 1 ? "component" : "components") installed · OptiScaler missing"
+                : String(localized: "OptiScaler component not installed")
+        }
         guard installed > 0 else { return String(localized: "No optional components installed") }
         return "\(installed) \(installed == 1 ? "component" : "components") installed"
     }
@@ -889,11 +912,31 @@ struct WineCompatibilityConfigurator: View {
 
     private func temporalInterfaceExplanation(_ game: GameUpscalingCapabilities) -> String {
         guard !game.detectedTemporalInterfaces.isEmpty else {
+            if GameLaunchCompatibility.supportsDLSSUnlocker(for: application) {
+                if temporalInspector?.optiScaler.includesOptiPatcher == true {
+                    return String(localized: "OptiPatcher is bundled with the managed OptiScaler component and will expose the DLSS input during injection.")
+                }
+                return String(localized: "GTA SA:DE requires the DLSS Unlocker/OptiPatcher input before OptiFG can be used.")
+            }
             return String(localized: "No DLSS, FSR 2+ or XeSS interface was detected in the game files.")
         }
         return game.detectedTemporalInterfaces.map { capability in
             "\(capability.kind.displayName): \(capability.confidence.rawValue) confidence; runtime operation is not proven."
         }.joined(separator: " ")
+    }
+
+    private func frameGenerationPlanExplanation(_ plan: TemporalUpscalingPlan) -> String {
+        if temporalInspector?.game.hasTemporalInterface == false,
+           GameLaunchCompatibility.supportsDLSSUnlocker(for: application) {
+            if temporalInspector?.optiScaler.includesOptiPatcher == true {
+                return String(localized: "OptiPatcher is bundled and will expose the DLSS input during OptiScaler injection; live operation remains unverified.")
+            }
+            return String(localized: "GTA SA:DE has no detected temporal input. Install the DLSS Unlocker/OptiPatcher input before enabling OptiFG.")
+        }
+        if temporalInspector?.optiScaler.installed != true {
+            return String(localized: "A compiled OptiScaler.dll component must be installed before OptiFG can be injected.")
+        }
+        return plan.reason
     }
 
     private func temporalStatus(_ compatibility: TemporalBridgeCompatibility?) -> UpscalingDetectionStatus {
@@ -1465,6 +1508,29 @@ private struct ComponentsAndPatchesView: View {
                 status: game.map { $0.hasTemporalInterface ? .detected : .notDetected } ?? .candidate,
                 explanation: game.map { temporalInterfaceExplanation($0) } ?? String(localized: "No game files have been analyzed yet.")
             )
+            if GameLaunchCompatibility.supportsDLSSUnlocker(for: application) {
+                let optiPatcherInstalled = temporalInspector?.optiScaler.includesOptiPatcher == true
+                let unlockerInstalled = store.dlssUnlockerInstalled(for: application)
+                let inputAvailable = optiPatcherInstalled || unlockerInstalled
+                HStack(alignment: .top, spacing: 10) {
+                    CompatibilityUpscalingRow(
+                        title: "GTA SA DLSS input",
+                        detail: optiPatcherInstalled
+                            ? String(localized: "OptiPatcher bundled in OptiScaler")
+                            : (unlockerInstalled ? String(localized: "DLSS Unlocker installed") : String(localized: "Required for OptiFG input")),
+                        status: inputAvailable ? .detected : .notDetected,
+                        explanation: inputAvailable
+                            ? String(localized: "The OptiPatcher/Unlocker path provides the input that OptiScaler needs; live compatibility is still unverified.")
+                            : String(localized: "Import the validated DLSS Unlocker ZIP to expose a DLSS input in GTA SA:DE.")
+                    )
+                    Spacer(minLength: 4)
+                    Button(inputAvailable ? String(localized: "Ready") : String(localized: "Install…"), systemImage: inputAvailable ? "checkmark" : "arrow.down.app") {
+                        if !inputAvailable { selectDLSSUnlockerArchive() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(inputAvailable || application.status == .running || application.status.isBusy)
+                }
+            }
             CompatibilityPickerRow(
                 title: "Temporal upscaling mode",
                 detail: "Automatic follows real detection data. Manual bridges remain experimental until a live smoke test verifies them."
@@ -1614,8 +1680,29 @@ private struct ComponentsAndPatchesView: View {
     }
 
     private func temporalInterfaceExplanation(_ game: GameUpscalingCapabilities) -> String {
-        guard !game.detectedTemporalInterfaces.isEmpty else { return String(localized: "No DLSS, FSR 2+ or XeSS interface was detected in the game files.") }
+        guard !game.detectedTemporalInterfaces.isEmpty else {
+            if GameLaunchCompatibility.supportsDLSSUnlocker(for: application) {
+                if temporalInspector?.optiScaler.includesOptiPatcher == true {
+                    return String(localized: "OptiPatcher is bundled with the managed OptiScaler component and will expose the DLSS input during injection.")
+                }
+                return String(localized: "GTA SA:DE requires the DLSS Unlocker/OptiPatcher input before OptiFG can be used.")
+            }
+            return String(localized: "No DLSS, FSR 2+ or XeSS interface was detected in the game files.")
+        }
         return game.detectedTemporalInterfaces.map { "\($0.kind.displayName): \($0.confidence.rawValue) confidence; runtime operation is not proven." }.joined(separator: " ")
+    }
+
+    private func selectDLSSUnlockerArchive() {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Install GTA SA DLSS Unlocker")
+        panel.message = String(localized: "Choose the ZIP downloaded from the linked mod page. Boreal will validate and install only the unlocker files.")
+        panel.prompt = String(localized: "Install Unlocker")
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let archive = panel.url else { return }
+        store.installDLSSUnlocker(archive, for: application.id)
     }
 
     private func temporalStatus(_ compatibility: TemporalBridgeCompatibility?) -> UpscalingDetectionStatus {
@@ -1651,7 +1738,7 @@ private struct ComponentsAndPatchesView: View {
     private func temporalComponentRow(title: LocalizedStringResource, status: TemporalComponentStatus?, component: TemporalComponentID) -> some View {
         let installed = status?.installed == true
         let explanation: String = if component == .optiScaler {
-            installed ? String(localized: "Versioned and hash-validated; selecting a release folder installs it next to the game executable.") : String(localized: "Select a compiled OptiScaler release folder; Boreal copies its payload and installs dxgi.dll next to the game executable.")
+            installed ? String(localized: "Versioned and hash-validated; the release payload and supported plugins are installed next to the game executable.") : String(localized: "Select a compiled OptiScaler release folder; Boreal copies its declared payload and plugins, then uses the game profile's safe proxy DLL.")
         } else {
             installed ? String(localized: "Versioned and hash-validated before a game injection is attempted.") : String(localized: "Import a user-supplied component folder; Boreal will store it immutably and record its SHA-256.")
         }

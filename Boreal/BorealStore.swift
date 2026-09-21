@@ -847,6 +847,7 @@ final class BorealStore {
                 "enabled": value.enabled,
                 "componentVersion": value.componentVersion ?? NSNull(),
                 "inputAPI": value.inputAPI?.rawValue ?? NSNull(),
+                "upscalerInput": value.upscalerInput.rawValue,
                 "outputUpscaler": value.outputUpscaler?.rawValue ?? NSNull(),
                 "frameGeneration": value.frameGeneration.mode.rawValue,
                 "frameGenerationInput": value.frameGeneration.input.rawValue,
@@ -3910,6 +3911,46 @@ final class BorealStore {
             // requested/effective temporal path in the new launch plan.
             temporalConfiguration.mode = .metalFXBridge
         }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.proxyStrategy == .automatic,
+           let preferredProxy = GameGraphicsProfiles.preferredOptiScalerProxy(
+               provider: provider,
+               externalID: externalID
+           ) {
+            temporalConfiguration.optiScaler.proxyStrategy = .named(preferredProxy)
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.frameGeneration.hudHandling == .automatic,
+           let preferredHUDHandling = GameGraphicsProfiles.preferredOptiScalerHUDHandling(
+               provider: provider,
+               externalID: externalID
+           ) {
+            temporalConfiguration.optiScaler.frameGeneration.hudHandling = preferredHUDHandling
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.upscalerInput == .automatic,
+           let preferredUpscalerInput = GameGraphicsProfiles.preferredOptiScalerUpscalerInput(
+              provider: provider,
+              externalID: externalID
+           ) {
+            temporalConfiguration.optiScaler.upscalerInput = preferredUpscalerInput
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.preserveSwapChain == nil,
+           let preferredPreserveSwapChain = GameGraphicsProfiles.preferredOptiScalerPreserveSwapChain(
+               provider: provider,
+               externalID: externalID
+           ) {
+            temporalConfiguration.optiScaler.preserveSwapChain = preferredPreserveSwapChain
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.skipResizeBuffers == nil,
+           let preferredSkipResizeBuffers = GameGraphicsProfiles.preferredOptiScalerSkipResizeBuffers(
+               provider: provider,
+               externalID: externalID
+           ) {
+            temporalConfiguration.optiScaler.skipResizeBuffers = preferredSkipResizeBuffers
+        }
         let temporalRoot = (gameRoot ?? launchWindowsPlan.executable.deletingLastPathComponent()).standardizedFileURL
         let temporalComponentStore = ManagedTemporalComponentStore(
             rootURL: runtime.rootURL
@@ -3930,6 +3971,13 @@ final class BorealStore {
                 temporalComponentStore.reference(for: .optiScaler, version: temporalConfiguration.optiScaler.componentVersion)
             )
         }.value
+        let supportsOptiPatcher = applications.first(where: { $0.id == applicationID })
+            .map { GameLaunchCompatibility.supportsDLSSUnlocker(for: $0) }
+            ?? (provider == .steam && externalID == GameLaunchCompatibility.gtaSanAndreasDefinitiveEditionSteamAppID)
+        let optiPatcherAvailable = supportsOptiPatcher
+            && componentReferences.1?.requiredFiles.contains {
+                $0.caseInsensitiveCompare("plugins/OptiPatcher.asi") == .orderedSame
+            } == true
         let temporalPlan = TemporalUpscalingResolutionEngine.resolve(
             game: temporalGame,
             runtime: runtime,
@@ -3942,7 +3990,8 @@ final class BorealStore {
             graphicsAPI: resolvedAPI,
             executableArchitecture: WindowsExecutableArchitecture.inspect(
                 launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) } ?? launchWindowsPlan.executable
-            )
+            ),
+            optiPatcherAvailable: optiPatcherAvailable
         )
         if temporalPlan.effective == .optiScaler {
             let executable = launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) }
@@ -6707,6 +6756,21 @@ final class BorealStore {
                 applications[index].lastResult = "Using direct game executable \(executable.lastPathComponent)"
                 save()
             }
+            let applicationRoot = auxiliarySearchRoot(for: applications[index])
+            let applicationName = applications[index].name
+            let automaticallyRequiredDependencies = await Task.detached(priority: .utility) {
+                let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                    root: applicationRoot,
+                    applicationName: applicationName,
+                    knownPrimary: executable
+                )
+                return AutomaticRuntimeDependencyDetection.requiredDependencies(in: analysis)
+            }.value
+            if !automaticallyRequiredDependencies.isSubset(of: profile.requiredDependencies) {
+                profile.requiredDependencies.formUnion(automaticallyRequiredDependencies)
+                applications[index].compatibilityProfile = profile
+                save()
+            }
             let isUnityIL2CPP = UnityIL2CPPRuntimeCompatibility.requiresModernWine(at: executable)
             if runtime.resolvedEngine == .gamePortingToolkit, isUnityIL2CPP {
                 let previousProfile = profile
@@ -8156,10 +8220,54 @@ final class BorealStore {
         if temporalConfiguration.mode == .automatic, profile.upscalingBridge == .ngxToMetalFX {
             temporalConfiguration.mode = .metalFXBridge
         }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.proxyStrategy == .automatic,
+           let preferredProxy = GameGraphicsProfiles.preferredOptiScalerProxy(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            temporalConfiguration.optiScaler.proxyStrategy = .named(preferredProxy)
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.frameGeneration.hudHandling == .automatic,
+           let preferredHUDHandling = GameGraphicsProfiles.preferredOptiScalerHUDHandling(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            temporalConfiguration.optiScaler.frameGeneration.hudHandling = preferredHUDHandling
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.upscalerInput == .automatic,
+           let preferredUpscalerInput = GameGraphicsProfiles.preferredOptiScalerUpscalerInput(
+              provider: application.storeProvider,
+              externalID: application.storeExternalID
+           ) {
+            temporalConfiguration.optiScaler.upscalerInput = preferredUpscalerInput
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.preserveSwapChain == nil,
+           let preferredPreserveSwapChain = GameGraphicsProfiles.preferredOptiScalerPreserveSwapChain(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            temporalConfiguration.optiScaler.preserveSwapChain = preferredPreserveSwapChain
+        }
+        if temporalConfiguration.mode == .optiScaler,
+           temporalConfiguration.optiScaler.skipResizeBuffers == nil,
+           let preferredSkipResizeBuffers = GameGraphicsProfiles.preferredOptiScalerSkipResizeBuffers(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            temporalConfiguration.optiScaler.skipResizeBuffers = preferredSkipResizeBuffers
+        }
         let dlsstweaks = await services.dlsstweaksManager.installedReference()
         let optiScaler = await services.optiScalerManager.installedReference(
             version: temporalConfiguration.optiScaler.componentVersion
         )
+        let optiPatcherAvailable = GameLaunchCompatibility.supportsDLSSUnlocker(for: application)
+            && optiScaler?.requiredFiles.contains {
+                $0.caseInsensitiveCompare("plugins/OptiPatcher.asi") == .orderedSame
+            } == true
         let dlsstweaksCapabilities: DLSSTweaksCapabilities? = if let dlsstweaks {
             // The manager exposes only controls declared by this exact
             // component version; no release-wide assumptions are made here.
@@ -8181,7 +8289,8 @@ final class BorealStore {
             optiScaler: optiScaler,
             applicationID: applicationID,
             graphicsAPI: profile.graphicsAPI ?? GraphicsAPIDetector.detect(executable: executable) ?? .automatic,
-            executableArchitecture: WindowsExecutableArchitecture.inspect(executable)
+            executableArchitecture: WindowsExecutableArchitecture.inspect(executable),
+            optiPatcherAvailable: optiPatcherAvailable
         )
         let graphicsExecutable = OptiScalerProxyResolver.resolveExecutable(
             gameRoot: gameRoot,
@@ -8337,6 +8446,41 @@ final class BorealStore {
         var configuration = profile.temporalUpscaling.optiScaler
         configuration.enabled = true
         configuration.componentVersion = reference.version
+        if configuration.proxyStrategy == .automatic,
+           let preferredProxy = GameGraphicsProfiles.preferredOptiScalerProxy(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            configuration.proxyStrategy = .named(preferredProxy)
+        }
+        if configuration.frameGeneration.hudHandling == .automatic,
+           let preferredHUDHandling = GameGraphicsProfiles.preferredOptiScalerHUDHandling(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            configuration.frameGeneration.hudHandling = preferredHUDHandling
+        }
+        if configuration.upscalerInput == .automatic,
+           let preferredUpscalerInput = GameGraphicsProfiles.preferredOptiScalerUpscalerInput(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            configuration.upscalerInput = preferredUpscalerInput
+        }
+        if configuration.preserveSwapChain == nil,
+           let preferredPreserveSwapChain = GameGraphicsProfiles.preferredOptiScalerPreserveSwapChain(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            configuration.preserveSwapChain = preferredPreserveSwapChain
+        }
+        if configuration.skipResizeBuffers == nil,
+           let preferredSkipResizeBuffers = GameGraphicsProfiles.preferredOptiScalerSkipResizeBuffers(
+               provider: application.storeProvider,
+               externalID: application.storeExternalID
+           ) {
+            configuration.skipResizeBuffers = preferredSkipResizeBuffers
+        }
         do {
             let receipt = try await services.optiScalerManager.inject(
                 reference: reference,
