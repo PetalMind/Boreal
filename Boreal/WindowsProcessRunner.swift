@@ -281,8 +281,13 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             // The prefix may still contain a previously activated DXVK
             // DLL. Force Wine builtin D3D for this process as well, so the
             // first retry works even before the next environment reconfigure
-            // has restored the managed prefix files.
-            processEnvironment["WINE_D3D_CONFIG"] = "renderer=vulkan"
+            // has restored the managed prefix files. A game-specific launch
+            // profile remains authoritative: Dragon Age: Origins, for
+            // example, must override a persisted Vulkan fallback with
+            // WineD3D/OpenGL on the affected MoltenVK runtime.
+            if plan.environment["WINE_D3D_CONFIG"] == nil {
+                processEnvironment["WINE_D3D_CONFIG"] = "renderer=vulkan"
+            }
             let libraries = Set(RendererLaunchFailureDetector.builtinDLLOverrides(for: environment.configuration.graphicsAPI))
             let existing = processEnvironment["WINEDLLOVERRIDES"]?.split(separator: ";").map(String.init) ?? []
             let preserved = existing.filter { entry in

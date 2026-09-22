@@ -122,6 +122,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         guard let componentRoot = componentRoot(
             for: backend,
             api: configuration.api,
+            environment: environment,
             runtime: runtime,
             reference: componentReference
         ) else {
@@ -261,13 +262,17 @@ nonisolated struct GraphicsBackendManager: Sendable {
     private func componentRoot(
         for backend: WineGraphicsBackend,
         api: GraphicsAPI,
+        environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime,
         reference: GraphicsComponentReference?
     ) -> URL? {
         if let reference,
            let componentStore,
            componentStore.contains(reference, fileManager: fileManager) {
-            return componentStore.componentURL(reference.component, version: reference.version)
+            let referenceRoot = componentStore.componentURL(reference.component, version: reference.version)
+            if api != .directX9 || containsD3D9Libraries(in: referenceRoot, environment: environment, runtime: runtime) {
+                return referenceRoot
+            }
         }
         let folders: [String]
         switch backend {
@@ -287,6 +292,26 @@ nonisolated struct GraphicsBackendManager: Sendable {
                 runtime.rootURL.appending(path: "Support/Graphics/\(folder)", directoryHint: .isDirectory)
             ]
         }.first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    private func containsD3D9Libraries(
+        in root: URL,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) -> Bool {
+        let prefixMode = environment.configuration.resolvedPrefixMode(
+            runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
+        )
+        let requiredDirectories: [String] = switch prefixMode {
+        case .wow64: ["x32", "x64"]
+        case .legacyWin32: ["x32"]
+        case .legacyWin64: ["x64"]
+        }
+        return requiredDirectories.allSatisfy { directory in
+            fileManager.isReadableFile(
+                atPath: root.appending(path: "\(directory)/d3d9.dll").path
+            )
+        }
     }
 
     private func componentReference(

@@ -191,6 +191,32 @@ nonisolated enum WineGraphicsFallback: String, Codable, CaseIterable, Sendable, 
     case wineD3DVulkan
 }
 
+/// Process-scoped WineD3D renderer selected by the user. Automatic preserves
+/// a game-specific compatibility profile or Wine's runtime default.
+nonisolated enum WineD3DRenderer: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case automatic
+    case openGL
+    case vulkan
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .openGL: "OpenGL"
+        case .vulkan: "Vulkan"
+        }
+    }
+
+    var launchEnvironmentValue: String? {
+        switch self {
+        case .automatic: nil
+        case .openGL: "renderer=gl"
+        case .vulkan: "renderer=vulkan"
+        }
+    }
+}
+
 nonisolated enum GraphicsFallbackReason: String, Codable, Sendable, Hashable {
     case graphicsDeviceInitialization
 }
@@ -463,6 +489,7 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var prefixMode: WinePrefixMode? = nil
     var graphicsBackend: WineGraphicsBackend = .automatic
     var graphicsFallback: WineGraphicsFallback = .none
+    var wineD3DRenderer: WineD3DRenderer = .automatic
     var legacyWrapper: LegacyGraphicsWrapper = .none
     var legacyGraphicsAPI: LegacyGraphicsAPI = .directDraw
     var graphicsAPI: GraphicsAPI? = nil
@@ -485,10 +512,10 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var forceXInput = true
     var launchArguments = ""
     var runtimeIDOverride: String? = nil
-    var requiredDependencies: Set<RuntimeDependency> = []
+    var requiredDependencies: Set<RuntimeDependency> = [.physX]
 
     private enum CodingKeys: String, CodingKey {
-        case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, legacyWrapper, legacyGraphicsAPI, graphicsAPI
+        case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, wineD3DRenderer, legacyWrapper, legacyGraphicsAPI, graphicsAPI
         case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
         case disableSteamInputEquivalent, forceXInput, launchArguments, runtimeIDOverride, requiredDependencies
     }
@@ -535,6 +562,7 @@ extension WineCompatibilityProfile {
         prefixMode = try values.decodeIfPresent(WinePrefixMode.self, forKey: .prefixMode)
         graphicsBackend = try values.decodeIfPresent(WineGraphicsBackend.self, forKey: .graphicsBackend) ?? .automatic
         graphicsFallback = try values.decodeIfPresent(WineGraphicsFallback.self, forKey: .graphicsFallback) ?? .none
+        wineD3DRenderer = try values.decodeIfPresent(WineD3DRenderer.self, forKey: .wineD3DRenderer) ?? .automatic
         legacyWrapper = try values.decodeIfPresent(LegacyGraphicsWrapper.self, forKey: .legacyWrapper) ?? .none
         legacyGraphicsAPI = try values.decodeIfPresent(LegacyGraphicsAPI.self, forKey: .legacyGraphicsAPI) ?? .directDraw
         graphicsAPI = try values.decodeIfPresent(GraphicsAPI.self, forKey: .graphicsAPI)

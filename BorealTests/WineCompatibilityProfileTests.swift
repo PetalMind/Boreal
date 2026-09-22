@@ -591,6 +591,62 @@ struct WineCompatibilityProfileTests {
         #expect(effective.graphicsAPI == .directX9)
     }
 
+    @Test func dragonAgeOriginsUsesWineD3DOpenGLForGOGLaunches() {
+        let application = WindowsApplication(
+            name: "Dragon Age: Origins - Ultimate Edition",
+            publisher: "BioWare",
+            executablePath: "/tmp/bin_ship/DAOrigins.exe",
+            installerPath: "existing-installation",
+            environmentID: UUID(),
+            compatibilityProfile: WineCompatibilityProfile(
+                windowsVersion: .windows10,
+                architecture: .win32,
+                graphicsBackend: .wineD3D,
+                graphicsFallback: .wineD3DVulkan,
+                graphicsAPI: .directX9
+            ),
+            storeProvider: .gog,
+            storeExternalID: "1949616134"
+        )
+
+        let profile = GameGraphicsProfiles.profile(for: application)
+        let effective = GameGraphicsProfiles.effectiveCompatibilityProfile(
+            application.resolvedCompatibilityProfile,
+            for: application
+        )
+
+        #expect(profile?.defaultAPI == .directX9)
+        #expect(profile?.preferredBackend == .wineD3D)
+        #expect(profile?.enforcedBackend == .wineD3D)
+        #expect(profile?.launchEnvironment?["WINE_D3D_CONFIG"] == "renderer=gl")
+        #expect(effective.graphicsBackend == .wineD3D)
+        #expect(effective.graphicsFallback == .none)
+        #expect(effective.graphicsAPI == .directX9)
+    }
+
+    @Test func explicitWineD3DRendererOverridesGameCompatibilityDefault() {
+        let plan = WindowsLaunchPlan(
+            executable: URL(fileURLWithPath: "/tmp/DAOrigins.exe"),
+            arguments: [],
+            environment: ["WINE_D3D_CONFIG": "renderer=gl"],
+            workingDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        let vulkan = GameGraphicsProfiles.applying(
+            wineD3DRenderer: .vulkan,
+            backend: .wineD3D,
+            to: plan
+        )
+        let automatic = GameGraphicsProfiles.applying(
+            wineD3DRenderer: .automatic,
+            backend: .wineD3D,
+            to: plan
+        )
+
+        #expect(vulkan.environment["WINE_D3D_CONFIG"] == "renderer=vulkan")
+        #expect(automatic.environment["WINE_D3D_CONFIG"] == "renderer=gl")
+    }
+
     @Test func rendererDeviceFailureSelectsGenericWineD3DFallback() {
         let profile = WineCompatibilityProfile(
             graphicsBackend: .dxvk,

@@ -145,6 +145,82 @@ nonisolated enum DragonAgeOriginsAdapter {
     static func append(_ relativePath: String, to root: URL) -> URL {
         relativePath.split(separator: "/").reduce(root) { $0.appending(path: String($1)) }
     }
+
+    /// WineD3D/OpenGL cannot reliably render DAO's legacy MRT framebuffer
+    /// effects. The failure is delayed until the game reaches an affected
+    /// scene and manifests as GL_INVALID_FRAMEBUFFER_OPERATION followed by a
+    /// stack-cookie termination in DAOrigins.exe. Keep this compatibility
+    /// repair scoped to DAO and preserve every unrelated user setting.
+    static func applyOpenGLFramebufferSafety(
+        prefixURL: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        guard let userDataRoot = userDataRoot(forPrefix: prefixURL, fileManager: fileManager) else { return }
+        let settingsDirectory = userDataRoot.appending(path: "Settings", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
+        let configurationURL = settingsDirectory.appending(path: "DragonAge.ini")
+
+        let originalData = try? Data(contentsOf: configurationURL)
+        let original = originalData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let newline = original.contains("\r\n") ? "\r\n" : "\n"
+        let updated = updatingINISection(
+            original,
+            section: "VideoOptions",
+            values: [
+                "EnableFrameBufferEffects": "0",
+                "DisableMRT": "1",
+                "AntialiasingLevel": "0"
+            ],
+            newline: newline
+        )
+        guard updated != original else { return }
+
+        if let originalData {
+            let backupURL = settingsDirectory.appending(path: "DragonAge.ini.boreal-before-opengl-framebuffer-fix")
+            if !fileManager.fileExists(atPath: backupURL.path) {
+                try originalData.write(to: backupURL, options: .atomic)
+            }
+        }
+        try updated.data(using: .utf8)?.write(to: configurationURL, options: .atomic)
+    }
+
+    private static func updatingINISection(
+        _ source: String,
+        section: String,
+        values: [String: String],
+        newline: String
+    ) -> String {
+        var lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+
+        let sectionHeader = "[\(section)]"
+        let sectionStart = lines.firstIndex {
+            $0.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(sectionHeader) == .orderedSame
+        }
+        let insertionIndex: Int
+        if let sectionStart {
+            insertionIndex = lines[(sectionStart + 1)...].firstIndex {
+                let trimmed = $0.trimmingCharacters(in: .whitespaces)
+                return trimmed.hasPrefix("[") && trimmed.hasSuffix("]")
+            } ?? lines.endIndex
+        } else {
+            if !lines.isEmpty { lines.append("") }
+            lines.append(sectionHeader)
+            insertionIndex = lines.endIndex
+        }
+
+        var pending = values
+        if let sectionStart {
+            for index in (sectionStart + 1)..<insertionIndex {
+                guard let separator = lines[index].firstIndex(of: "=") else { continue }
+                let key = lines[index][..<separator].trimmingCharacters(in: .whitespaces)
+                guard let matchedKey = pending.keys.first(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) else { continue }
+                lines[index] = "\(matchedKey)=\(pending.removeValue(forKey: matchedKey)!)"
+            }
+        }
+        lines.insert(contentsOf: pending.keys.sorted().map { "\($0)=\(pending[$0]!)" }, at: insertionIndex)
+        return lines.joined(separator: newline) + newline
+    }
 }
 
 nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {

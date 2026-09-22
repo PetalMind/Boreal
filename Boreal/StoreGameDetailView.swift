@@ -184,14 +184,9 @@ struct StoreGameDetailView: View {
         .task(id: diskReportTaskID) {
             store.refreshGameDiskStorage(for: currentGame)
         }
-        .task(id: linkedEnvironment?.id) {
-            if let environmentID = linkedEnvironment?.id {
-                store.refreshDependencies(for: environmentID, application: linkedApplication)
-            }
-        }
-        .task(id: linkedApplication?.id) {
+        .task(id: "compatibility-\(linkedApplication?.id.uuidString ?? "none")-\(linkedEnvironment?.id.uuidString ?? "none")") {
             if let applicationID = linkedApplication?.id {
-                _ = await store.resolveCompatibility(for: applicationID)
+                await store.refreshCompatibility(for: applicationID)
             }
         }
         .task(id: "compatibility-preparation-\(game.id.uuidString)-\(store.isInstalled(currentGame))-\(linkedApplication?.id.uuidString ?? "none")") {

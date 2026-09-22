@@ -336,6 +336,17 @@ final class BorealStore {
         return resolution
     }
 
+    /// Re-reads the environment after a prefix mutation instead of leaving the
+    /// compatibility tab backed by the previous environment's cached result.
+    /// Dependency statuses are awaited so the UI only reports installed
+    /// components after the prefix has been inspected again.
+    func refreshCompatibility(for applicationID: UUID) async {
+        guard let application = application(id: applicationID) else { return }
+        lastCompatibilityResolutions[applicationID] = nil
+        await refreshDependencyStatuses(for: application.environmentID, application: application)
+        _ = await resolveCompatibility(for: applicationID)
+    }
+
     func analyzeDependencies(for applicationID: UUID) async -> [DependencyRequirement] {
         guard let application = application(id: applicationID) else { return [] }
         let executable = URL(fileURLWithPath: application.executablePath).standardizedFileURL
@@ -2518,24 +2529,40 @@ final class BorealStore {
     }
 
     func refreshDependencies(for environmentID: UUID, application: WindowsApplication? = nil) {
-        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshDependencyStatuses(for: environmentID, application: application)
+        }
+    }
+
+    private func refreshDependencyStatuses(for environmentID: UUID, application: WindowsApplication? = nil) async {
+        guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else {
+            environmentDependencyStatuses[environmentID] = nil
+            return
+        }
         let resolvedApplication = application ?? applications.first {
             $0.environmentID == environmentID && !$0.usesStoreMetadataOnly
         }
-        let recommendations = RuntimeDependencyResolver.resolve(
+        var recommendations = RuntimeDependencyResolver.resolve(
             executableURL: resolvedApplication.map { URL(fileURLWithPath: $0.executablePath) }
         )
-        Task { [weak self] in
-            guard let self, let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { return }
-            let statuses = await services.environmentManager.dependencyStatuses(managed, runtime: runtime).map { status in
-                var resolved = status
-                let resolution = recommendations[status.dependency] ?? (.optional, "Install only when needed")
-                resolved.recommendation = resolution.0
-                resolved.detail = resolution.1
-                return resolved
+        if let resolvedApplication {
+            for dependency in compatibilityProfile(for: resolvedApplication).requiredDependencies {
+                recommendations[dependency] = (.required, "Required by the current compatibility profile")
             }
-            environmentDependencyStatuses[environmentID] = statuses
         }
+        guard let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else {
+            environmentDependencyStatuses[environmentID] = nil
+            return
+        }
+        let statuses = await services.environmentManager.dependencyStatuses(managed, runtime: runtime).map { status in
+            var resolved = status
+            let resolution = recommendations[status.dependency] ?? (.optional, "Install only when needed")
+            resolved.recommendation = resolution.0
+            resolved.detail = resolution.1
+            return resolved
+        }
+        environmentDependencyStatuses[environmentID] = statuses
     }
 
     func installDependency(_ dependency: RuntimeDependency, for environmentID: UUID) {
@@ -2889,18 +2916,26 @@ final class BorealStore {
         let currentEngine = runtimeStatuses.first(where: {
             $0.id == currentRuntimeID && $0.source == .installed
         })?.engine ?? .wine
-        let currentRuntimeFeatures = runtimeStatuses.first { $0.id == currentRuntimeID }?.features
         applications[index].compatibilityProfile = profile
         applications[index].windowsVersion = profile.windowsVersion.displayName
         let selectedRuntime = profile.runtimeIDOverride.flatMap { selectedID in
             runtimeStatuses.first { $0.id == selectedID && $0.source == .installed && $0.state == .installed }
         }
         let requestedEngine = selectedRuntime?.engine ?? profile.graphicsBackend.requiredEngine ?? currentEngine
+        let currentRuntimeFeatures = runtimeStatuses.first { $0.id == currentRuntimeID }?.features
+        let currentGraphicsAPI = profile.graphicsAPI
+            ?? GraphicsAPIDetector.detect(executable: URL(fileURLWithPath: applications[index].executablePath))
+            ?? .automatic
         let currentRuntimeSupportsBackend: Bool
         switch profile.graphicsBackend {
         case .d3dMetal: currentRuntimeSupportsBackend = currentRuntimeFeatures?.hasVerifiedD3DMetal == true
         case .dxmt: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxmt == true && currentRuntimeFeatures?.d3d11Verified == true
-        case .dxvk: currentRuntimeSupportsBackend = currentRuntimeFeatures?.dxvk == true
+        case .dxvk:
+            // RuntimeStatus carries capability metadata but not the runtime
+            // root needed to inspect API-specific DLLs. Force a D3D9 DXVK
+            // profile through the API-aware recreation path below; it will
+            // reject D3D10/11-only packages and select D9VK when available.
+            currentRuntimeSupportsBackend = currentGraphicsAPI != .directX9 && currentRuntimeFeatures?.dxvk == true
         case .vkd3d: currentRuntimeSupportsBackend = currentRuntimeFeatures?.vkd3d == true
         case .automatic, .wineD3D: currentRuntimeSupportsBackend = true
         }
@@ -2974,6 +3009,7 @@ final class BorealStore {
                 applications[updatedIndex].lastResult = "Compatibility profile applied"
                 applications[updatedIndex].lastErrorDetail = nil
                 save()
+                await refreshCompatibility(for: applicationID)
             } catch {
                 if let currentIndex = applications.firstIndex(where: { $0.id == applicationID }) {
                     applications[currentIndex].compatibilityProfile = previousProfile
@@ -3019,6 +3055,9 @@ final class BorealStore {
                     preferredEngine: engine,
                     executableArchitecture: executableArchitecture,
                     prefixMode: profile.prefixMode,
+                    graphicsAPI: profile.graphicsAPI
+                        ?? GraphicsAPIDetector.detect(executable: executable)
+                        ?? .automatic,
                     runtimeIDOverride: profile.runtimeIDOverride
                 )
                 try validatePrefixSelection(profile, executableArchitecture: executableArchitecture, runtime: runtime)
@@ -3049,6 +3088,7 @@ final class BorealStore {
                 applications[currentIndex].lastResult = "Compatibility environment rebuilt"
                 applications[currentIndex].lastErrorDetail = nil
                 save()
+                await refreshCompatibility(for: applicationID)
                 if applications.allSatisfy({ $0.environmentID != oldEnvironmentID }),
                    let oldRecord = environment(id: oldEnvironmentID),
                    let oldManaged = managedEnvironment(from: oldRecord) {
@@ -5538,6 +5578,9 @@ final class BorealStore {
                     preferredEngine: engine,
                     executableArchitecture: currentArchitecture,
                     prefixMode: compatibilityProfile.prefixMode,
+                    graphicsAPI: compatibilityProfile.graphicsAPI
+                        ?? GraphicsAPIDetector.detect(executable: currentExecutable)
+                        ?? .automatic,
                     runtimeIDOverride: compatibilityProfile.runtimeIDOverride
                 )
                 try validatePrefixSelection(compatibilityProfile, executableArchitecture: currentArchitecture, runtime: runtime)
@@ -5598,6 +5641,7 @@ final class BorealStore {
                 storeOperationTasks[key] = nil
                 storeOperationTokens[key] = nil
                 save()
+                await refreshCompatibility(for: applicationID)
 
                 if launchWhenReady {
                     await toggleRunningAsync(applicationID)
@@ -5660,6 +5704,7 @@ final class BorealStore {
         preferredEngine: RuntimeEngine,
         executableArchitecture: WindowsExecutableArchitecture? = nil,
         prefixMode: WinePrefixMode? = nil,
+        graphicsAPI: GraphicsAPI = .automatic,
         runtimeIDOverride: String? = nil
     ) async throws -> InstalledRuntime {
         let installed = try await services.runtimeManager.installedRuntimes()
@@ -5679,13 +5724,13 @@ final class BorealStore {
                 }
                 if unsupported { return false }
             }
-            switch backend {
-            case .d3dMetal: return $0.features?.hasVerifiedD3DMetal == true
-            case .dxmt: return $0.features?.dxmt == true
-            case .dxvk: return $0.features?.dxvk == true
-            case .vkd3d: return $0.features?.vkd3d == true
-            case .automatic, .wineD3D: return true
-            }
+            let prefixArchitecture: WinePrefixArchitecture = prefixMode == .legacyWin32 ? .win32 : .win64
+            return GraphicsBackendResolver.resolve(
+                api: graphicsAPI,
+                requestedBackend: backend,
+                runtime: $0,
+                architecture: prefixArchitecture
+            ).isAvailable
         }) {
             return runtime
         }
@@ -6681,6 +6726,29 @@ final class BorealStore {
             )
             return
         }
+        if let environmentRecord = environment(id: applications[index].environmentID),
+           let runtime = try? await services.runtimeManager.installedRuntimes().first(where: { $0.id == environmentRecord.runtimeID }),
+           GameGraphicsProfiles.requiresRuntimeMigration(
+               for: applications[index],
+               profile: effectiveApplicationProfile,
+               runtime: runtime
+           ) {
+            let previousProfile = applications[index].resolvedCompatibilityProfile
+            var compatibleProfile = effectiveApplicationProfile
+            compatibleProfile.runtimeIDOverride = nil
+            applications[index].compatibilityProfile = compatibleProfile
+            applications[index].graphics = compatibleProfile.graphicsBackend.displayName
+            applications[index].lastResult = "Preparing the D3D9-compatible graphics runtime"
+            applications[index].lastErrorDetail = nil
+            save()
+            recreateEnvironment(
+                id,
+                with: compatibleProfile.graphicsBackend.requiredEngine ?? .wine,
+                launchWhenReady: true,
+                rollbackProfile: previousProfile
+            )
+            return
+        }
         var usesExistingExecutable = applications[index].installerPath == "existing-installation"
             || applications[index].usesStoreMetadataOnly
             || applications[index].hasCustomLaunchExecutable
@@ -6927,6 +6995,11 @@ final class BorealStore {
                     backend: environmentProfile.graphicsBackend,
                     to: configuredPlan
                 )
+                configuredPlan = GameGraphicsProfiles.applying(
+                    wineD3DRenderer: profile.wineD3DRenderer,
+                    backend: environmentProfile.graphicsBackend,
+                    to: configuredPlan
+                )
                 if provider != .steam {
                     let graphicsPlan = try graphicsCompatibilityManager.apply(
                         configuration: profile,
@@ -6955,6 +7028,12 @@ final class BorealStore {
                 )
                 lastLaunchPlans[applications[index].id] = launchPlan
                 applications[index].graphics = launchPlan.graphicsStack?.backend.displayName ?? launchPlan.graphicsBackend.displayName
+                if provider == .gog,
+                   appID == "1949616134",
+                   environmentProfile.graphicsBackend == .wineD3D,
+                   profile.wineD3DRenderer != .vulkan {
+                    try DragonAgeOriginsAdapter.applyOpenGLFramebufferSafety(prefixURL: managed.prefixURL)
+                }
                 session = try await services.launchCoordinator.start(
                     plan: launchPlan,
                     environment: managed,
@@ -6980,6 +7059,11 @@ final class BorealStore {
                 configuredPlan.overlayDisplayID = profile.overlayDisplayID
                 configuredPlan = GameGraphicsProfiles.applying(
                     graphicsProfile,
+                    backend: profile.graphicsBackend,
+                    to: configuredPlan
+                )
+                configuredPlan = GameGraphicsProfiles.applying(
+                    wineD3DRenderer: profile.wineD3DRenderer,
                     backend: profile.graphicsBackend,
                     to: configuredPlan
                 )
@@ -7012,6 +7096,12 @@ final class BorealStore {
                 )
                 lastLaunchPlans[applications[index].id] = launchPlan
                 applications[index].graphics = launchPlan.graphicsStack?.backend.displayName ?? launchPlan.graphicsBackend.displayName
+                if applications[index].storeProvider == .gog,
+                   applications[index].storeExternalID == "1949616134",
+                   profile.graphicsBackend == .wineD3D,
+                   profile.wineD3DRenderer != .vulkan {
+                    try DragonAgeOriginsAdapter.applyOpenGLFramebufferSafety(prefixURL: managed.prefixURL)
+                }
                 session = try await services.launchCoordinator.start(
                     plan: launchPlan,
                     environment: managed,
@@ -7526,6 +7616,10 @@ final class BorealStore {
         var fallbackProfile = currentProfile
         fallbackProfile.graphicsBackend = .wineD3D
         fallbackProfile.graphicsFallback = .wineD3DVulkan
+        // Automatic recovery owns the renderer choice for this retry. A
+        // persisted OpenGL preference must not override the fallback marker
+        // and make the launch plan claim Vulkan while still using OpenGL.
+        fallbackProfile.wineD3DRenderer = .automatic
         applications[index].compatibilityProfile = fallbackProfile
         applications[index].graphics = fallbackProfile.graphicsBackend.displayName
         var events = applications[index].compatibilityFallbackEvents ?? []

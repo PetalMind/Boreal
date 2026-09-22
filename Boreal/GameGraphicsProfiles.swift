@@ -169,6 +169,47 @@ nonisolated enum GameGraphicsProfiles {
         ),
         GameGraphicsProfile(
             provider: .gog,
+            externalID: "1949616134",
+            availableAPIs: [.directX9],
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            // Dragon Age: Origins reaches its D3D9 device with WineD3D's
+            // Vulkan renderer, but MoltenVK rejects the first game buffer on
+            // Apple Silicon and Wine terminates with an access violation.
+            // Keep this title on WineD3D's OpenGL renderer instead of feeding
+            // the same failure back into the generic Vulkan fallback.
+            preferredBackend: .wineD3D,
+            enforcedBackend: .wineD3D,
+            overlayCompatibleFullscreen: true,
+            launchEnvironment: ["WINE_D3D_CONFIG": "renderer=gl"]
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
+            externalID: "2015389384",
+            availableAPIs: [.directX9],
+            defaultAPI: .directX9,
+            launchOptions: [
+                GraphicsAPILaunchOption(api: .directX9, arguments: [])
+            ],
+            // Gunslinger is a 32-bit DirectX 9 game. Both D9VK and WineD3D's
+            // Vulkan renderer fail while creating buffers through MoltenVK on
+            // Apple Silicon. Keep this title on WineD3D's OpenGL renderer.
+            preferredBackend: .wineD3D,
+            enforcedBackend: .wineD3D,
+            enforcedAPI: .directX9,
+            overlayCompatibleFullscreen: true,
+            launchEnvironment: [
+                "WINE_D3D_CONFIG": "renderer=gl",
+                // Wine's WMV reader enters the movie and then faults/stalls
+                // before returning a frame for this title. The game handles
+                // an unavailable WMV reader and continues to the menu.
+                "WINEDLLOVERRIDES": "wmvcore="
+            ]
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
             externalID: "1449651388",
             availableAPIs: [.directX11],
             defaultAPI: .directX11,
@@ -359,7 +400,39 @@ nonisolated enum GameGraphicsProfiles {
            effective.runtimeIDOverride?.contains("game-porting-toolkit") == true {
             effective.runtimeIDOverride = nil
         }
+        if application.storeProvider == .gog,
+           application.storeExternalID == "2015389384" {
+            // Discard renderer choices persisted by the earlier D9VK and
+            // WineD3D/Vulkan recovery attempts. The built-in profile above
+            // is reapplied and persisted during launch.
+            effective.runtimeIDOverride = nil
+            effective.graphicsFallback = .none
+            effective.wineD3DRenderer = .openGL
+        }
         return effective
+    }
+
+    static func requiresRuntimeMigration(
+        for application: WindowsApplication,
+        profile: WineCompatibilityProfile,
+        runtime: InstalledRuntime
+    ) -> Bool {
+        guard let builtIn = Self.profile(for: application),
+              builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil else {
+            return false
+        }
+        let api = profile.graphicsAPI ?? builtIn.enforcedAPI ?? builtIn.defaultAPI
+        let prefixArchitecture: WinePrefixArchitecture = profile.prefixMode == .legacyWin32
+            ? .win32
+            : .win64
+        return !GraphicsBackendResolver.resolve(
+            api: api,
+            requestedBackend: profile.graphicsBackend,
+            gameProfile: builtIn,
+            runtime: runtime,
+            architecture: prefixArchitecture,
+            fallback: profile.graphicsFallback
+        ).isAvailable
     }
 
     static func legacyWrapperDecision(
@@ -435,6 +508,18 @@ nonisolated enum GameGraphicsProfiles {
               !launchEnvironment.isEmpty else { return plan }
         var configured = plan
         configured.environment.merge(launchEnvironment) { _, profileValue in profileValue }
+        return configured
+    }
+
+    static func applying(
+        wineD3DRenderer: WineD3DRenderer,
+        backend: WineGraphicsBackend,
+        to plan: WindowsLaunchPlan
+    ) -> WindowsLaunchPlan {
+        guard backend == .wineD3D,
+              let renderer = wineD3DRenderer.launchEnvironmentValue else { return plan }
+        var configured = plan
+        configured.environment["WINE_D3D_CONFIG"] = renderer
         return configured
     }
 }
@@ -563,7 +648,7 @@ nonisolated enum GraphicsBackendResolver {
         let effectiveRequested = gameProfile?.enforcedBackend ?? requestedBackend
         let eligible = GraphicsStackCatalog.all.filter {
             $0.supports(api: api, architecture: architecture)
-                && runtimeSupports($0, api: api, runtime: runtime)
+                && runtimeSupports($0, api: api, runtime: runtime, architecture: architecture)
         }
 
         let preferred = gameProfile?.preferredBackend
@@ -641,13 +726,14 @@ nonisolated enum GraphicsBackendResolver {
     ) -> Bool {
         guard let stack = GraphicsStackCatalog.stack(for: backend),
               stack.supports(api: api, architecture: architecture) else { return false }
-        return runtimeSupports(stack, api: api, runtime: runtime)
+        return runtimeSupports(stack, api: api, runtime: runtime, architecture: architecture)
     }
 
     private static func runtimeSupports(
         _ stack: GraphicsStack,
         api: GraphicsAPI,
-        runtime: InstalledRuntime
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture
     ) -> Bool {
         let featuresAvailable = stack.requiredRuntimeFeatures.allSatisfy { feature in
             switch feature {
@@ -669,7 +755,19 @@ nonisolated enum GraphicsBackendResolver {
         // may intentionally omit d3d9.dll. Keep D3D9 available only when the
         // selected runtime really contains that library.
         if stack.backend == .dxvk, api == .directX9 {
-            return containsGraphicsLibrary(["DXVK", "D9VK"], named: "d3d9.dll", in: runtime)
+            // Gunslinger is a 32-bit executable. A WoW64 runtime must expose
+            // both sides of the component, while a legacy Win32 prefix only
+            // needs x32. Checking the directory prevents a D3D9-capable
+            // runtime with only an x64 DLL from being selected for this game.
+            let requiredArchitectures = architecture == .win32 ? ["x32"] : ["x32", "x64"]
+            return requiredArchitectures.allSatisfy { architectureDirectory in
+                containsGraphicsLibrary(
+                    ["D9VK", "DXVK"],
+                    named: "d3d9.dll",
+                    in: runtime,
+                    requiredSubdirectory: architectureDirectory
+                )
+            }
         }
         if stack.backend == .dxvk, api == .directX10 {
             return containsGraphicsLibrary(["DXVK"], named: "d3d10core.dll", in: runtime)
@@ -683,7 +781,8 @@ nonisolated enum GraphicsBackendResolver {
     private static func containsGraphicsLibrary(
         _ components: [String],
         named libraryName: String,
-        in runtime: InstalledRuntime
+        in runtime: InstalledRuntime,
+        requiredSubdirectory: String? = nil
     ) -> Bool {
         let fileManager = FileManager.default
         let legacyRoots = components.flatMap { component in
@@ -711,8 +810,11 @@ nonisolated enum GraphicsBackendResolver {
         })
         let roots = legacyRoots + componentRoots
         return roots.contains { root in
+            let searchRoot = requiredSubdirectory.map {
+                root.appending(path: $0, directoryHint: .isDirectory)
+            } ?? root
             guard let enumerator = fileManager.enumerator(
-                at: root,
+                at: searchRoot,
                 includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) else { return false }

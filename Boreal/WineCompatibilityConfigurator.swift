@@ -300,6 +300,20 @@ struct WineCompatibilityConfigurator: View {
                 .labelsHidden()
                 .disabled(usesSharedSteamEnvironment || graphicsProfile?.enforcedBackend != nil)
             }
+            if profile.graphicsBackend == .wineD3D {
+                CompatibilityPickerRow(
+                    title: "WineD3D renderer",
+                    detail: String(localized: "OpenGL is the compatibility path for older games. Vulkan can be faster, but requires working MoltenVK features for the selected game.")
+                ) {
+                    Picker("WineD3D renderer", selection: $profile.wineD3DRenderer) {
+                        ForEach(WineD3DRenderer.allCases) { renderer in
+                            Text(renderer.displayName).tag(renderer)
+                        }
+                    }
+                    .labelsHidden()
+                    .disabled(usesSharedSteamEnvironment)
+                }
+            }
             if let issue = graphicsBackendIssue {
                 CompatibilityCallout(text: issue, symbol: "exclamationmark.triangle.fill", tint: .orange)
                 if profile.graphicsBackend != .automatic {
