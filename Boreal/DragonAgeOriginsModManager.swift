@@ -279,7 +279,8 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         gameID: UUID,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String? = nil
+        profileID: String? = nil,
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         let gameDirectory = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
@@ -320,7 +321,8 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         preview: ModInstallPreview,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String = "default"
+        profileID: String = "default",
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         guard preview.adapter == adapter else { throw ModManagerError.unsupportedGame(preview.adapter.displayName) }
         guard preview.canInstallAutomatically else {
@@ -709,7 +711,8 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
     func deploymentHealth(
         for state: ModGameState,
         gameRoot: URL?,
-        pluginsFile: URL?
+        pluginsFile: URL?,
+        auxiliaryRoot: URL? = nil
     ) -> ModDeploymentHealth {
         let fileManager = FileManager.default
         var externalChanges: [String] = []
@@ -958,6 +961,8 @@ private extension DragonAgeOriginsModManager {
                         throw ModManagerError.invalidRelativePath(file.relativePath)
                     }
                     target = String(file.relativePath.dropFirst(prefix.count))
+                case .witcher2CookedPC, .witcher2UserContent:
+                    throw ModManagerError.deploymentFailed("The Dragon Age profile contains a non-Dragon Age mod.")
                 default:
                     throw ModManagerError.deploymentFailed("The Dragon Age profile contains a non-Dragon Age mod.")
                 }
@@ -1168,7 +1173,7 @@ private extension DragonAgeOriginsModManager {
             case .sevenZip, .rar:
                 guard let tool = sevenZipTool() else { throw ModManagerError.archiveToolUnavailable(format) }
                 _ = try run(tool, arguments: ["x", "-y", archive.path, "-o\(temporary.path)"])
-            case .loosePak:
+            case .loosePak, .dzip:
                 throw ModManagerError.archiveToolUnavailable(format)
             }
             _ = try contentFiles(in: temporary)
@@ -1196,7 +1201,7 @@ private extension DragonAgeOriginsModManager {
                 guard !value.isEmpty, value != archive.lastPathComponent, listedPath != archivePath else { return nil }
                 return value
             }
-        case .loosePak:
+        case .loosePak, .dzip:
             throw ModManagerError.archiveToolUnavailable(format)
         }
     }

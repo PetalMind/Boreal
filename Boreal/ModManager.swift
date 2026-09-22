@@ -6,6 +6,7 @@ nonisolated enum ModArchiveFormat: String, Codable, CaseIterable, Sendable {
     case zip
     case sevenZip = "7z"
     case rar
+    case dzip
     /// A standalone Unreal PAK is copied as a mod payload instead of extracted.
     /// This format is used only by the GTA San Andreas — Definitive Edition adapter.
     case loosePak = "pak"
@@ -15,6 +16,7 @@ nonisolated enum ModArchiveFormat: String, Codable, CaseIterable, Sendable {
         case "zip": self = .zip
         case "7z": self = .sevenZip
         case "rar": self = .rar
+        case "dzip": self = .dzip
         default: return nil
         }
     }
@@ -25,6 +27,7 @@ nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashab
     case gtaSanAndreas
     case gtaSanAndreasDefinitiveEdition
     case dragonAgeOrigins
+    case witcher2
 
     var displayName: String {
         switch self {
@@ -32,6 +35,7 @@ nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashab
         case .gtaSanAndreas: "GTA San Andreas"
         case .gtaSanAndreasDefinitiveEdition: "GTA San Andreas — Definitive Edition"
         case .dragonAgeOrigins: "Dragon Age: Origins"
+        case .witcher2: "The Witcher 2: Assassins of Kings"
         }
     }
 }
@@ -46,6 +50,8 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
     case config
     case dragonAgeOverride
     case dragonAgeDazip
+    case witcher2CookedPC
+    case witcher2UserContent
     case manual
     case unknown
 
@@ -60,6 +66,8 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .config: "Configuration"
         case .dragonAgeOverride: "Dragon Age Override"
         case .dragonAgeDazip: "Dragon Age DAZIP"
+        case .witcher2CookedPC: "The Witcher 2 CookedPC"
+        case .witcher2UserContent: "The Witcher 2 User Content"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
         }
@@ -87,6 +95,8 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
     case unrealPaks
     case dragonAgeOverride
     case dragonAgeDazip
+    case witcher2CookedPC
+    case witcher2UserContent
 
     var displayName: String {
         switch self {
@@ -98,6 +108,8 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
         case .unrealPaks: "Unreal Paks"
         case .dragonAgeOverride: "Dragon Age Override"
         case .dragonAgeDazip: "Dragon Age DAZIP"
+        case .witcher2CookedPC: "CookedPC"
+        case .witcher2UserContent: "User Content"
         }
     }
 }
@@ -547,6 +559,67 @@ nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
     var pluginFileHash: String?
     var pluginFileBackup: String?
     var pluginFileOriginalHash: String?
+    /// Package directory names written to The Witcher 2 UserContent.ini by
+    /// Boreal. Older manifests decode with an empty list.
+    var managedUserContentPackages: [String] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, gameID, deployedAt, profileFingerprint, files
+        case pluginFilePath, pluginFileHash, pluginFileBackup, pluginFileOriginalHash
+        case managedUserContentPackages
+    }
+
+    init(
+        schemaVersion: Int = 1,
+        gameID: UUID,
+        deployedAt: Date?,
+        profileFingerprint: String?,
+        files: [String: ModDeploymentFile],
+        pluginFilePath: String? = nil,
+        pluginFileHash: String? = nil,
+        pluginFileBackup: String? = nil,
+        pluginFileOriginalHash: String? = nil,
+        managedUserContentPackages: [String] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.gameID = gameID
+        self.deployedAt = deployedAt
+        self.profileFingerprint = profileFingerprint
+        self.files = files
+        self.pluginFilePath = pluginFilePath
+        self.pluginFileHash = pluginFileHash
+        self.pluginFileBackup = pluginFileBackup
+        self.pluginFileOriginalHash = pluginFileOriginalHash
+        self.managedUserContentPackages = managedUserContentPackages
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        gameID = try container.decode(UUID.self, forKey: .gameID)
+        deployedAt = try container.decodeIfPresent(Date.self, forKey: .deployedAt)
+        profileFingerprint = try container.decodeIfPresent(String.self, forKey: .profileFingerprint)
+        files = try container.decode([String: ModDeploymentFile].self, forKey: .files)
+        pluginFilePath = try container.decodeIfPresent(String.self, forKey: .pluginFilePath)
+        pluginFileHash = try container.decodeIfPresent(String.self, forKey: .pluginFileHash)
+        pluginFileBackup = try container.decodeIfPresent(String.self, forKey: .pluginFileBackup)
+        pluginFileOriginalHash = try container.decodeIfPresent(String.self, forKey: .pluginFileOriginalHash)
+        managedUserContentPackages = try container.decodeIfPresent([String].self, forKey: .managedUserContentPackages) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(gameID, forKey: .gameID)
+        try container.encodeIfPresent(deployedAt, forKey: .deployedAt)
+        try container.encodeIfPresent(profileFingerprint, forKey: .profileFingerprint)
+        try container.encode(files, forKey: .files)
+        try container.encodeIfPresent(pluginFilePath, forKey: .pluginFilePath)
+        try container.encodeIfPresent(pluginFileHash, forKey: .pluginFileHash)
+        try container.encodeIfPresent(pluginFileBackup, forKey: .pluginFileBackup)
+        try container.encodeIfPresent(pluginFileOriginalHash, forKey: .pluginFileOriginalHash)
+        try container.encode(managedUserContentPackages, forKey: .managedUserContentPackages)
+    }
 
     static func empty(gameID: UUID) -> ModDeploymentManifest {
         ModDeploymentManifest(gameID: gameID, deployedAt: nil, profileFingerprint: nil, files: [:])
@@ -638,6 +711,9 @@ nonisolated struct ModGameState: Hashable, Sendable {
     var deployment: ModDeploymentManifest
     var adapter: ModGameAdapter = .skyrimSpecialEdition
     var runtime: ModRuntimeState? = nil
+    /// Optional secondary data root used by adapters whose mods live outside
+    /// the game installation, such as The Witcher 2 UserContent directory.
+    var auxiliaryRoot: URL? = nil
 
     var conflicts: [ModConflict] {
         ModConflictResolver.conflicts(in: mods)
@@ -722,6 +798,8 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     case dragonAgeDocumentsUnavailable
     case dragonAgeManifestUnavailable
     case dragonAgeArchiveInvalid(String)
+    case witcher2DocumentsUnavailable
+    case witcher2ArchiveInvalid(String)
     case invalidRelativePath(String)
     case duplicatePath(String)
     case stagedFileChanged(String)
@@ -738,10 +816,12 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .unsupportedArchive(let url):
-            "Boreal supports ZIP, RAR, 7z and Dragon Age DAZIP mod archives. This file is not a supported archive: \(url.lastPathComponent)."
+            "Boreal supports ZIP, RAR, 7z, Witcher 2 DZIP and Dragon Age DAZIP mod archives. This file is not a supported archive: \(url.lastPathComponent)."
         case .archiveToolUnavailable(let format):
             if format == .loosePak {
                 "A standalone Unreal PAK file is copied directly and does not use an archive extraction tool."
+            } else if format == .dzip {
+                "A standalone Witcher 2 DZIP file is copied directly and does not use an archive extraction tool."
             } else if format == .zip {
                 "The system ZIP extraction tool is unavailable."
             } else {
@@ -767,6 +847,10 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
             "This Dragon Age: Origins DAZIP does not contain a readable Manifest.xml and cannot be registered safely."
         case .dragonAgeArchiveInvalid(let detail):
             "Boreal couldn’t interpret this Dragon Age: Origins mod archive: \(detail)"
+        case .witcher2DocumentsUnavailable:
+            "Boreal couldn’t locate The Witcher 2 user-content directory inside the managed Wine prefix."
+        case .witcher2ArchiveInvalid(let detail):
+            "Boreal couldn’t interpret this The Witcher 2 mod archive: \(detail)"
         case .invalidRelativePath(let path):
             "The mod contains an invalid relative path: \(path)"
         case .duplicatePath(let path):
@@ -1089,7 +1173,8 @@ nonisolated struct ModManager: Sendable {
         gameID: UUID,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String? = nil
+        profileID: String? = nil,
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         let gameURL = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
@@ -1146,7 +1231,8 @@ nonisolated struct ModManager: Sendable {
         preview: ModInstallPreview,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String = "default"
+        profileID: String = "default",
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         let fileManager = FileManager.default
         let format = try archiveFormat(for: preview.archiveURL)
@@ -1526,7 +1612,8 @@ nonisolated struct ModManager: Sendable {
     func deploymentHealth(
         for state: ModGameState,
         gameRoot: URL?,
-        pluginsFile: URL?
+        pluginsFile: URL?,
+        auxiliaryRoot: URL? = nil
     ) -> ModDeploymentHealth {
         let fileManager = FileManager.default
         var externalChanges: [String] = []
@@ -1890,7 +1977,7 @@ nonisolated struct ModManager: Sendable {
             case .sevenZip, .rar:
                 guard let tool = sevenZipTool() else { throw ModManagerError.archiveToolUnavailable(format) }
                 _ = try run(tool, arguments: ["x", "-y", archive.path, "-o\(temporary.path)"])
-            case .loosePak:
+            case .loosePak, .dzip:
                 throw ModManagerError.archiveToolUnavailable(format)
             }
             _ = try contentFiles(in: temporary)
@@ -1924,7 +2011,7 @@ nonisolated struct ModManager: Sendable {
                       listedPath != archivePath else { return nil }
                 return path
             }
-        case .loosePak:
+        case .loosePak, .dzip:
             throw ModManagerError.archiveToolUnavailable(format)
         }
     }

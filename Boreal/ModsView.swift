@@ -42,6 +42,8 @@ struct ModsView: View {
                 case .config: "slider.horizontal.3"
                 case .dragonAgeOverride: "folder.badge.gearshape"
                 case .dragonAgeDazip: "archivebox"
+                case .witcher2CookedPC: "folder"
+                case .witcher2UserContent: "person.crop.folder"
                 case .manual: "hand.raised"
                 case .unknown: "questionmark.square"
                 }
@@ -241,7 +243,11 @@ struct ModsView: View {
                 showsImporter = true
             }
             .buttonStyle(.borderedProminent)
-            .disabled(isUnsupportedDefinitiveEdition || store.isModOperationActive(for: game))
+            .disabled(
+                isUnsupportedDefinitiveEdition
+                    || state == nil
+                    || store.isModOperationActive(for: game)
+            )
         }
     }
 
@@ -392,10 +398,12 @@ struct ModsView: View {
                                 ? "Mod Loader profile synchronized"
                                 : state.adapter == .gtaSanAndreasDefinitiveEdition
                                     ? "Pak profile synchronized"
+                                : state.adapter == .witcher2
+                                    ? "Witcher 2 roots synchronized"
                                 : "Plugins \(health.pluginsSynchronized ? "synchronized" : "out of sync")",
                             symbol: state.adapter == .gtaSanAndreas || state.adapter == .gtaSanAndreasDefinitiveEdition
                                 ? "shippingbox"
-                                : "list.number"
+                                : state.adapter == .witcher2 ? "folder" : "list.number"
                         )
                         healthItem("Vanilla \(health.vanillaFilesProtected ? "protected" : "at risk")", symbol: "lock.shield")
                     }
@@ -1040,6 +1048,7 @@ struct ModsView: View {
             UTType(filenameExtension: "7z") ?? .archive,
             UTType(filenameExtension: "rar") ?? .archive,
             UTType(filenameExtension: "dazip") ?? .archive,
+            UTType(filenameExtension: "dzip") ?? .data,
             UTType(filenameExtension: "pak") ?? .data
         ]
     }

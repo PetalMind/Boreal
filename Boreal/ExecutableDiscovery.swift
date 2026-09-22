@@ -202,6 +202,7 @@ nonisolated enum ExecutableDiscovery {
         // GameSetup-style name above is treated as a configuration tool.
         if has("setup") || has("install") { return nil }
         if has("launcher") || has("launch") { return .launcher }
+        if has("usercontentmanager") { return .tool }
         if has("benchmark") || has("bench") { return .benchmark }
         if has("editor") || has("tool") || has("diagnostic") { return .tool }
         if nameSimilarity(stem, primaryStem) >= 0.55 { return .alternate }

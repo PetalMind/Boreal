@@ -108,6 +108,7 @@ final class BorealStore {
     private let gtaModManager: GTASAModManager
     private let gtaDefinitiveEditionModManager: GTASADefinitiveEditionModManager
     private let dragonAgeOriginsModManager: DragonAgeOriginsModManager
+    private let witcher2ModManager: Witcher2ModManager
     private let graphicsCompatibilityManager = GraphicsCompatibilityManager()
     private let frameGenerationLogger = Logger(subsystem: "STDMSolution.Boreal", category: "FrameGenerationLaunch")
     private var activeSessions: [UUID: WindowsProcessSession] = [:]
@@ -187,6 +188,7 @@ final class BorealStore {
         self.gtaModManager = GTASAModManager(applicationSupportURL: supportRoot)
         self.gtaDefinitiveEditionModManager = GTASADefinitiveEditionModManager(applicationSupportURL: supportRoot)
         self.dragonAgeOriginsModManager = DragonAgeOriginsModManager(applicationSupportURL: supportRoot)
+        self.witcher2ModManager = Witcher2ModManager(applicationSupportURL: supportRoot)
         self.gameDiscoveryCache = GameDiscoveryCacheStore.load(
             at: supportRoot.appending(path: "Discovery/game-discovery.json")
         )
@@ -2045,7 +2047,9 @@ final class BorealStore {
     /// Keeps the Mods entry point visible when Boreal can identify the game,
     /// even if its verified mod runtime is not available for that edition.
     func shouldShowModsTab(for game: StoreLibraryGame) -> Bool {
-        supportsMods(for: game) || GTASAModLoaderAdapter.isDefinitiveEdition(game: game)
+        supportsMods(for: game)
+            || Witcher2Adapter.supports(game: game)
+            || GTASAModLoaderAdapter.isDefinitiveEdition(game: game)
     }
 
     func modGameRoot(for game: StoreLibraryGame) -> URL? {
@@ -2079,10 +2083,18 @@ final class BorealStore {
         Task { @MainActor [weak self] in
             do {
                 let state = try await Task.detached(priority: .utility) {
-                    try manager.load(gameID: gameID, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile, profileID: nil)
+                    try manager.load(
+                        gameID: gameID,
+                        gameRoot: context.gameRoot,
+                        pluginsFile: context.pluginsFile,
+                        profileID: nil,
+                        auxiliaryRoot: context.auxiliaryRoot
+                    )
                 }.value
-                self?.modStates[gameID] = state
-                self?.refreshModHealth(for: game, state: state, context: context)
+                var contextualState = state
+                contextualState.auxiliaryRoot = context.auxiliaryRoot
+                self?.modStates[gameID] = contextualState
+                self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(error, title: "Mods couldn’t be loaded", stage: "Reading the mod profile")
             }
@@ -2119,12 +2131,14 @@ final class BorealStore {
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
                 let state = try await Task.detached(priority: .userInitiated) {
-                    let installed = try manager.install(
+                    var installed = try manager.install(
                         preview: preview,
                         gameRoot: context.gameRoot,
                         pluginsFile: context.pluginsFile,
-                        profileID: profileID
+                        profileID: profileID,
+                        auxiliaryRoot: context.auxiliaryRoot
                     )
+                    installed.auxiliaryRoot = context.auxiliaryRoot
                     // GTA SA:DE archives are immediately deployed after every
                     // install, including a first install. This prevents a
                     // freshly imported JS archive from remaining only in
@@ -2140,8 +2154,10 @@ final class BorealStore {
                     }
                     return installed
                 }.value
-                self?.modStates[gameID] = state
-                self?.refreshModHealth(for: game, state: state, context: context)
+                var contextualState = state
+                contextualState.auxiliaryRoot = context.auxiliaryRoot
+                self?.modStates[gameID] = contextualState
+                self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(
                     error,
@@ -2186,8 +2202,10 @@ final class BorealStore {
                 let next = try await Task.detached(priority: .userInitiated) {
                     try manager.removeMod(modID, from: state)
                 }.value
-                self?.modStates[gameID] = next
-                self?.refreshModHealth(for: game, state: next, context: context)
+                var contextualState = next
+                contextualState.auxiliaryRoot = context.auxiliaryRoot
+                self?.modStates[gameID] = contextualState
+                self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(error, title: "Mod couldn’t be removed", stage: "Removing the staged mod package")
             }
@@ -2237,8 +2255,10 @@ final class BorealStore {
                 let deployed = try await Task.detached(priority: .userInitiated) {
                     try manager.deploy(state: state, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile)
                 }.value
-                self?.modStates[gameID] = deployed
-                self?.refreshModHealth(for: game, state: deployed, context: context)
+                var contextualState = deployed
+                contextualState.auxiliaryRoot = context.auxiliaryRoot
+                self?.modStates[gameID] = contextualState
+                self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(error, title: "Mods couldn’t be deployed", stage: "Applying the selected mod profile")
             }
@@ -2255,10 +2275,18 @@ final class BorealStore {
             do {
                 try manager.activateProfile(profileID, for: gameID)
                 let state = try await Task.detached(priority: .userInitiated) {
-                    try manager.load(gameID: gameID, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile, profileID: profileID)
+                    try manager.load(
+                        gameID: gameID,
+                        gameRoot: context.gameRoot,
+                        pluginsFile: context.pluginsFile,
+                        profileID: profileID,
+                        auxiliaryRoot: context.auxiliaryRoot
+                    )
                 }.value
-                self?.modStates[gameID] = state
-                self?.refreshModHealth(for: game, state: state, context: context)
+                var contextualState = state
+                contextualState.auxiliaryRoot = context.auxiliaryRoot
+                self?.modStates[gameID] = contextualState
+                self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(error, title: "Mod profile couldn’t be loaded", stage: "Switching the active profile")
             }
@@ -2277,8 +2305,10 @@ final class BorealStore {
                 let created = try await Task.detached(priority: .userInitiated) {
                     try manager.createProfile(name: name, from: state)
                 }.value
-                self?.modStates[gameID] = created
-                self?.refreshModHealth(for: game, state: created, context: context)
+                var contextualState = created
+                contextualState.auxiliaryRoot = context.auxiliaryRoot
+                self?.modStates[gameID] = contextualState
+                self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(error, title: "Mod profile couldn’t be created", stage: "Saving the new profile")
             }
@@ -2320,7 +2350,12 @@ final class BorealStore {
         let fingerprint = ModProfileFingerprint.make(mods: state.mods, plugins: state.plugins)
         Task { @MainActor [weak self] in
             let health = await Task.detached(priority: .utility) {
-                manager.deploymentHealth(for: state, gameRoot: context.gameRoot, pluginsFile: context.pluginsFile)
+                manager.deploymentHealth(
+                    for: state,
+                    gameRoot: context.gameRoot,
+                    pluginsFile: context.pluginsFile,
+                    auxiliaryRoot: context.auxiliaryRoot
+                )
             }.value
             guard let self,
                   let current = self.modStates[gameID],
@@ -2372,6 +2407,7 @@ final class BorealStore {
         let gameRoot: URL
         let pluginsFile: URL?
         let adapter: ModGameAdapter
+        let auxiliaryRoot: URL?
     }
 
     private func modGameContext(for game: StoreLibraryGame) -> ModGameContext? {
@@ -2382,7 +2418,7 @@ final class BorealStore {
             let pluginsFile = linkedApplication(for: game)
                 .flatMap { environment(id: $0.environmentID)?.prefixPath }
                 .flatMap { SkyrimModAdapter.pluginsFile(in: URL(fileURLWithPath: $0, isDirectory: true)) }
-            return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile, adapter: .skyrimSpecialEdition)
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: pluginsFile, adapter: .skyrimSpecialEdition, auxiliaryRoot: nil)
         }
         if DragonAgeOriginsAdapter.supports(game: game),
            let gameRoot = DragonAgeOriginsAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
@@ -2393,16 +2429,25 @@ final class BorealStore {
             return ModGameContext(
                 gameRoot: gameRoot,
                 pluginsFile: managedPrefixAddIns ?? DragonAgeOriginsAdapter.addInsFile(in: gameRoot),
-                adapter: .dragonAgeOrigins
+                adapter: .dragonAgeOrigins,
+                auxiliaryRoot: nil
             )
+        }
+        if Witcher2Adapter.supports(game: game),
+           let gameRoot = Witcher2Adapter.gameRoot(installationRoot: installationRoot, executable: executable) {
+            let auxiliaryRoot = linkedApplication(for: game)
+                .flatMap { environment(id: $0.environmentID)?.prefixPath }
+                .flatMap { Witcher2Adapter.userDataRoot(inPrefix: URL(fileURLWithPath: $0, isDirectory: true)) }
+                ?? Witcher2Adapter.userDataRoot(forGameRoot: gameRoot)
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .witcher2, auxiliaryRoot: auxiliaryRoot)
         }
         if GTASADefinitiveEditionAdapter.supports(game: game),
            let gameRoot = GTASADefinitiveEditionAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
-            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreasDefinitiveEdition)
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreasDefinitiveEdition, auxiliaryRoot: nil)
         }
         if GTASAModLoaderAdapter.supports(game: game),
            let gameRoot = GTASAModLoaderAdapter.gameRoot(installationRoot: installationRoot, executable: executable) {
-            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreas)
+            return ModGameContext(gameRoot: gameRoot, pluginsFile: nil, adapter: .gtaSanAndreas, auxiliaryRoot: nil)
         }
         return nil
     }
@@ -2415,6 +2460,7 @@ final class BorealStore {
     private func modManager(for game: StoreLibraryGame) -> any GameModManaging {
         if GTASADefinitiveEditionAdapter.supports(game: game) { return gtaDefinitiveEditionModManager }
         if DragonAgeOriginsAdapter.supports(game: game) { return dragonAgeOriginsModManager }
+        if Witcher2Adapter.supports(game: game) { return witcher2ModManager }
         return GTASAModLoaderAdapter.supports(game: game) ? gtaModManager : modManager
     }
 
@@ -2424,6 +2470,7 @@ final class BorealStore {
         case .gtaSanAndreasDefinitiveEdition: gtaDefinitiveEditionModManager
         case .skyrimSpecialEdition: modManager
         case .dragonAgeOrigins: dragonAgeOriginsModManager
+        case .witcher2: witcher2ModManager
         }
     }
 

@@ -5,8 +5,8 @@ nonisolated protocol GameModManaging: Sendable {
 
     func inspect(archive: URL, gameID: UUID) throws -> ModInstallPreview
     func discardPreview(_ preview: ModInstallPreview)
-    func load(gameID: UUID, gameRoot: URL?, pluginsFile: URL?, profileID: String?) throws -> ModGameState
-    func install(preview: ModInstallPreview, gameRoot: URL?, pluginsFile: URL?, profileID: String) throws -> ModGameState
+    func load(gameID: UUID, gameRoot: URL?, pluginsFile: URL?, profileID: String?, auxiliaryRoot: URL?) throws -> ModGameState
+    func install(preview: ModInstallPreview, gameRoot: URL?, pluginsFile: URL?, profileID: String, auxiliaryRoot: URL?) throws -> ModGameState
     func saveProfile(gameID: UUID, profileID: String, profileName: String, mods: [InstalledMod], plugins: [BethesdaPlugin]) throws
     func deploy(state: ModGameState, gameRoot: URL?, pluginsFile: URL?) throws -> ModGameState
     func profiles(for gameID: UUID) -> [ModProfileDescriptor]
@@ -14,7 +14,7 @@ nonisolated protocol GameModManaging: Sendable {
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState
     func stagedModURL(gameID: UUID, modID: UUID) -> URL?
     func activateProfile(_ profileID: String, for gameID: UUID) throws
-    func deploymentHealth(for state: ModGameState, gameRoot: URL?, pluginsFile: URL?) -> ModDeploymentHealth
+    func deploymentHealth(for state: ModGameState, gameRoot: URL?, pluginsFile: URL?, auxiliaryRoot: URL?) -> ModDeploymentHealth
     func repairRuntime(gameRoot: URL?) throws -> ModRuntimeState?
     func launchArguments(for gameRoot: URL?) -> [String]
 }
@@ -287,7 +287,8 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         gameID: UUID,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String? = nil
+        profileID: String? = nil,
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         let gameDirectory = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
@@ -323,7 +324,8 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         preview: ModInstallPreview,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String = "default"
+        profileID: String = "default",
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         guard preview.adapter == adapter else { throw ModManagerError.unsupportedGame(preview.adapter.displayName) }
         guard preview.canInstallAutomatically else {
@@ -623,7 +625,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         try Data(normalizedProfileID(profileID).utf8).write(to: url, options: .atomic)
     }
 
-    func deploymentHealth(for state: ModGameState, gameRoot: URL?, pluginsFile: URL?) -> ModDeploymentHealth {
+    func deploymentHealth(for state: ModGameState, gameRoot: URL?, pluginsFile: URL?, auxiliaryRoot: URL? = nil) -> ModDeploymentHealth {
         var externalChanges: [String] = []
         let fileManager = FileManager.default
         if let gameRoot {
@@ -797,7 +799,7 @@ extension GTASAModManager {
             case .sevenZip, .rar:
                 guard let tool = sevenZipTool() else { throw ModManagerError.archiveToolUnavailable(format) }
                 _ = try run(tool, arguments: ["x", "-y", archive.path, "-o\(temporary.path)"])
-            case .loosePak:
+            case .loosePak, .dzip:
                 throw ModManagerError.archiveToolUnavailable(format)
             }
             _ = try contentFiles(in: temporary)
@@ -825,7 +827,7 @@ extension GTASAModManager {
                 guard !value.isEmpty, value != archive.lastPathComponent, listedPath != archivePath else { return nil }
                 return value
             }
-        case .loosePak:
+        case .loosePak, .dzip:
             throw ModManagerError.archiveToolUnavailable(format)
         }
     }
@@ -950,6 +952,8 @@ extension GTASAModManager {
                 case .modLoader, .manual, .dragonAgeOverride, .dragonAgeDazip:
                     target = "modloader/Boreal/\(modDirectoryName(for: mod))/\(file.relativePath)"
                 case .unrealPaks:
+                    continue
+                case .witcher2CookedPC, .witcher2UserContent:
                     continue
                 }
                 result[target.lowercased()] = ResolvedFile(

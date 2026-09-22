@@ -212,7 +212,8 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
         gameID: UUID,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String? = nil
+        profileID: String? = nil,
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         let gameDirectory = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
@@ -249,7 +250,8 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
         preview: ModInstallPreview,
         gameRoot: URL?,
         pluginsFile: URL?,
-        profileID: String = "default"
+        profileID: String = "default",
+        auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
         guard preview.adapter == adapter else { throw ModManagerError.unsupportedGame(preview.adapter.displayName) }
         guard preview.canInstallAutomatically else {
@@ -593,7 +595,8 @@ nonisolated struct GTASADefinitiveEditionModManager: GameModManaging, Sendable {
     func deploymentHealth(
         for state: ModGameState,
         gameRoot: URL?,
-        pluginsFile: URL?
+        pluginsFile: URL?,
+        auxiliaryRoot: URL? = nil
     ) -> ModDeploymentHealth {
         var externalChanges: [String] = []
         if let gameRoot {
