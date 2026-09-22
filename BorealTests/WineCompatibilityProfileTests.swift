@@ -3,6 +3,56 @@ import Testing
 @testable import Boreal
 
 struct WineCompatibilityProfileTests {
+    @Test func prefixRuntimeLeasesBlockMutationsUntilEverySessionReleases() async throws {
+        let coordinator = PrefixUsageCoordinator()
+        let prefix = FileManager.default.temporaryDirectory
+            .appending(path: "boreal-prefix-lease-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let firstSession = UUID()
+        let secondSession = UUID()
+        try await coordinator.acquireRuntimeLease(for: prefix, sessionID: firstSession)
+        try await coordinator.acquireRuntimeLease(for: prefix, sessionID: secondSession)
+
+        await #expect(throws: EnvironmentManagerError.self) {
+            try await coordinator.withLock(for: prefix) { true }
+        }
+
+        await coordinator.releaseRuntimeLease(for: prefix, sessionID: firstSession)
+        #expect(await coordinator.hasRuntimeLease(for: prefix))
+        await #expect(throws: EnvironmentManagerError.self) {
+            try await coordinator.withLock(for: prefix) { true }
+        }
+
+        await coordinator.releaseRuntimeLease(for: prefix, sessionID: secondSession)
+        #expect(await !coordinator.hasRuntimeLease(for: prefix))
+        #expect(try await coordinator.withLock(for: prefix) { true })
+    }
+
+    @Test func graphicsBackendDLLOverridesCoverTheSupportedDirectXMatrix() {
+        let cases: [(GraphicsBackend, GraphicsAPI, Set<String>)] = [
+            (.dxvk, .directX9, ["d3d9", "dxgi"]),
+            (.dxvk, .directX10, ["d3d10", "d3d10_1", "d3d10core", "dxgi"]),
+            (.dxvk, .directX11, ["d3d11", "dxgi"]),
+            (.dxmt, .directX10, ["d3d10", "d3d10_1", "d3d10core", "d3d11", "dxgi"]),
+            (.dxmt, .directX11, ["d3d11", "dxgi"]),
+            (.vkd3d, .directX12, ["d3d12", "d3d12core", "dxgi"]),
+            (.wineD3D, .directX9, []),
+            (.d3dMetal, .directX11, []),
+            (.d3dMetal, .directX12, [])
+        ]
+
+        for (backend, api, expected) in cases {
+            #expect(
+                GraphicsBackendManager.apiSpecificDLLOverrides(for: backend, api: api) == expected,
+                "Unexpected DLL override matrix entry for \(backend.rawValue)/\(api.rawValue)."
+            )
+        }
+
+        #expect(RendererLaunchFailureDetector.builtinDLLOverrides(for: .directX9) == ["d3d9"])
+        #expect(RendererLaunchFailureDetector.builtinDLLOverrides(for: .directX10) == ["d3d10", "d3d10_1", "d3d10core", "dxgi"])
+        #expect(RendererLaunchFailureDetector.builtinDLLOverrides(for: .directX11) == ["d3d11", "dxgi"])
+        #expect(RendererLaunchFailureDetector.builtinDLLOverrides(for: .directX12) == ["d3d12", "d3d12core", "dxgi"])
+    }
+
     @Test func automaticRendererPolicyUsesDXVKWhenNativeMetalPathsAreUnavailable() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-resolver-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -53,6 +103,34 @@ struct WineCompatibilityProfileTests {
         try Data("prefix d3d9.dll middle d3d11.dll suffix".utf8).write(to: executable)
 
         #expect(GraphicsAPIDetector.detect(executable: executable) == .directX11)
+    }
+
+    @Test func directXAnalysisIncludesDelayImportsAndPreservesAmbiguousCandidates() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-delay-api-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appending(path: "game.exe")
+        try makePEImage(
+            at: executable,
+            imports: ["d3d11.dll"],
+            delayImports: ["d3d12.dll"]
+        )
+
+        let pe = WindowsPEInspection.inspect(executable)
+        let detection = GraphicsAPIDetector.analyze(executable: executable)
+
+        #expect(pe.imports.contains("d3d11.dll"))
+        #expect(pe.delayImports.contains("d3d12.dll"))
+        #expect(detection.api == nil)
+        #expect(detection.confidence == .low)
+        #expect(detection.candidates == [.directX12, .directX11])
+    }
+
+    @Test func rendererRegistryOverridesAreScopedToTheSelectedAPI() {
+        #expect(GraphicsBackendManager.apiSpecificDLLOverrides(for: .dxvk, api: .directX11) == ["d3d11", "dxgi"])
+        #expect(GraphicsBackendManager.apiSpecificDLLOverrides(for: .dxvk, api: .directX9) == ["d3d9", "dxgi"])
+        #expect(GraphicsBackendManager.apiSpecificDLLOverrides(for: .vkd3d, api: .directX12) == ["d3d12", "d3d12core", "dxgi"])
+        #expect(!GraphicsBackendManager.apiSpecificDLLOverrides(for: .dxvk, api: .directX11).contains("d3d12core"))
     }
 
     @Test func darksidersDeathinitiveProfileSelectsDirectX11AtLaunch() {
@@ -235,6 +313,114 @@ struct WineCompatibilityProfileTests {
 
         #expect(try String(contentsOf: publishedPrefix.appending(path: "drive_c/windows/system32/dxgi.dll"), encoding: .utf8) == "wine")
         #expect(!fileManager.fileExists(atPath: environmentRoot.appending(path: ".graphics-backend.json").path))
+    }
+
+    @Test func unavailableReplacementBackendLeavesCurrentPrefixActivationUntouched() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-graphics-rollback-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let runtimeRoot = root.appending(path: "runtime", directoryHint: .isDirectory)
+        let dxvk = runtimeRoot.appending(path: "GraphicsComponents/DXVK/x64", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: dxvk, withIntermediateDirectories: true)
+        try Data("dxvk-d3d11".utf8).write(to: dxvk.appending(path: "d3d11.dll"))
+        try Data("dxvk-dxgi".utf8).write(to: dxvk.appending(path: "dxgi.dll"))
+
+        let runtime = InstalledRuntime(
+            id: "rollback-runtime",
+            displayName: "Rollback Runtime",
+            wineVersion: "test",
+            rootURL: runtimeRoot,
+            wineExecutable: runtimeRoot.appending(path: "wine"),
+            wineServerExecutable: runtimeRoot.appending(path: "wineserver"),
+            wineBootExecutable: runtimeRoot.appending(path: "wineboot"),
+            architecture: .arm64,
+            requirements: [],
+            features: RuntimeFeatures(
+                wow64: true,
+                wineMono: false,
+                wineGecko: false,
+                d3dmetal: false,
+                dxmt: true,
+                d3d11Verified: true,
+                d3d11VerifiedArchitectures: [.x86_64],
+                dxvk: true
+            )
+        )
+        let environmentRoot = root.appending(path: "environment", directoryHint: .isDirectory)
+        let prefix = environmentRoot.appending(path: "prefix", directoryHint: .isDirectory)
+        let system32 = prefix.appending(path: "drive_c/windows/system32", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: system32, withIntermediateDirectories: true)
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(
+                name: "Rollback",
+                profile: WineCompatibilityProfile(graphicsAPI: .directX11)
+            ),
+            runtimeID: runtime.id,
+            rootURL: environmentRoot,
+            prefixURL: prefix,
+            logsURL: environmentRoot.appending(path: "Logs", directoryHint: .isDirectory),
+            state: .ready
+        )
+        let manager = GraphicsBackendManager()
+        _ = try manager.activate(.dxvk, in: environment, runtime: runtime)
+
+        #expect(throws: GraphicsBackendManagerError.self) {
+            try manager.activate(.dxmt, in: environment, runtime: runtime)
+        }
+
+        #expect(try String(contentsOf: system32.appending(path: "d3d11.dll"), encoding: .utf8) == "dxvk-d3d11")
+        #expect(try String(contentsOf: system32.appending(path: "dxgi.dll"), encoding: .utf8) == "dxvk-dxgi")
+        #expect(fileManager.fileExists(atPath: environmentRoot.appending(path: ".graphics-backend.json").path))
+    }
+
+    @Test func deferredBackendActivationCanRestorePreviousFilesAndManifest() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appending(path: "boreal-graphics-deferred-rollback-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: root) }
+        let runtimeRoot = root.appending(path: "runtime", directoryHint: .isDirectory)
+        let dxvk = runtimeRoot.appending(path: "GraphicsComponents/DXVK/x64", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: dxvk, withIntermediateDirectories: true)
+        try Data("dxvk-d3d11".utf8).write(to: dxvk.appending(path: "d3d11.dll"))
+        try Data("dxvk-dxgi".utf8).write(to: dxvk.appending(path: "dxgi.dll"))
+
+        let runtime = InstalledRuntime(
+            id: "deferred-rollback-runtime",
+            displayName: "Deferred Rollback Runtime",
+            wineVersion: "test",
+            rootURL: runtimeRoot,
+            wineExecutable: runtimeRoot.appending(path: "wine"),
+            wineServerExecutable: runtimeRoot.appending(path: "wineserver"),
+            wineBootExecutable: runtimeRoot.appending(path: "wineboot"),
+            architecture: .arm64,
+            requirements: [],
+            features: RuntimeFeatures(wow64: true, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false, dxvk: true)
+        )
+        let environmentRoot = root.appending(path: "environment", directoryHint: .isDirectory)
+        let prefix = environmentRoot.appending(path: "prefix", directoryHint: .isDirectory)
+        let system32 = prefix.appending(path: "drive_c/windows/system32", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: system32, withIntermediateDirectories: true)
+        let environment = ManagedBorealEnvironment(
+            id: UUID(),
+            configuration: EnvironmentConfiguration(name: "Deferred rollback", profile: WineCompatibilityProfile(graphicsAPI: .directX11)),
+            runtimeID: runtime.id,
+            rootURL: environmentRoot,
+            prefixURL: prefix,
+            logsURL: environmentRoot.appending(path: "Logs", directoryHint: .isDirectory),
+            state: .ready
+        )
+        let manager = GraphicsBackendManager()
+        _ = try manager.activate(.dxvk, in: environment, runtime: runtime)
+
+        let staged = try manager.activate(.wineD3D, in: environment, runtime: runtime, keepRollbackSnapshot: true)
+
+        #expect(staged.rollbackSnapshot != nil)
+        #expect(!fileManager.fileExists(atPath: system32.appending(path: "d3d11.dll").path))
+        try manager.rollback(staged, in: environment)
+
+        #expect(try String(contentsOf: system32.appending(path: "d3d11.dll"), encoding: .utf8) == "dxvk-d3d11")
+        #expect(try String(contentsOf: system32.appending(path: "dxgi.dll"), encoding: .utf8) == "dxvk-dxgi")
+        #expect(fileManager.fileExists(atPath: environmentRoot.appending(path: ".graphics-backend.json").path))
     }
 
     @Test func modernWow64Installs32BitRendererIntoSyswow64() throws {
@@ -744,5 +930,61 @@ struct WineCompatibilityProfileTests {
             logsURL: root.appending(path: "Logs"),
             state: .ready
         )
+    }
+
+    private func makePEImage(at url: URL, imports: [String], delayImports: [String]) throws {
+        let peOffset = 0x80
+        let optionalHeaderOffset = peOffset + 24
+        let optionalHeaderSize = 240
+        let sectionTableOffset = optionalHeaderOffset + optionalHeaderSize
+        let rawDataOffset = 0x200
+        var data = Data(repeating: 0, count: 0x400)
+
+        func put16(_ value: UInt16, at offset: Int) {
+            data[offset] = UInt8(value & 0xff)
+            data[offset + 1] = UInt8((value >> 8) & 0xff)
+        }
+        func put32(_ value: UInt32, at offset: Int) {
+            for byte in 0..<4 { data[offset + byte] = UInt8((value >> (byte * 8)) & 0xff) }
+        }
+        func putLibrary(_ name: String, at offset: Int) {
+            for (index, byte) in name.utf8.enumerated() { data[offset + index] = byte }
+            data[offset + name.utf8.count] = 0
+        }
+
+        data[0] = 0x4d
+        data[1] = 0x5a
+        put32(UInt32(peOffset), at: 0x3c)
+        put32(0x00004550, at: peOffset)
+        let fileHeaderOffset = peOffset + 4
+        put16(0x8664, at: fileHeaderOffset)
+        put16(1, at: fileHeaderOffset + 2)
+        put16(UInt16(optionalHeaderSize), at: fileHeaderOffset + 16)
+        put16(0x020b, at: optionalHeaderOffset)
+        put32(16, at: optionalHeaderOffset + 108)
+
+        let dataDirectoryOffset = optionalHeaderOffset + 112
+        put32(0x1000, at: dataDirectoryOffset + 8)
+        put32(40, at: dataDirectoryOffset + 12)
+        put32(0x1040, at: dataDirectoryOffset + (13 * 8))
+        put32(64, at: dataDirectoryOffset + (13 * 8) + 4)
+
+        put32(0x200, at: sectionTableOffset + 8)
+        put32(0x1000, at: sectionTableOffset + 12)
+        put32(0x200, at: sectionTableOffset + 16)
+        put32(UInt32(rawDataOffset), at: sectionTableOffset + 20)
+
+        if let library = imports.first {
+            put32(0x1080, at: rawDataOffset)
+            put32(0x1060, at: rawDataOffset + 12)
+            put32(0x1080, at: rawDataOffset + 16)
+            putLibrary(library, at: rawDataOffset + 0x60)
+        }
+        if let library = delayImports.first {
+            put32(1, at: rawDataOffset + 0x40)
+            put32(0x1068, at: rawDataOffset + 0x44)
+            putLibrary(library, at: rawDataOffset + 0x68)
+        }
+        try data.write(to: url, options: .atomic)
     }
 }

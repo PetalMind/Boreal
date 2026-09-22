@@ -143,6 +143,18 @@ actor InstallerService: Installing {
             } onCancel: {
                 Task { try? await self.processRunner.stopApplication(installerSession) }
             }
+            switch await processRunner.environmentSessionState(environment: environment, runtime: runtime) {
+            case .inactive:
+                await processRunner.releaseRuntimeLeases(for: environment)
+            case .active:
+                Task { await self.waitForInstallerPrefixToBecomeIdle(environment, runtime: runtime) }
+                throw EnvironmentManagerError.prefixInUse
+            case .unknown:
+                Task { await self.waitForInstallerPrefixToBecomeIdle(environment, runtime: runtime) }
+                throw ProcessRunnerError.launchFailed(
+                    "Boreal could not verify that the installer stopped using its Windows environment."
+                )
+            }
             try Task.checkCancellation()
             await progress(.detectingApplication)
             let discoveredExecutable = try await discoverInstalledExecutable(
@@ -266,6 +278,22 @@ actor InstallerService: Installing {
             architectures: requiredArchitectures ?? [executableArchitecture],
             requiredEngine: preferredEngine
         ))
+    }
+
+    private func waitForInstallerPrefixToBecomeIdle(
+        _ environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async {
+        while !Task.isCancelled {
+            switch await processRunner.environmentSessionState(environment: environment, runtime: runtime) {
+            case .inactive:
+                await processRunner.releaseRuntimeLeases(for: environment)
+                try? await environmentManager.remove(environment)
+                return
+            case .active, .unknown:
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 
     private func portableExecutable(_ installer: URL) -> URL? {

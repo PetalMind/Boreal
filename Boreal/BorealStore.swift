@@ -2616,13 +2616,15 @@ final class BorealStore {
         guard let record = environment(id: environmentID), let managed = managedEnvironment(from: record) else { return }
         guard let current = environmentDependencyStatuses[environmentID],
               let index = current.firstIndex(where: { $0.dependency == dependency }),
-              current[index].state != .installed else { return }
+              current[index].state == .missing || current[index].state == .failed else { return }
         environmentDependencyStatuses[environmentID]?[index].state = .installing
         Task { [weak self] in
             guard let self else { return }
             var recoverySnapshot: EnvironmentSnapshot?
+            var installedRuntime: InstalledRuntime?
             do {
                 guard let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { throw InstallerServiceError.noRuntimeAvailable }
+                installedRuntime = runtime
                 // Dependency installation mutates the prefix. Keep a restore
                 // point before invoking the existing installer so a failed
                 // winetricks/configuration operation does not leave the user
@@ -2633,20 +2635,43 @@ final class BorealStore {
                 try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
                 refreshDependencies(for: environmentID)
             } catch {
-                if let recoverySnapshot {
-                    _ = try? await services.environmentSnapshotManager.restore(
-                        recoverySnapshot,
-                        to: managed,
-                        activeSession: false,
-                        preserveCurrent: false,
-                        traceID: recoverySnapshot.traceID
-                    )
+                let diagnostics = await services.environmentManager.preserveFailureDiagnostics(managed)
+                let didRestore = await restoreDependencyRecoverySnapshot(recoverySnapshot, to: managed)
+
+                // Winetricks can fail transiently while downloading or running
+                // Microsoft's redistributable. Retry only from the clean
+                // recovery snapshot, never against a partially-mutated prefix.
+                if didRestore, isDependencyInstallerFailure(error), let runtime = installedRuntime {
+                    do {
+                        try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
+                        refreshDependencies(for: environmentID)
+                        return
+                    } catch {
+                        let retryDiagnostics = await services.environmentManager.preserveFailureDiagnostics(managed)
+                        _ = await restoreDependencyRecoverySnapshot(recoverySnapshot, to: managed)
+                        if let index = environmentDependencyStatuses[environmentID]?.firstIndex(where: { $0.dependency == dependency }) {
+                            environmentDependencyStatuses[environmentID]?[index].state = .failed
+                            environmentDependencyStatuses[environmentID]?[index].detail = error.localizedDescription
+                        }
+                        present(
+                            error,
+                            title: "\(dependency.displayName) couldn’t be installed",
+                            stage: "Installing the dependency into the selected Windows environment",
+                            diagnostics: retryDiagnostics
+                        )
+                        return
+                    }
                 }
                 if let index = environmentDependencyStatuses[environmentID]?.firstIndex(where: { $0.dependency == dependency }) {
                     environmentDependencyStatuses[environmentID]?[index].state = .failed
                     environmentDependencyStatuses[environmentID]?[index].detail = error.localizedDescription
                 }
-                present(error, title: "\(dependency.displayName) couldn’t be installed", stage: "Installing the dependency into the selected Windows environment")
+                present(
+                    error,
+                    title: "\(dependency.displayName) couldn’t be installed",
+                    stage: "Installing the dependency into the selected Windows environment",
+                    diagnostics: diagnostics
+                )
             }
         }
     }
@@ -2665,8 +2690,10 @@ final class BorealStore {
         Task { [weak self] in
             guard let self else { return }
             var recoverySnapshot: EnvironmentSnapshot?
+            var installedRuntime: InstalledRuntime?
             do {
                 guard let runtime = try await services.runtimeManager.installedRuntimes().first(where: { $0.id == managed.runtimeID }) else { throw InstallerServiceError.noRuntimeAvailable }
+                installedRuntime = runtime
                 // The actor executes each command serially so winetricks never
                 // changes the same prefix concurrently.
                 if FileManager.default.fileExists(atPath: managed.rootURL.appending(path: "environment.json").path) {
@@ -2677,20 +2704,65 @@ final class BorealStore {
                 }
                 refreshDependencies(for: environmentID)
             } catch {
-                if let recoverySnapshot {
-                    _ = try? await services.environmentSnapshotManager.restore(
-                        recoverySnapshot,
-                        to: managed,
-                        activeSession: false,
-                        preserveCurrent: false,
-                        traceID: recoverySnapshot.traceID
-                    )
+                let diagnostics = await services.environmentManager.preserveFailureDiagnostics(managed)
+                let didRestore = await restoreDependencyRecoverySnapshot(recoverySnapshot, to: managed)
+
+                if didRestore, isDependencyInstallerFailure(error), let runtime = installedRuntime {
+                    do {
+                        for dependency in dependencies {
+                            try await services.environmentManager.install(dependency, in: managed, runtime: runtime)
+                        }
+                        refreshDependencies(for: environmentID)
+                        return
+                    } catch {
+                        let retryDiagnostics = await services.environmentManager.preserveFailureDiagnostics(managed)
+                        _ = await restoreDependencyRecoverySnapshot(recoverySnapshot, to: managed)
+                        refreshDependencies(for: environmentID)
+                        present(
+                            error,
+                            title: "Dependencies couldn’t be installed",
+                            stage: "Installing Windows libraries into the selected environment",
+                            diagnostics: retryDiagnostics
+                        )
+                        return
+                    }
                 }
                 refreshDependencies(for: environmentID)
-                present(error, title: "Dependencies couldn’t be installed", stage: "Installing Windows libraries into the selected environment")
+                present(
+                    error,
+                    title: "Dependencies couldn’t be installed",
+                    stage: "Installing Windows libraries into the selected environment",
+                    diagnostics: diagnostics
+                )
             }
         }
     }
+
+    private func restoreDependencyRecoverySnapshot(
+        _ snapshot: EnvironmentSnapshot?,
+        to environment: ManagedBorealEnvironment
+    ) async -> Bool {
+        guard let snapshot else { return false }
+        do {
+            _ = try await services.environmentSnapshotManager.restore(
+                snapshot,
+                to: environment,
+                activeSession: false,
+                preserveCurrent: false,
+                traceID: snapshot.traceID
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func isDependencyInstallerFailure(_ error: Error) -> Bool {
+        guard let error = error as? EnvironmentManagerError else { return false }
+        if case .dependencyInstallationFailed = error { return true }
+        return false
+    }
+
     func applications(in environmentID: UUID) -> [WindowsApplication] { applications.filter { $0.environmentID == environmentID } }
 
     func recommendedRuntimeEngine(for game: StoreLibraryGame) -> RuntimeEngine {
@@ -7358,6 +7430,9 @@ final class BorealStore {
                         environment: environment,
                         runtime: runtime
                     )
+                    if await services.processRunner.environmentSessionState(environment: environment, runtime: runtime) == .inactive {
+                        await services.processRunner.releaseRuntimeLeases(for: environment)
+                    }
                     guard environmentMonitorIDs[appID] == monitorID else { return }
                     // Steam's client and wineserver intentionally survive the
                     // game. Only the process-group session has ended here.
@@ -7403,6 +7478,7 @@ final class BorealStore {
                         try? await Task.sleep(for: .milliseconds(250))
                         continue
                     }
+                    await services.processRunner.releaseRuntimeLeases(for: environment)
                     markEnvironmentEnded(appID: appID)
                     return
                 }
@@ -7478,6 +7554,15 @@ final class BorealStore {
                     environment: managed
                 )
                 if let recoveredSession {
+                    do {
+                        try await services.processRunner.adoptRuntimeLease(
+                            for: recoveredSession,
+                            environment: managed
+                        )
+                    } catch {
+                        markEnvironmentUnknown(appID: appID, detail: error.localizedDescription)
+                        continue
+                    }
                     activeSessions[appID] = recoveredSession
                     performanceLogURLs[appID] = recoveredSession.stderrLog
                     startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
@@ -7499,10 +7584,20 @@ final class BorealStore {
                 monitorEnvironmentSession(environment: managed, runtime: installedRuntime, appID: appID)
                 continue
             }
+            let recoveredSession = activeSessions[appID]
+                ?? recoveredSessionForApplication(application: app, environment: managed)
+            do {
+                try await services.processRunner.adoptRuntimeLease(
+                    for: recoveredSession,
+                    environment: managed
+                )
+            } catch {
+                markEnvironmentUnknown(appID: appID, detail: error.localizedDescription)
+                continue
+            }
+            activeSessions[appID] = recoveredSession
             switch await services.processRunner.environmentSessionState(environment: managed, runtime: installedRuntime) {
             case .active:
-                let recoveredSession = activeSessions[appID] ?? recoveredSessionForApplication(application: app, environment: managed)
-                activeSessions[appID] = recoveredSession
                 performanceLogURLs[appID] = recoveredSession.stderrLog
                 startPerformanceProcessTracking(session: recoveredSession, environment: managed, runtime: installedRuntime, appID: appID)
                 startFrameGeneration(appID: appID, profile: compatibilityProfile(for: app))
@@ -7522,6 +7617,7 @@ final class BorealStore {
                 save()
                 monitorEnvironmentSession(environment: managed, runtime: installedRuntime, appID: appID)
             case .inactive:
+                await services.processRunner.releaseRuntimeLeases(for: managed)
                 markEnvironmentEnded(appID: appID)
             case .unknown:
                 markEnvironmentUnknown(appID: appID, detail: "Boreal couldn’t recover the Windows environment session after restart.")

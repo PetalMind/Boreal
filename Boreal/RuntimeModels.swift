@@ -694,6 +694,19 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
         case .physX: ["PhysXLoader.dll"]
         }
     }
+
+    /// Wine ships builtin copies of the VC runtime DLLs. Their presence in a
+    /// prefix is therefore not evidence that the native redistributable has
+    /// been installed. Boreal writes an explicit marker after winetricks
+    /// completes, which is the reliable signal for these dependencies.
+    var requiresExplicitInstallationEvidence: Bool {
+        switch self {
+        case .vc2010, .vc2015To2022:
+            true
+        default:
+            false
+        }
+    }
 }
 
 nonisolated enum RuntimeDependencyState: String, Codable, Sendable, Hashable {
@@ -758,6 +771,9 @@ nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
     let sha256: String
     let compressedSize: Int64?
     let installedFiles: [String]
+    /// Hashes of the published component files. Empty only for receipts
+    /// written by older Boreal versions before file-level integrity checks.
+    let installedFileSHA256: [String: String]
 
     init(
         component: RuntimeComponent,
@@ -766,7 +782,8 @@ nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
         installedAt: Date,
         sha256: String = "",
         compressedSize: Int64? = nil,
-        installedFiles: [String] = []
+        installedFiles: [String] = [],
+        installedFileSHA256: [String: String] = [:]
     ) {
         self.component = component
         self.version = version
@@ -775,10 +792,11 @@ nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
         self.sha256 = sha256
         self.compressedSize = compressedSize
         self.installedFiles = installedFiles
+        self.installedFileSHA256 = installedFileSHA256
     }
 
     private enum CodingKeys: String, CodingKey {
-        case component, version, sourceRepository, installedAt, sha256, compressedSize, installedFiles
+        case component, version, sourceRepository, installedAt, sha256, compressedSize, installedFiles, installedFileSHA256
     }
 
     init(from decoder: Decoder) throws {
@@ -790,6 +808,7 @@ nonisolated struct RuntimeComponentReceipt: Codable, Sendable, Hashable {
         sha256 = try values.decodeIfPresent(String.self, forKey: .sha256) ?? ""
         compressedSize = try values.decodeIfPresent(Int64.self, forKey: .compressedSize)
         installedFiles = try values.decodeIfPresent([String].self, forKey: .installedFiles) ?? []
+        installedFileSHA256 = try values.decodeIfPresent([String: String].self, forKey: .installedFileSHA256) ?? [:]
     }
 }
 

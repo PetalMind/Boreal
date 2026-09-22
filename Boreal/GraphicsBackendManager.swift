@@ -1,18 +1,33 @@
 import Foundation
 
+nonisolated struct GraphicsBackendActivationSnapshot: Sendable, Equatable {
+    nonisolated struct File: Sendable, Equatable {
+        let snapshot: URL?
+        let destination: URL
+    }
+
+    let rootURL: URL
+    let manifestData: Data?
+    let touchedFiles: [File]
+    let backupSnapshotURL: URL?
+}
+
 nonisolated struct GraphicsBackendActivation: Sendable, Equatable {
     let backend: WineGraphicsBackend
     let dllOverrides: [String]
     let componentReference: GraphicsComponentReference?
+    let rollbackSnapshot: GraphicsBackendActivationSnapshot?
 
     init(
         backend: WineGraphicsBackend,
         dllOverrides: [String],
-        componentReference: GraphicsComponentReference? = nil
+        componentReference: GraphicsComponentReference? = nil,
+        rollbackSnapshot: GraphicsBackendActivationSnapshot? = nil
     ) {
         self.backend = backend
         self.dllOverrides = dllOverrides
         self.componentReference = componentReference
+        self.rollbackSnapshot = rollbackSnapshot
     }
 }
 
@@ -21,6 +36,7 @@ nonisolated enum GraphicsBackendManagerError: LocalizedError, Sendable {
     case componentPackageMissing(WineGraphicsBackend)
     case componentPackageEmpty(WineGraphicsBackend)
     case builtinDXVKPackage
+    case activationRollbackFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -32,6 +48,8 @@ nonisolated enum GraphicsBackendManagerError: LocalizedError, Sendable {
             "The \(backend.displayName) component package does not contain supported Direct3D libraries."
         case .builtinDXVKPackage:
             "This DXVK package contains Wine builtin DLLs, which cannot be activated through prefix overrides. Reinstall DXVK using the runtime component download, or import the archive without 'builtin' in its name."
+        case .activationRollbackFailed(let detail):
+            "The graphics backend change failed and Boreal could not fully restore the previous prefix state: \(detail)"
         }
     }
 }
@@ -86,9 +104,9 @@ nonisolated struct GraphicsBackendManager: Sendable {
     func activate(
         _ requested: WineGraphicsBackend,
         in environment: ManagedBorealEnvironment,
-        runtime: InstalledRuntime
+        runtime: InstalledRuntime,
+        keepRollbackSnapshot: Bool = false
     ) throws -> GraphicsBackendActivation {
-        try reset(environment)
         var configuration = environment.configuration.graphicsConfiguration
         configuration.backend = requested
         let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
@@ -103,7 +121,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
         }
         let backend = resolution.stack.backend
         guard backend == .dxmt || backend == .dxvk || backend == .vkd3d else {
-            return GraphicsBackendActivation(backend: backend, dllOverrides: [])
+            return try activateWithoutManagedDLLs(backend, in: environment, keepRollbackSnapshot: keepRollbackSnapshot)
         }
 
         let componentReference = componentReference(
@@ -132,10 +150,15 @@ nonisolated struct GraphicsBackendManager: Sendable {
             guard backend == .dxmt, builtinDXMTAvailable(in: environment, runtime: runtime) else {
                 throw GraphicsBackendManagerError.componentPackageMissing(backend)
             }
-            return GraphicsBackendActivation(
+            let activation = GraphicsBackendActivation(
                 backend: .dxmt,
-                dllOverrides: ["d3d11", "dxgi"],
+                dllOverrides: Self.apiSpecificDLLOverrides(for: backend, api: configuration.api).sorted(),
                 componentReference: nil
+            )
+            return try activateWithoutManagedDLLs(
+                activation,
+                in: environment,
+                keepRollbackSnapshot: keepRollbackSnapshot
             )
         }
         if backend == .dxmt,
@@ -151,9 +174,17 @@ nonisolated struct GraphicsBackendManager: Sendable {
         }
 
         let backupRoot = environment.rootURL.appending(path: ".graphics-backup", directoryHint: .isDirectory)
-        try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+        let snapshot = try makeActivationSnapshot(
+            in: environment,
+            touchedFiles: candidates.map { $0.1 }
+        )
         var installed: [InstalledFile] = []
         do {
+            try reset(environment)
+            if snapshot?.manifestData == nil, fileManager.fileExists(atPath: backupRoot.path) {
+                try fileManager.removeItem(at: backupRoot)
+            }
+            try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
             for (source, destination) in candidates {
                 try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let backup: URL?
@@ -173,29 +204,207 @@ nonisolated struct GraphicsBackendManager: Sendable {
                 componentReference: componentReference
             )
             try JSONEncoder().encode(manifest).write(to: manifestURL(environment), options: .atomic)
-        } catch {
+        } catch let activationError {
             try? restore(installed.reversed())
-            try? fileManager.removeItem(at: backupRoot)
-            throw error
+            do {
+                try restoreActivationSnapshot(snapshot, in: environment)
+            } catch let rollbackError {
+                throw GraphicsBackendManagerError.activationRollbackFailed(rollbackError.localizedDescription)
+            }
+            throw activationError
         }
 
-        let overrides = Array(Set(installed.map { $0.destination.deletingPathExtension().lastPathComponent }))
-            .filter { $0.caseInsensitiveCompare("winemetal") != .orderedSame }
+        let installedDLLNames = Set(installed.map {
+            $0.destination.deletingPathExtension().lastPathComponent.lowercased()
+        })
+        let overrides = installedDLLNames
+            .intersection(Self.apiSpecificDLLOverrides(for: backend, api: configuration.api))
             .sorted()
+        if !keepRollbackSnapshot { discardActivationSnapshot(snapshot) }
         return GraphicsBackendActivation(
             backend: backend,
             dllOverrides: overrides,
-            componentReference: componentReference
+            componentReference: componentReference,
+            rollbackSnapshot: keepRollbackSnapshot ? snapshot : nil
         )
     }
 
     func reset(_ environment: ManagedBorealEnvironment) throws {
         let url = manifestURL(environment)
-        guard fileManager.fileExists(atPath: url.path) else { return }
-        let manifest = try JSONDecoder().decode(InstallationManifest.self, from: Data(contentsOf: url))
-        try restore(manifest.files.reversed())
-        try? fileManager.removeItem(at: url)
-        try? fileManager.removeItem(at: environment.rootURL.appending(path: ".graphics-backup"))
+        let backupRoot = environment.rootURL.appending(path: ".graphics-backup", directoryHint: .isDirectory)
+        guard fileManager.fileExists(atPath: url.path) || fileManager.fileExists(atPath: backupRoot.path) else { return }
+        let snapshot = try makeActivationSnapshot(in: environment)
+        do {
+            if fileManager.fileExists(atPath: url.path) {
+                let manifest = try JSONDecoder().decode(InstallationManifest.self, from: Data(contentsOf: url))
+                try restore(manifest.files.reversed())
+                try fileManager.removeItem(at: url)
+            }
+            if fileManager.fileExists(atPath: backupRoot.path) {
+                try fileManager.removeItem(at: backupRoot)
+            }
+            discardActivationSnapshot(snapshot)
+        } catch let resetError {
+            do {
+                try restoreActivationSnapshot(snapshot, in: environment)
+            } catch let rollbackError {
+                throw GraphicsBackendManagerError.activationRollbackFailed(rollbackError.localizedDescription)
+            }
+            throw resetError
+        }
+    }
+
+    func commit(_ activation: GraphicsBackendActivation) {
+        discardActivationSnapshot(activation.rollbackSnapshot)
+    }
+
+    func rollback(_ activation: GraphicsBackendActivation, in environment: ManagedBorealEnvironment) throws {
+        guard let snapshot = activation.rollbackSnapshot else { return }
+        try restoreActivationSnapshot(snapshot, in: environment)
+    }
+
+    private func activateWithoutManagedDLLs(
+        _ backend: WineGraphicsBackend,
+        in environment: ManagedBorealEnvironment,
+        keepRollbackSnapshot: Bool = false
+    ) throws -> GraphicsBackendActivation {
+        try activateWithoutManagedDLLs(
+            GraphicsBackendActivation(backend: backend, dllOverrides: []),
+            in: environment,
+            keepRollbackSnapshot: keepRollbackSnapshot
+        )
+    }
+
+    private func activateWithoutManagedDLLs(
+        _ activation: GraphicsBackendActivation,
+        in environment: ManagedBorealEnvironment,
+        keepRollbackSnapshot: Bool = false
+    ) throws -> GraphicsBackendActivation {
+        let snapshot = try makeActivationSnapshot(in: environment)
+        do {
+            try reset(environment)
+            if !keepRollbackSnapshot { discardActivationSnapshot(snapshot) }
+            return GraphicsBackendActivation(
+                backend: activation.backend,
+                dllOverrides: activation.dllOverrides,
+                componentReference: activation.componentReference,
+                rollbackSnapshot: keepRollbackSnapshot ? snapshot : nil
+            )
+        } catch let activationError {
+            do {
+                try restoreActivationSnapshot(snapshot, in: environment)
+            } catch let rollbackError {
+                throw GraphicsBackendManagerError.activationRollbackFailed(rollbackError.localizedDescription)
+            }
+            throw activationError
+        }
+    }
+
+    private func makeActivationSnapshot(
+        in environment: ManagedBorealEnvironment,
+        touchedFiles: [URL] = []
+    ) throws -> GraphicsBackendActivationSnapshot? {
+        let url = manifestURL(environment)
+        let backupRoot = environment.rootURL.appending(path: ".graphics-backup", directoryHint: .isDirectory)
+        let manifestData = fileManager.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        let manifest = try manifestData.map { try JSONDecoder().decode(InstallationManifest.self, from: $0) }
+        guard manifestData != nil || fileManager.fileExists(atPath: backupRoot.path) || !touchedFiles.isEmpty else { return nil }
+        let prefixPath = environment.prefixURL.standardizedFileURL.path + "/"
+        let snapshotRoot = environment.rootURL.appending(
+            path: ".graphics-activation-transaction/\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        let activeRoot = snapshotRoot.appending(path: "active", directoryHint: .isDirectory)
+        var activeFiles: [GraphicsBackendActivationSnapshot.File] = []
+        do {
+            try fileManager.createDirectory(at: activeRoot, withIntermediateDirectories: true)
+            let managedDestinations = (manifest?.files ?? []).map(\.destination)
+            let destinations = Array(Set(managedDestinations + touchedFiles.map { $0.standardizedFileURL }))
+            for (index, destination) in destinations.enumerated() {
+                guard destination.path.hasPrefix(prefixPath) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let saved: URL?
+                if fileManager.fileExists(atPath: destination.path) {
+                    let values = try destination.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                    guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    let snapshotFile = activeRoot.appending(path: "\(index)-\(destination.lastPathComponent)")
+                    try fileManager.copyItem(at: destination, to: snapshotFile)
+                    saved = snapshotFile
+                } else {
+                    saved = nil
+                }
+                activeFiles.append(.init(snapshot: saved, destination: destination))
+            }
+            if let manifestData {
+                try manifestData.write(to: snapshotRoot.appending(path: "manifest.json"), options: .atomic)
+            }
+
+            let backupSnapshot = snapshotRoot.appending(path: "backup", directoryHint: .isDirectory)
+            let backupSnapshotURL: URL?
+            if fileManager.fileExists(atPath: backupRoot.path) {
+                try fileManager.copyItem(at: backupRoot, to: backupSnapshot)
+                backupSnapshotURL = backupSnapshot
+            } else {
+                backupSnapshotURL = nil
+            }
+            return GraphicsBackendActivationSnapshot(
+                rootURL: snapshotRoot,
+                manifestData: manifestData,
+                touchedFiles: activeFiles,
+                backupSnapshotURL: backupSnapshotURL
+            )
+        } catch {
+            try? fileManager.removeItem(at: snapshotRoot)
+            throw error
+        }
+    }
+
+    private func restoreActivationSnapshot(
+        _ snapshot: GraphicsBackendActivationSnapshot?,
+        in environment: ManagedBorealEnvironment
+    ) throws {
+        let url = manifestURL(environment)
+        let backupRoot = environment.rootURL.appending(path: ".graphics-backup", directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: url.path) {
+            let currentManifest = try JSONDecoder().decode(InstallationManifest.self, from: Data(contentsOf: url))
+            for file in currentManifest.files.reversed() where fileManager.fileExists(atPath: file.destination.path) {
+                try fileManager.removeItem(at: file.destination)
+            }
+            try fileManager.removeItem(at: url)
+        }
+        if fileManager.fileExists(atPath: backupRoot.path) {
+            try fileManager.removeItem(at: backupRoot)
+        }
+        guard let snapshot else {
+            try? fileManager.removeItem(at: url)
+            return
+        }
+        if let backupSnapshotURL = snapshot.backupSnapshotURL {
+            try fileManager.copyItem(at: backupSnapshotURL, to: backupRoot)
+        }
+        for file in snapshot.touchedFiles {
+            if fileManager.fileExists(atPath: file.destination.path) {
+                try fileManager.removeItem(at: file.destination)
+            }
+            if let saved = file.snapshot {
+                try fileManager.createDirectory(at: file.destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fileManager.copyItem(at: saved, to: file.destination)
+            }
+        }
+        if let manifestData = snapshot.manifestData {
+            try manifestData.write(to: url, options: .atomic)
+        } else {
+            try? fileManager.removeItem(at: url)
+        }
+        discardActivationSnapshot(snapshot)
+    }
+
+    private func discardActivationSnapshot(_ snapshot: GraphicsBackendActivationSnapshot?) {
+        guard let snapshot, fileManager.fileExists(atPath: snapshot.rootURL.path) else { return }
+        try? fileManager.removeItem(at: snapshot.rootURL)
     }
 
     func prefixDidMove(
@@ -337,6 +546,31 @@ nonisolated struct GraphicsBackendManager: Sendable {
         case .dxvk: .dxvk
         case .vkd3d: .vkd3d
         default: nil
+        }
+    }
+
+    static func apiSpecificDLLOverrides(for backend: WineGraphicsBackend, api: GraphicsAPI) -> Set<String> {
+        switch (backend, api) {
+        case (.dxmt, .directX10):
+            ["d3d10", "d3d10_1", "d3d10core", "d3d11", "dxgi"]
+        case (.dxmt, .directX11):
+            ["d3d11", "dxgi"]
+        case (.dxmt, .automatic):
+            ["d3d10", "d3d10_1", "d3d10core", "d3d11", "dxgi"]
+        case (.dxvk, .directX9):
+            ["d3d9", "dxgi"]
+        case (.dxvk, .directX10):
+            ["d3d10", "d3d10_1", "d3d10core", "dxgi"]
+        case (.dxvk, .directX11):
+            ["d3d11", "dxgi"]
+        case (.dxvk, .automatic):
+            ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "dxgi"]
+        case (.vkd3d, .directX12):
+            ["d3d12", "d3d12core", "dxgi"]
+        case (.vkd3d, .automatic):
+            ["d3d12", "d3d12core", "dxgi"]
+        default:
+            []
         }
     }
 

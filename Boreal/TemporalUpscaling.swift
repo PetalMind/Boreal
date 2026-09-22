@@ -112,6 +112,7 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
     let architecture: WindowsExecutableArchitecture
     let version: String?
     let imports: Set<String>
+    let delayImports: Set<String>
     let exports: Set<String>
 
     static let unknown = WindowsPEInspection(
@@ -119,6 +120,7 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         architecture: .unknown,
         version: nil,
         imports: [],
+        delayImports: [],
         exports: []
     )
 
@@ -147,13 +149,23 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         default: .unknown
         }
         guard magic == 0x010b || magic == 0x020b else {
-            return WindowsPEInspection(isPE: true, architecture: architecture, version: extractVersion(from: data), imports: [], exports: [])
+            return WindowsPEInspection(
+                isPE: true,
+                architecture: architecture,
+                version: extractVersion(from: data),
+                imports: [],
+                delayImports: [],
+                exports: []
+            )
         }
 
         guard let dataDirectoryOffset = checkedAdd(optionalHeader, magic == 0x020b ? 112 : 96),
               let numberOfDirectoriesOffset = checkedAdd(optionalHeader, magic == 0x020b ? 108 : 92),
               let sectionTable = checkedAdd(optionalHeader, optionalSize) else { return .unknown }
         let directoryCount = Int(exactly: u32(data, at: numberOfDirectoriesOffset)) ?? 0
+        let imageBase = magic == 0x020b
+            ? u64(data, at: optionalHeader + 24)
+            : UInt64(u32(data, at: optionalHeader + 28))
         var sections: [PESection] = []
         if sectionCount > 0,
            let sectionTableSize = checkedMultiply(sectionCount, 40),
@@ -181,12 +193,16 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         }
 
         let imports = directory(1).map { parseImports(data: data, directory: $0, sections: sections, architecture: architecture) } ?? []
+        let delayImports = directory(13).map {
+            parseDelayImports(data: data, directory: $0, sections: sections, imageBase: imageBase)
+        } ?? []
         let exports = directory(0).map { parseExports(data: data, directory: $0, sections: sections) } ?? []
         return WindowsPEInspection(
             isPE: true,
             architecture: architecture,
             version: extractVersion(from: data),
             imports: imports,
+            delayImports: delayImports,
             exports: exports
         )
     }
@@ -231,6 +247,45 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
         // The architecture argument is deliberately consumed to keep this
         // parser's contract explicit: imports are metadata, not code loading.
         _ = architecture
+        return result
+    }
+
+    private static func parseDelayImports(
+        data: Data,
+        directory: (rva: UInt32, size: UInt32),
+        sections: [PESection],
+        imageBase: UInt64
+    ) -> Set<String> {
+        guard let directoryOffset = fileOffset(directory.rva, sections: sections),
+              let directorySize = Int(exactly: directory.size),
+              let directoryEnd = checkedAdd(directoryOffset, directorySize) else { return [] }
+        var result = Set<String>()
+        var cursor = directoryOffset
+        let end = min(data.count, directoryEnd)
+        while let recordEnd = checkedAdd(cursor, 32), recordEnd <= end {
+            let attributes = u32(data, at: cursor)
+            let nameValue = u32(data, at: cursor + 4)
+            let descriptorIsEmpty = (0..<8).allSatisfy { u32(data, at: cursor + $0 * 4) == 0 }
+            if descriptorIsEmpty { break }
+
+            let nameRVA: UInt32?
+            if attributes & 1 == 1 {
+                nameRVA = nameValue
+            } else if UInt64(nameValue) >= imageBase,
+                      let converted = UInt32(exactly: UInt64(nameValue) - imageBase) {
+                // Older delay descriptors store an image VA instead of an RVA.
+                nameRVA = converted
+            } else {
+                nameRVA = nil
+            }
+            if let nameRVA,
+               let nameOffset = fileOffset(nameRVA, sections: sections),
+               let name = asciiString(data, at: nameOffset) {
+                result.insert(name.lowercased())
+            }
+            guard let nextCursor = checkedAdd(cursor, 32) else { break }
+            cursor = nextCursor
+        }
         return result
     }
 
@@ -306,6 +361,11 @@ nonisolated struct WindowsPEInspection: Sendable, Hashable {
             | UInt32(data[offset + 1]) << 8
             | UInt32(data[offset + 2]) << 16
             | UInt32(data[offset + 3]) << 24
+    }
+
+    private static func u64(_ data: Data, at offset: Int) -> UInt64 {
+        guard offset >= 0, offset + 7 < data.count else { return 0 }
+        return UInt64(u32(data, at: offset)) | UInt64(u32(data, at: offset + 4)) << 32
     }
 
     private static func intOffset(_ data: Data, at offset: Int) -> Int? {

@@ -261,7 +261,7 @@ nonisolated enum DirectXDetector {
         guard fileManager.fileExists(atPath: file.path) else { return [] }
         let inspection = WindowsPEInspection.inspect(file, fileManager: fileManager)
         if inspection.isPE {
-            return inspection.imports.compactMap { library in
+            return inspection.imports.union(inspection.delayImports).compactMap { library in
                 api(for: library).map { APISignal(api: $0, library: library, source: "PE imports") }
             }
         }
@@ -271,7 +271,6 @@ nonisolated enum DirectXDetector {
             ("d3d12.dll", GraphicsAPI.directX12),
             ("d3d12core.dll", GraphicsAPI.directX12),
             ("d3d11.dll", GraphicsAPI.directX11),
-            ("dxgi.dll", GraphicsAPI.directX11),
             ("d3d10.dll", GraphicsAPI.directX10),
             ("d3d10_1.dll", GraphicsAPI.directX10),
             ("d3d10core.dll", GraphicsAPI.directX10),
@@ -285,7 +284,7 @@ nonisolated enum DirectXDetector {
     private static func api(for library: String) -> GraphicsAPI? {
         let name = library.lowercased()
         if name == "d3d12.dll" || name == "d3d12core.dll" { return .directX12 }
-        if name == "d3d11.dll" || name == "dxgi.dll" { return .directX11 }
+        if name == "d3d11.dll" { return .directX11 }
         if name == "d3d10.dll" || name == "d3d10_1.dll" || name == "d3d10core.dll" { return .directX10 }
         if name == "d3d9.dll" || name.hasPrefix("d3dx9_") { return .directX9 }
         return nil
@@ -1046,6 +1045,16 @@ actor EnvironmentSnapshotManager {
         reason: SnapshotReason,
         traceID: OperationTraceID = OperationTraceID()
     ) async throws -> EnvironmentSnapshot {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.createSnapshotUnderPrefixLock(for: environment, reason: reason, traceID: traceID)
+        }
+    }
+
+    private func createSnapshotUnderPrefixLock(
+        for environment: ManagedBorealEnvironment,
+        reason: SnapshotReason,
+        traceID: OperationTraceID
+    ) async throws -> EnvironmentSnapshot {
         guard fileManager.fileExists(atPath: environment.rootURL.path) else { throw SnapshotError.sourceMissing }
         let sourceSize = allocatedSize(of: environment.rootURL)
         let volumeValues = try? snapshotsRootURL.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
@@ -1101,6 +1110,24 @@ actor EnvironmentSnapshotManager {
         preserveCurrent: Bool = true,
         traceID: OperationTraceID = OperationTraceID()
     ) async throws -> ManagedBorealEnvironment {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.restoreUnderPrefixLock(
+                snapshot,
+                to: environment,
+                activeSession: activeSession,
+                preserveCurrent: preserveCurrent,
+                traceID: traceID
+            )
+        }
+    }
+
+    private func restoreUnderPrefixLock(
+        _ snapshot: EnvironmentSnapshot,
+        to environment: ManagedBorealEnvironment,
+        activeSession: Bool,
+        preserveCurrent: Bool,
+        traceID: OperationTraceID
+    ) async throws -> ManagedBorealEnvironment {
         guard !activeSession else { throw SnapshotError.activeSession }
         guard snapshot.environmentID == environment.id,
               snapshot.snapshotURL.standardizedFileURL.path.hasPrefix(snapshotsRootURL.path + "/"),
@@ -1108,7 +1135,7 @@ actor EnvironmentSnapshotManager {
               validateSnapshot(snapshot.snapshotURL, environmentID: environment.id) else { throw SnapshotError.invalidSnapshot }
 
         if preserveCurrent {
-            _ = try await createSnapshot(for: environment, reason: .beforeRestore, traceID: traceID)
+            _ = try await createSnapshotUnderPrefixLock(for: environment, reason: .beforeRestore, traceID: traceID)
         }
         let parent = environment.rootURL.deletingLastPathComponent()
         let staging = parent.appending(path: ".\(environment.id.uuidString).restore-staging", directoryHint: .isDirectory)

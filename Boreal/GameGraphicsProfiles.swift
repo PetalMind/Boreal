@@ -658,6 +658,13 @@ nonisolated enum GraphicsBackendResolver {
                 "Runtime capability matches (\(stack.backend.displayName))",
                 "Architecture is supported"
             ]
+            if stack.backend == .d3dMetal, runtime.features?.hasVerifiedD3DMetal == true {
+                score += 20
+                reasons.append("D3D11 device and Present were verified for this runtime")
+            } else if stack.backend == .dxmt, runtime.features?.d3d11Verified == true {
+                score += 20
+                reasons.append("DXMT D3D11 device and Present were verified for this runtime")
+            }
             if stack.backend == preferred {
                 score += 40
                 reasons.append("Game profile preference")
@@ -840,22 +847,23 @@ nonisolated enum RendererPolicy {
 }
 
 nonisolated enum GraphicsAPIDetector {
+    /// Returns the evidence-backed API candidates used by diagnostics. A
+    /// direct import is stronger evidence than a matching string in a binary.
+    static func analyze(
+        executable: URL,
+        fileManager: FileManager = .default
+    ) -> DirectXDetectionResult {
+        DirectXDetector.detect(executable: executable, fileManager: fileManager)
+    }
+
     static func detect(
         executable: URL,
         fileManager: FileManager = .default
     ) -> GraphicsAPI? {
-        let candidates = [executable]
-        var detected = Set<GraphicsAPI>()
-        for candidate in candidates {
-            guard let handle = try? FileHandle(forReadingFrom: candidate) else { continue }
-            defer { try? handle.close() }
-            guard let data = try? handle.read(upToCount: 8 * 1_024 * 1_024) else { continue }
-            let text = String(decoding: data, as: UTF8.self).lowercased()
-            if text.contains("d3d12.dll") { detected.insert(.directX12) }
-            if text.contains("d3d11.dll") { detected.insert(.directX11) }
-            if text.contains("d3d10.dll") || text.contains("d3d10core.dll") { detected.insert(.directX10) }
-            if text.contains("d3d9.dll") { detected.insert(.directX9) }
-        }
-        return [.directX12, .directX11, .directX10, .directX9].first { detected.contains($0) }
+        let detection = analyze(executable: executable, fileManager: fileManager)
+        // Preserve the existing best-effort automatic launch behavior when a
+        // game imports more than one optional graphics path. The full candidate
+        // set and low confidence remain available through `analyze`.
+        return detection.api ?? detection.candidates.first
     }
 }

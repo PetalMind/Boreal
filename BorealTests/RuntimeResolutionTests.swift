@@ -34,6 +34,31 @@ struct RuntimeResolutionTests {
         #expect(runtime.graphicsName == "WineD3D")
     }
 
+    @Test func graphicsComponentReceiptRejectsModifiedInstalledDLL() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-component-receipt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = GraphicsComponentStore(rootURL: root.appending(path: "Components", directoryHint: .isDirectory))
+        let componentRoot = store.componentURL(.dxvk, version: "2.5")
+        let library = componentRoot.appending(path: "x64/d3d11.dll")
+        try FileManager.default.createDirectory(at: library.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("verified-dxvk-library".utf8).write(to: library)
+        let fileHash = try RuntimeSecurity.sha256(of: library)
+        let receipt = RuntimeComponentReceipt(
+            component: .dxvk,
+            version: "2.5",
+            sourceRepository: "Gcenx/DXVK-macOS",
+            installedAt: Date(),
+            sha256: RuntimeSecurity.sha256(data: Data("archive".utf8)),
+            installedFiles: ["x64/d3d11.dll"],
+            installedFileSHA256: ["x64/d3d11.dll": fileHash]
+        )
+        try JSONEncoder().encode(receipt).write(to: componentRoot.appending(path: "component.json"))
+
+        #expect(store.reference(for: .dxvk)?.version == "2.5")
+        try Data("modified-library".utf8).write(to: library, options: .atomic)
+        #expect(store.reference(for: .dxvk) == nil)
+    }
+
     @Test func importsDetectedLocalWineWhenNoRuntimeWasPreparedEarlier() async throws {
         let root = URL(fileURLWithPath: "/private/tmp/boreal-runtime-resolution")
         let runtime = InstalledRuntime(

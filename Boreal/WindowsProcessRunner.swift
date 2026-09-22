@@ -188,6 +188,32 @@ actor WindowsProcessRunner: WindowsProcessRunning {
 
     func run(plan: WindowsLaunchPlan, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> WindowsProcessSession {
         let sessionID = UUID()
+        try await PrefixUsageCoordinator.shared.acquireRuntimeLease(
+            for: environment.prefixURL,
+            sessionID: sessionID
+        )
+        do {
+            return try await launch(
+                plan: plan,
+                environment: environment,
+                runtime: runtime,
+                sessionID: sessionID
+            )
+        } catch {
+            await PrefixUsageCoordinator.shared.releaseRuntimeLease(
+                for: environment.prefixURL,
+                sessionID: sessionID
+            )
+            throw error
+        }
+    }
+
+    private func launch(
+        plan: WindowsLaunchPlan,
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        sessionID: UUID
+    ) async throws -> WindowsProcessSession {
         let traceSegment = plan.traceID?.description ?? sessionID.uuidString.lowercased()
         let stem = "launch-\(traceSegment)"
         let displayID = plan.overlayDisplayID.flatMap {
@@ -453,6 +479,18 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         guard result.exitCode == 0 else {
             throw ProcessRunnerError.launchFailed("wineserver -w exited with code \(result.exitCode).")
         }
+        await PrefixUsageCoordinator.shared.releaseRuntimeLeases(for: environment.prefixURL)
+    }
+
+    func adoptRuntimeLease(for session: WindowsProcessSession, environment: ManagedBorealEnvironment) async throws {
+        try await PrefixUsageCoordinator.shared.acquireRuntimeLease(
+            for: environment.prefixURL,
+            sessionID: session.id
+        )
+    }
+
+    func releaseRuntimeLeases(for environment: ManagedBorealEnvironment) async {
+        await PrefixUsageCoordinator.shared.releaseRuntimeLeases(for: environment.prefixURL)
     }
 
     func waitForProcessGroupEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {

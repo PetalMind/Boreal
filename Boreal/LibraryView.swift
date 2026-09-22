@@ -1298,10 +1298,10 @@ struct LibraryView: View {
                                 .font(.callout.weight(.bold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
+                                .buttonStyle(LibraryPressButtonStyle())
                                 .frame(maxWidth: .infinity, minHeight: 36)
                                 .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .buttonStyle(LibraryPressButtonStyle())
 
                             Menu {
                                 erasedItemContextMenu(item)

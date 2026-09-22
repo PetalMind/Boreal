@@ -253,6 +253,9 @@ nonisolated struct EnvironmentFailureDiagnostics: Sendable, Equatable {
 nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
     case initializationFailed(exitCode: Int32, stderrLog: URL)
     case configurationFailed(exitCode: Int32, stderrLog: URL)
+    case graphicsActivationRollbackFailed(String)
+    case prefixInUse
+    case prefixMutationInProgress
     case registryImportFailed(exitCode: Int32, stderrLog: URL)
     case validationFailed(EnvironmentValidation)
     case unsupportedPrefixMode(mode: WinePrefixMode, runtime: String)
@@ -265,6 +268,9 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
         switch self {
         case .initializationFailed(let code, _): "Wine couldn’t initialize the environment (exit code \(code))."
         case .configurationFailed(let code, _): "Wine couldn’t apply the compatibility profile (exit code \(code))."
+        case .graphicsActivationRollbackFailed(let detail): "The graphics backend change failed and Boreal could not fully restore the previous prefix and registry state: \(detail)"
+        case .prefixInUse: "This Windows environment is currently in use. Close its running applications before changing its configuration."
+        case .prefixMutationInProgress: "This Windows environment is being configured. Try launching the application again when configuration finishes."
         case .registryImportFailed(let code, _): "Wine couldn’t import the registry override (exit code \(code))."
         case .validationFailed: "The Windows environment is incomplete."
         case .unsupportedPrefixMode(let mode, let runtime): "The \(mode.displayName) prefix is unavailable in the selected runtime (\(runtime))."

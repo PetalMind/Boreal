@@ -1,6 +1,16 @@
 import Foundation
 
 actor EnvironmentManager: EnvironmentManaging {
+    private struct PendingGraphicsActivation {
+        let activation: GraphicsBackendActivation
+        let registrySnapshot: [String: RegistryValue]
+    }
+
+    private struct ConfigurationApplication {
+        let environment: ManagedBorealEnvironment
+        let graphicsActivation: PendingGraphicsActivation
+    }
+
     private let environmentsURL: URL
     private let dependencyToolsURL: URL
     private let processExecutor: any ProcessExecuting
@@ -8,6 +18,7 @@ actor EnvironmentManager: EnvironmentManaging {
     private let fileManager = FileManager.default
     private let componentStore: GraphicsComponentStore
     private let graphicsBackendManager: GraphicsBackendManager
+    private let graphicsOverrideNames = ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi"]
     private let prefixInitializationAttempts: Int
     private let prefixInitializationInterval: Duration
 
@@ -48,6 +59,12 @@ actor EnvironmentManager: EnvironmentManaging {
     }
 
     func initialize(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.initializeUnderPrefixLock(environment, runtime: runtime)
+        }
+    }
+
+    private func initializeUnderPrefixLock(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
         try validatePrefixMode(environment, runtime: runtime)
         var initializing = environment
@@ -69,6 +86,7 @@ actor EnvironmentManager: EnvironmentManaging {
             purpose: environment.purpose
         )
 
+        var pendingGraphicsActivation: PendingGraphicsActivation?
         do {
             let request = ProcessLaunchRequest(
                 executable: runtime.wineBootExecutable,
@@ -94,11 +112,13 @@ actor EnvironmentManager: EnvironmentManaging {
 
             // Some Wine and GPTK builds can return a non-zero status after they
             // have committed a usable prefix. Completeness remains the truth.
-            let configuredEnvironment = try await applyConfiguration(stagingEnvironment, runtime: runtime)
+            let configurationApplication = try await applyConfiguration(stagingEnvironment, runtime: runtime)
+            pendingGraphicsActivation = configurationApplication.graphicsActivation
+            let configuredEnvironment = configurationApplication.environment
             for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
                 let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
                 guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
-                try await install(dependency, in: configuredEnvironment, runtime: runtime)
+                try await installUnderPrefixLock(dependency, in: configuredEnvironment, runtime: runtime)
             }
             let missing = missingPrefixPaths(at: stagingPrefix)
             guard missing.isEmpty else {
@@ -115,7 +135,13 @@ actor EnvironmentManager: EnvironmentManaging {
             ready.configuration = configuredEnvironment.configuration
             ready.state = .ready
             try write(ready)
+            graphicsBackendManager.commit(configurationApplication.graphicsActivation.activation)
         } catch {
+            if let pendingGraphicsActivation {
+                // The failed staging prefix is discarded in this catch path;
+                // only the transaction's snapshot directory needs cleanup.
+                graphicsBackendManager.commit(pendingGraphicsActivation.activation)
+            }
             try? removePrefixIfPresent(stagingPrefix)
             try? removePrefixIfPresent(environment.prefixURL)
             var invalid = environment
@@ -126,22 +152,51 @@ actor EnvironmentManager: EnvironmentManaging {
     }
 
     func configure(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.configureUnderPrefixLock(environment, runtime: runtime)
+        }
+    }
+
+    private func configureUnderPrefixLock(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
         try validatePrefixMode(environment, runtime: runtime)
-        let configuredEnvironment = try await applyConfiguration(environment, runtime: runtime)
-        for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
-            let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
-            guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
-            try await install(dependency, in: configuredEnvironment, runtime: runtime)
+        let configurationApplication = try await applyConfiguration(environment, runtime: runtime)
+        do {
+            let configuredEnvironment = configurationApplication.environment
+            for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
+                let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
+                guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
+                try await installUnderPrefixLock(dependency, in: configuredEnvironment, runtime: runtime)
+            }
+            try write(configuredEnvironment)
+            graphicsBackendManager.commit(configurationApplication.graphicsActivation.activation)
+            return configuredEnvironment
+        } catch let configurationError {
+            do {
+                try await rollbackGraphicsActivation(configurationApplication.graphicsActivation, in: environment, runtime: runtime)
+            } catch let rollbackError {
+                throw EnvironmentManagerError.graphicsActivationRollbackFailed(
+                    "configuration error: \(configurationError.localizedDescription); rollback error: \(rollbackError.localizedDescription)"
+                )
+            }
+            throw configurationError
         }
-        try write(configuredEnvironment)
-        return configuredEnvironment
     }
 
     /// Imports a registry file into the selected prefix without opening a
     /// native macOS registry editor. The temporary copy lives inside drive_c
     /// so the Wine path is unambiguous and is removed after the import.
     func importRegistry(
+        _ registryFile: URL,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.importRegistryUnderPrefixLock(registryFile, in: environment, runtime: runtime)
+        }
+    }
+
+    private func importRegistryUnderPrefixLock(
         _ registryFile: URL,
         in environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime
@@ -200,6 +255,16 @@ actor EnvironmentManager: EnvironmentManaging {
         in environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime
     ) async throws -> NGXDebugIndicatorReceipt {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.setNGXDebugIndicatorUnderPrefixLock(enabled, in: environment, runtime: runtime)
+        }
+    }
+
+    private func setNGXDebugIndicatorUnderPrefixLock(
+        _ enabled: Bool,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws -> NGXDebugIndicatorReceipt {
         let previous = try await queryNGXIndicator(in: environment, runtime: runtime)
         try await runConfigurationCommand(
             executable: runtime.wineExecutable,
@@ -221,6 +286,16 @@ actor EnvironmentManager: EnvironmentManaging {
     }
 
     func restoreNGXDebugIndicator(
+        _ receipt: NGXDebugIndicatorReceipt,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.restoreNGXDebugIndicatorUnderPrefixLock(receipt, in: environment, runtime: runtime)
+        }
+    }
+
+    private func restoreNGXDebugIndicatorUnderPrefixLock(
         _ receipt: NGXDebugIndicatorReceipt,
         in environment: ManagedBorealEnvironment,
         runtime: InstalledRuntime
@@ -288,7 +363,7 @@ actor EnvironmentManager: EnvironmentManaging {
         return normalized == "1" || normalized == "0x1" || normalized == "true"
     }
 
-    private func applyConfiguration(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ManagedBorealEnvironment {
+    private func applyConfiguration(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> ConfigurationApplication {
         let winecfg = runtime.wineExecutable.deletingLastPathComponent().appending(path: "winecfg")
         let hasWinecfgLauncher = fileManager.isExecutableFile(atPath: winecfg.path)
         try await runConfigurationCommand(
@@ -337,34 +412,35 @@ actor EnvironmentManager: EnvironmentManaging {
             }
         }
 
-        let activation = try await applyGraphicsBackend(environment, runtime: runtime)
+        let graphicsActivation = try await applyGraphicsBackend(environment, runtime: runtime)
         var configured = environment
-        configured.configuration.graphicsComponentReferences = activation.componentReference.map { [$0] } ?? []
-        return configured
+        configured.configuration.graphicsComponentReferences = graphicsActivation.activation.componentReference.map { [$0] } ?? []
+        return ConfigurationApplication(environment: configured, graphicsActivation: graphicsActivation)
     }
 
-    private func applyGraphicsBackend(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> GraphicsBackendActivation {
-        let overrideNames = ["d3d9", "d3d10", "d3d10_1", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi"]
-        for name in overrideNames {
-            // Older Wine tools wrote forced-native overrides with a leading
-            // asterisk. Clear both forms before selecting a prefix backend.
-            for registryName in [name, "*\(name)"] {
-                try await runConfigurationCommand(
-                    executable: runtime.wineExecutable,
-                    arguments: ["reg", "delete", #"HKCU\Software\Wine\DllOverrides"#, "/v", registryName, "/f"],
-                    logName: "graphics-reset-\(registryName.replacingOccurrences(of: "*", with: "star-"))",
-                    environment: environment,
-                    runtime: runtime,
-                    allowsFailure: true
-                )
-            }
-        }
+    private func applyGraphicsBackend(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws -> PendingGraphicsActivation {
+        let registrySnapshot = try await graphicsRegistryOverrides(in: environment, runtime: runtime)
+        let activation = try graphicsBackendManager.activate(
+            environment.configuration.graphicsBackend,
+            in: environment,
+            runtime: runtime,
+            keepRollbackSnapshot: true
+        )
         do {
-            let activation = try graphicsBackendManager.activate(
-                environment.configuration.graphicsBackend,
-                in: environment,
-                runtime: runtime
-            )
+            for name in graphicsOverrideNames {
+                // Older Wine tools wrote forced-native overrides with a leading
+                // asterisk. Clear both forms before applying the selected backend.
+                for registryName in [name, "*\(name)"] {
+                    try await runConfigurationCommand(
+                        executable: runtime.wineExecutable,
+                        arguments: ["reg", "delete", #"HKCU\Software\Wine\DllOverrides"#, "/v", registryName, "/f"],
+                        logName: "graphics-reset-\(registryName.replacingOccurrences(of: "*", with: "star-"))",
+                        environment: environment,
+                        runtime: runtime,
+                        allowsFailure: true
+                    )
+                }
+            }
             for name in activation.dllOverrides {
                 try await runConfigurationCommand(
                     executable: runtime.wineExecutable,
@@ -374,11 +450,114 @@ actor EnvironmentManager: EnvironmentManaging {
                     runtime: runtime
                 )
             }
-            return activation
-        } catch {
-            try? graphicsBackendManager.reset(environment)
-            throw error
+            return PendingGraphicsActivation(activation: activation, registrySnapshot: registrySnapshot)
+        } catch let activationError {
+            do {
+                try await rollbackGraphicsActivation(
+                    PendingGraphicsActivation(activation: activation, registrySnapshot: registrySnapshot),
+                    in: environment,
+                    runtime: runtime
+                )
+            } catch let rollbackError {
+                throw EnvironmentManagerError.graphicsActivationRollbackFailed(
+                    "original error: \(activationError.localizedDescription); rollback error: \(rollbackError.localizedDescription)"
+                )
+            }
+            throw activationError
         }
+    }
+
+    private func rollbackGraphicsActivation(
+        _ pending: PendingGraphicsActivation,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        var rollbackFailures: [String] = []
+        do {
+            try await restoreGraphicsRegistryOverrides(pending.registrySnapshot, in: environment, runtime: runtime)
+        } catch {
+            rollbackFailures.append("registry: \(error.localizedDescription)")
+        }
+        do {
+            try graphicsBackendManager.rollback(pending.activation, in: environment)
+        } catch {
+            rollbackFailures.append("prefix files: \(error.localizedDescription)")
+        }
+        if !rollbackFailures.isEmpty {
+            throw EnvironmentManagerError.graphicsActivationRollbackFailed(rollbackFailures.joined(separator: "; "))
+        }
+    }
+
+    private func graphicsRegistryOverrides(
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws -> [String: RegistryValue] {
+        let stdout = environment.logsURL.appending(path: "graphics-registry-snapshot.stdout.log")
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineExecutable,
+            arguments: ["reg", "query", #"HKCU\Software\Wine\DllOverrides"#],
+            environment: wineEnvironment(for: environment, runtime: runtime),
+            currentDirectory: environment.rootURL,
+            stdoutLog: stdout,
+            stderrLog: environment.logsURL.appending(path: "graphics-registry-snapshot.stderr.log")
+        )
+        let receipt = try await processExecutor.launch(request)
+        let result = try await processExecutor.waitForExit(receipt.id)
+        guard result.exitCode == 0 || result.exitCode == 1 else {
+            throw EnvironmentManagerError.configurationFailed(
+                exitCode: result.exitCode,
+                stderrLog: result.stderrLog
+            )
+        }
+        if result.exitCode == 1 { return [:] }
+        guard let output = try? String(contentsOf: stdout, encoding: .utf8) else {
+            throw EnvironmentManagerError.configurationFailed(exitCode: -1, stderrLog: result.stderrLog)
+        }
+        let trackedNames = Set(graphicsOverrideNames.flatMap { [$0, "*\($0)"] })
+        var values: [String: RegistryValue] = [:]
+        for line in output.split(whereSeparator: \.isNewline) {
+            let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard fields.count >= 3,
+                  trackedNames.contains(fields[0].lowercased()) else { continue }
+            values[fields[0].lowercased()] = RegistryValue(
+                type: fields[1],
+                value: fields.dropFirst(2).joined(separator: " ")
+            )
+        }
+        return values
+    }
+
+    private func restoreGraphicsRegistryOverrides(
+        _ snapshot: [String: RegistryValue],
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        var firstError: Error?
+        for name in graphicsOverrideNames.flatMap({ [$0, "*\($0)"] }) {
+            do {
+                if let value = snapshot[name.lowercased()], let type = value.type, let data = value.value {
+                    try await runConfigurationCommand(
+                        executable: runtime.wineExecutable,
+                        arguments: ["reg", "add", #"HKCU\Software\Wine\DllOverrides"#, "/v", name, "/t", type, "/d", data, "/f"],
+                        logName: "graphics-rollback-\(name.replacingOccurrences(of: "*", with: "star-"))",
+                        environment: environment,
+                        runtime: runtime
+                    )
+                } else {
+                    try await runConfigurationCommand(
+                        executable: runtime.wineExecutable,
+                        arguments: ["reg", "delete", #"HKCU\Software\Wine\DllOverrides"#, "/v", name, "/f"],
+                        logName: "graphics-rollback-\(name.replacingOccurrences(of: "*", with: "star-"))",
+                        environment: environment,
+                        runtime: runtime,
+                        allowsFailure: true
+                    )
+                }
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let firstError { throw firstError }
     }
 
     private func runConfigurationCommand(
@@ -422,11 +601,22 @@ actor EnvironmentManager: EnvironmentManaging {
             }
             let markerExists = fileManager.fileExists(atPath: marker.path)
                 || legacyMarker.map { fileManager.fileExists(atPath: $0.path) } == true
-            return RuntimeDependencyStatus(dependency: dependency, state: (hasLibraries || markerExists) ? .installed : .missing, detail: nil)
+            let installed = markerExists || (hasLibraries && !dependency.requiresExplicitInstallationEvidence)
+            return RuntimeDependencyStatus(dependency: dependency, state: installed ? .installed : .missing, detail: nil)
         }
     }
 
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            try await self.installUnderPrefixLock(dependency, in: environment, runtime: runtime)
+        }
+    }
+
+    private func installUnderPrefixLock(
+        _ dependency: RuntimeDependency,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
         try validatePrefixMode(environment, runtime: runtime)
         // InstalledRuntime persists the resolved executable URLs, while the
@@ -435,10 +625,11 @@ actor EnvironmentManager: EnvironmentManaging {
         let winetricks = fileManager.isExecutableFile(atPath: packagedInstaller.path)
             ? packagedInstaller
             : try await ensureDependencyInstaller()
+        let installerEnvironment = dependencyInstallerEnvironment(for: environment, runtime: runtime)
         let request = ProcessLaunchRequest(
             executable: winetricks,
             arguments: ["--unattended", dependency.winetricksVerb],
-            environment: wineEnvironment(for: environment, runtime: runtime),
+            environment: installerEnvironment,
             currentDirectory: environment.rootURL,
             stdoutLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue).stdout.log"),
             stderrLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue).stderr.log")
@@ -487,24 +678,22 @@ actor EnvironmentManager: EnvironmentManaging {
                 try fileManager.copyItem(at: descriptor, to: destination.appending(path: "environment.json"))
             }
 
-            let preferredNames = ["wineboot.stderr.log", "winecfg.stderr.log", "wine-registry.stderr.log"]
-            var diagnosticLog = preferredNames
-                .map { copiedLogs.appending(path: $0) }
-                .first { fileManager.fileExists(atPath: $0.path) }
-            if diagnosticLog == nil,
-               let children = try? fileManager.contentsOfDirectory(
+            var diagnosticLog: URL?
+            if let children = try? fileManager.contentsOfDirectory(
                     at: copiedLogs,
-                    includingPropertiesForKeys: [.contentModificationDateKey],
+                    includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
                     options: [.skipsHiddenFiles]
                ) {
-                diagnosticLog = children
+                let stderrLogs = children
                     .filter { $0.lastPathComponent.hasSuffix(".stderr.log") }
                     .sorted {
                         let lhs = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                         let rhs = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                         return lhs > rhs
                     }
-                    .first
+                diagnosticLog = stderrLogs.first {
+                    ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+                } ?? stderrLogs.first
             }
             return EnvironmentFailureDiagnostics(
                 directoryURL: destination,
@@ -518,8 +707,12 @@ actor EnvironmentManager: EnvironmentManaging {
 
     func remove(_ environment: ManagedBorealEnvironment) async throws {
         let root = environment.rootURL.standardizedFileURL
-        guard root.deletingLastPathComponent() == environmentsURL.standardizedFileURL else { throw CocoaError(.fileWriteNoPermission) }
-        if fileManager.fileExists(atPath: root.path) { try fileManager.removeItem(at: root) }
+        guard root.deletingLastPathComponent() == environmentsURL.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
+            if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
+        }
     }
 
     func load(at root: URL) throws -> ManagedBorealEnvironment {
@@ -583,6 +776,29 @@ actor EnvironmentManager: EnvironmentManaging {
         return values
     }
 
+    private func dependencyInstallerEnvironment(
+        for environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) -> [String: String] {
+        var values = wineEnvironment(for: environment, runtime: runtime)
+        let hostToolDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+            .filter { directory in
+                fileManager.isExecutableFile(atPath: URL(fileURLWithPath: directory).appending(path: "cabextract").path)
+            }
+        guard !hostToolDirectories.isEmpty else { return values }
+
+        let existingDirectories = (values["PATH"] ?? "/usr/bin:/bin")
+            .split(separator: ":")
+            .map(String.init)
+        let runtimeBin = runtime.wineExecutable.deletingLastPathComponent().path
+        var directories = [runtimeBin]
+        directories.append(contentsOf: hostToolDirectories)
+        directories.append(contentsOf: existingDirectories.filter { $0 != runtimeBin })
+        var seen = Set<String>()
+        values["PATH"] = directories.filter { seen.insert($0).inserted }.joined(separator: ":")
+        return values
+    }
+
     private func validatePrefixMode(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) throws {
         let mode = environment.configuration.resolvedPrefixMode(runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true)
         let capabilities = runtime.features?.resolvedArchitectureCapabilities ?? .unknown
@@ -634,5 +850,82 @@ actor EnvironmentManager: EnvironmentManaging {
         let bounded = data.count > 16_384 ? data.suffix(16_384) : data[...]
         return String(decoding: bounded, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Coordinates runtime usage and mutations across all managers. An actor alone
+/// is not sufficient because it may re-enter while awaiting Wine commands,
+/// allowing a second configuration request to alter DLLs and registry values
+/// mid-transaction. Runtime leases make mutations fail closed while Wine uses
+/// the prefix.
+actor PrefixUsageCoordinator {
+    static let shared = PrefixUsageCoordinator()
+
+    private var runtimeLeases: [String: Set<UUID>] = [:]
+
+    func acquireRuntimeLease(for prefix: URL, sessionID: UUID) throws {
+        let key = prefix.standardizedFileURL.path
+        guard !lockedPrefixes.contains(key), waiters[key]?.isEmpty != false else {
+            throw EnvironmentManagerError.prefixMutationInProgress
+        }
+        runtimeLeases[key, default: []].insert(sessionID)
+    }
+
+    func releaseRuntimeLease(for prefix: URL, sessionID: UUID) {
+        let key = prefix.standardizedFileURL.path
+        runtimeLeases[key]?.remove(sessionID)
+        if runtimeLeases[key]?.isEmpty == true {
+            runtimeLeases[key] = nil
+        }
+    }
+
+    func releaseRuntimeLeases(for prefix: URL) {
+        runtimeLeases[prefix.standardizedFileURL.path] = nil
+    }
+
+    func hasRuntimeLease(for prefix: URL) -> Bool {
+        runtimeLeases[prefix.standardizedFileURL.path]?.isEmpty == false
+    }
+
+    private var lockedPrefixes = Set<String>()
+    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    func withLock<Value: Sendable>(
+        for prefix: URL,
+        operation: @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let key = prefix.standardizedFileURL.path
+        try await acquire(key)
+        do {
+            let value = try await operation()
+            release(key)
+            return value
+        } catch {
+            release(key)
+            throw error
+        }
+    }
+
+    private func acquire(_ key: String) async throws {
+        guard runtimeLeases[key]?.isEmpty != false else {
+            throw EnvironmentManagerError.prefixInUse
+        }
+        guard !lockedPrefixes.contains(key) else {
+            await withCheckedContinuation { continuation in
+                waiters[key, default: []].append(continuation)
+            }
+            return
+        }
+        lockedPrefixes.insert(key)
+    }
+
+    private func release(_ key: String) {
+        if var queued = waiters[key], !queued.isEmpty {
+            let next = queued.removeFirst()
+            waiters[key] = queued.isEmpty ? nil : queued
+            next.resume()
+        } else {
+            lockedPrefixes.remove(key)
+        }
     }
 }

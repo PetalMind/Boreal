@@ -58,7 +58,7 @@ nonisolated struct GraphicsComponentStore: Sendable {
                   receipt.component == component,
                   receipt.sha256.count == 64,
                   receipt.sha256.allSatisfy({ $0.isHexDigit }),
-                  receipt.installedFiles.allSatisfy(Self.isSafeRelativePath) else { return nil }
+                  Self.installedFilesAreValid(receipt, under: root, fileManager: fileManager) else { return nil }
             return GraphicsComponentReference(
                 component: component,
                 version: receipt.version,
@@ -90,12 +90,44 @@ nonisolated struct GraphicsComponentStore: Sendable {
               root.lastPathComponent == value.version,
               value.version == reference.version,
               value.sha256 == reference.sha256,
-              value.installedFiles.allSatisfy(Self.isSafeRelativePath),
+              Self.installedFilesAreValid(value, under: root, fileManager: fileManager),
               reference.installedFiles.allSatisfy(Self.isSafeRelativePath) else { return false }
         let installedFiles = Set(value.installedFiles).union(reference.installedFiles)
         return !installedFiles.isEmpty && installedFiles.allSatisfy {
-            fileManager.fileExists(atPath: root.appending(path: $0).path)
+            Self.isSafeRelativePath($0) && fileManager.fileExists(atPath: root.appending(path: $0).path)
         }
+    }
+
+    private static func installedFilesAreValid(
+        _ receipt: RuntimeComponentReceipt,
+        under root: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        guard !receipt.installedFiles.isEmpty,
+              receipt.installedFiles.allSatisfy(isSafeRelativePath),
+              Set(receipt.installedFiles).count == receipt.installedFiles.count else { return false }
+
+        let expectedHashes = receipt.installedFileSHA256
+        if !expectedHashes.isEmpty, Set(expectedHashes.keys) != Set(receipt.installedFiles) {
+            return false
+        }
+
+        for relativePath in receipt.installedFiles {
+            let file = root.appending(path: relativePath)
+            guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true else { return false }
+            guard let expected = expectedHashes[relativePath] else {
+                // Older receipts did not record per-file hashes. Continue to
+                // accept them after checking their paths and regular files.
+                continue
+            }
+            guard expected.count == 64,
+                  expected.allSatisfy(\.isHexDigit),
+                  let actual = try? RuntimeSecurity.sha256(of: file),
+                  actual.caseInsensitiveCompare(expected) == .orderedSame else { return false }
+        }
+        return true
     }
 
     func upscalingReferences(

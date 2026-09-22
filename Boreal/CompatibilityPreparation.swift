@@ -72,7 +72,12 @@ nonisolated struct ExecutableAnalysis: Codable, Hashable, Sendable {
     }
 
     var importantExecutables: [AnalyzedExecutable] {
-        executables.filter { [.game, .launcher].contains($0.role) }
+        // An executable that cannot be confidently named as a game is still
+        // relevant when it is part of the installation. Unreal's bootstrap
+        // executable is often accompanied by a nested *-Win64-Shipping.exe;
+        // that binary owns the actual VC++ imports while its role may remain
+        // `.unknown` after discovery scoring.
+        executables.filter { [.game, .launcher, .unknown].contains($0.role) }
     }
 
     private func uniqueArchitectures(for role: CompatibilityExecutableRole) -> [WindowsExecutableArchitecture] {

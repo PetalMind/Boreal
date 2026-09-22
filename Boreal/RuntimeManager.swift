@@ -259,7 +259,12 @@ actor RuntimeManager: RuntimeManaging {
               asset.browserDownloadURL.host == "github.com",
               asset.size > 0,
               asset.size <= 250 * 1_024 * 1_024,
-              let digest = verifiedDigest(asset.digest) else {
+              let digest = verifiedDigest(
+                  asset.digest,
+                  repository: repository,
+                  releaseTag: release.tagName,
+                  assetName: asset.name
+              ) else {
             throw RuntimeManagerError.downloadFailed("No compatible binary artifact was found in the official \(release.tagName) release.")
         }
 
@@ -755,20 +760,26 @@ actor RuntimeManager: RuntimeManaging {
         do {
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
             var installedFiles: [String] = []
+            var installedFileSHA256: [String: String] = [:]
             for library in discovered {
                 let architectureFolder = library.architecture == .x86 ? "x32" : "x64"
                 let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
                 let relative = "\(architectureFolder)/\(library.url.lastPathComponent.lowercased())"
-                try fileManager.copyItem(at: library.url, to: staging.appending(path: relative))
+                let installedURL = staging.appending(path: relative)
+                try fileManager.copyItem(at: library.url, to: installedURL)
                 installedFiles.append(relative)
+                installedFileSHA256[relative] = try RuntimeSecurity.sha256(of: installedURL)
             }
             if backend == .dxmt {
                 let unixFolder = staging.appending(path: "x64-unix", directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: unixFolder, withIntermediateDirectories: true)
                 for library in discoveredUnix {
-                    try fileManager.copyItem(at: library, to: unixFolder.appending(path: "winemetal.so"))
-                    installedFiles.append("x64-unix/winemetal.so")
+                    let relative = "x64-unix/winemetal.so"
+                    let installedURL = staging.appending(path: relative)
+                    try fileManager.copyItem(at: library, to: installedURL)
+                    installedFiles.append(relative)
+                    installedFileSHA256[relative] = try RuntimeSecurity.sha256(of: installedURL)
                 }
             }
             let receipt = RuntimeComponentReceipt(
@@ -778,7 +789,8 @@ actor RuntimeManager: RuntimeManaging {
                 installedAt: Date(),
                 sha256: sha256,
                 compressedSize: compressedSize,
-                installedFiles: installedFiles.sorted()
+                installedFiles: installedFiles.sorted(),
+                installedFileSHA256: installedFileSHA256
             )
             try makeEncoder().encode(receipt).write(to: staging.appending(path: "component.json"), options: .atomic)
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -1002,13 +1014,16 @@ actor RuntimeManager: RuntimeManaging {
         do {
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
             var installedFiles: [String] = []
+            var installedFileSHA256: [String: String] = [:]
             for library in libraries {
                 let architectureFolder = library.architecture == .x86 ? "x32" : "x64"
                 let folder = staging.appending(path: architectureFolder, directoryHint: .isDirectory)
                 try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
                 let relative = "\(architectureFolder)/\(library.url.lastPathComponent.lowercased())"
-                try fileManager.copyItem(at: library.url, to: staging.appending(path: relative))
+                let installedURL = staging.appending(path: relative)
+                try fileManager.copyItem(at: library.url, to: installedURL)
                 installedFiles.append(relative)
+                installedFileSHA256[relative] = try RuntimeSecurity.sha256(of: installedURL)
             }
             let receipt = RuntimeComponentReceipt(
                 component: component,
@@ -1017,7 +1032,8 @@ actor RuntimeManager: RuntimeManaging {
                 installedAt: Date(),
                 sha256: sha256,
                 compressedSize: compressedSize,
-                installedFiles: installedFiles.sorted()
+                installedFiles: installedFiles.sorted(),
+                installedFileSHA256: installedFileSHA256
             )
             try makeEncoder().encode(receipt).write(to: staging.appending(path: "component.json"), options: .atomic)
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -2628,6 +2644,29 @@ actor RuntimeManager: RuntimeManaging {
         let normalized = digest.replacingOccurrences(of: "sha256:", with: "").lowercased()
         guard normalized.count == 64, normalized.allSatisfy({ $0.isHexDigit }) else { return nil }
         return normalized
+    }
+
+    private func verifiedDigest(
+        _ digest: String?,
+        repository: String,
+        releaseTag: String,
+        assetName: String
+    ) -> String? {
+        if let digest = verifiedDigest(digest) {
+            return digest
+        }
+
+        // GitHub's API does not expose a digest for the standard DXVK-macOS
+        // archive from this older release, although the archive remains the
+        // correct non-builtin package. Keep its independently verified digest
+        // pinned instead of accepting an arbitrary downloaded file or falling
+        // back to the builtin variant.
+        guard repository == "Gcenx/DXVK-macOS",
+              releaseTag == "v1.10.3-20230507-repack",
+              assetName == "dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz" else {
+            return nil
+        }
+        return "acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477"
     }
 
     private func componentReceipt(_ component: RuntimeComponent, in runtime: InstalledRuntime) -> RuntimeComponentReceipt? {
