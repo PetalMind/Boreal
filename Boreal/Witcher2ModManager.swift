@@ -157,13 +157,35 @@ nonisolated enum Witcher2Adapter {
     }
 }
 
-nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
+nonisolated enum WitcherModContract: Sendable, Equatable {
+    case witcher2
+    case witcher3
+
+    var adapter: ModGameAdapter {
+        switch self {
+        case .witcher2: .witcher2
+        case .witcher3: .witcher3
+        }
+    }
+
+    var storageDirectory: String {
+        switch self {
+        case .witcher2: "witcher-2"
+        case .witcher3: "witcher-3"
+        }
+    }
+}
+
+nonisolated struct WitcherModManager: GameModManaging, Sendable {
     let rootURL: URL
     private let archiveSupport: GTASAModManager
-    let adapter: ModGameAdapter = .witcher2
+    let contract: WitcherModContract
 
-    init(applicationSupportURL: URL) {
-        rootURL = applicationSupportURL.appending(path: "Mods/witcher-2", directoryHint: .isDirectory)
+    var adapter: ModGameAdapter { contract.adapter }
+
+    init(applicationSupportURL: URL, contract: WitcherModContract = .witcher2) {
+        self.contract = contract
+        rootURL = applicationSupportURL.appending(path: "Mods/\(contract.storageDirectory)", directoryHint: .isDirectory)
         archiveSupport = GTASAModManager(applicationSupportURL: applicationSupportURL)
     }
 
@@ -235,6 +257,11 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
         let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
         let discoveredMods = scanExternalMods(in: gameRoot, auxiliaryRoot: auxiliaryRoot, deployment: deployment)
         var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
+        if contract == .witcher3,
+           profile?.mods.contains(where: \.isExternallyDetected) != true,
+           let auxiliaryRoot {
+            applyExistingWitcher3LoadOrder(from: auxiliaryRoot, to: &mods)
+        }
         mods.sort {
             $0.priority == $1.priority
                 ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -242,7 +269,11 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
         }
         for index in mods.indices { mods[index].priority = index }
         var resolvedDeployment = deployment
-        let fingerprint = ModProfileFingerprint.make(mods: mods, plugins: [])
+        let fingerprint = ModProfileFingerprint.make(
+            mods: mods,
+            plugins: [],
+            includeExternallyDetected: contract == .witcher3
+        )
         if deployment.profileFingerprint == nil && mods.isEmpty {
             resolvedDeployment.profileFingerprint = fingerprint
         }
@@ -254,7 +285,8 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
             plugins: [],
             deployment: resolvedDeployment,
             adapter: adapter,
-            runtime: nil
+            runtime: nil,
+            auxiliaryRoot: auxiliaryRoot
         )
     }
 
@@ -402,25 +434,31 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
         guard let gameRoot else { throw ModManagerError.gameRootUnavailable }
         let fileManager = FileManager.default
         let gameDirectory = gameURL(for: state.gameID)
-        let cookedRoot = Witcher2Adapter.cookedPCRoot(in: gameRoot)
-        try fileManager.createDirectory(at: cookedRoot, withIntermediateDirectories: true)
+        if contract == .witcher2 {
+            try fileManager.createDirectory(at: Witcher2Adapter.cookedPCRoot(in: gameRoot), withIntermediateDirectories: true)
+        }
         let old = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json")))
             ?? .empty(gameID: state.gameID)
         let userRoot = state.auxiliaryRoot
-        let hasUserContent = state.mods.contains {
-            $0.enabled && !$0.isExternallyDetected && $0.deployStrategy == .witcher2UserContent
-        } || old.files.keys.contains { $0.lowercased().hasPrefix("usercontent/") || $0.lowercased().hasPrefix("userconfig/") }
+        let hasUserContent = contract == .witcher2 && (
+            state.mods.contains {
+                $0.enabled && !$0.isExternallyDetected && $0.deployStrategy == .witcher2UserContent
+            } || old.files.keys.contains {
+                $0.lowercased().hasPrefix("usercontent/") || $0.lowercased().hasPrefix("userconfig/")
+            }
+        )
         if hasUserContent && userRoot == nil {
             throw ModManagerError.witcher2DocumentsUnavailable
         }
-        if let userRoot {
+        if let userRoot, contract == .witcher2 {
             try fileManager.createDirectory(at: userRoot.appending(path: "UserContent", directoryHint: .isDirectory), withIntermediateDirectories: true)
             try fileManager.createDirectory(at: userRoot.appending(path: "Config", directoryHint: .isDirectory), withIntermediateDirectories: true)
         }
 
         var resolved = try resolvedFiles(for: state.mods)
         let packageNames = userContentPackageNames(for: state.mods)
-        if !packageNames.isEmpty {
+        var witcher3Folders: [String] = []
+        if contract == .witcher2, !packageNames.isEmpty {
             guard let userRoot else { throw ModManagerError.witcher2DocumentsUnavailable }
             let config = try makeUserContentINI(
                 at: userRoot.appending(path: "Config/UserContent.ini"),
@@ -435,6 +473,35 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
                 content: Data(config.utf8),
                 sha256: hash
             )
+        }
+        if contract == .witcher3 {
+            witcher3Folders = witcher3ModFolderNames(in: state.mods)
+            let oldHasSettings = old.files.values.contains {
+                $0.path.caseInsensitiveCompare(Self.witcher3SettingsPath) == .orderedSame
+            }
+            let hasUserDataFiles = resolved.values.contains {
+                $0.targetPath.lowercased().hasPrefix("userdata/")
+            } || old.files.values.contains {
+                $0.path.lowercased().hasPrefix("userdata/")
+            }
+            if (witcher3Folders.isEmpty == false || oldHasSettings || hasUserDataFiles), userRoot == nil {
+                throw ModManagerError.witcher3DocumentsUnavailable
+            }
+            if !witcher3Folders.isEmpty, let userRoot {
+                let settings = try makeWitcher3ModsSettings(
+                    at: userRoot.appending(path: "mods.settings"),
+                    removing: Set(old.managedWitcher3ModFolders),
+                    mods: state.mods
+                )
+                let bytes = Data(settings.utf8)
+                resolved[Self.witcher3SettingsPath.lowercased()] = ResolvedFile(
+                    targetPath: Self.witcher3SettingsPath,
+                    owner: Self.generatedOwner,
+                    source: nil,
+                    content: bytes,
+                    sha256: RuntimeSecurity.sha256(data: bytes)
+                )
+            }
         }
 
         try validateManagedFiles(old.files, gameRoot: gameRoot, userRoot: userRoot)
@@ -459,7 +526,7 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
                 }
                 let values = try destination.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
                 guard values.isSymbolicLink != true, values.isRegularFile == true else {
-                    throw ModManagerError.deploymentFailed("The Witcher 2 destination is not a regular file: \(path)")
+                    throw ModManagerError.deploymentFailed("The \(adapter.displayName) destination is not a regular file: \(path)")
                 }
                 let backup = transactionURL.appending(path: "originals/\(UUID().uuidString)")
                 try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -479,7 +546,8 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
                         throw ModManagerError.stagedFileChanged(resolvedFile.targetPath)
                     }
                 } else {
-                    source = transactionURL.appending(path: "generated/UserContent.ini")
+                    let generatedName = contract == .witcher3 ? "mods.settings" : "UserContent.ini"
+                    source = transactionURL.appending(path: "generated/\(generatedName)")
                     try fileManager.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try resolvedFile.content?.write(to: source, options: .atomic)
                 }
@@ -497,7 +565,7 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
                     path: resolvedFile.targetPath,
                     owner: resolvedFile.owner,
                     sha256: resolvedFile.sha256,
-                    source: resolvedFile.source ?? "generated/UserContent.ini",
+                    source: resolvedFile.source ?? "generated/\(contract == .witcher3 ? "mods.settings" : "UserContent.ini")",
                     backup: backup.path,
                     originalHash: backup.originalHash
                 )
@@ -521,13 +589,18 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
             let next = ModDeploymentManifest(
                 gameID: state.gameID,
                 deployedAt: .now,
-                profileFingerprint: ModProfileFingerprint.make(mods: state.mods, plugins: []),
+                profileFingerprint: ModProfileFingerprint.make(
+                    mods: state.mods,
+                    plugins: [],
+                    includeExternallyDetected: contract == .witcher3
+                ),
                 files: nextFiles,
                 pluginFilePath: nil,
                 pluginFileHash: nil,
                 pluginFileBackup: nil,
                 pluginFileOriginalHash: nil,
-                managedUserContentPackages: packageNames
+                managedUserContentPackages: packageNames,
+                managedWitcher3ModFolders: witcher3Folders
             )
             try saveJSON(next, at: gameDirectory.appending(path: "deployment.json"))
             try saveProfile(gameID: state.gameID, profileID: state.profileID, profileName: state.profileName, mods: state.mods, plugins: [])
@@ -655,9 +728,12 @@ nonisolated struct Witcher2ModManager: GameModManaging, Sendable {
     func launchArguments(for gameRoot: URL?) -> [String] { [] }
 }
 
-private extension Witcher2ModManager {
+typealias Witcher2ModManager = WitcherModManager
+
+private extension WitcherModManager {
     static let generatedOwner = UUID(uuidString: "4C7A6A7E-8F0F-4F40-8D8B-4C59C27C6D2B")!
     static let userConfigPath = "UserConfig/UserContent.ini"
+    static let witcher3SettingsPath = "UserConfig/mods.settings"
 
     struct PackageAnalysis {
         let root: URL
@@ -667,6 +743,7 @@ private extension Witcher2ModManager {
         let deployStrategy: ModDeployStrategy
         let requirements: [String]
         let warnings: [String]
+        var routesWitcher3Payload = false
 
         func relativePath(for source: URL) throws -> String {
             let rootPath = root.standardizedFileURL.path
@@ -680,7 +757,49 @@ private extension Witcher2ModManager {
                   !components.contains(where: { $0.contains(":" ) }) else {
                 throw ModManagerError.invalidRelativePath(relative)
             }
-            return relative
+            guard routesWitcher3Payload else { return relative }
+            let normalized = relative.replacingOccurrences(of: "\\", with: "/")
+            var routed = normalized.split(separator: "/").map(String.init)
+            guard let first = routed.first else { throw ModManagerError.invalidRelativePath(relative) }
+            let lower = first.lowercased()
+            if lower == "mods" || lower == "dlc" {
+                routed[0] = lower == "mods" ? "Mods" : "DLC"
+            } else if lower == "documents" {
+                guard routed.count >= 3,
+                      routed[1].caseInsensitiveCompare("The Witcher 3") == .orderedSame else {
+                    throw ModManagerError.witcher3ArchiveInvalid("Documents payloads must be inside a The Witcher 3 folder.")
+                }
+                routed = ["UserData"] + Array(routed.dropFirst(2))
+            } else if first.caseInsensitiveCompare("The Witcher 3") == .orderedSame {
+                let second = routed.dropFirst().first?.lowercased()
+                if ["mods", "dlc", "bin", "content", "redkit"].contains(second ?? "") {
+                    routed = Array(routed.dropFirst())
+                } else {
+                    routed = ["UserData"] + Array(routed.dropFirst())
+                }
+            } else if lower == "userdata" {
+                routed[0] = "UserData"
+            } else if lower.hasPrefix("mod") {
+                routed.insert("Mods", at: 0)
+            } else if lower.hasPrefix("dlc") {
+                routed.insert("DLC", at: 0)
+            } else if routed.count == 1,
+                      ["input.settings", "user.settings"].contains(lower) {
+                routed.insert("UserData", at: 0)
+            }
+            let target = routed.joined(separator: "/")
+            if target.caseInsensitiveCompare("UserData/mods.settings") == .orderedSame {
+                throw ModManagerError.witcher3ArchiveInvalid("Boreal owns mods.settings while a Witcher 3 profile is deployed. Import other Documents/The Witcher 3 files separately.")
+            }
+            guard !target.isEmpty, isValidRelativePath(target) else {
+                throw ModManagerError.invalidRelativePath(target)
+            }
+            return target
+        }
+
+        private func isValidRelativePath(_ path: String) -> Bool {
+            let components = path.split(separator: "/").map(String.init)
+            return !path.hasPrefix("/") && !components.contains("..") && !components.contains(where: { $0.contains(":") })
         }
     }
 
@@ -701,7 +820,10 @@ private extension Witcher2ModManager {
         guard FileManager.default.isReadableFile(atPath: archive.path) else {
             throw ModManagerError.unsupportedArchive(archive)
         }
-        if archive.pathExtension.caseInsensitiveCompare("dzip") == .orderedSame { return .dzip }
+        if archive.pathExtension.caseInsensitiveCompare("dzip") == .orderedSame {
+            guard contract == .witcher2 else { throw ModManagerError.unsupportedArchive(archive) }
+            return .dzip
+        }
         return try archiveSupport.archiveFormat(for: archive)
     }
 
@@ -722,6 +844,11 @@ private extension Witcher2ModManager {
     }
 
     func analyze(extracted: URL) throws -> PackageAnalysis {
+        if contract == .witcher3 { return try analyzeWitcher3(extracted: extracted) }
+        return try analyzeWitcher2(extracted: extracted)
+    }
+
+    func analyzeWitcher2(extracted: URL) throws -> PackageAnalysis {
         let files = try archiveSupport.contentFiles(in: extracted)
         guard !files.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
         let cooked = findDirectory(named: "CookedPC", under: extracted)
@@ -782,6 +909,93 @@ private extension Witcher2ModManager {
             requirements: [],
             warnings: ["The archive has no CookedPC wrapper; its files will be overlaid relative to CookedPC."]
         )
+    }
+
+    func analyzeWitcher3(extracted: URL) throws -> PackageAnalysis {
+        let files = try archiveSupport.contentFiles(in: extracted)
+        guard !files.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
+
+        var root = extracted
+        let installationFolders: Set<String> = ["mods", "dlc", "bin", "content", "redkit", "documents", "userdata", "the witcher 3"]
+        for _ in 0..<4 {
+            let children = (try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            let directories = children.filter {
+                (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }
+            let rootFiles = children.filter {
+                (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            guard directories.count == 1, rootFiles.isEmpty, let candidate = directories.first else { break }
+            let lower = candidate.lastPathComponent.lowercased()
+            if installationFolders.contains(lower) || lower.hasPrefix("mod") || lower.hasPrefix("dlc") {
+                break
+            }
+            root = candidate
+        }
+
+        let selected = try archiveSupport.contentFiles(in: root)
+        guard !selected.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
+        let targetPaths = try selected.map { try witcher3TargetPath(for: $0, relativeTo: root) }
+        let allModFolders = !targetPaths.isEmpty && targetPaths.allSatisfy(isWitcher3ModPath)
+        let allDLCFolders = !targetPaths.isEmpty && targetPaths.allSatisfy(isWitcher3DLCPath)
+        let contentType: ModContentType = allModFolders
+            ? .witcher3Mod
+            : allDLCFolders ? .witcher3DLC : .witcher3GameFiles
+        let detectedRoot: String = allModFolders
+            ? "Game/Mods"
+            : allDLCFolders ? "Game/DLC" : "Game folder and Documents/The Witcher 3"
+        var warnings = [
+            "Boreal will stage this archive first and keep a backup of every game file it replaces.",
+            "Conflicting Witcher 3 scripts need a Script Merger review; Boreal reports conflicts but does not merge script code."
+        ]
+        if !allModFolders && !allDLCFolders {
+            warnings.append("This archive includes game-root or user-data files. Review the mod author’s installation instructions before deploying it.")
+        }
+        if targetPaths.contains(where: { $0.lowercased().hasPrefix("userdata/") }) {
+            warnings.append("User-data files will be deployed inside the linked Wine prefix’s Documents/The Witcher 3 folder.")
+        }
+        return PackageAnalysis(
+            root: root,
+            sourceFiles: selected,
+            detectedRoot: detectedRoot,
+            contentType: contentType,
+            deployStrategy: .witcher3GameRoot,
+            requirements: [],
+            warnings: warnings,
+            routesWitcher3Payload: true
+        )
+    }
+
+    func witcher3TargetPath(for source: URL, relativeTo root: URL) throws -> String {
+        let relative = try PackageAnalysis(
+            root: root,
+            sourceFiles: [],
+            detectedRoot: "",
+            contentType: .witcher3GameFiles,
+            deployStrategy: .witcher3GameRoot,
+            requirements: [],
+            warnings: [],
+            routesWitcher3Payload: true
+        ).relativePath(for: source)
+        return relative
+    }
+
+    func isWitcher3ModPath(_ path: String) -> Bool {
+        let components = path.split(separator: "/").map(String.init)
+        return components.count >= 3
+            && components[0].caseInsensitiveCompare("Mods") == .orderedSame
+            && components[1].lowercased().hasPrefix("mod")
+    }
+
+    func isWitcher3DLCPath(_ path: String) -> Bool {
+        let components = path.split(separator: "/").map(String.init)
+        return components.count >= 3
+            && components[0].caseInsensitiveCompare("DLC") == .orderedSame
+            && components[1].lowercased().hasPrefix("dlc")
     }
 
     func userContentAnalysis(root: URL, files: [URL], detectedRoot: String) -> PackageAnalysis {
@@ -846,6 +1060,9 @@ private extension Witcher2ModManager {
 
     func scanExternalMods(in gameRoot: URL?, auxiliaryRoot: URL?, deployment: ModDeploymentManifest) -> [InstalledMod] {
         guard let gameRoot else { return [] }
+        if contract == .witcher3 {
+            return scanExternalWitcher3Mods(in: gameRoot, deployment: deployment)
+        }
         let fileManager = FileManager.default
         let cookedRoot = Witcher2Adapter.cookedPCRoot(in: gameRoot)
         let managedPaths = Set(deployment.files.values.map { $0.path.lowercased() })
@@ -904,9 +1121,167 @@ private extension Witcher2ModManager {
         return result
     }
 
+    func scanExternalWitcher3Mods(in gameRoot: URL, deployment: ModDeploymentManifest) -> [InstalledMod] {
+        let fileManager = FileManager.default
+        let modsRoot = Witcher3Adapter.contentDirectory(named: "Mods", in: gameRoot, fileManager: fileManager)
+        let managedPaths = Set(deployment.files.values.map { ExternalModDiscovery.normalizedPath($0.path) })
+        guard let rootValues = try? modsRoot.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              rootValues.isDirectory == true,
+              rootValues.isSymbolicLink != true else { return [] }
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: modsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return children.compactMap { child in
+            guard child.lastPathComponent.lowercased().hasPrefix("mod"),
+                  let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true,
+                  let allFiles = try? archiveSupport.contentFiles(in: child) else { return nil }
+            let folderPrefix = ExternalModDiscovery.normalizedPath("Mods/\(child.lastPathComponent)/")
+            let externalFiles = allFiles.filter { file in
+                guard let relative = ExternalModDiscovery.relativePath(of: file, from: gameRoot) else { return false }
+                return !managedPaths.contains(ExternalModDiscovery.normalizedPath(relative))
+            }
+            guard !externalFiles.isEmpty else { return nil }
+            let contents = externalFiles.compactMap { ExternalModDiscovery.relativePath(of: $0, from: gameRoot) }
+            guard contents.allSatisfy({ ExternalModDiscovery.normalizedPath($0).hasPrefix(folderPrefix) }) else { return nil }
+            return ExternalModDiscovery.makeMod(
+                adapter: adapter,
+                name: child.lastPathComponent,
+                detectionKey: "mods/\(child.lastPathComponent)",
+                files: externalFiles,
+                relativeTo: gameRoot,
+                contentType: .witcher3Mod,
+                requirements: ["The Witcher 3 script or bundle conflicts may need Script Merger."]
+            )
+        }
+    }
+
+    func applyExistingWitcher3LoadOrder(from documentsRoot: URL, to mods: inout [InstalledMod]) {
+        let settings = witcher3LoadSettings(at: documentsRoot.appending(path: "mods.settings"))
+        guard !settings.isEmpty else { return }
+        for index in mods.indices where mods[index].isExternallyDetected {
+            let folders = witcher3ModFolderNames(in: [mods[index]])
+            let values = folders.compactMap { settings[$0.lowercased()] }
+            guard !values.isEmpty else { continue }
+            mods[index].enabled = values.allSatisfy(\.enabled)
+            mods[index].priority = (values.map(\.priority).min() ?? 1) - 1
+        }
+    }
+
+    func witcher3LoadSettings(at url: URL) -> [String: (enabled: Bool, priority: Int)] {
+        guard let data = try? Data(contentsOf: url),
+              let source = String(data: data, encoding: .utf8) else { return [:] }
+        var result: [String: (enabled: Bool, priority: Int)] = [:]
+        var currentSection: String?
+        var enabled = true
+        var priority: Int?
+
+        func saveCurrent() {
+            guard let currentSection else { return }
+            result[currentSection] = (enabled, priority ?? 10_000)
+        }
+
+        for rawLine in source.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("["), line.hasSuffix("]"), line.count > 2 {
+                saveCurrent()
+                currentSection = String(line.dropFirst().dropLast()).lowercased()
+                enabled = true
+                priority = nil
+                continue
+            }
+            guard let currentSection,
+                  let separator = line.firstIndex(of: "=") else { continue }
+            let key = line[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+            if key == "enabled", let parsed = Int(value) { enabled = parsed != 0 }
+            if key == "priority", let parsed = Int(value), (1...9999).contains(parsed) { priority = parsed }
+            _ = currentSection
+        }
+        saveCurrent()
+        return result
+    }
+
+    func witcher3ModFolderNames(in mods: [InstalledMod]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for mod in mods.sorted(by: { $0.priority < $1.priority }) {
+            for file in mod.files {
+                let components = file.relativePath.replacingOccurrences(of: "\\", with: "/").split(separator: "/").map(String.init)
+                guard components.count >= 3,
+                      components[0].caseInsensitiveCompare("Mods") == .orderedSame,
+                      components[1].lowercased().hasPrefix("mod") else { continue }
+                let key = components[1].lowercased()
+                if seen.insert(key).inserted { result.append(components[1]) }
+            }
+        }
+        return result
+    }
+
+    func makeWitcher3ModsSettings(
+        at url: URL,
+        removing oldFolders: Set<String>,
+        mods: [InstalledMod]
+    ) throws -> String {
+        let original = String(data: (try? Data(contentsOf: url)) ?? Data(), encoding: .utf8) ?? ""
+        let removeSet = Set(oldFolders.map { $0.lowercased() }).union(witcher3ModFolderNames(in: mods).map { $0.lowercased() })
+        let lines = original.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var preserved: [String] = []
+        var removingSection = false
+        for line in lines {
+            let header = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if header.hasPrefix("["), header.hasSuffix("]"), header.count > 2 {
+                let section = String(header.dropFirst().dropLast()).lowercased()
+                removingSection = removeSet.contains(section)
+            }
+            if !removingSection { preserved.append(line) }
+        }
+        while preserved.last?.isEmpty == true { preserved.removeLast() }
+
+        var values: [String: (name: String, enabled: Bool, priority: Int)] = [:]
+        for mod in mods.sorted(by: { $0.priority < $1.priority }) {
+            for name in witcher3ModFolderNames(in: [mod]) {
+                let key = name.lowercased()
+                let requestedPriority = min(max(mod.priority + 1, 1), 9999)
+                if let existing = values[key] {
+                    values[key] = (existing.name, existing.enabled || mod.enabled, min(existing.priority, requestedPriority))
+                } else {
+                    values[key] = (name, mod.enabled, requestedPriority)
+                }
+            }
+        }
+        let generated = values.values.sorted {
+            if $0.priority != $1.priority { return $0.priority < $1.priority }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }.flatMap { value in
+            ["[\(value.name)]", "Enabled=\(value.enabled ? 1 : 0)", "Priority=\(value.priority)"]
+        }
+        guard !generated.isEmpty else { return preserved.joined(separator: "\n") + (preserved.isEmpty ? "" : "\n") }
+        if !preserved.isEmpty { preserved.append("") }
+        preserved.append(contentsOf: generated)
+        return preserved.joined(separator: "\n") + "\n"
+    }
+
     func resolvedFiles(for mods: [InstalledMod]) throws -> [String: ResolvedFile] {
         var result: [String: ResolvedFile] = [:]
         for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled && !mod.isExternallyDetected {
+            if contract == .witcher3, mod.deployStrategy == .witcher3GameRoot {
+                for file in mod.files {
+                    guard isSafeRelativePath(file.relativePath) else { throw ModManagerError.invalidRelativePath(file.relativePath) }
+                    result[file.relativePath.lowercased()] = ResolvedFile(
+                        targetPath: file.relativePath,
+                        owner: mod.id,
+                        source: "\(mod.stagingRelativePath)/files/\(file.relativePath)",
+                        content: nil,
+                        sha256: file.sha256
+                    )
+                }
+                continue
+            }
             guard mod.deployStrategy == .witcher2CookedPC || mod.deployStrategy == .witcher2UserContent else {
                 continue
             }
@@ -969,6 +1344,17 @@ private extension Witcher2ModManager {
     func destinationURL(for path: String, gameRoot: URL?, userRoot: URL?) -> URL? {
         let normalized = path.replacingOccurrences(of: "\\", with: "/")
         let lower = normalized.lowercased()
+        if contract == .witcher3 {
+            if lower == Self.witcher3SettingsPath.lowercased() {
+                return userRoot?.appending(path: "mods.settings")
+            }
+            if lower.hasPrefix("userdata/") {
+                guard let userRoot else { return nil }
+                return safelyAppend(String(normalized.dropFirst("UserData/".count)), to: userRoot)
+            }
+            guard let gameRoot else { return nil }
+            return safelyAppend(normalized, to: gameRoot)
+        }
         if lower.hasPrefix("cookedpc/") {
             guard let gameRoot else { return nil }
             return Witcher2Adapter.append(String(normalized.dropFirst("CookedPC/".count)), to: Witcher2Adapter.cookedPCRoot(in: gameRoot))
@@ -983,6 +1369,27 @@ private extension Witcher2ModManager {
         return nil
     }
 
+    func safelyAppend(_ relativePath: String, to root: URL) -> URL? {
+        guard isSafeRelativePath(relativePath) else { return nil }
+        let components = relativePath.replacingOccurrences(of: "\\", with: "/").split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return nil }
+        let normalizedRoot = root.standardizedFileURL
+        let destination = append(relativePath, to: normalizedRoot).standardizedFileURL
+        guard destination.path.hasPrefix(normalizedRoot.path.hasSuffix("/") ? normalizedRoot.path : normalizedRoot.path + "/") else {
+            return nil
+        }
+
+        var parent = normalizedRoot
+        for component in components.dropLast() {
+            parent.append(path: component, directoryHint: .isDirectory)
+            guard FileManager.default.fileExists(atPath: parent.path) else { continue }
+            guard let values = try? parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true else { return nil }
+        }
+        return destination
+    }
+
     func validateManagedFiles(_ files: [String: ModDeploymentFile], gameRoot: URL?, userRoot: URL?) throws {
         for path in files.values.map(\.path) {
             guard isSafeRelativePath(path), let destination = destinationURL(for: path, gameRoot: gameRoot, userRoot: userRoot) else {
@@ -991,7 +1398,7 @@ private extension Witcher2ModManager {
             if FileManager.default.fileExists(atPath: destination.path) {
                 let values = try destination.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
                 guard values.isSymbolicLink != true, values.isRegularFile == true else {
-                    throw ModManagerError.deploymentFailed("The managed Witcher 2 destination is unsafe: \(path)")
+                    throw ModManagerError.deploymentFailed("The managed \(adapter.displayName) destination is unsafe: \(path)")
                 }
             }
         }
@@ -1073,7 +1480,10 @@ private extension Witcher2ModManager {
     func isSafeRelativePath(_ path: String) -> Bool {
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\0") else { return false }
         let components = path.replacingOccurrences(of: "\\", with: "/").split(separator: "/").map(String.init)
-        return !components.isEmpty && !components.contains("..") && !components.contains(where: { $0.contains(":" ) })
+        return !components.isEmpty
+            && !components.contains("..")
+            && !components.contains(".")
+            && !components.contains(where: { $0.contains(":" ) })
     }
 
     func append(_ relativePath: String, to root: URL) -> URL {

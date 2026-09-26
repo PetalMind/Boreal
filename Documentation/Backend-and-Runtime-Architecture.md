@@ -570,16 +570,25 @@ Przy WineBus/SDL ustawiane są wartości pod HKLM\System\CurrentControlSet\Servi
 Obsługiwane zależności:
 
 ~~~text
-legacyDirectX   → d3dx9
-vc2010          → vcrun2010
-vc2015To2022    → vcrun2019
-xact            → xact
-xinput          → xinput
-dotNetFramework → dotnet48
-physX           → physx
+windowsMediaCompatibility → mf albo directshow (według wykrytej capability)
+legacyDirectX             → d3dx9
+vc2005                    → vcrun2005
+vc2008                    → vcrun2008
+vc2010                    → vcrun2010
+vc2012                    → vcrun2012
+vc2013                    → vcrun2013
+vc2015To2022              → vcrun2022
+xact                      → xact (PE32), xact_x64 (PE32+), oba w WoW64
+xaudio                    → wybrany XACT + xaudio29
+xinput                    → xinput
+dotNetFramework           → dotnet48
+openAL                    → openal
+xna                       → xna40
+msxml                     → msxml6
+physX                     → physx
 ~~~
 
-Najpierw używany jest Support/winetricks. Fallback pobiera skrypt do Tools/Winetricks/2026-09-04/winetricks. Receipt trafia do prefix/.boreal-dependencies/<dependency>. Status jest dodatkowo sprawdzany przez obecność bibliotek w system32/syswow64.
+Najpierw używany jest Support/winetricks. Fallback pobiera skrypt do Tools/Winetricks/2026-09-04/winetricks. Receipt trafia do prefix/.boreal-dependencies/<dependency> dopiero po zakończeniu całego planu verbów; po częściowym sukcesie zapisuje się marker `<dependency>.partial`. Status łączy receipt Boreal, `winetricks --unattended list-installed` oraz rzeczywiste pliki w system32/syswow64, dlatego rozróżnia instalację pełną, częściową, uszkodzoną, wykrytą i zewnętrznie zainstalowaną.
 
 ## 8. Backend graficzny
 

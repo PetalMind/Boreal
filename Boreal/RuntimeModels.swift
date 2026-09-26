@@ -641,10 +641,26 @@ nonisolated struct GraphicsComponentReference: Codable, Sendable, Hashable {
     let installedFiles: [String]
 }
 
+nonisolated enum MediaCompatibilityCapability: String, Codable, CaseIterable, Sendable, Hashable {
+    case mediaFoundation
+    case directShow
+
+    var displayName: String {
+        switch self {
+        case .mediaFoundation: "Media Foundation"
+        case .directShow: "DirectShow"
+        }
+    }
+}
+
 /// Windows redistributables belong to a mutable game environment, never to
 /// the immutable runtime package or the user's global Wine prefix.
 nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
-    case legacyDirectX, vc2010, vc2015To2022, xact, xinput, dotNetFramework, physX
+    case windowsMediaCompatibility
+    case legacyDirectX
+    case vc2005, vc2008, vc2010, vc2012, vc2013, vc2015To2022
+    case xact, xaudio, xinput
+    case dotNetFramework, openAL, xna, msxml, physX
 
     init(from decoder: Decoder) throws {
         let value = try decoder.singleValueContainer().decode(String.self)
@@ -663,34 +679,104 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
     var id: String { rawValue }
     var displayName: String {
         switch self {
+        case .windowsMediaCompatibility: "Windows Media Compatibility"
         case .legacyDirectX: "Legacy DirectX runtime"
+        case .vc2005: "VC++ 2005"
+        case .vc2008: "VC++ 2008 SP1"
         case .vc2010: "VC++ 2010"
+        case .vc2012: "VC++ 2012"
+        case .vc2013: "VC++ 2013"
         case .vc2015To2022: "VC++ 2015–2022"
         case .xact: "XACT"
+        case .xaudio: "XAudio"
         case .xinput: "XInput"
         case .dotNetFramework: ".NET Framework"
+        case .openAL: "OpenAL"
+        case .xna: "XNA Framework"
+        case .msxml: "MSXML"
         case .physX: "PhysX"
         }
     }
-    var winetricksVerb: String {
+
+    /// Winetricks verbs are verified against the bundled helper. A logical
+    /// dependency may be composed of more than one supported verb, while the
+    /// UI still presents one actionable compatibility package.
+    var winetricksVerbs: [String] {
         switch self {
-        case .legacyDirectX: "d3dx9"
-        case .vc2010: "vcrun2010"
-        case .vc2015To2022: "vcrun2022"
-        case .xact: "xact"
-        case .xinput: "xinput"
-        case .dotNetFramework: "dotnet48"
-        case .physX: "physx"
+        case .windowsMediaCompatibility: ["mf"]
+        case .legacyDirectX: ["d3dx9"]
+        case .vc2005: ["vcrun2005"]
+        case .vc2008: ["vcrun2008"]
+        case .vc2010: ["vcrun2010"]
+        case .vc2012: ["vcrun2012"]
+        case .vc2013: ["vcrun2013"]
+        case .vc2015To2022: ["vcrun2022"]
+        case .xact: ["xact"]
+        case .xaudio: ["xact", "xaudio29"]
+        case .xinput: ["xinput"]
+        case .dotNetFramework: ["dotnet48"]
+        case .openAL: ["openal"]
+        case .xna: ["xna40"]
+        case .msxml: ["msxml6"]
+        case .physX: ["physx"]
         }
     }
+
+    /// Resolves a logical package to the smallest helper payload supported by
+    /// the selected prefix and the evidence found in the game files. The
+    /// static `winetricksVerbs` accessor above remains the compatibility
+    /// default for persisted data and diagnostics.
+    func winetricksVerbs(
+        prefixMode: WinePrefixMode? = nil,
+        executableArchitecture: String? = nil,
+        mediaCapabilities: Set<MediaCompatibilityCapability> = []
+    ) -> [String] {
+        switch self {
+        case .windowsMediaCompatibility:
+            let capabilities: Set<MediaCompatibilityCapability> = mediaCapabilities.isEmpty ? [.mediaFoundation] : mediaCapabilities
+            return [
+                capabilities.contains(.mediaFoundation) ? "mf" : nil,
+                capabilities.contains(.directShow) ? "directshow" : nil
+            ].compactMap { $0 }
+        case .xact, .xaudio:
+            let xactVerbs: [String]
+            if prefixMode == .wow64 {
+                xactVerbs = ["xact", "xact_x64"]
+            } else if prefixMode == .legacyWin64 || executableArchitecture == WinePrefixArchitecture.win64.rawValue {
+                xactVerbs = ["xact_x64"]
+            } else {
+                xactVerbs = ["xact"]
+            }
+            return self == .xaudio ? xactVerbs + ["xaudio29"] : xactVerbs
+        default:
+            return winetricksVerbs
+        }
+    }
+
+    /// Kept as a compatibility accessor for diagnostics written before a
+    /// dependency could contain multiple installer verbs.
+    var winetricksVerb: String { winetricksVerbs[0] }
+
     var detectionLibraries: [String] {
         switch self {
+        case .windowsMediaCompatibility: [
+            "mf.dll", "mfplat.dll", "mfreadwrite.dll", "mfplay.dll",
+            "wmvcore.dll", "wmv9vcm.dll", "quartz.dll", "qasf.dll", "qedit.dll", "amstream.dll"
+        ]
         case .legacyDirectX: ["d3dx9_43.dll", "d3dcompiler_43.dll"]
+        case .vc2005: ["msvcp80.dll", "msvcr80.dll", "mfc80.dll"]
+        case .vc2008: ["msvcp90.dll", "msvcr90.dll", "mfc90.dll"]
         case .vc2010: ["msvcp100.dll", "msvcr100.dll"]
+        case .vc2012: ["msvcp110.dll", "msvcr110.dll", "mfc110.dll"]
+        case .vc2013: ["msvcp120.dll", "msvcr120.dll", "mfc120.dll"]
         case .vc2015To2022: ["msvcp140.dll", "vcruntime140.dll"]
-        case .xact: ["xactengine3_7.dll"]
+        case .xact: ["xactengine3_7.dll", "xactengine2_0.dll"]
+        case .xaudio: ["xaudio2_7.dll", "xaudio2_9.dll", "x3daudio1_7.dll"]
         case .xinput: ["xinput1_3.dll", "xinput1_4.dll"]
         case .dotNetFramework: ["mscoree.dll"]
+        case .openAL: ["OpenAL32.dll"]
+        case .xna: ["XnaNative.dll", "Microsoft.Xna.Framework.dll"]
+        case .msxml: ["msxml3.dll", "msxml4.dll", "msxml6.dll"]
         case .physX: ["PhysXLoader.dll"]
         }
     }
@@ -701,7 +787,7 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
     /// completes, which is the reliable signal for these dependencies.
     var requiresExplicitInstallationEvidence: Bool {
         switch self {
-        case .vc2010, .vc2015To2022:
+        case .windowsMediaCompatibility, .vc2005, .vc2008, .vc2010, .vc2012, .vc2013, .vc2015To2022, .dotNetFramework, .xna:
             true
         default:
             false
@@ -710,7 +796,14 @@ nonisolated enum RuntimeDependency: String, Codable, CaseIterable, Sendable, Has
 }
 
 nonisolated enum RuntimeDependencyState: String, Codable, Sendable, Hashable {
-    case installed, missing, installing, failed
+    case installed, missing, installing, failed, partial, broken, detected, externallyInstalled
+
+    var satisfiesDependency: Bool {
+        switch self {
+        case .installed, .detected, .externallyInstalled: true
+        case .missing, .installing, .failed, .partial, .broken: false
+        }
+    }
 }
 
 nonisolated enum RuntimeDependencyRecommendation: String, Codable, Sendable, Hashable {
@@ -728,12 +821,21 @@ nonisolated struct RuntimeDependencyStatus: Identifiable, Codable, Sendable, Has
 nonisolated enum RuntimeDependencyResolver {
     static func resolve(executableURL: URL?) -> [RuntimeDependency: (RuntimeDependencyRecommendation, String)] {
         var result: [RuntimeDependency: (RuntimeDependencyRecommendation, String)] = [
+            .windowsMediaCompatibility: (.optional, "Install only when the game uses Windows Media, DirectShow or Media Foundation"),
             .vc2015To2022: (.recommended, "Common runtime for modern Windows games"),
             .xinput: (.recommended, "Common controller API for Windows games"),
             .legacyDirectX: (.optional, "Install only when the game needs legacy DirectX components"),
+            .vc2005: (.optional, "Install only for games built with Visual C++ 2005"),
+            .vc2008: (.optional, "Install only for games built with Visual C++ 2008"),
             .vc2010: (.optional, "Install only for games built with Visual C++ 2010"),
+            .vc2012: (.optional, "Install only for games built with Visual C++ 2012"),
+            .vc2013: (.optional, "Install only for games built with Visual C++ 2013"),
             .xact: (.optional, "Install only for games using legacy XACT audio"),
+            .xaudio: (.optional, "Install only for games using the XAudio redistributable"),
             .dotNetFramework: (.optional, "Install only when this game explicitly requires .NET Framework"),
+            .openAL: (.optional, "Install only for games using OpenAL"),
+            .xna: (.optional, "Install only for games built with XNA Framework"),
+            .msxml: (.optional, "Install only for launchers or games requiring MSXML"),
             .physX: (.optional, "Install only for games that use NVIDIA PhysX")
         ]
         guard let executableURL,
@@ -748,12 +850,21 @@ nonisolated enum RuntimeDependencyResolver {
             return data.range(of: lower) != nil || data.range(of: upper) != nil
         }
         let evidence: [(RuntimeDependency, [String], String)] = [
+            (.windowsMediaCompatibility, ["mf.dll", "mfplat.dll", "mfreadwrite.dll", "mfplay.dll", "wmvcore.dll", "quartz.dll", "devenum.dll"], "Required by this executable's Windows media imports"),
             (.legacyDirectX, ["d3dx9_", "d3dcompiler_43.dll"], "Required by this executable's legacy DirectX imports"),
+            (.vc2005, ["msvcp80.dll", "msvcr80.dll", "mfc80.dll"], "Required by this executable's Visual C++ 2005 imports"),
+            (.vc2008, ["msvcp90.dll", "msvcr90.dll", "mfc90.dll"], "Required by this executable's Visual C++ 2008 imports"),
             (.vc2010, ["msvcp100.dll", "msvcr100.dll"], "Required by this executable's Visual C++ 2010 imports"),
+            (.vc2012, ["msvcp110.dll", "msvcr110.dll", "mfc110.dll"], "Required by this executable's Visual C++ 2012 imports"),
+            (.vc2013, ["msvcp120.dll", "msvcr120.dll", "mfc120.dll"], "Required by this executable's Visual C++ 2013 imports"),
             (.vc2015To2022, ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"], "Required by this executable's Visual C++ runtime imports"),
             (.xact, ["xactengine"], "Required by this executable's XACT audio import"),
+            (.xaudio, ["xaudio2_", "x3daudio"], "Required by this executable's XAudio import"),
             (.xinput, ["xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll"], "Required by this executable's controller API import"),
             (.dotNetFramework, ["mscoree.dll"], "Required by this managed .NET executable"),
+            (.openAL, ["openal32.dll"], "Required by this executable's OpenAL import"),
+            (.xna, ["microsoft.xna.framework", "xnanative.dll"], "Required by this executable's XNA runtime import"),
+            (.msxml, ["msxml3.dll", "msxml4.dll", "msxml6.dll"], "Required by this executable's MSXML import"),
             (.physX, ["physxloader.dll", "physx3"], "Required by this executable's NVIDIA PhysX import")
         ]
         for (dependency, names, detail) in evidence where names.contains(where: containsImport) {

@@ -469,6 +469,7 @@ nonisolated struct LaunchPlan: Codable, Hashable, Sendable {
             workingDirectory: workingDirectory,
             overlayCompatibleFullscreen: overlayCompatibleFullscreen,
             overlayDisplayID: overlayDisplayID,
+            wineLoggingLevel: compatibilityProfile?.wineLoggingLevel ?? .errorsOnly,
             sessionScope: sessionScope,
             processExecutableName: processExecutableName,
             processExecutablePath: processExecutablePath,

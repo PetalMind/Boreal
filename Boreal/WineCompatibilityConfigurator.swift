@@ -69,12 +69,12 @@ private func compatibilityLocalizedCapabilityDetail(_ capability: UpscalingCapab
 }
 
 private enum CompatibilityPreset: CaseIterable, Identifiable {
-    case recommended, legacy, performance, custom
+    case recommended, compatibility, performance, custom
     var id: Self { self }
     var title: LocalizedStringResource {
         switch self {
         case .recommended: "Recommended"
-        case .legacy: "Legacy"
+        case .compatibility: "Compatibility"
         case .performance: "Performance"
         case .custom: "Custom"
         }
@@ -82,7 +82,7 @@ private enum CompatibilityPreset: CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .recommended: "wand.and.stars"
-        case .legacy: "clock.arrow.circlepath"
+        case .compatibility: "checkmark.shield"
         case .performance: "gauge.with.dots.needle.67percent"
         case .custom: "gearshape"
         }
@@ -173,19 +173,27 @@ struct WineCompatibilityConfigurator: View {
 
     @Environment(BorealStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let application: WindowsApplication
     @State private var profile: WineCompatibilityProfile
     @State private var detectedGraphicsAPI: GraphicsAPI?
     @State private var controllerManager = ControllerManager.shared
     @State private var showsComponentsPatches = false
     @State private var showsControllerSettings = false
+    @State private var showsAdvancedSettings = false
+    @State private var isApplying = false
+    @State private var saveError: String?
     @State private var temporalInspector: TemporalUpscalingInspectorSnapshot?
+    @State private var environmentPrefixMode: WinePrefixMode?
     @AppStorage("developerMode") private var developerMode = false
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     init(application: WindowsApplication) {
         self.application = application
-        _profile = State(initialValue: GameGraphicsProfiles.effectiveCompatibilityProfile(application.resolvedCompatibilityProfile, for: application))
+        _profile = State(initialValue: application.compatibilityProfile ?? application.resolvedCompatibilityProfile)
         _detectedGraphicsAPI = State(initialValue: nil)
     }
 
@@ -212,9 +220,12 @@ struct WineCompatibilityConfigurator: View {
             Divider()
             CompatibilitySettingsFooter(
                 restore: { profile = .default }, cancel: { dismiss() }, save: save,
-                saveDisabled: application.status == .running || application.status.isBusy || graphicsBackendIssue != nil || prefixModeIssue != nil || selectedRuntimeIssue != nil,
+                saveDisabled: currentApplication.status == .running || currentApplication.status.isBusy || isApplying || graphicsBackendIssue != nil || prefixModeIssue != nil || selectedRuntimeIssue != nil,
                 saveTitle: requiresEnvironmentRebuild ? "Apply & Rebuild" : "Save changes",
-                showsRebuildNotice: requiresEnvironmentRebuild
+                impacts: changeImpacts,
+                isApplying: isApplying,
+                applyingMessage: currentApplication.lastResult,
+                errorMessage: saveError
             )
         }
         .frame(minWidth: 680, idealWidth: 840, maxWidth: 900, minHeight: 620, idealHeight: 760, maxHeight: 860)
@@ -228,6 +239,28 @@ struct WineCompatibilityConfigurator: View {
         }) {
             ComponentsAndPatchesView(application: application, profile: $profile)
         }
+        .sheet(isPresented: $showsAdvancedSettings) {
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 12) {
+                        displaySection
+                        upscalingSection
+                        frameGenerationSection
+                        overlaySection
+                        controllerSection
+                        advancedSection
+                    }
+                    .padding(16)
+                }
+                .navigationTitle("Advanced compatibility")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showsAdvancedSettings = false }
+                    }
+                }
+            }
+            .frame(minWidth: 620, idealWidth: 720, minHeight: 600, idealHeight: 760)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .borealRuntimeImportCompleted)) { _ in
             Task { temporalInspector = await store.temporalUpscalingInspector(for: application.id) }
         }
@@ -237,22 +270,35 @@ struct WineCompatibilityConfigurator: View {
             let detected = await Task.detached(priority: .utility) { GraphicsAPIDetector.detect(executable: executable) }.value
             guard !Task.isCancelled else { return }
             detectedGraphicsAPI = detected
-            if profile.graphicsAPI == nil { profile.graphicsAPI = detected }
         }
         .task(id: application.environmentID) {
+            environmentPrefixMode = store.configuredPrefixMode(for: currentApplication)
             temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+        }
+        .onChange(of: currentApplication.status) { _, status in
+            guard isApplying, !status.isBusy else { return }
+            isApplying = false
+            if status == .ready, currentApplication.lastErrorDetail == nil {
+                dismiss()
+            } else {
+                saveError = currentApplication.lastErrorDetail
+                    ?? currentApplication.lastResult
+                    ?? String(localized: "Boreal could not apply these compatibility changes.")
+            }
         }
     }
 
     private var settingsContent: some View {
         VStack(spacing: 12) {
             graphicsSection
-            upscalingSection
-            displaySection
-            frameGenerationSection
-            overlaySection
-            controllerSection
-            advancedSection
+            launchOverviewSection
+            graphicsOverviewSection
+            compatibilityOverviewSection
+            Button("Advanced settings…", systemImage: "slider.horizontal.3") {
+                showsAdvancedSettings = true
+            }
+            .buttonStyle(.bordered)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -264,11 +310,11 @@ struct WineCompatibilityConfigurator: View {
                     ForEach(availableRuntimes) { runtime in
                         Text(runtimeLabel(runtime))
                             .tag(Optional(runtime.id))
-                            .disabled(store.runtimeSelectionIssue(runtime.id, profile: profile) != nil)
+                            .disabled(store.runtimeSelectionIssue(runtime.id, profile: profile, for: currentApplication) != nil)
                     }
                 }
                 .labelsHidden()
-                .disabled(usesSharedSteamEnvironment)
+                .disabled(isSettingManaged(.runtimeSelection))
             }
             if profile.runtimeIDOverride != nil {
                 Label("Pinned by user", systemImage: "lock.fill")
@@ -287,46 +333,68 @@ struct WineCompatibilityConfigurator: View {
                     profile.runtimeIDOverride = nil
                 }
                 .buttonStyle(.bordered)
+                .disabled(isSettingManaged(.runtimeSelection))
             }
             CompatibilityPickerRow(title: "Game API", detail: graphicsAPIExplanation) {
-                Picker("Game API", selection: graphicsAPIBinding) {
-                    ForEach(GraphicsAPI.allCases) { api in Text(graphicsAPILabel(for: api)).tag(api) }
-                }.labelsHidden()
+                if selectableGraphicsAPIs.isEmpty {
+                    Text(readOnlyGameAPILabel)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                } else {
+                    Picker("Game API", selection: graphicsAPIBinding) {
+                        Text("Automatic").tag(GraphicsAPI.automatic)
+                        ForEach(selectableGraphicsAPIs) { api in
+                            Text(compatibilityLocalizedGraphicsAPIName(api)).tag(api)
+                        }
+                    }
+                    .labelsHidden()
+                }
             }
             CompatibilityPickerRow(title: "Graphics renderer", detail: graphicsBackendExplanation) {
                 Picker("Graphics renderer", selection: $profile.graphicsBackend) {
                     ForEach(WineGraphicsBackend.allCases) { backend in Text(backendLabel(backend)).tag(backend) }
                 }
                 .labelsHidden()
-                .disabled(usesSharedSteamEnvironment || graphicsProfile?.enforcedBackend != nil)
+                .disabled(isSettingManaged(.graphicsRenderer) || graphicsProfile?.enforcedBackend != nil)
             }
-            if profile.graphicsBackend == .wineD3D {
-                CompatibilityPickerRow(
-                    title: "WineD3D renderer",
-                    detail: String(localized: "OpenGL is the compatibility path for older games. Vulkan can be faster, but requires working MoltenVK features for the selected game.")
-                ) {
-                    Picker("WineD3D renderer", selection: $profile.wineD3DRenderer) {
-                        ForEach(WineD3DRenderer.allCases) { renderer in
-                            Text(renderer.displayName).tag(renderer)
+            Group {
+                if profile.graphicsBackend == .wineD3D || graphicsBackendIssue != nil {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if profile.graphicsBackend == .wineD3D {
+                            CompatibilityPickerRow(
+                                title: "WineD3D renderer",
+                                detail: String(localized: "OpenGL is the compatibility path for older games. Vulkan can be faster, but requires working MoltenVK features for the selected game.")
+                            ) {
+                                Picker("WineD3D renderer", selection: $profile.wineD3DRenderer) {
+                                    ForEach(WineD3DRenderer.allCases) { renderer in
+                                        Text(renderer.displayName).tag(renderer)
+                                    }
+                                }
+                                .labelsHidden()
+                                .disabled(isSettingManaged(.wineD3DRenderer))
+                            }
+                        }
+                        if let issue = graphicsBackendIssue {
+                            CompatibilityCallout(text: issue, symbol: "exclamationmark.triangle.fill", tint: .orange)
+                            if profile.graphicsBackend != .automatic {
+                                Button("Use automatic renderer", systemImage: "wand.and.stars") {
+                                    profile.graphicsBackend = .automatic
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(isSettingManaged(.graphicsRenderer))
+                            }
+                            if profile.graphicsBackend == .d3dMetal {
+                                Button("Manage runtimes…", systemImage: "shippingbox") { openRuntimeManager() }
+                                    .buttonStyle(.bordered)
+                            }
                         }
                     }
-                    .labelsHidden()
-                    .disabled(usesSharedSteamEnvironment)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
                 }
             }
-            if let issue = graphicsBackendIssue {
-                CompatibilityCallout(text: issue, symbol: "exclamationmark.triangle.fill", tint: .orange)
-                if profile.graphicsBackend != .automatic {
-                    Button("Use automatic renderer", systemImage: "wand.and.stars") {
-                        profile.graphicsBackend = .automatic
-                    }
-                    .buttonStyle(.bordered)
-                }
-                if profile.graphicsBackend == .d3dMetal {
-                    Button("Manage runtimes…", systemImage: "shippingbox") { openRuntimeManager() }
-                        .buttonStyle(.bordered)
-                }
-            }
+            .animation(motion.panel, value: profile.graphicsBackend)
             if let event = application.compatibilityFallbackEvents?.last {
                 CompatibilityCallout(
                     text: String(localized: "Boreal switched from \(compatibilityLocalizedBackendName(event.failedBackend)) to \(compatibilityLocalizedBackendName(event.fallbackBackend)) after a Direct3D device initialization failure."),
@@ -335,14 +403,93 @@ struct WineCompatibilityConfigurator: View {
                 )
             }
             if usesSharedSteamEnvironment {
-                CompatibilityCallout(text: String(localized: "Steam shares its Windows environment across games. Architecture, graphics renderer and older-game fixes are managed there."), symbol: "person.2.fill", tint: .blue)
+                CompatibilityCallout(text: String(localized: "Steam shares its Wine environment across games. Runtime, prefix, and environment-wide renderer settings are read-only here; launch and game-file settings remain per game."), symbol: "person.2.fill", tint: .blue)
+            }
+        }
+    }
+
+    private var launchOverviewSection: some View {
+        CompatibilitySettingsSection(title: "Launch", subtitle: "Choose how Boreal opens this game.", symbol: "play.rectangle", tint: .cyan) {
+            CompatibilityPickerRow(title: "Start game", detail: launchModeExplanation) {
+                Picker("Start game", selection: gameLaunchModeBinding) {
+                    ForEach(GameLaunchMode.allCases) { mode in Text(mode.title).tag(mode) }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+            if profile.overlayCompatibleFullscreen {
+                Text("Runs in Boreal's virtual desktop so the overlay can stay available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var graphicsOverviewSection: some View {
+        CompatibilitySettingsSection(title: "Graphics quality", subtitle: "Common visual settings. Unsupported paths stay visibly unavailable.", symbol: "sparkles", tint: .orange) {
+            CompatibilityPickerRow(title: "Upscaling mode", detail: nil) {
+                Picker("Upscaling mode", selection: temporalModeBinding) {
+                    ForEach(TemporalUpscalingMode.allCases) { mode in Text(mode.displayName).tag(mode) }
+                }
+                .labelsHidden()
+            }
+            CompatibilityToggleRow(
+                title: "High-resolution rendering (Retina)",
+                detail: "Render at higher resolution for a sharper image.",
+                isOn: $profile.retinaModeEnabled,
+                disabled: isSettingManaged(.retinaMode) && !profile.retinaModeEnabled
+            )
+            CompatibilityToggleRow(
+                title: "Wine Fullscreen FSR 1",
+                detail: "Uses Wine's spatial upscaler on a verified compatible graphics path.",
+                isOn: $profile.fullscreenFSREnabled,
+                disabled: isSettingManaged(.spatialUpscaling) && !profile.fullscreenFSREnabled,
+                detailText: fullscreenFSRUnavailableReason
+            )
+            CompatibilityToggleRow(
+                title: "Frame generation",
+                detail: temporalInspector?.optiScaler.installed == true
+                    ? "Uses the installed per-game OptiScaler component."
+                    : "Requires a compiled OptiScaler component; manage it in Advanced settings.",
+                isOn: optiScalerFrameGenerationBinding,
+                disabled: temporalInspector?.optiScaler.installed != true
+                    && !profile.temporalUpscaling.optiScaler.frameGenerationEnabled
+            )
+        }
+    }
+
+    private var compatibilityOverviewSection: some View {
+        CompatibilitySettingsSection(title: "Compatibility", subtitle: "Boreal resolves dependencies from game evidence and the selected environment.", symbol: "checkmark.shield", tint: .purple) {
+            HStack(spacing: 10) {
+                Image(systemName: controllerManager.controllers.first?.supportsExtendedProfile == true ? "gamecontroller.fill" : "gamecontroller")
+                    .foregroundStyle(controllerManager.controllers.first?.supportsExtendedProfile == true ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Present as Xbox 360 Controller").fontWeight(.medium)
+                    Text(controllerManager.controllers.first?.name ?? "No controller detected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("Present as Xbox 360 Controller", isOn: $profile.forceXInput)
+                    .labelsHidden()
+                    .disabled(
+                        !profile.forceXInput
+                            && (isSettingManaged(.controllerMapping) || runtimeFeatures?.wineBusControllerMapping != true)
+                    )
+            }
+            Text(dependencySummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if usesSharedSteamEnvironment {
+                CompatibilityCallout(text: String(localized: "This game uses Steam's shared environment. The controller and dependency details are shown here; environment-wide changes are managed by that shared prefix."), symbol: "person.2.fill", tint: .blue)
             }
         }
     }
 
     private var displaySection: some View {
         CompatibilitySettingsSection(title: "Display", subtitle: "Configure display resolution, scaling, and window behavior.", symbol: "display", tint: .blue) {
-            CompatibilityToggleRow(title: "High-resolution rendering (Retina)", detail: "Render the game at higher resolution for a sharper image.", isOn: $profile.retinaModeEnabled, disabled: usesSharedSteamEnvironment)
             CompatibilityPickerRow(title: "Game display", detail: String(localized: "Choose which screen the borderless game window uses.")) {
                 Picker("Game display", selection: $profile.overlayDisplayID) {
                     Text("Automatic (main display)").tag(Optional<UInt32>.none)
@@ -357,22 +504,11 @@ struct WineCompatibilityConfigurator: View {
         return CompatibilitySettingsSection(title: "Upscaling", subtitle: "Boreal chooses compatible spatial and temporal paths from real capability data.", symbol: "arrow.up.left.and.arrow.down.right", tint: .orange) {
             let game = temporalInspector?.game
             let plan = temporalInspector?.temporalPlan
-            CompatibilityPickerRow(title: "Upscaling mode", detail: String(localized: "Automatic follows detected game capabilities. Detailed components and bridges are managed separately.")) {
-                Picker("Upscaling mode", selection: temporalModeBinding) {
-                    ForEach(TemporalUpscalingMode.allCases) { mode in Text(mode.displayName).tag(mode) }
-                }
-                .labelsHidden()
-            }
             CompatibilityUpscalingRow(
                 title: "Wine Fullscreen FSR 1",
                 detail: compatibilityLocalizedCapabilityTitle(spatialCapability),
                 status: spatialCapability.status,
                 explanation: compatibilityLocalizedCapabilityDetail(spatialCapability)
-            )
-            CompatibilityToggleRow(
-                title: "Enable spatial upscaling",
-                detail: "Requested preference for Wine's fullscreen FSR path. It becomes active only with a verified compatible Vulkan path and no active temporal path.",
-                isOn: $profile.fullscreenFSREnabled
             )
             CompatibilityUpscalingRow(
                 title: "Effective path",
@@ -418,12 +554,6 @@ struct WineCompatibilityConfigurator: View {
             symbol: "sparkles.rectangle.stack",
             tint: .purple
         ) {
-            CompatibilityToggleRow(
-                title: "Frame generation",
-                detail: "Injects OptiScaler per game and uses the real game window for presentation, focus, and input.",
-                isOn: optiScalerFrameGenerationBinding,
-                disabled: !optiInstalled
-            )
             CompatibilityPickerRow(
                 title: "Technology",
                 detail: "The first managed backend supports OptiFG with FSR Frame Generation."
@@ -487,15 +617,9 @@ struct WineCompatibilityConfigurator: View {
 
     private var overlaySection: some View {
         CompatibilitySettingsSection(title: "Launch mode", subtitle: "Choose how Wine creates the game window.", symbol: "rectangle.on.rectangle", tint: .cyan) {
-            CompatibilityPickerRow(title: "Start game", detail: launchModeExplanation) {
-                Picker("Start game", selection: gameLaunchModeBinding) {
-                    ForEach(GameLaunchMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-            }
+            Label(profile.overlayCompatibleFullscreen ? "Virtual desktop" : "Direct launch", systemImage: profile.overlayCompatibleFullscreen ? "rectangle.on.rectangle" : "arrow.up.right.square")
+                .font(.caption.weight(.medium))
+                .frame(maxWidth: .infinity, alignment: .leading)
             if profile.overlayCompatibleFullscreen {
                 CompatibilityCallout(
                     text: String(localized: "The virtual desktop keeps Boreal's overlay above the game, but some games may require direct launch to locate their files correctly."),
@@ -518,9 +642,9 @@ struct WineCompatibilityConfigurator: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Toggle("Present as Xbox 360 Controller", isOn: $profile.forceXInput)
-                    .labelsHidden()
-                    .disabled(usesSharedSteamEnvironment || runtimeFeatures?.wineBusControllerMapping != true)
+                Text(profile.forceXInput ? "Enabled" : "Disabled")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Text("Restart the entire Wine session after changing this setting.")
                 .font(.caption)
@@ -535,19 +659,19 @@ struct WineCompatibilityConfigurator: View {
             DisclosureGroup("Windows environment") {
                 VStack(spacing: 10) {
                     CompatibilityPickerRow(title: "Windows version", detail: nil) {
-                        Picker("Windows version", selection: $profile.windowsVersion) { ForEach(WineWindowsVersion.allCases) { Text($0.displayName).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment)
+                        Picker("Windows version", selection: $profile.windowsVersion) { ForEach(WineWindowsVersion.allCases) { Text($0.displayName).tag($0) } }.labelsHidden().disabled(isSettingManaged(.windowsVersion))
                     }
                     CompatibilityPickerRow(title: "Windows executable architecture", detail: String(localized: "This describes the selected Windows executable. It is separate from the Wine prefix mode.")) {
-                        Picker("Windows executable architecture", selection: $profile.architecture) { ForEach(WinePrefixArchitecture.allCases) { Text(executableArchitectureLabel($0)).tag($0) } }.labelsHidden().disabled(usesSharedSteamEnvironment)
+                        Picker("Windows executable architecture", selection: $profile.architecture) { ForEach(WinePrefixArchitecture.allCases) { Text(executableArchitectureLabel($0)).tag($0) } }.labelsHidden().disabled(isSettingManaged(.executableArchitecture))
                     }
                     CompatibilityPickerRow(title: "Wine prefix", detail: prefixModeExplanation) {
                         Picker("Wine prefix", selection: prefixModeBinding) {
                             ForEach(WinePrefixMode.allCases) { mode in
-                                Text(prefixModeLabel(mode)).tag(mode).disabled(store.prefixModeIssue(mode, for: application) != nil)
+                                Text(prefixModeLabel(mode)).tag(mode).disabled(prefixModeIssue(for: mode) != nil)
                             }
                         }
                         .labelsHidden()
-                        .disabled(usesSharedSteamEnvironment)
+                        .disabled(isSettingManaged(.prefixMode))
                     }
                     if let prefixModeIssue {
                         CompatibilityCallout(text: prefixModeIssue, symbol: "exclamationmark.triangle.fill", tint: .orange)
@@ -565,7 +689,7 @@ struct WineCompatibilityConfigurator: View {
                             }
                         }
                         .labelsHidden()
-                        .disabled(usesSharedSteamEnvironment)
+                        .disabled(isSettingManaged(.legacyWrapper))
                     }
                     if let legacyWrapperAvailabilityMessage {
                         CompatibilityCallout(text: legacyWrapperAvailabilityMessage, symbol: "exclamationmark.triangle.fill", tint: .orange)
@@ -597,8 +721,8 @@ struct WineCompatibilityConfigurator: View {
             }
             DisclosureGroup("Performance") {
                 VStack(spacing: 10) {
-                    CompatibilityToggleRow(title: "ESync", detail: nil, isOn: $profile.esyncEnabled, disabled: runtimeFeatures?.esync != true)
-                    CompatibilityToggleRow(title: "MSync", detail: "These options can reduce CPU overhead. Support depends on the Wine runtime.", isOn: $profile.msyncEnabled, disabled: runtimeFeatures?.msync != true)
+                    CompatibilityToggleRow(title: "ESync", detail: nil, isOn: $profile.esyncEnabled, disabled: isSettingManaged(.synchronization) || runtimeFeatures?.esync != true)
+                    CompatibilityToggleRow(title: "MSync", detail: "These options can reduce CPU overhead. Support depends on the Wine runtime.", isOn: $profile.msyncEnabled, disabled: isSettingManaged(.synchronization) || runtimeFeatures?.msync != true)
                     if runtimeFeatures?.esync != true || runtimeFeatures?.msync != true {
                         CompatibilityCallout(text: String(localized: "Unavailable switches are not exported to Wine."), symbol: "exclamationmark.triangle.fill", tint: .orange)
                     }
@@ -607,35 +731,35 @@ struct WineCompatibilityConfigurator: View {
             DisclosureGroup("Launch and diagnostics") {
                 VStack(alignment: .leading, spacing: 10) {
                     TextField("Launch arguments", text: $profile.launchArguments, prompt: Text("e.g. -windowed -novsync")).textFieldStyle(.roundedBorder)
-                    CompatibilityToggleRow(title: "Verbose Wine logging", detail: "Verbose logging can create large log files. Enable it only while diagnosing a problem.", isOn: $profile.debugLoggingEnabled)
+                    CompatibilityPickerRow(title: "Wine logging", detail: String(localized: "Full logs can grow quickly. Errors-only keeps Wine error output without enabling every trace channel.")) {
+                        Picker("Wine logging", selection: $profile.wineLoggingLevel) {
+                            ForEach(WineLoggingLevel.allCases) { level in Text(level.displayName).tag(level) }
+                        }
+                        .labelsHidden()
+                    }
                 }.padding(.top, 8)
             }
         }
     }
 
     private var resultCard: some View {
-        VStack(spacing: 12) {
-            CompatibilityLaunchPlanCard(
-                application: application,
-                profile: profile,
-                gameAPILabel: compatibilityLocalizedGraphicsAPIName(graphicsAPIBinding.wrappedValue),
-                runtimeLabel: profile.runtimeIDOverride.flatMap { id in availableRuntimes.first(where: { $0.id == id }).map { runtimeLabel($0) } }
-                    ?? automaticallySelectedRuntimeLabel,
-                displayLabel: selectedDisplayLabel,
-                temporalPath: temporalInspector?.temporalPlan.effective.displayName,
-                configurationIssue: launchPlanIssue
-            )
-            CompatibilityCommunityCard(
-                application: application,
-                communityURL: communityURL,
-                openCommunityReports: { if let communityURL { openURL(communityURL) } }
-            )
-        }
+        CompatibilityLaunchPlanCard(
+            application: currentApplication,
+            profile: profile,
+            gameAPILabel: compatibilityLocalizedGraphicsAPIName(effectiveGraphicsAPI),
+            rendererLabel: resolvedRendererSummary,
+            prefixLabel: resolvedPrefixSummary,
+            runtimeLabel: profile.runtimeIDOverride.flatMap { id in availableRuntimes.first(where: { $0.id == id }).map { runtimeLabel($0) } }
+                ?? automaticallySelectedRuntimeLabel,
+            displayLabel: selectedDisplayLabel,
+            temporalPath: temporalInspector?.temporalPlan.effective.displayName,
+            configurationIssue: launchPlanIssue
+        )
     }
 
     private var selectedPreset: CompatibilityPreset {
         if profile == recommendedProfile { return .recommended }
-        if profile == legacyProfile { return .legacy }
+        if profile == compatibilityGoalProfile { return .compatibility }
         if profile == performanceProfile { return .performance }
         return .custom
     }
@@ -644,22 +768,32 @@ struct WineCompatibilityConfigurator: View {
         let pinnedRuntimeID = profile.runtimeIDOverride
         switch preset {
         case .recommended: profile = recommendedProfile
-        case .legacy: profile = legacyProfile
+        case .compatibility: profile = compatibilityGoalProfile
         case .performance: profile = performanceProfile
         case .custom: break
         }
         if preset != .custom { profile.runtimeIDOverride = pinnedRuntimeID }
     }
 
-    private func save() { store.updateCompatibilityProfile(for: application.id, profile: profile); dismiss() }
+    private func save() {
+        guard !isApplying else { return }
+        saveError = nil
+        store.updateCompatibilityProfile(for: application.id, profile: profile)
+        let updated = store.application(id: application.id) ?? application
+        guard updated.status.isBusy else {
+            dismiss()
+            return
+        }
+        isApplying = true
+    }
+
+    private var currentApplication: WindowsApplication {
+        store.application(id: application.id) ?? application
+    }
 
     private var artwork: StoreLibraryGame? {
         guard let reference = application.storeReference else { return nil }
         return store.storeGames.first { $0.storeReference == reference }
-    }
-    private var communityURL: URL? {
-        guard let value = application.communityCompatibility?.sourceURL else { return nil }
-        return URL(string: value)
     }
     private var selectedDisplayLabel: String {
         guard let id = profile.overlayDisplayID, let display = availableDisplays.first(where: { $0.id == id }) else { return String(localized: "Automatic (main display)") }
@@ -682,12 +816,62 @@ struct WineCompatibilityConfigurator: View {
         guard installed > 0 else { return String(localized: "No optional components installed") }
         return "\(installed) \(installed == 1 ? "component" : "components") installed"
     }
+    private var dependencySummary: String {
+        let overrides = profile.dependencyOverrides.count
+        if overrides == 0 {
+            return String(localized: "Game dependencies are detected automatically; there are no manual dependency overrides.")
+        }
+        return String(localized: "\(overrides) explicit dependency override(s). Detected requirements are kept separate from this preference.")
+    }
+    private func isSettingManaged(_ setting: WineCompatibilitySetting) -> Bool {
+        guard currentApplication.usesSharedSteamEnvironment else { return false }
+        return setting.scope == .environment || setting.scope == .runtime
+    }
+    private var changeImpacts: [CompatibilityChangeImpact] {
+        let original = store.compatibilityProfile(for: application)
+        var impacts: [CompatibilityChangeImpact] = []
+        if original.launchArguments != profile.launchArguments
+            || original.overlayCompatibleFullscreen != profile.overlayCompatibleFullscreen
+            || original.overlayDisplayID != profile.overlayDisplayID
+            || original.wineLoggingLevel != profile.wineLoggingLevel
+            || original.wineD3DRenderer != profile.wineD3DRenderer {
+            impacts.append(.launchOnly)
+        }
+        if original.forceXInput != profile.forceXInput
+            || original.disableSteamInputEquivalent != profile.disableSteamInputEquivalent {
+            impacts.append(.sessionRestart)
+        }
+        if original.windowsVersion != profile.windowsVersion
+            || original.graphicsBackend != profile.graphicsBackend
+            || original.graphicsAPI != profile.graphicsAPI
+            || original.graphicsFallback != profile.graphicsFallback
+            || original.esyncEnabled != profile.esyncEnabled
+            || original.msyncEnabled != profile.msyncEnabled
+            || original.retinaModeEnabled != profile.retinaModeEnabled
+            || original.fullscreenFSREnabled != profile.fullscreenFSREnabled
+            || original.fullscreenFSRMode != profile.fullscreenFSRMode
+            || original.fullscreenFSRStrength != profile.fullscreenFSRStrength
+            || original.fullscreenFSRCustomMode != profile.fullscreenFSRCustomMode
+            || original.upscalingBridge != profile.upscalingBridge
+            || original.temporalUpscaling != profile.temporalUpscaling
+            || original.dependencyOverrides != profile.dependencyOverrides
+            || original.forceXInput != profile.forceXInput {
+            impacts.append(.environmentConfiguration)
+        }
+        if requiresEnvironmentRebuild { impacts.append(.environmentRebuild) }
+        if original.legacyWrapper != profile.legacyWrapper
+            || original.legacyGraphicsAPI != profile.legacyGraphicsAPI
+            || original.temporalUpscaling != profile.temporalUpscaling {
+            impacts.append(.gameFilesModification)
+        }
+        return impacts
+    }
     private var requiresEnvironmentRebuild: Bool {
         let original = store.compatibilityProfile(for: application)
         return original.architecture != profile.architecture
             || original.prefixMode != profile.prefixMode
             || original.runtimeIDOverride != profile.runtimeIDOverride
-            || original.graphicsBackend != profile.graphicsBackend
+            || (original.graphicsBackend != profile.graphicsBackend && graphicsBackendIssue != nil)
     }
     private var launchPlanIssue: String? {
         if let issue = graphicsBackendIssue ?? prefixModeIssue ?? selectedRuntimeIssue { return issue }
@@ -697,6 +881,24 @@ struct WineCompatibilityConfigurator: View {
         }
         return fullscreenFSRUnavailableReason
     }
+    private var resolvedRendererSummary: String {
+        if let enforced = graphicsProfile?.enforcedBackend {
+            return "\(compatibilityLocalizedBackendName(enforced)) · \(String(localized: "Game rule"))"
+        }
+        if profile.graphicsBackend != .automatic {
+            return compatibilityLocalizedBackendName(profile.graphicsBackend)
+        }
+        if let preferred = graphicsProfile?.preferredBackend {
+            return "Automatic · \(compatibilityLocalizedBackendName(preferred))"
+        }
+        let actual = currentApplication.graphics
+        return actual.isEmpty ? String(localized: "Automatic") : "Automatic · \(actual)"
+    }
+    private var resolvedPrefixSummary: String {
+        if let selected = profile.prefixMode { return compatibilityLocalizedPrefixModeName(selected) }
+        guard let environmentPrefixMode else { return String(localized: "Automatic") }
+        return "Automatic · \(compatibilityLocalizedPrefixModeName(environmentPrefixMode))"
+    }
     private func openRuntimeManager() {
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -705,7 +907,7 @@ struct WineCompatibilityConfigurator: View {
     }
     private var prefixModeBinding: Binding<WinePrefixMode> {
         Binding(
-            get: { profile.prefixMode ?? .wow64 },
+            get: { profile.prefixMode ?? environmentPrefixMode ?? .wow64 },
             set: { profile.prefixMode = $0 }
         )
     }
@@ -713,13 +915,21 @@ struct WineCompatibilityConfigurator: View {
         architecture == .win32 ? "32-bit (x86)" : "64-bit (x64)"
     }
     private func prefixModeLabel(_ mode: WinePrefixMode) -> String {
-        guard store.prefixModeIssue(mode, for: application) == nil else {
+        guard prefixModeIssue(for: mode) == nil else {
             return compatibilityLocalizedPrefixModeName(mode) + " · " + String(localized: "Unavailable")
         }
         return compatibilityLocalizedPrefixModeName(mode)
     }
+    private func prefixModeIssue(for mode: WinePrefixMode) -> String? {
+        if let runtimeID = profile.runtimeIDOverride {
+            var candidate = profile
+            candidate.prefixMode = mode
+            return store.runtimeSelectionIssue(runtimeID, profile: candidate, for: currentApplication)
+        }
+        return store.prefixModeIssue(mode, for: currentApplication)
+    }
     private var prefixModeExplanation: String {
-        let mode = profile.prefixMode ?? .wow64
+        let mode = profile.prefixMode ?? environmentPrefixMode ?? .wow64
         return switch mode {
         case .wow64:
             String(localized: "Modern combined prefix. WINEARCH is left unset and both 32-bit and 64-bit processes can run in one environment.")
@@ -729,16 +939,14 @@ struct WineCompatibilityConfigurator: View {
             String(localized: "Classic 64-bit prefix. Uses WINEARCH=win64 and requires a runtime that supports legacy prefixes.")
         }
     }
-    private var legacyProfile: WineCompatibilityProfile {
+    private var compatibilityGoalProfile: WineCompatibilityProfile {
         var value = profile
-        value.architecture = detectedExecutableArchitecture
-        value.graphicsAPI = detectedGameAPI
-        value.graphicsBackend = .wineD3D
+        value.graphicsAPI = nil
+        value.graphicsBackend = .automatic
         value.graphicsFallback = .none
-        value.legacyWrapper = .none
+        value.wineD3DRenderer = .automatic
         value.esyncEnabled = true
         value.msyncEnabled = false
-        value.retinaModeEnabled = false
         value.fullscreenFSREnabled = false
         value.temporalUpscaling.mode = .automatic
         value.upscalingBridge = .none
@@ -746,9 +954,10 @@ struct WineCompatibilityConfigurator: View {
     }
     private var performanceProfile: WineCompatibilityProfile {
         var value = profile
-        value.graphicsBackend = .d3dMetal
+        value.graphicsAPI = nil
+        value.graphicsBackend = .automatic
         value.esyncEnabled = true
-        value.msyncEnabled = true
+        value.msyncEnabled = runtimeFeatures?.msync == true
         value.retinaModeEnabled = false
         value.fullscreenFSREnabled = false
         value.temporalUpscaling.mode = .automatic
@@ -756,26 +965,9 @@ struct WineCompatibilityConfigurator: View {
         return value
     }
     private var recommendedProfile: WineCompatibilityProfile {
-        var value = WineCompatibilityProfile.default
-        guard let graphicsProfile else { return value }
-        value.graphicsAPI = graphicsProfile.defaultAPI
-        if let backend = graphicsProfile.preferredBackend { value.graphicsBackend = backend }
-        if let wrapper = graphicsProfile.preferredLegacyWrapper { value.legacyWrapper = wrapper }
-        if let overlay = graphicsProfile.overlayCompatibleFullscreen { value.overlayCompatibleFullscreen = overlay }
-        return value
+        WineCompatibilityProfile.default
     }
-    private var usesSharedSteamEnvironment: Bool { application.usesSharedSteamEnvironment }
-    private var detectedExecutableArchitecture: WinePrefixArchitecture {
-        switch WindowsExecutableArchitecture.inspect(URL(fileURLWithPath: application.executablePath)) {
-        case .x86: .win32
-        case .x86_64: .win64
-        case .unknown: profile.architecture
-        }
-    }
-    private var detectedGameAPI: GraphicsAPI {
-        if let graphicsProfile { return graphicsProfile.defaultAPI }
-        return detectedGraphicsAPI ?? profile.graphicsAPI ?? .automatic
-    }
+    private var usesSharedSteamEnvironment: Bool { currentApplication.usesSharedSteamEnvironment }
     private var availableDisplays: [DisplayChoice] {
         NSScreen.screens.enumerated().compactMap { index, screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
@@ -798,23 +990,22 @@ struct WineCompatibilityConfigurator: View {
     private var availableRuntimes: [RuntimeStatus] { store.installedRuntimeStatusesForGameConfiguration() }
     private var selectedRuntimeIssue: String? {
         guard let runtimeID = profile.runtimeIDOverride else { return nil }
-        return store.runtimeSelectionIssue(runtimeID, profile: profile)
+        return store.runtimeSelectionIssue(runtimeID, profile: profile, for: currentApplication)
     }
     private func runtimeLabel(_ runtime: RuntimeStatus) -> String {
         "\(runtime.name) · \(runtime.engine.displayName) \(runtime.wineVersion)"
     }
-    private var graphicsBackendIssue: String? { store.graphicsBackendIssue(profile.graphicsBackend, for: application) }
+    private var graphicsBackendIssue: String? { store.graphicsBackendIssue(effectiveRequestedBackend, for: currentApplication) }
     private var prefixModeIssue: String? {
-        profile.runtimeIDOverride == nil
-            ? store.prefixModeIssue(profile.prefixMode ?? .wow64, for: application)
-            : nil
+        guard profile.runtimeIDOverride == nil, let requestedMode = profile.prefixMode else { return nil }
+        return store.prefixModeIssue(requestedMode, for: currentApplication)
     }
     private var runtimeFeatures: RuntimeFeatures? {
         if let runtimeID = profile.runtimeIDOverride,
            let selected = availableRuntimes.first(where: { $0.id == runtimeID }) {
             return selected.features
         }
-        return store.compatibilityRuntimeFeatures(for: application, backend: profile.graphicsBackend)
+        return store.compatibilityRuntimeFeatures(for: currentApplication, backend: effectiveRequestedBackend)
     }
     private func legacyWrapperAvailable(_ wrapper: LegacyGraphicsWrapper) -> Bool {
         switch wrapper {
@@ -963,9 +1154,9 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var fullscreenFSRResolvedBackend: GraphicsBackend {
-        switch profile.graphicsBackend {
+        switch effectiveRequestedBackend {
         case .automatic:
-            let api = graphicsAPIBinding.wrappedValue
+            let api = effectiveGraphicsAPI
             if runtimeFeatures?.hasVerifiedD3DMetal == true, (api == .directX11 || api == .directX12) { return .d3dMetal }
             if runtimeFeatures?.dxvk == true, api != .directX12 { return .dxvk }
             if runtimeFeatures?.vkd3d == true, api == .directX12 { return .vkd3d }
@@ -1024,16 +1215,45 @@ struct WineCompatibilityConfigurator: View {
             && fullscreenFSRStackSupportLevel == .verified
     }
     private func backendLabel(_ backend: WineGraphicsBackend) -> String { store.graphicsBackendIssue(backend, for: application) == nil ? compatibilityLocalizedBackendName(backend) : compatibilityLocalizedBackendName(backend) + " · " + String(localized: "Unavailable") }
-    private var graphicsAPIBinding: Binding<GraphicsAPI> { Binding(get: { profile.graphicsAPI ?? graphicsProfile?.defaultAPI ?? .automatic }, set: { profile.graphicsAPI = $0 }) }
-    private func graphicsAPILabel(for api: GraphicsAPI) -> String {
-        if let graphicsProfile, api == graphicsProfile.defaultAPI { return compatibilityLocalizedGraphicsAPIName(api) + " · " + String(localized: "Recommended") }
-        if graphicsProfile == nil, api == detectedGraphicsAPI { return compatibilityLocalizedGraphicsAPIName(api) + " · " + String(localized: "Detected") }
-        if let graphicsProfile, api != .automatic, !graphicsProfile.availableAPIs.contains(api) { return compatibilityLocalizedGraphicsAPIName(api) + " · " + String(localized: "Manual") }
-        return compatibilityLocalizedGraphicsAPIName(api)
+    private var selectableGraphicsAPIs: [GraphicsAPI] {
+        graphicsProfile?.selectableLaunchOptions.map(\.api) ?? []
+    }
+    private var graphicsAPIBinding: Binding<GraphicsAPI> {
+        Binding(
+            get: {
+                guard let selected = profile.graphicsAPI,
+                      selected != .automatic,
+                      selectableGraphicsAPIs.contains(selected) else { return .automatic }
+                return selected
+            },
+            set: { profile.graphicsAPI = $0 }
+        )
+    }
+    private var effectiveGraphicsAPI: GraphicsAPI {
+        CompatibilityPreparationResolver.directXAPI(
+            executable: URL(fileURLWithPath: application.executablePath),
+            userProfile: profile,
+            gameProfile: graphicsProfile
+        )
+    }
+    private var readOnlyGameAPILabel: String {
+        if let enforced = graphicsProfile?.enforcedAPI, enforced != .automatic {
+            return "\(compatibilityLocalizedGraphicsAPIName(enforced)) · \(String(localized: "Enforced"))"
+        }
+        if let gameAPI = graphicsProfile?.defaultAPI, gameAPI != .automatic {
+            return "\(compatibilityLocalizedGraphicsAPIName(gameAPI)) · \(String(localized: "Game profile"))"
+        }
+        if let detected = detectedGraphicsAPI ?? GraphicsAPIDetector.detect(executable: URL(fileURLWithPath: application.executablePath)) {
+            return "\(compatibilityLocalizedGraphicsAPIName(detected)) · \(String(localized: "Detected"))"
+        }
+        return String(localized: "Not detected")
     }
     private var graphicsBackendExplanation: String {
         if let enforcedBackend = graphicsProfile?.enforcedBackend {
             return enforcedBackendExplanation(for: enforcedBackend)
+        }
+        if profile.graphicsBackend == .automatic, let preferredBackend = graphicsProfile?.preferredBackend {
+            return String(localized: "Automatic selection follows the game profile's (preferredBackend.displayName) preference when the selected runtime supports it.")
         }
         return switch profile.graphicsBackend {
         case .automatic: String(localized: "Chooses an available renderer for this game.")
@@ -1061,10 +1281,15 @@ struct WineCompatibilityConfigurator: View {
         }
     }
     private var graphicsAPIExplanation: String {
-        let api = graphicsAPIBinding.wrappedValue
-        if api == .automatic { return String(localized: "Uses the detected DirectX API. Choose a specific API only if the game supports it.") }
-        if graphicsProfile?.launchOption(for: api) != nil { return String(localized: "Boreal will request \(api.displayName) when this game starts.") }
-        return String(localized: "This preference alone cannot switch the game to \(api.displayName). Set it in the game or add its documented launch argument under Advanced → Launch and diagnostics.")
+        if selectableGraphicsAPIs.isEmpty {
+            return String(localized: "Read-only game fact. Boreal has no verified launch option for changing this API; change it in the game's own settings if supported.")
+        }
+        return String(localized: "Choose only APIs with a game-specific Boreal launch option. Automatic keeps the game's default selection.")
+    }
+    private var effectiveRequestedBackend: WineGraphicsBackend {
+        if let enforced = graphicsProfile?.enforcedBackend { return enforced }
+        if profile.graphicsBackend == .automatic, let preferred = graphicsProfile?.preferredBackend { return preferred }
+        return profile.graphicsBackend
     }
 }
 
@@ -1093,7 +1318,7 @@ private struct CompatibilityPresetSelector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                ForEach([CompatibilityPreset.recommended, .legacy, .performance]) { preset in
+                ForEach([CompatibilityPreset.recommended, .compatibility, .performance]) { preset in
                     Button { action(preset) } label: { Label(preset.title, systemImage: preset.symbol).frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(selected == preset ? Color.white : Color.primary)
                         .background(selected == preset ? Color.accentColor : Color.secondary.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
@@ -1137,9 +1362,18 @@ private struct CompatibilityPickerRow<Control: View>: View {
 
 private struct CompatibilityToggleRow: View {
     let title: LocalizedStringResource; let detail: LocalizedStringResource?; @Binding var isOn: Bool; var disabled = false
+    var detailText: String? = nil
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) { Text(title).fontWeight(.medium); if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) } }.frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).fontWeight(.medium)
+                if let detailText {
+                    Text(detailText).font(.caption).foregroundStyle(.secondary)
+                } else if let detail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Toggle(title, isOn: $isOn).labelsHidden().disabled(disabled)
         }
     }
@@ -1259,6 +1493,8 @@ private struct CompatibilityLaunchPlanCard: View {
     let application: WindowsApplication
     let profile: WineCompatibilityProfile
     let gameAPILabel: String
+    let rendererLabel: String
+    let prefixLabel: String
     let runtimeLabel: String?
     let displayLabel: String
     let temporalPath: String?
@@ -1292,11 +1528,11 @@ private struct CompatibilityLaunchPlanCard: View {
                 }
             }
             Divider()
-            planRow("Renderer", compatibilityLocalizedBackendName(profile.graphicsBackend), "gearshape.2")
+            planRow("Renderer", rendererLabel, "gearshape.2")
             planRow("Game API", gameAPILabel, "square.3.layers.3d")
             planRow("Runtime", runtimeLabel ?? String(localized: "Automatic"), "shippingbox")
             planRow("Windows", profile.windowsVersion.displayName, "window.ceiling")
-            planRow("Prefix", compatibilityLocalizedPrefixModeName(profile.prefixMode ?? .wow64), "externaldrive")
+            planRow("Prefix", prefixLabel, "externaldrive")
             planRow("Display", displayLabel, "display")
             planRow("Launch", profile.overlayCompatibleFullscreen ? String(localized: "Virtual desktop") : String(localized: "Directly"), "rectangle.on.rectangle")
             if let temporalPath {
@@ -1322,74 +1558,48 @@ private struct CompatibilityLaunchPlanCard: View {
     }
 }
 
-private struct CompatibilityCommunityCard: View {
-    let application: WindowsApplication
-    let communityURL: URL?
-    let openCommunityReports: () -> Void
-
-    private var rating: CompatibilityRating { application.communityCompatibility?.tier.rating ?? application.compatibility }
-    private var tint: Color {
-        switch rating {
-        case .excellent: .green
-        case .good: .teal
-        case .limited: .orange
-        case .unsupported: .red
-        case .unknown: .secondary
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Community compatibility").font(.headline)
-            HStack(spacing: 9) {
-                Image(systemName: rating.symbol).foregroundStyle(tint)
-                Text(rating.localizedTitle).font(.subheadline.weight(.semibold)).foregroundStyle(tint)
-            }
-            if let compatibility = application.communityCompatibility {
-                Text(reportCountLabel(compatibility.reportCount))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Based on available community reports.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("No community compatibility data is available.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if communityURL != nil {
-                Button("View community reports", systemImage: "arrow.up.right.square", action: openCommunityReports)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.separator.opacity(0.55)) }
-    }
-
-    private func reportCountLabel(_ count: Int) -> String {
-        let noun = count == 1 ? String(localized: "report") : String(localized: "reports")
-        return "\(count.formatted()) \(noun)"
-    }
-}
-
 private struct CompatibilitySettingsFooter: View {
     let restore: () -> Void; let cancel: () -> Void; let save: () -> Void; let saveDisabled: Bool
     let saveTitle: LocalizedStringResource
-    let showsRebuildNotice: Bool
+    let impacts: [CompatibilityChangeImpact]
+    let isApplying: Bool
+    let applyingMessage: String?
+    let errorMessage: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if showsRebuildNotice {
-                Label("Environment will be rebuilt. Game files will not be modified.", systemImage: "arrow.triangle.2.circlepath")
+            ForEach(impacts) { impact in
+                Label(impact.displayName, systemImage: impact.symbol)
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(impact == .environmentRebuild || impact == .gameFilesModification ? .orange : .secondary)
+            }
+            if isApplying {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(applyingMessage ?? String(localized: "Applying compatibility changes…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let errorMessage {
+                CompatibilityCallout(text: errorMessage, symbol: "exclamationmark.triangle.fill", tint: .red)
             }
             HStack {
                 Button("Restore defaults", systemImage: "arrow.counterclockwise", action: restore)
+                    .disabled(isApplying)
                 Spacer()
-                Button("Cancel", action: cancel)
-                Button(saveTitle, action: save).buttonStyle(.borderedProminent).disabled(saveDisabled)
+                Button("Cancel", action: cancel).disabled(isApplying)
+                Button {
+                    save()
+                } label: {
+                    if isApplying {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text(saveTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(saveDisabled)
             }
         }
         .padding(16)

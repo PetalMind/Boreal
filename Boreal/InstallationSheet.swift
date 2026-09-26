@@ -11,11 +11,16 @@ struct InstallationSheet: View {
 
     @Environment(BorealStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let candidate: InstallCandidate
     let completion: (UUID) -> Void
     @State private var showsDetails = false
     @State private var selectedAction: InstallerSheetAction = .install
     @State private var selectedRuntimeEngine: RuntimeEngine = .wine
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,6 +39,7 @@ struct InstallationSheet: View {
             )
         )
         .preferredColorScheme(.dark)
+        .animation(motion.stateChange, value: installationStateKey)
         .interactiveDismissDisabled(isInstalling)
         .onAppear {
             store.resetInstallation()
@@ -311,6 +317,12 @@ struct InstallationSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
+        .animation(motion.stateChange, value: store.installation.stage)
+        .animation(motion.stateChange, value: store.installation.completedStages)
+    }
+
+    private var installationStateKey: String {
+        String(describing: store.installation.state)
     }
 
     private var installationStages: [InstallationStage] {

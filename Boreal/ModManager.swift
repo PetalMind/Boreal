@@ -28,6 +28,7 @@ nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashab
     case gtaSanAndreasDefinitiveEdition
     case dragonAgeOrigins
     case witcher2
+    case witcher3
 
     var displayName: String {
         switch self {
@@ -36,6 +37,7 @@ nonisolated enum ModGameAdapter: String, Codable, CaseIterable, Sendable, Hashab
         case .gtaSanAndreasDefinitiveEdition: "GTA San Andreas — Definitive Edition"
         case .dragonAgeOrigins: "Dragon Age: Origins"
         case .witcher2: "The Witcher 2: Assassins of Kings"
+        case .witcher3: "The Witcher 3: Wild Hunt"
         }
     }
 }
@@ -52,6 +54,9 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
     case dragonAgeDazip
     case witcher2CookedPC
     case witcher2UserContent
+    case witcher3Mod
+    case witcher3DLC
+    case witcher3GameFiles
     case manual
     case unknown
 
@@ -68,6 +73,9 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .dragonAgeDazip: "Dragon Age DAZIP"
         case .witcher2CookedPC: "The Witcher 2 CookedPC"
         case .witcher2UserContent: "The Witcher 2 User Content"
+        case .witcher3Mod: "The Witcher 3 Mod Folder"
+        case .witcher3DLC: "The Witcher 3 DLC Folder"
+        case .witcher3GameFiles: "The Witcher 3 Game Files"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
         }
@@ -97,6 +105,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
     case dragonAgeDazip
     case witcher2CookedPC
     case witcher2UserContent
+    case witcher3GameRoot
 
     var displayName: String {
         switch self {
@@ -110,6 +119,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
         case .dragonAgeDazip: "Dragon Age DAZIP"
         case .witcher2CookedPC: "CookedPC"
         case .witcher2UserContent: "User Content"
+        case .witcher3GameRoot: "The Witcher 3 Game Folder"
         }
     }
 }
@@ -502,6 +512,10 @@ nonisolated enum ExternalModDiscovery {
             var value = detected
             if let previous = storedExternal[normalizedPath(detected.detectionKey ?? "")] {
                 value.id = previous.id
+                if detected.adapter == .witcher3 {
+                    value.enabled = previous.enabled
+                    value.priority = previous.priority
+                }
             }
             result.append(value)
         }
@@ -562,11 +576,15 @@ nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
     /// Package directory names written to The Witcher 2 UserContent.ini by
     /// Boreal. Older manifests decode with an empty list.
     var managedUserContentPackages: [String] = []
+    /// Mod directory sections Boreal owns in The Witcher 3 `mods.settings`.
+    /// Older manifests decode with an empty list.
+    var managedWitcher3ModFolders: [String] = []
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, gameID, deployedAt, profileFingerprint, files
         case pluginFilePath, pluginFileHash, pluginFileBackup, pluginFileOriginalHash
         case managedUserContentPackages
+        case managedWitcher3ModFolders
     }
 
     init(
@@ -579,7 +597,8 @@ nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
         pluginFileHash: String? = nil,
         pluginFileBackup: String? = nil,
         pluginFileOriginalHash: String? = nil,
-        managedUserContentPackages: [String] = []
+        managedUserContentPackages: [String] = [],
+        managedWitcher3ModFolders: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.gameID = gameID
@@ -591,6 +610,7 @@ nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
         self.pluginFileBackup = pluginFileBackup
         self.pluginFileOriginalHash = pluginFileOriginalHash
         self.managedUserContentPackages = managedUserContentPackages
+        self.managedWitcher3ModFolders = managedWitcher3ModFolders
     }
 
     init(from decoder: Decoder) throws {
@@ -605,6 +625,7 @@ nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
         pluginFileBackup = try container.decodeIfPresent(String.self, forKey: .pluginFileBackup)
         pluginFileOriginalHash = try container.decodeIfPresent(String.self, forKey: .pluginFileOriginalHash)
         managedUserContentPackages = try container.decodeIfPresent([String].self, forKey: .managedUserContentPackages) ?? []
+        managedWitcher3ModFolders = try container.decodeIfPresent([String].self, forKey: .managedWitcher3ModFolders) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -619,6 +640,7 @@ nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
         try container.encodeIfPresent(pluginFileBackup, forKey: .pluginFileBackup)
         try container.encodeIfPresent(pluginFileOriginalHash, forKey: .pluginFileOriginalHash)
         try container.encode(managedUserContentPackages, forKey: .managedUserContentPackages)
+        try container.encode(managedWitcher3ModFolders, forKey: .managedWitcher3ModFolders)
     }
 
     static func empty(gameID: UUID) -> ModDeploymentManifest {
@@ -716,15 +738,22 @@ nonisolated struct ModGameState: Hashable, Sendable {
     var auxiliaryRoot: URL? = nil
 
     var conflicts: [ModConflict] {
-        ModConflictResolver.conflicts(in: mods)
+        adapter == .witcher3 ? Witcher3ConflictResolver.conflicts(in: mods) : ModConflictResolver.conflicts(in: mods)
     }
 
     var activeModCount: Int { mods.filter(\.enabled).count }
     var conflictCount: Int { conflicts.count }
     var validation: ModValidationReport { ModValidationReport.make(mods: mods, plugins: plugins) }
     var pendingChanges: Bool {
-        guard mods.contains(where: { !$0.isExternallyDetected }) || deployment.deployedAt != nil else { return false }
-        return deployment.profileFingerprint != ModProfileFingerprint.make(mods: mods, plugins: plugins)
+        let hasChangesToTrack = mods.contains(where: { !$0.isExternallyDetected })
+            || (adapter == .witcher3 && !mods.isEmpty)
+            || deployment.deployedAt != nil
+        guard hasChangesToTrack else { return false }
+        return deployment.profileFingerprint != ModProfileFingerprint.make(
+            mods: mods,
+            plugins: plugins,
+            includeExternallyDetected: adapter == .witcher3
+        )
     }
 }
 
@@ -800,6 +829,8 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     case dragonAgeArchiveInvalid(String)
     case witcher2DocumentsUnavailable
     case witcher2ArchiveInvalid(String)
+    case witcher3DocumentsUnavailable
+    case witcher3ArchiveInvalid(String)
     case invalidRelativePath(String)
     case duplicatePath(String)
     case stagedFileChanged(String)
@@ -851,6 +882,10 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
             "Boreal couldn’t locate The Witcher 2 user-content directory inside the managed Wine prefix."
         case .witcher2ArchiveInvalid(let detail):
             "Boreal couldn’t interpret this The Witcher 2 mod archive: \(detail)"
+        case .witcher3DocumentsUnavailable:
+            "Boreal couldn’t locate The Witcher 3 Documents folder inside the linked Wine prefix. It is needed to store mod enablement and load order."
+        case .witcher3ArchiveInvalid(let detail):
+            "Boreal couldn’t interpret this The Witcher 3 mod archive: \(detail)"
         case .invalidRelativePath(let path):
             "The mod contains an invalid relative path: \(path)"
         case .duplicatePath(let path):
@@ -1074,8 +1109,12 @@ nonisolated enum ModConflictResolver {
 }
 
 nonisolated enum ModProfileFingerprint {
-    static func make(mods: [InstalledMod], plugins: [BethesdaPlugin]) -> String {
-        let modPart = mods.filter { !$0.isExternallyDetected }.sorted { $0.priority < $1.priority }.map { mod in
+    static func make(
+        mods: [InstalledMod],
+        plugins: [BethesdaPlugin],
+        includeExternallyDetected: Bool = false
+    ) -> String {
+        let modPart = mods.filter { includeExternallyDetected || !$0.isExternallyDetected }.sorted { $0.priority < $1.priority }.map { mod in
             let files = mod.files.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
                 .map { "\($0.relativePath)=\($0.sha256)" }
                 .joined(separator: ";")

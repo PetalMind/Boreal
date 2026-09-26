@@ -38,6 +38,76 @@ nonisolated enum CompatibilityExecutableRole: String, Codable, Sendable, Hashabl
     case unknown
 }
 
+/// Bounded, read-only inventory used by compatibility analysis. The analyzer
+/// needs PE files and media assets, but should not read every large archive or
+/// video in a game installation.
+nonisolated enum CompatibilityFileInventory {
+    private static let relevantExtensions: Set<String> = [
+        "exe", "dll", "sys", "wmv", "asf", "wma", "avi", "mp4", "bik", "bk2", "xml", "json", "ini"
+    ]
+    private static let mediaExtensions: Set<String> = ["wmv", "asf", "wma", "avi", "mp4"]
+
+    static func relatedFiles(
+        in root: URL,
+        excluding excludedURL: URL? = nil,
+        fileManager: FileManager = .default,
+        limit: Int = 512
+    ) -> [URL] {
+        let normalizedExcluded = excludedURL?.standardizedFileURL
+        guard let enumerator = fileManager.enumerator(
+            at: root.standardizedFileURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var candidates: [(URL, Int)] = []
+        for case let url as URL in enumerator {
+            let normalized = url.standardizedFileURL
+            guard normalized != normalizedExcluded,
+                  relevantExtensions.contains(normalized.pathExtension.lowercased()),
+                  let values = try? normalized.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true,
+                  (values.fileSize ?? 0) <= 16 * 1_024 * 1_024 else { continue }
+            let ext = normalized.pathExtension.lowercased()
+            let priority = ext == "exe" || ext == "dll" || ext == "sys" ? 0 : (mediaExtensions.contains(ext) ? 1 : 2)
+            candidates.append((normalized, priority))
+        }
+
+        return candidates
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 < $1.1 }
+                return $0.0.path.localizedStandardCompare($1.0.path) == .orderedAscending
+            }
+            .prefix(limit)
+            .map(\.0)
+    }
+
+    static func logFiles(
+        in directory: URL?,
+        fileManager: FileManager = .default,
+        limit: Int = 32
+    ) -> [URL] {
+        guard let directory,
+              let enumerator = fileManager.enumerator(
+                  at: directory.standardizedFileURL,
+                  includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                  options: [.skipsHiddenFiles]
+              ) else { return [] }
+        return enumerator.compactMap { item -> URL? in
+            guard let url = item as? URL,
+                  url.pathExtension.caseInsensitiveCompare("log") == .orderedSame,
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true,
+                  (values.fileSize ?? 0) <= 2 * 1_024 * 1_024 else { return nil }
+            return url.standardizedFileURL
+        }
+        .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        .suffix(limit)
+        .reversed()
+        .map { $0 }
+    }
+}
+
 nonisolated struct AnalyzedExecutable: Codable, Hashable, Sendable, Identifiable {
     let id: URL
     let url: URL
@@ -49,6 +119,13 @@ nonisolated struct AnalyzedExecutable: Codable, Hashable, Sendable, Identifiable
 nonisolated struct ExecutableAnalysis: Codable, Hashable, Sendable {
     let executables: [AnalyzedExecutable]
     let primaryExecutable: URL?
+    let relatedFiles: [URL]
+
+    init(executables: [AnalyzedExecutable], primaryExecutable: URL?, relatedFiles: [URL] = []) {
+        self.executables = executables
+        self.primaryExecutable = primaryExecutable
+        self.relatedFiles = relatedFiles
+    }
 
     var gameExecutable: AnalyzedExecutable? {
         guard let primaryExecutable else { return nil }
@@ -134,7 +211,15 @@ nonisolated enum ExecutableCompatibilityAnalyzer {
         }
         ?? descriptors.first(where: { $0.role == .launcher })?.url
 
-        return ExecutableAnalysis(executables: descriptors, primaryExecutable: primary)
+        let relatedRoot: URL
+        if root.lastPathComponent.caseInsensitiveCompare("drive_c") == .orderedSame,
+           let primary {
+            relatedRoot = primary.deletingLastPathComponent()
+        } else {
+            relatedRoot = root
+        }
+        let relatedFiles = CompatibilityFileInventory.relatedFiles(in: relatedRoot, excluding: primary)
+        return ExecutableAnalysis(executables: descriptors, primaryExecutable: primary, relatedFiles: relatedFiles)
     }
 
     private static func role(for filename: String) -> CompatibilityExecutableRole {
@@ -173,7 +258,31 @@ nonisolated enum AutomaticRuntimeDependencyDetection {
                 .compactMap { entry in entry.value.0 == .required ? entry.key : nil }
             dependencies.formUnion(required)
         }
+        // Related PE files can own the actual imports while the selected
+        // launcher remains a thin redirector. Media assets deliberately do
+        // not become automatic installs: they are recommendations until a
+        // PE import or runtime log confirms that Windows media is required.
+        for file in analysis.relatedFiles where ["exe", "dll", "sys"].contains(file.pathExtension.lowercased()) {
+            let required = RuntimeDependencyResolver.resolve(executableURL: file)
+                .compactMap { entry in entry.value.0 == .required ? entry.key : nil }
+            dependencies.formUnion(required)
+        }
         return dependencies
+    }
+
+    static func mediaCapabilities(in analysis: ExecutableAnalysis) -> Set<MediaCompatibilityCapability> {
+        let mediaFoundationLibraries: Set<String> = ["mf.dll", "mfplat.dll", "mfreadwrite.dll", "mfplay.dll", "wmvcore.dll", "wmv9vcm.dll"]
+        let directShowLibraries: Set<String> = ["quartz.dll", "qasf.dll", "qedit.dll", "amstream.dll"]
+        let files = analysis.importantExecutables.map(\.url) + analysis.relatedFiles.filter {
+            ["exe", "dll", "sys"].contains($0.pathExtension.lowercased())
+        }
+        var capabilities: Set<MediaCompatibilityCapability> = []
+        for file in files {
+            let imports = WindowsPEInspection.inspect(file).imports
+            if !mediaFoundationLibraries.isDisjoint(with: imports) { capabilities.insert(.mediaFoundation) }
+            if !directShowLibraries.isDisjoint(with: imports) { capabilities.insert(.directShow) }
+        }
+        return capabilities
     }
 }
 
@@ -220,7 +329,40 @@ nonisolated enum CompatibilityPreparationError: LocalizedError, Sendable {
     }
 }
 
-nonisolated struct ResolvedCompatibilityConfiguration: Codable, Hashable, Sendable {
+nonisolated struct GameCompatibilityFacts: Codable, Hashable, Sendable {
+    let executableArchitecture: WindowsExecutableArchitecture
+    let detectedDirectXAPI: GraphicsAPI
+    let detectedDependencies: [RuntimeDependency]
+}
+
+nonisolated struct GameCompatibilityRules: Codable, Hashable, Sendable {
+    let supportedAPIs: [GraphicsAPI]
+    let defaultAPI: GraphicsAPI
+    let enforcedAPI: GraphicsAPI?
+    let preferredBackend: WineGraphicsBackend?
+    let enforcedBackend: WineGraphicsBackend?
+
+    init(profile: GameGraphicsProfile?) {
+        supportedAPIs = profile?.availableAPIs ?? []
+        defaultAPI = profile?.defaultAPI ?? .automatic
+        enforcedAPI = profile?.enforcedAPI
+        preferredBackend = profile?.preferredBackend
+        enforcedBackend = profile?.enforcedBackend
+    }
+}
+
+nonisolated struct LaunchOnlyCompatibilityOverrides: Codable, Hashable, Sendable {
+    let arguments: [String]
+    let overlayCompatibleFullscreen: Bool
+    let displayID: UInt32?
+    let loggingLevel: WineLoggingLevel
+    let temporalUpscaling: TemporalUpscalingConfiguration
+}
+
+/// Immutable output of compatibility resolution. User intent is kept
+/// separate from evidence, game-owned rules, the environment specification,
+/// and settings consumed only when a process starts.
+nonisolated struct ResolvedCompatibilityPlan: Codable, Hashable, Sendable {
     let executable: URL
     let executableArchitecture: WindowsExecutableArchitecture
     let launcherArchitectures: [WindowsExecutableArchitecture]
@@ -230,7 +372,13 @@ nonisolated struct ResolvedCompatibilityConfiguration: Codable, Hashable, Sendab
     let graphicsStack: GraphicsStack
     let dependencies: [RuntimeDependency]
     let runtimeID: String
+    let facts: GameCompatibilityFacts
+    let rules: GameCompatibilityRules
+    let environmentSpecification: EnvironmentConfiguration
+    let launchOverrides: LaunchOnlyCompatibilityOverrides
 }
+
+typealias ResolvedCompatibilityConfiguration = ResolvedCompatibilityPlan
 
 nonisolated enum CompatibilityPreparationResolver {
     static func directXAPI(
@@ -239,16 +387,39 @@ nonisolated enum CompatibilityPreparationResolver {
         gameProfile: GameGraphicsProfile?
     ) -> GraphicsAPI {
         if let enforced = gameProfile?.enforcedAPI, enforced != .automatic { return enforced }
-        if let user = userProfile.graphicsAPI, user != .automatic { return user }
+        if let user = userProfile.graphicsAPI,
+           user != .automatic,
+           gameProfile?.selectableLaunchOptions.contains(where: { $0.api == user }) == true {
+            return user
+        }
         if let preferred = gameProfile?.defaultAPI, preferred != .automatic { return preferred }
         return GraphicsAPIDetector.detect(executable: executable) ?? .automatic
+    }
+
+    static func graphicsResolution(
+        api: GraphicsAPI,
+        requestedBackend: WineGraphicsBackend,
+        gameProfile: GameGraphicsProfile?,
+        runtime: InstalledRuntime,
+        architecture: WinePrefixArchitecture,
+        fallback: WineGraphicsFallback = .none
+    ) -> GraphicsStackResolution {
+        GraphicsBackendResolver.resolve(
+            api: api,
+            requestedBackend: requestedBackend,
+            gameProfile: gameProfile,
+            runtime: runtime,
+            architecture: architecture,
+            fallback: fallback
+        )
     }
 
     static func resolve(
         analysis: ExecutableAnalysis,
         userProfile: WineCompatibilityProfile,
         gameProfile: GameGraphicsProfile?,
-        runtime: InstalledRuntime
+        runtime: InstalledRuntime,
+        environmentName: String? = nil
     ) throws -> ResolvedCompatibilityConfiguration {
         guard let primary = analysis.gameExecutable else {
             throw CompatibilityPreparationError.noGameExecutable(URL(fileURLWithPath: "."))
@@ -260,7 +431,7 @@ nonisolated enum CompatibilityPreparationResolver {
         )
         let prefixArchitecture = prefixMode == .legacyWin32 ? WinePrefixArchitecture.win32 : .win64
         let api = directXAPI(executable: primary.url, userProfile: userProfile, gameProfile: gameProfile)
-        let resolution = GraphicsBackendResolver.resolve(
+        let resolution = graphicsResolution(
             api: api,
             requestedBackend: userProfile.graphicsBackend,
             gameProfile: gameProfile,
@@ -272,10 +443,25 @@ nonisolated enum CompatibilityPreparationResolver {
             throw CompatibilityPreparationError.incompatibleGraphics(resolution.reasons.joined(separator: "; "))
         }
 
-        var dependencies = Set(userProfile.requiredDependencies)
-        dependencies.formUnion(AutomaticRuntimeDependencyDetection.requiredDependencies(in: analysis))
+        let detectedDependencies = AutomaticRuntimeDependencyDetection.requiredDependencies(in: analysis)
+        var dependencies = Set(userProfile.dependencyOverrides)
+        dependencies.formUnion(detectedDependencies)
 
-        return ResolvedCompatibilityConfiguration(
+        var environmentSpecification = EnvironmentConfiguration(
+            name: environmentName ?? primary.url.deletingLastPathComponent().lastPathComponent,
+            profile: userProfile
+        )
+        environmentSpecification.windowsVersion = userProfile.windowsVersion.rawValue
+        environmentSpecification.architecture = (primary.architecture == .x86 ? WinePrefixArchitecture.win32 : .win64).rawValue
+        environmentSpecification.prefixMode = prefixMode
+        environmentSpecification.graphicsBackend = resolution.stack.backend
+        environmentSpecification.graphicsAPI = api
+        environmentSpecification.requiredDependencies = dependencies
+        environmentSpecification.requiredMediaCapabilities = AutomaticRuntimeDependencyDetection.mediaCapabilities(in: analysis)
+
+        let detectedAPI = GraphicsAPIDetector.detect(executable: primary.url) ?? .automatic
+
+        return ResolvedCompatibilityPlan(
             executable: primary.url,
             executableArchitecture: primary.architecture,
             launcherArchitectures: analysis.launcherArchitectures,
@@ -284,7 +470,21 @@ nonisolated enum CompatibilityPreparationResolver {
             directXAPI: api,
             graphicsStack: resolution.stack,
             dependencies: dependencies.sorted { $0.rawValue < $1.rawValue },
-            runtimeID: runtime.id
+            runtimeID: runtime.id,
+            facts: GameCompatibilityFacts(
+                executableArchitecture: primary.architecture,
+                detectedDirectXAPI: detectedAPI,
+                detectedDependencies: detectedDependencies.sorted { $0.rawValue < $1.rawValue }
+            ),
+            rules: GameCompatibilityRules(profile: gameProfile),
+            environmentSpecification: environmentSpecification,
+            launchOverrides: LaunchOnlyCompatibilityOverrides(
+                arguments: userProfile.parsedLaunchArguments,
+                overlayCompatibleFullscreen: userProfile.overlayCompatibleFullscreen,
+                displayID: userProfile.overlayDisplayID,
+                loggingLevel: userProfile.wineLoggingLevel,
+                temporalUpscaling: userProfile.temporalUpscaling
+            )
         )
     }
 
@@ -319,7 +519,7 @@ nonisolated enum CompatibilityPreparationResolver {
         case nil:
             prefixArchitecture = request.architectures.contains(.x86_64) || capabilities.usesNewWoW64 ? .win64 : .win32
         }
-        let resolution = GraphicsBackendResolver.resolve(
+        let resolution = graphicsResolution(
             api: request.directXAPI,
             requestedBackend: request.requestedBackend,
             gameProfile: request.gameProfile,
@@ -336,7 +536,7 @@ nonisolated enum CompatibilityPreparationResolver {
         if request.prefixMode == nil, runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true { score += 500 }
         if runtime.origin == .localImport { score += 50 }
         let prefixArchitecture: WinePrefixArchitecture = request.prefixMode == .legacyWin32 ? .win32 : .win64
-        score += GraphicsBackendResolver.resolve(
+        score += graphicsResolution(
             api: request.directXAPI,
             requestedBackend: request.requestedBackend,
             gameProfile: request.gameProfile,

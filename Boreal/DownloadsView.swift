@@ -5,11 +5,16 @@ import UniformTypeIdentifiers
 
 struct DownloadsView: View {
     @Environment(BorealStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("developerMode") private var developerMode = false
     @State private var showsRuntimeDetails = false
     @State private var d3d11SelfTest: D3D11SelfTestResult?
     @State private var d3d11SelfTestRuntimeID: String?
     @State private var d3d11SelfTestError: String?
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     var body: some View {
         ScrollView {
@@ -34,6 +39,7 @@ struct DownloadsView: View {
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(motion.stateChange, value: focusedOperation?.game.id)
         }
         .task { await store.refreshRuntimeStatuses() }
     }
@@ -110,11 +116,13 @@ struct DownloadsView: View {
                         onResume: { store.resumeStoreGameOperation(item.game) },
                         onRemove: { store.clearStoreGameOperation(for: item.game) }
                     )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                     if index < remaining.count - 1 { Divider().padding(.leading, 70).opacity(0.7) }
                 }
             }
         }
         .downloadPanel()
+        .animation(motion.stateChange, value: remaining.map { $0.game.id })
     }
 
     private func downloadInspector(_ operation: (game: StoreLibraryGame, state: StoreGameOperationState)) -> some View {
@@ -242,6 +250,7 @@ struct DownloadsView: View {
                         onResume: { store.resumeStoreGameOperation(operation.game) },
                         onRemove: { store.clearStoreGameOperation(for: operation.game) }
                     )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
                 if !queuedGameOperations.isEmpty {
                     HStack {
@@ -265,10 +274,16 @@ struct DownloadsView: View {
                             onResume: { store.resumeStoreGameOperation(operation.game) },
                             onRemove: { store.clearStoreGameOperation(for: operation.game) }
                         )
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }
         }
+        .animation(motion.stateChange, value: operationLayoutKey)
+    }
+
+    private var operationLayoutKey: [String] {
+        sortedGameOperations.map { "\($0.game.id.uuidString)-\($0.state.isCancellable)" }
     }
 
     private var downloadQueueSummary: String {

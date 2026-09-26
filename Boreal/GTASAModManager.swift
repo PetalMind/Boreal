@@ -953,7 +953,7 @@ extension GTASAModManager {
                     target = "modloader/Boreal/\(modDirectoryName(for: mod))/\(file.relativePath)"
                 case .unrealPaks:
                     continue
-                case .witcher2CookedPC, .witcher2UserContent:
+                case .witcher2CookedPC, .witcher2UserContent, .witcher3GameRoot:
                     continue
                 }
                 result[target.lowercased()] = ResolvedFile(

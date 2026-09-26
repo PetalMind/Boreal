@@ -73,9 +73,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
     var fullscreenFSRCustomMode: String? = nil
     var upscalingBridge: TemporalUpscalingBridge = .none
     var temporalUpscaling: TemporalUpscalingConfiguration = .default
-    var debugLoggingEnabled: Bool = false
     var forceXInput: Bool = true
     var requiredDependencies: Set<RuntimeDependency> = []
+    var requiredMediaCapabilities: Set<MediaCompatibilityCapability> = []
     /// Exact immutable component snapshots selected for this environment.
     /// Empty is retained for environments written by older Boreal versions.
     var graphicsComponentReferences: [GraphicsComponentReference] = []
@@ -114,14 +114,13 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         self.fullscreenFSRCustomMode = profile?.fullscreenFSRCustomMode
         self.upscalingBridge = profile?.upscalingBridge ?? .none
         self.temporalUpscaling = profile?.temporalUpscaling ?? .default
-        self.debugLoggingEnabled = profile?.debugLoggingEnabled ?? false
         self.forceXInput = profile?.forceXInput ?? true
-        self.requiredDependencies = profile?.requiredDependencies ?? []
+        self.requiredDependencies = profile?.dependencyOverrides ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case name, windowsVersion, architecture, prefixMode, graphicsBackend, graphicsAPI, graphicsFallback, esyncEnabled, msyncEnabled
-        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, debugLoggingEnabled, forceXInput, requiredDependencies, graphicsComponentReferences
+        case retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, forceXInput, requiredDependencies, requiredMediaCapabilities, graphicsComponentReferences
     }
 
     init(from decoder: Decoder) throws {
@@ -150,9 +149,9 @@ nonisolated struct EnvironmentConfiguration: Codable, Sendable, Hashable {
         } else {
             self.temporalUpscaling = .default
         }
-        debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []
+        requiredMediaCapabilities = try values.decodeIfPresent(Set<MediaCompatibilityCapability>.self, forKey: .requiredMediaCapabilities) ?? []
         graphicsComponentReferences = try values.decodeIfPresent([GraphicsComponentReference].self, forKey: .graphicsComponentReferences) ?? []
     }
 
@@ -256,6 +255,7 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
     case graphicsActivationRollbackFailed(String)
     case prefixInUse
     case prefixMutationInProgress
+    case prefixSessionClosing
     case registryImportFailed(exitCode: Int32, stderrLog: URL)
     case validationFailed(EnvironmentValidation)
     case unsupportedPrefixMode(mode: WinePrefixMode, runtime: String)
@@ -271,6 +271,7 @@ nonisolated enum EnvironmentManagerError: LocalizedError, Sendable {
         case .graphicsActivationRollbackFailed(let detail): "The graphics backend change failed and Boreal could not fully restore the previous prefix and registry state: \(detail)"
         case .prefixInUse: "This Windows environment is currently in use. Close its running applications before changing its configuration."
         case .prefixMutationInProgress: "This Windows environment is being configured. Try launching the application again when configuration finishes."
+        case .prefixSessionClosing: "This Windows environment is being checked for shutdown. Try launching the application again in a moment."
         case .registryImportFailed(let code, _): "Wine couldn’t import the registry override (exit code \(code))."
         case .validationFailed: "The Windows environment is incomplete."
         case .unsupportedPrefixMode(let mode, let runtime): "The \(mode.displayName) prefix is unavailable in the selected runtime (\(runtime))."
@@ -293,6 +294,12 @@ nonisolated protocol EnvironmentManaging: Sendable {
     func validate(_ environment: ManagedBorealEnvironment) async throws -> EnvironmentValidation
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus]
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
+    func install(
+        _ dependency: RuntimeDependency,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        mediaCapabilities: Set<MediaCompatibilityCapability>
+    ) async throws
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics?
     func remove(_ environment: ManagedBorealEnvironment) async throws
 }
@@ -315,4 +322,13 @@ extension EnvironmentManaging {
     func preserveFailureDiagnostics(_ environment: ManagedBorealEnvironment) async -> EnvironmentFailureDiagnostics? { nil }
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] { [] }
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws { throw CocoaError(.featureUnsupported) }
+    func install(
+        _ dependency: RuntimeDependency,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        mediaCapabilities: Set<MediaCompatibilityCapability>
+    ) async throws {
+        _ = mediaCapabilities
+        try await install(dependency, in: environment, runtime: runtime)
+    }
 }

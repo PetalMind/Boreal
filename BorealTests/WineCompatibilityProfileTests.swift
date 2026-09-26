@@ -3,6 +3,28 @@ import Testing
 @testable import Boreal
 
 struct WineCompatibilityProfileTests {
+    @Test func runtimeLaunchIsRejectedWhilePrefixMutationIsInProgress() async throws {
+        let coordinator = PrefixUsageCoordinator()
+        let prefix = FileManager.default.temporaryDirectory
+            .appending(path: "boreal-prefix-mutation-gate-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let mutationEntered = PrefixUsageTestGate()
+        let finishMutation = PrefixUsageTestGate()
+        let mutation = Task {
+            try await coordinator.withLock(for: prefix) {
+                await mutationEntered.open()
+                await finishMutation.wait()
+            }
+        }
+        await mutationEntered.wait()
+
+        await #expect(throws: EnvironmentManagerError.prefixMutationInProgress) {
+            try await coordinator.acquireRuntimeLease(for: prefix, sessionID: UUID())
+        }
+
+        await finishMutation.open()
+        try await mutation.value
+    }
+
     @Test func prefixRuntimeLeasesBlockMutationsUntilEverySessionReleases() async throws {
         let coordinator = PrefixUsageCoordinator()
         let prefix = FileManager.default.temporaryDirectory
@@ -12,17 +34,46 @@ struct WineCompatibilityProfileTests {
         try await coordinator.acquireRuntimeLease(for: prefix, sessionID: firstSession)
         try await coordinator.acquireRuntimeLease(for: prefix, sessionID: secondSession)
 
-        await #expect(throws: EnvironmentManagerError.self) {
+        await #expect(throws: EnvironmentManagerError.prefixInUse) {
             try await coordinator.withLock(for: prefix) { true }
         }
 
         await coordinator.releaseRuntimeLease(for: prefix, sessionID: firstSession)
         #expect(await coordinator.hasRuntimeLease(for: prefix))
-        await #expect(throws: EnvironmentManagerError.self) {
+        await #expect(throws: EnvironmentManagerError.prefixInUse) {
             try await coordinator.withLock(for: prefix) { true }
         }
 
         await coordinator.releaseRuntimeLease(for: prefix, sessionID: secondSession)
+        #expect(await !coordinator.hasRuntimeLease(for: prefix))
+        #expect(try await coordinator.withLock(for: prefix) { true })
+    }
+
+    @Test func prefixIdleProbePreventsNewLaunchesAndOnlyClearsLeasesOnConfirmedIdle() async throws {
+        let coordinator = PrefixUsageCoordinator()
+        let prefix = FileManager.default.temporaryDirectory
+            .appending(path: "boreal-prefix-idle-probe-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let runningSession = UUID()
+        let racingSession = UUID()
+        try await coordinator.acquireRuntimeLease(for: prefix, sessionID: runningSession)
+        await coordinator.markRuntimeLeaseStarted(for: prefix, sessionID: runningSession)
+
+        let activeProbe = UUID()
+        #expect(try await coordinator.beginIdleProbe(for: prefix, probeID: activeProbe))
+        await #expect(throws: EnvironmentManagerError.prefixSessionClosing) {
+            try await coordinator.acquireRuntimeLease(for: prefix, sessionID: racingSession)
+        }
+        await #expect(throws: EnvironmentManagerError.prefixInUse) {
+            try await coordinator.withLock(for: prefix) { true }
+        }
+        await coordinator.finishIdleProbe(for: prefix, probeID: activeProbe, prefixIsIdle: false)
+        #expect(await coordinator.hasRuntimeLease(for: prefix))
+        try await coordinator.acquireRuntimeLease(for: prefix, sessionID: racingSession)
+        await coordinator.markRuntimeLeaseStarted(for: prefix, sessionID: racingSession)
+
+        let idleProbe = UUID()
+        #expect(try await coordinator.beginIdleProbe(for: prefix, probeID: idleProbe))
+        await coordinator.finishIdleProbe(for: prefix, probeID: idleProbe, prefixIsIdle: true)
         #expect(await !coordinator.hasRuntimeLease(for: prefix))
         #expect(try await coordinator.withLock(for: prefix) { true })
     }
@@ -986,5 +1037,24 @@ struct WineCompatibilityProfileTests {
             putLibrary(library, at: rawDataOffset + 0x68)
         }
         try data.write(to: url, options: .atomic)
+    }
+}
+
+private actor PrefixUsageTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }

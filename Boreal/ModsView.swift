@@ -44,6 +44,9 @@ struct ModsView: View {
                 case .dragonAgeDazip: "archivebox"
                 case .witcher2CookedPC: "folder"
                 case .witcher2UserContent: "person.crop.folder"
+                case .witcher3Mod: "shippingbox"
+                case .witcher3DLC: "folder.badge.plus"
+                case .witcher3GameFiles: "doc.badge.gearshape"
                 case .manual: "hand.raised"
                 case .unknown: "questionmark.square"
                 }
@@ -68,6 +71,7 @@ struct ModsView: View {
     }
 
     @Environment(BorealStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: StoreLibraryGame
     @State private var tab: Tab = .mods
     @State private var showsImporter = false
@@ -81,6 +85,10 @@ struct ModsView: View {
     @State private var selectedModIDs = Set<UUID>()
     @State private var versionDraft = ""
 
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
+
     private var state: ModGameState? { store.modState(for: game) }
     private var isUnsupportedDefinitiveEdition: Bool {
         GTASAModLoaderAdapter.isDefinitiveEdition(game: game) && !store.supportsMods(for: game)
@@ -92,6 +100,9 @@ struct ModsView: View {
             if isUnsupportedDefinitiveEdition {
                 definitiveEditionNotice
             } else if let state {
+                if state.adapter == .witcher3 {
+                    witcher3Guide
+                }
                 profileControls(state)
                 if state.adapter == .gtaSanAndreas, let runtime = state.runtime {
                     gtaRuntime(runtime)
@@ -134,6 +145,7 @@ struct ModsView: View {
         }
         .padding(22)
         .task(id: game.id) {
+            tab = .mods
             selectedModIDs = []
             selectedFilter = .all
             searchText = ""
@@ -156,6 +168,10 @@ struct ModsView: View {
         .onChange(of: store.modState(for: game)?.profileID) { _, _ in
             synchronizeVersionDraft()
         }
+        .animation(
+            motion.stateChange,
+            value: store.modState(for: game)?.pendingChanges ?? false
+        )
         .fileImporter(
             isPresented: $showsImporter,
             allowedContentTypes: Self.archiveTypes,
@@ -248,6 +264,35 @@ struct ModsView: View {
                     || state == nil
                     || store.isModOperationActive(for: game)
             )
+            if state?.adapter == .witcher3 {
+                Button("Nexus Mods", systemImage: "safari") {
+                    NSWorkspace.shared.open(Witcher3Adapter.nexusURL)
+                }
+                .buttonStyle(.bordered)
+                .help("Browse Witcher 3 mods on Nexus Mods. Download an archive, then import it into Boreal.")
+            }
+        }
+    }
+
+    private var witcher3Guide: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.title3)
+                .foregroundStyle(.cyan)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("The Witcher 3 load order")
+                    .font(.headline)
+                Text("Boreal installs Mods and DLC folders, backs up replaced game files, and writes mod enablement and priority to Documents/The Witcher 3/mods.settings. Script conflicts are listed for review; merge them with Script Merger before playing.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(13)
+        .background(.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(.cyan.opacity(0.2))
         }
     }
 
@@ -400,10 +445,12 @@ struct ModsView: View {
                                     ? "Pak profile synchronized"
                                 : state.adapter == .witcher2
                                     ? "Witcher 2 roots synchronized"
+                                : state.adapter == .witcher3
+                                    ? "Witcher 3 load order synchronized"
                                 : "Plugins \(health.pluginsSynchronized ? "synchronized" : "out of sync")",
                             symbol: state.adapter == .gtaSanAndreas || state.adapter == .gtaSanAndreasDefinitiveEdition
                                 ? "shippingbox"
-                                : state.adapter == .witcher2 ? "folder" : "list.number"
+                                : state.adapter == .witcher2 || state.adapter == .witcher3 ? "folder" : "list.number"
                         )
                         healthItem("Vanilla \(health.vanillaFilesProtected ? "protected" : "at risk")", symbol: "lock.shield")
                     }
@@ -431,7 +478,7 @@ struct ModsView: View {
                         Spacer()
                         if health.needsAttention {
                             Button("Review Problems") {
-                                tab = isGTAAdapter(state.adapter) ? .mods : .plugins
+                                tab = state.adapter == .skyrimSpecialEdition ? .plugins : .mods
                             }
                             .buttonStyle(.bordered)
                         }
@@ -469,6 +516,7 @@ struct ModsView: View {
         .padding(12)
         .background(.orange.opacity(0.11), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.orange.opacity(0.25)) }
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     private func modsList(_ state: ModGameState) -> some View {
@@ -628,11 +676,11 @@ struct ModsView: View {
                     Button("Move Up", systemImage: "arrow.up") {
                         moveMod(mod, direction: -1, state: state)
                     }
-                    .disabled(mod.isExternallyDetected)
+                    .disabled(mod.isExternallyDetected && state.adapter != .witcher3)
                     Button("Move Down", systemImage: "arrow.down") {
                         moveMod(mod, direction: 1, state: state)
                     }
-                    .disabled(mod.isExternallyDetected)
+                    .disabled(mod.isExternallyDetected && state.adapter != .witcher3)
                     Divider()
                     Button("Open Files", systemImage: "folder") {
                         store.openModFiles(mod.id, for: game)
@@ -694,7 +742,7 @@ struct ModsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.mini)
-                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
+                    .disabled((mod.isExternallyDetected && state.adapter != .witcher3) || store.isModOperationActive(for: game))
             })
             .width(min: 68, ideal: 74, max: 85)
         } rows: {
@@ -734,7 +782,7 @@ struct ModsView: View {
 
                 Toggle("Enabled", isOn: enabledBinding(for: mod))
                     .toggleStyle(.switch)
-                    .disabled(mod.isExternallyDetected || store.isModOperationActive(for: game))
+                    .disabled((mod.isExternallyDetected && state.adapter != .witcher3) || store.isModOperationActive(for: game))
 
                 Divider()
 
@@ -872,7 +920,9 @@ struct ModsView: View {
             }
 
             if mod.isExternallyDetected {
-                Text("External mods are read-only in Boreal.")
+                Text(state.adapter == .witcher3
+                    ? "Detected files stay in place. Boreal can update this mod’s enabled state and priority in mods.settings."
+                    : "External mods are read-only in Boreal.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else {
@@ -959,14 +1009,19 @@ struct ModsView: View {
 
     private func moveMod(_ mod: InstalledMod, direction: Int, state: ModGameState) {
         guard !store.isModOperationActive(for: game) else { return }
+        guard !mod.isExternallyDetected || state.adapter == .witcher3 else { return }
         let ordered = state.mods.sorted { $0.priority < $1.priority }
         guard let index = ordered.firstIndex(where: { $0.id == mod.id }) else { return }
         if direction < 0 {
             guard index > 0 else { return }
-            store.moveMod(from: IndexSet(integer: index), to: index, for: game)
+            withAnimation(motion.reorder) {
+                store.moveMod(from: IndexSet(integer: index), to: index, for: game)
+            }
         } else {
             guard index < ordered.count - 1 else { return }
-            store.moveMod(from: IndexSet(integer: index), to: index + 2, for: game)
+            withAnimation(motion.reorder) {
+                store.moveMod(from: IndexSet(integer: index), to: index + 2, for: game)
+            }
         }
     }
 
@@ -996,7 +1051,9 @@ struct ModsView: View {
                             )
                         }
                         .onMove { offsets, destination in
-                            store.movePlugin(from: offsets, to: destination, for: game)
+                            withAnimation(motion.reorder) {
+                                store.movePlugin(from: offsets, to: destination, for: game)
+                            }
                         }
                     }
                 }

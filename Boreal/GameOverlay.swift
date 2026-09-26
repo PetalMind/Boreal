@@ -881,7 +881,9 @@ private struct GameOverlayView: View {
                 Spacer()
                 Text(sessionDuration)
                     .foregroundStyle(.orange)
-                    .contentTransition(.numericText())
+                    .transaction { transaction in
+                        transaction.animation = nil
+                    }
             }
             .font(.system(size: 12, weight: .medium, design: .monospaced))
             .foregroundStyle(.secondary)
@@ -901,7 +903,15 @@ private struct GameOverlayView: View {
     }
     private var divider: some View { Divider().overlay(.white.opacity(0.16)) }
     private func row(_ label: String, _ value: String, _ color: Color) -> some View {
-        HStack { Text(label); Spacer(); Text(value).foregroundStyle(value == "—" ? Color.secondary : color).contentTransition(.numericText()) }
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value)
+                .foregroundStyle(value == "—" ? Color.secondary : color)
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
+        }
             .font(.system(size: 12.5, weight: .medium, design: .monospaced))
     }
     private func title(_ symbol: String, _ text: String, _ color: Color) -> some View {

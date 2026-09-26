@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CloudSaveCard: View {
     @Environment(BorealStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let game: StoreLibraryGame
 
     @State private var windowsPath = ""
@@ -14,6 +15,10 @@ struct CloudSaveCard: View {
     @State private var showsAdvanced = false
     @State private var showsGOGAuthorizationCode = false
     @State private var gogAuthorizationCode = ""
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     private var status: CloudSaveStatus {
         store.cloudSaveStatus(for: game)
@@ -40,6 +45,7 @@ struct CloudSaveCard: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(.white.opacity(0.08))
         }
+        .animation(motion.stateChange, value: status.state)
         .task(id: game.storeReference) {
             await loadConfiguration()
             store.refreshGOGConnection()
@@ -463,6 +469,7 @@ struct CloudSaveCard: View {
                 case .syncing:
                     Label("Syncing…", systemImage: "arrow.triangle.2.circlepath")
                         .foregroundStyle(.cyan)
+                        .borealActivityPulse(isActive: true)
                 case .checking:
                     Label("Checking…", systemImage: "ellipsis.circle")
                         .foregroundStyle(.secondary)

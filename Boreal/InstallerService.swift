@@ -143,9 +143,9 @@ actor InstallerService: Installing {
             } onCancel: {
                 Task { try? await self.processRunner.stopApplication(installerSession) }
             }
-            switch await processRunner.environmentSessionState(environment: environment, runtime: runtime) {
+            switch await processRunner.confirmPrefixIdle(environment: environment, runtime: runtime) {
             case .inactive:
-                await processRunner.releaseRuntimeLeases(for: environment)
+                break
             case .active:
                 Task { await self.waitForInstallerPrefixToBecomeIdle(environment, runtime: runtime) }
                 throw EnvironmentManagerError.prefixInUse
@@ -188,12 +188,11 @@ actor InstallerService: Installing {
                     "The installed game requires a different prefix architecture than the installer environment."
                 )
             }
-            preparedEnvironment.configuration.architecture = resolved.executableArchitecture == .x86 ? "win32" : "win64"
-            preparedEnvironment.configuration.windowsVersion = resolved.windowsVersion.rawValue
-            preparedEnvironment.configuration.graphicsAPI = resolved.directXAPI
-            preparedEnvironment.configuration.graphicsBackend = resolved.graphicsStack.backend
-            preparedEnvironment.configuration.prefixMode = resolved.prefixMode
-            preparedEnvironment.configuration.requiredDependencies = Set(resolved.dependencies)
+            let componentReferences = preparedEnvironment.configuration.graphicsComponentReferences
+            var environmentSpecification = resolved.environmentSpecification
+            environmentSpecification.name = preparedEnvironment.configuration.name
+            environmentSpecification.graphicsComponentReferences = componentReferences
+            preparedEnvironment.configuration = environmentSpecification
             // Persist the resolved plan before installing components so a retry
             // or later launch observes the same compatibility decision.
             preparedEnvironment = try await environmentManager.configure(preparedEnvironment, runtime: runtime)
@@ -263,6 +262,7 @@ actor InstallerService: Installing {
         } catch {
             if let installerSession {
                 try? await processRunner.stopApplication(installerSession)
+                Task { await self.waitForInstallerPrefixToBecomeIdle(environment, runtime: runtime) }
             }
             try? await environmentManager.remove(environment)
             throw error
@@ -285,9 +285,8 @@ actor InstallerService: Installing {
         runtime: InstalledRuntime
     ) async {
         while !Task.isCancelled {
-            switch await processRunner.environmentSessionState(environment: environment, runtime: runtime) {
+            switch await processRunner.confirmPrefixIdle(environment: environment, runtime: runtime) {
             case .inactive:
-                await processRunner.releaseRuntimeLeases(for: environment)
                 try? await environmentManager.remove(environment)
                 return
             case .active, .unknown:

@@ -18,15 +18,18 @@ enum GameDetailsTransitionPhase: Equatable {
 struct GameDetailsTransitionState: Equatable {
     var selectedGameID: UUID?
     var phase: GameDetailsTransitionPhase = .library
+    var usesArtworkTransition = false
 
     static let library = Self(selectedGameID: nil, phase: .library)
 }
 
 struct ContentView: View {
     @Environment(BorealStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: SidebarDestination? = .library
     @State private var libraryPath: [LibraryRoute] = []
     @Namespace private var gameTransitionNamespace
+    @Namespace private var sidebarSelectionNamespace
     @State private var gameTransitionState = GameDetailsTransitionState.library
     @State private var searchText = ""
     @State private var discoverySearchText = ""
@@ -50,6 +53,10 @@ struct ContentView: View {
     @State private var showsControllerPrompt = false
     @State private var hadRunningGame = false
     @State private var hasNativeRunningGame = false
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     enum LibraryStyle: String, CaseIterable { case grid, list }
 
@@ -111,18 +118,18 @@ struct ContentView: View {
                         .opacity(libraryTransitionOpacity)
                         .scaleEffect(libraryTransitionScale)
                         .allowsHitTesting(!isGameTransitionActive)
-                        .animation(.easeOut(duration: 0.2), value: gameTransitionState.phase)
+                        .animation(motion.stateChange, value: gameTransitionState.phase)
 
                     if let game = transitionGame,
                        isGameTransitionActive {
                         StoreGameDetailView(
                             game: game,
                             onSelectProducer: showProducer,
-                            transitionNamespace: gameTransitionNamespace,
+                            transitionNamespace: gameTransitionState.usesArtworkTransition ? gameTransitionNamespace : nil,
                             transitionPhase: gameTransitionState.phase
                         )
                         .zIndex(100)
-                        .transition(.identity)
+                        .transition(gameTransitionState.usesArtworkTransition ? .identity : .opacity)
                     }
                 }
                 .frame(minWidth: 640, minHeight: 500)
@@ -249,7 +256,8 @@ struct ContentView: View {
                         symbol: "sparkles",
                         tint: .purple,
                         count: store.discoveryCatalog?.trackedCount,
-                        isSelected: selection == .discovery
+                        isSelected: selection == .discovery,
+                        selectionNamespace: sidebarSelectionNamespace
                     )
                 }
                 .buttonStyle(.plain)
@@ -267,7 +275,8 @@ struct ContentView: View {
                         subtitle: .Navigation.homeSubtitle,
                         symbol: "rectangle.grid.2x2.fill",
                         tint: .cyan,
-                        isSelected: isHomeSelected
+                        isSelected: isHomeSelected,
+                        selectionNamespace: sidebarSelectionNamespace
                     )
                 }
                 .buttonStyle(.plain)
@@ -281,7 +290,8 @@ struct ContentView: View {
                         symbol: "arrow.down.circle.fill",
                         tint: .green,
                         count: installedCount,
-                        isSelected: isInstalledSelected
+                        isSelected: isInstalledSelected,
+                        selectionNamespace: sidebarSelectionNamespace
                     )
                 }
                 .buttonStyle(.plain)
@@ -296,7 +306,8 @@ struct ContentView: View {
                         symbol: "heart.fill",
                         tint: .pink,
                         count: favoriteCount,
-                        isSelected: isFavoritesSelected
+                        isSelected: isFavoritesSelected,
+                        selectionNamespace: sidebarSelectionNamespace
                     )
                 }
                 .buttonStyle(.plain)
@@ -314,7 +325,8 @@ struct ContentView: View {
                         BorealStoreSidebarRow(
                             source: source,
                             count: sourceCount(source),
-                            isSelected: isSelected(source)
+                            isSelected: isSelected(source),
+                            selectionNamespace: sidebarSelectionNamespace
                         )
                     }
                     .buttonStyle(.plain)
@@ -349,6 +361,7 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+        .animation(motion.navigation, value: selection)
         .safeAreaInset(edge: .top) {
             HStack(spacing: 11) {
                 ZStack {
@@ -507,38 +520,67 @@ struct ContentView: View {
     }
 
     private var libraryTransitionOpacity: Double {
+        guard !gameTransitionState.usesArtworkTransition else { return 1 }
         switch gameTransitionState.phase {
-        case .library, .opening, .closing: 1
-        case .details: 0
+        case .library, .opening, .closing: return 1
+        case .details: return 0
         }
     }
 
     private var libraryTransitionScale: CGFloat {
-        gameTransitionState.phase == .details ? 0.985 : 1
+        guard !gameTransitionState.usesArtworkTransition else { return 1 }
+        return gameTransitionState.phase == .details ? 0.985 : 1
     }
 
     private func openGameTransition(_ gameID: UUID) {
         guard gameTransitionState.phase == .library,
               store.storeGame(id: gameID) != nil else { return }
 
-        withAnimation(.interpolatingSpring(duration: 0.44, bounce: 0.04)) {
-            gameTransitionState = GameDetailsTransitionState(selectedGameID: gameID, phase: .opening)
+        let usesArtworkTransition = libraryStyle == .grid && !reduceMotion
+        guard usesArtworkTransition else {
+            withAnimation(motion.stateChange) {
+                gameTransitionState = GameDetailsTransitionState(selectedGameID: gameID, phase: .details)
+            }
+            return
+        }
+
+        withAnimation(motion.hero) {
+            gameTransitionState = GameDetailsTransitionState(
+                selectedGameID: gameID,
+                phase: .opening,
+                usesArtworkTransition: true
+            )
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
             guard gameTransitionState.selectedGameID == gameID,
                   gameTransitionState.phase == .opening else { return }
-            withAnimation(.easeOut(duration: 0.26)) {
+            withAnimation(motion.panel) {
                 gameTransitionState.phase = .details
             }
         }
     }
 
     private func closeGameTransition() {
-        guard isGameTransitionActive else { return }
+        guard isGameTransitionActive, gameTransitionState.phase != .closing else { return }
 
-        withAnimation(.interpolatingSpring(duration: 0.44, bounce: 0.04)) {
-            gameTransitionState = .library
+        guard gameTransitionState.usesArtworkTransition,
+              let gameID = gameTransitionState.selectedGameID,
+              transitionGame != nil else {
+            withAnimation(motion.stateChange) {
+                gameTransitionState = .library
+            }
+            return
+        }
+
+        withAnimation(motion.hero, completionCriteria: .removed) {
+            gameTransitionState.phase = .closing
+        } completion: {
+            guard gameTransitionState.selectedGameID == gameID,
+                  gameTransitionState.phase == .closing else { return }
+            withAnimation(motion.panel) {
+                gameTransitionState = .library
+            }
         }
     }
 
@@ -560,6 +602,7 @@ struct ContentView: View {
                         }
                 }
                 .buttonStyle(.plain)
+                .disabled(gameTransitionState.phase == .closing)
                 .help(Text(.Navigation.libraryTitle))
                 .accessibilityLabel(Text(.Navigation.libraryTitle))
             }
@@ -763,6 +806,7 @@ private struct BorealSidebarRow: View {
     let tint: Color
     var count: Int?
     let isSelected: Bool
+    let selectionNamespace: Namespace.ID
 
     var body: some View {
         HStack(spacing: 10) {
@@ -797,6 +841,7 @@ private struct BorealSidebarRow: View {
         if isSelected {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(tint.opacity(0.12))
+                .matchedGeometryEffect(id: "sidebar-selection", in: selectionNamespace)
                 .overlay(alignment: .leading) {
                     Capsule().fill(tint).frame(width: 3).padding(.vertical, 7)
                 }
@@ -808,6 +853,7 @@ private struct BorealStoreSidebarRow: View {
     let source: LibrarySourceFilter
     let count: Int
     let isSelected: Bool
+    let selectionNamespace: Namespace.ID
 
     var body: some View {
         HStack(spacing: 10) {
@@ -833,6 +879,7 @@ private struct BorealStoreSidebarRow: View {
             if isSelected {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(source.brandColor.opacity(0.12))
+                    .matchedGeometryEffect(id: "sidebar-selection", in: selectionNamespace)
                     .overlay(alignment: .leading) {
                         Capsule().fill(source.brandColor).frame(width: 3).padding(.vertical, 7)
                     }

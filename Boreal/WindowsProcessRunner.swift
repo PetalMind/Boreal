@@ -193,12 +193,17 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             sessionID: sessionID
         )
         do {
-            return try await launch(
+            let session = try await launch(
                 plan: plan,
                 environment: environment,
                 runtime: runtime,
                 sessionID: sessionID
             )
+            await PrefixUsageCoordinator.shared.markRuntimeLeaseStarted(
+                for: environment.prefixURL,
+                sessionID: sessionID
+            )
+            return session
         } catch {
             await PrefixUsageCoordinator.shared.releaseRuntimeLease(
                 for: environment.prefixURL,
@@ -261,7 +266,11 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             displayHeight: Int(CGDisplayBounds(displayID).height),
             prefixURL: environment.prefixURL
         )
-        var processEnvironment = wineEnvironment(for: environment, runtime: runtime)
+        var processEnvironment = wineEnvironment(
+            for: environment,
+            runtime: runtime,
+            loggingLevel: launchPlan.wineLoggingLevel
+        )
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
         Self.removeDeveloperToolsEnvironment(from: &processEnvironment)
         if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD != true {
@@ -467,6 +476,22 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     }
 
     func waitForEnvironmentSessionEnd(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        let probeID = UUID()
+        while true {
+            try Task.checkCancellation()
+            do {
+                if try await PrefixUsageCoordinator.shared.beginIdleProbe(
+                    for: environment.prefixURL,
+                    probeID: probeID
+                ) {
+                    break
+                }
+            } catch EnvironmentManagerError.prefixSessionClosing {
+                // Another observer owns the short idle-check barrier. Let it
+                // finish rather than competing to release the same leases.
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
         let request = controlRequest(
             executable: runtime.wineServerExecutable,
             arguments: ["-w"],
@@ -474,12 +499,26 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             environment: environment,
             runtime: runtime
         )
-        let receipt = try await processExecutor.launch(request)
-        let result = try await processExecutor.waitForExit(receipt.id)
-        guard result.exitCode == 0 else {
-            throw ProcessRunnerError.launchFailed("wineserver -w exited with code \(result.exitCode).")
+        do {
+            try Task.checkCancellation()
+            let receipt = try await processExecutor.launch(request)
+            let result = try await processExecutor.waitForExit(receipt.id)
+            guard result.exitCode == 0 else {
+                throw ProcessRunnerError.launchFailed("wineserver -w exited with code \(result.exitCode).")
+            }
+            await PrefixUsageCoordinator.shared.finishIdleProbe(
+                for: environment.prefixURL,
+                probeID: probeID,
+                prefixIsIdle: true
+            )
+        } catch {
+            await PrefixUsageCoordinator.shared.finishIdleProbe(
+                for: environment.prefixURL,
+                probeID: probeID,
+                prefixIsIdle: false
+            )
+            throw error
         }
-        await PrefixUsageCoordinator.shared.releaseRuntimeLeases(for: environment.prefixURL)
     }
 
     func adoptRuntimeLease(for session: WindowsProcessSession, environment: ManagedBorealEnvironment) async throws {
@@ -487,10 +526,32 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             for: environment.prefixURL,
             sessionID: session.id
         )
+        await PrefixUsageCoordinator.shared.markRuntimeLeaseStarted(
+            for: environment.prefixURL,
+            sessionID: session.id
+        )
     }
 
-    func releaseRuntimeLeases(for environment: ManagedBorealEnvironment) async {
-        await PrefixUsageCoordinator.shared.releaseRuntimeLeases(for: environment.prefixURL)
+    func confirmPrefixIdle(
+        environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async -> EnvironmentSessionState {
+        let probeID = UUID()
+        do {
+            guard try await PrefixUsageCoordinator.shared.beginIdleProbe(
+                for: environment.prefixURL,
+                probeID: probeID
+            ) else { return .unknown }
+        } catch {
+            return .unknown
+        }
+        let state = await environmentSessionState(environment: environment, runtime: runtime)
+        await PrefixUsageCoordinator.shared.finishIdleProbe(
+            for: environment.prefixURL,
+            probeID: probeID,
+            prefixIsIdle: state == .inactive
+        )
+        return state
     }
 
     func waitForProcessGroupEnd(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
@@ -702,7 +763,11 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         values["WINEDLLOVERRIDES"] = (preserved + bridgeOverrides).joined(separator: ";")
     }
 
-    private func wineEnvironment(for environment: ManagedBorealEnvironment, runtime: InstalledRuntime) -> [String: String] {
+    private func wineEnvironment(
+        for environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        loggingLevel: WineLoggingLevel = .errorsOnly
+    ) -> [String: String] {
         var values = ProcessInfo.processInfo.environment
         WineProcessEnvironment.removeInheritedRuntimeConfiguration(from: &values)
         values["WINEPREFIX"] = environment.prefixURL.path
@@ -817,13 +882,9 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         // FPS telemetry is high-frequency. Keeping Wine's broad warning channels
         // enabled can produce hundreds of megabytes per session and push the most
         // recent FPS record out of the sampler's bounded read window.
-        // Keep Wine's error class even when verbose diagnostics are disabled.
-        // Otherwise an early loader failure such as D3DMetal/dxgi status
-        // c0000142 produces empty launch logs and Boreal reports a normal exit.
-        var debugChannels = environment.configuration.debugLoggingEnabled ? "+all" : (values["WINEDEBUG"] ?? "-all")
-        if !environment.configuration.debugLoggingEnabled && !debugChannels.contains("err+all") {
-            debugChannels += ",err+all"
-        }
+        // Select bounded diagnostic channels explicitly. In particular, do
+        // not inherit a broad +all trace from the parent process by default.
+        let debugChannels = loggingLevel.wineDebugChannels
         values["WINEDEBUG"] = debugChannels.contains("+fps") ? debugChannels : debugChannels + ",+fps"
         // Never inherit Metal HUD settings from Boreal's parent process. HUD
         // creates MTLTools resources and is unsafe when the selected runtime

@@ -117,8 +117,15 @@ actor EnvironmentManager: EnvironmentManaging {
             let configuredEnvironment = configurationApplication.environment
             for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
                 let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
-                guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
-                try await installUnderPrefixLock(dependency, in: configuredEnvironment, runtime: runtime)
+                guard current.first(where: { $0.dependency == dependency })?.state.satisfiesDependency != true else { continue }
+                try await installUnderPrefixLock(
+                    dependency,
+                    in: configuredEnvironment,
+                    runtime: runtime,
+                    mediaCapabilities: dependency == .windowsMediaCompatibility
+                        ? configuredEnvironment.configuration.requiredMediaCapabilities
+                        : []
+                )
             }
             let missing = missingPrefixPaths(at: stagingPrefix)
             guard missing.isEmpty else {
@@ -165,8 +172,15 @@ actor EnvironmentManager: EnvironmentManaging {
             let configuredEnvironment = configurationApplication.environment
             for dependency in configuredEnvironment.configuration.requiredDependencies.sorted(by: { $0.rawValue < $1.rawValue }) {
                 let current = await dependencyStatuses(configuredEnvironment, runtime: runtime)
-                guard current.first(where: { $0.dependency == dependency })?.state != .installed else { continue }
-                try await installUnderPrefixLock(dependency, in: configuredEnvironment, runtime: runtime)
+                guard current.first(where: { $0.dependency == dependency })?.state.satisfiesDependency != true else { continue }
+                try await installUnderPrefixLock(
+                    dependency,
+                    in: configuredEnvironment,
+                    runtime: runtime,
+                    mediaCapabilities: dependency == .windowsMediaCompatibility
+                        ? configuredEnvironment.configuration.requiredMediaCapabilities
+                        : []
+                )
             }
             try write(configuredEnvironment)
             graphicsBackendManager.commit(configurationApplication.graphicsActivation.activation)
@@ -590,8 +604,13 @@ actor EnvironmentManager: EnvironmentManaging {
     }
 
     func dependencyStatuses(_ environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [RuntimeDependencyStatus] {
-        RuntimeDependency.allCases.map { dependency in
+        let installedWinetricksVerbs = await installedWinetricksVerbs(in: environment, runtime: runtime)
+        let prefixMode = environment.configuration.resolvedPrefixMode(
+            runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
+        )
+        return RuntimeDependency.allCases.map { dependency in
             let marker = environment.prefixURL.appending(path: ".boreal-dependencies/\(dependency.rawValue)")
+            let partialMarker = environment.prefixURL.appending(path: ".boreal-dependencies/\(dependency.rawValue).partial")
             let legacyMarker = dependency == .legacyDirectX
                 ? environment.prefixURL.appending(path: ".boreal-dependencies/directXRuntime")
                 : nil
@@ -601,21 +620,70 @@ actor EnvironmentManager: EnvironmentManaging {
             }
             let markerExists = fileManager.fileExists(atPath: marker.path)
                 || legacyMarker.map { fileManager.fileExists(atPath: $0.path) } == true
-            let installed = markerExists || (hasLibraries && !dependency.requiresExplicitInstallationEvidence)
-            return RuntimeDependencyStatus(dependency: dependency, state: installed ? .installed : .missing, detail: nil)
+            let partialExists = fileManager.fileExists(atPath: partialMarker.path)
+            let expectedVerbs = dependency.winetricksVerbs(
+                prefixMode: prefixMode,
+                executableArchitecture: environment.configuration.architecture
+            )
+            let markerVerbs = Self.readVerbMarker(marker, fileManager: fileManager)
+                .union(Self.readVerbMarker(legacyMarker, fileManager: fileManager))
+            let loggedVerbs = Set(expectedVerbs.filter { installedWinetricksVerbs.contains($0) })
+            let hasCompleteVerbEvidence = !expectedVerbs.isEmpty && expectedVerbs.allSatisfy {
+                markerVerbs.contains($0) || installedWinetricksVerbs.contains($0)
+            }
+            let hasPartialVerbEvidence = !loggedVerbs.isEmpty || !markerVerbs.isEmpty || partialExists
+
+            let state: RuntimeDependencyState
+            let detail: String?
+            switch (markerExists, hasLibraries, hasCompleteVerbEvidence, hasPartialVerbEvidence) {
+            case (true, true, _, _):
+                state = .installed
+                detail = "Boreal receipt and expected files are present."
+            case (true, false, _, _):
+                state = .broken
+                detail = "Boreal receipt exists, but the expected files are missing from the prefix."
+            case (false, _, false, true):
+                state = .partial
+                detail = "Only part of the dependency installation is recorded; repair will resume the dependency transaction."
+            case (false, true, true, _):
+                state = .externallyInstalled
+                detail = "Winetricks reports the verbs as installed and the expected files were detected, but Boreal has no receipt."
+            case (false, true, false, _):
+                state = .detected
+                detail = "Expected files were detected in the prefix without a Boreal receipt."
+            default:
+                state = .missing
+                detail = nil
+            }
+            return RuntimeDependencyStatus(dependency: dependency, state: state, detail: detail)
         }
     }
 
     func install(_ dependency: RuntimeDependency, in environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
+        try await install(dependency, in: environment, runtime: runtime, mediaCapabilities: [])
+    }
+
+    func install(
+        _ dependency: RuntimeDependency,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime,
+        mediaCapabilities: Set<MediaCompatibilityCapability>
+    ) async throws {
         try await PrefixUsageCoordinator.shared.withLock(for: environment.prefixURL) {
-            try await self.installUnderPrefixLock(dependency, in: environment, runtime: runtime)
+            try await self.installUnderPrefixLock(
+                dependency,
+                in: environment,
+                runtime: runtime,
+                mediaCapabilities: mediaCapabilities
+            )
         }
     }
 
     private func installUnderPrefixLock(
         _ dependency: RuntimeDependency,
         in environment: ManagedBorealEnvironment,
-        runtime: InstalledRuntime
+        runtime: InstalledRuntime,
+        mediaCapabilities: Set<MediaCompatibilityCapability>
     ) async throws {
         guard environment.runtimeID == runtime.id else { throw EnvironmentManagerError.runtimeMismatch }
         try validatePrefixMode(environment, runtime: runtime)
@@ -626,22 +694,86 @@ actor EnvironmentManager: EnvironmentManaging {
             ? packagedInstaller
             : try await ensureDependencyInstaller()
         let installerEnvironment = dependencyInstallerEnvironment(for: environment, runtime: runtime)
-        let request = ProcessLaunchRequest(
-            executable: winetricks,
-            arguments: ["--unattended", dependency.winetricksVerb],
-            environment: installerEnvironment,
-            currentDirectory: environment.rootURL,
-            stdoutLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue).stdout.log"),
-            stderrLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue).stderr.log")
+        let prefixMode = environment.configuration.resolvedPrefixMode(
+            runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
         )
-        let receipt = try await processExecutor.launch(request)
-        let result = try await processExecutor.waitForExit(receipt.id)
-        guard result.exitCode == 0 else {
-            throw EnvironmentManagerError.dependencyInstallationFailed(dependency: dependency, exitCode: result.exitCode, stderrLog: result.stderrLog)
-        }
+        let verbs = dependency.winetricksVerbs(
+            prefixMode: prefixMode,
+            executableArchitecture: environment.configuration.architecture,
+            mediaCapabilities: mediaCapabilities
+        )
         let markers = environment.prefixURL.appending(path: ".boreal-dependencies", directoryHint: .isDirectory)
+        let marker = markers.appending(path: dependency.rawValue)
+        let partialMarker = markers.appending(path: "\(dependency.rawValue).partial")
         try fileManager.createDirectory(at: markers, withIntermediateDirectories: true)
-        try Data("\(dependency.winetricksVerb)\n".utf8).write(to: markers.appending(path: dependency.rawValue), options: .atomic)
+        var completedVerbs: [String] = []
+        do {
+            for (index, verb) in verbs.enumerated() {
+                let suffix = verbs.count == 1 ? "" : "-\(index + 1)-\(verb)"
+                let request = ProcessLaunchRequest(
+                    executable: winetricks,
+                    arguments: ["--unattended", verb],
+                    environment: installerEnvironment,
+                    currentDirectory: environment.rootURL,
+                    stdoutLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue)\(suffix).stdout.log"),
+                    stderrLog: environment.logsURL.appending(path: "dependency-\(dependency.rawValue)\(suffix).stderr.log")
+                )
+                let receipt = try await processExecutor.launch(request)
+                let result = try await processExecutor.waitForExit(receipt.id)
+                guard result.exitCode == 0 else {
+                    throw EnvironmentManagerError.dependencyInstallationFailed(dependency: dependency, exitCode: result.exitCode, stderrLog: result.stderrLog)
+                }
+                completedVerbs.append(verb)
+                try Data("\(completedVerbs.joined(separator: "\n"))\n".utf8).write(to: partialMarker, options: .atomic)
+            }
+            try Data("\(verbs.joined(separator: "\n"))\n".utf8).write(to: marker, options: .atomic)
+            try? fileManager.removeItem(at: partialMarker)
+        } catch {
+            if !completedVerbs.isEmpty {
+                try? Data("\(completedVerbs.joined(separator: "\n"))\n".utf8).write(to: partialMarker, options: .atomic)
+            }
+            throw error
+        }
+    }
+
+    private func installedWinetricksVerbs(
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async -> Set<String> {
+        guard fileManager.fileExists(atPath: environment.prefixURL.path) else { return [] }
+        let packagedInstaller = runtime.rootURL.appending(path: "Support/winetricks")
+        let localInstaller = dependencyToolsURL.appending(path: "winetricks")
+        let installer = [packagedInstaller, localInstaller].first { fileManager.isExecutableFile(atPath: $0.path) }
+        guard let installer else { return [] }
+        let outputLog = environment.logsURL.appending(path: "dependency-list-installed.stdout.log")
+        let errorLog = environment.logsURL.appending(path: "dependency-list-installed.stderr.log")
+        do {
+            let receipt = try await processExecutor.launch(ProcessLaunchRequest(
+                executable: installer,
+                arguments: ["--unattended", "list-installed"],
+                environment: dependencyInstallerEnvironment(for: environment, runtime: runtime),
+                currentDirectory: environment.rootURL,
+                stdoutLog: outputLog,
+                stderrLog: errorLog
+            ))
+            let result = try await processExecutor.waitForExit(receipt.id)
+            guard result.exitCode == 0 else { return [] }
+            let output = ((try? String(contentsOf: outputLog, encoding: .utf8)) ?? "").lowercased()
+            let knownVerbs = Set(RuntimeDependency.allCases.flatMap {
+                $0.winetricksVerbs + $0.winetricksVerbs(prefixMode: .wow64, executableArchitecture: WinePrefixArchitecture.win64.rawValue) + ["directshow"]
+            })
+            let tokens = Set(output.split { !$0.isLetter && !$0.isNumber && $0 != "_" }.map(String.init))
+            return knownVerbs.intersection(tokens)
+        } catch {
+            return []
+        }
+    }
+
+    private static func readVerbMarker(_ url: URL?, fileManager: FileManager) -> Set<String> {
+        guard let url,
+              fileManager.fileExists(atPath: url.path),
+              let contents = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return Set(contents.split(whereSeparator: \.isNewline).map(String.init))
     }
 
     private func ensureDependencyInstaller() async throws -> URL {
@@ -862,25 +994,68 @@ actor PrefixUsageCoordinator {
     static let shared = PrefixUsageCoordinator()
 
     private var runtimeLeases: [String: Set<UUID>] = [:]
+    private var startingRuntimeLeases: [String: Set<UUID>] = [:]
+    private var idleProbeIDs: [String: UUID] = [:]
 
     func acquireRuntimeLease(for prefix: URL, sessionID: UUID) throws {
         let key = prefix.standardizedFileURL.path
         guard !lockedPrefixes.contains(key), waiters[key]?.isEmpty != false else {
             throw EnvironmentManagerError.prefixMutationInProgress
         }
+        guard idleProbeIDs[key] == nil else {
+            throw EnvironmentManagerError.prefixSessionClosing
+        }
         runtimeLeases[key, default: []].insert(sessionID)
+        startingRuntimeLeases[key, default: []].insert(sessionID)
+    }
+
+    func markRuntimeLeaseStarted(for prefix: URL, sessionID: UUID) {
+        let key = prefix.standardizedFileURL.path
+        startingRuntimeLeases[key]?.remove(sessionID)
+        if startingRuntimeLeases[key]?.isEmpty == true {
+            startingRuntimeLeases[key] = nil
+        }
     }
 
     func releaseRuntimeLease(for prefix: URL, sessionID: UUID) {
         let key = prefix.standardizedFileURL.path
         runtimeLeases[key]?.remove(sessionID)
+        startingRuntimeLeases[key]?.remove(sessionID)
         if runtimeLeases[key]?.isEmpty == true {
             runtimeLeases[key] = nil
         }
+        if startingRuntimeLeases[key]?.isEmpty == true {
+            startingRuntimeLeases[key] = nil
+        }
     }
 
-    func releaseRuntimeLeases(for prefix: URL) {
-        runtimeLeases[prefix.standardizedFileURL.path] = nil
+    func beginIdleProbe(for prefix: URL, probeID: UUID) throws -> Bool {
+        let key = prefix.standardizedFileURL.path
+        guard !lockedPrefixes.contains(key), waiters[key]?.isEmpty != false else {
+            throw EnvironmentManagerError.prefixMutationInProgress
+        }
+        guard idleProbeIDs[key] == nil else {
+            throw EnvironmentManagerError.prefixSessionClosing
+        }
+        if let starting = startingRuntimeLeases[key], !starting.isEmpty { return false }
+        idleProbeIDs[key] = probeID
+        runtimeLeases[key, default: []].insert(probeID)
+        return true
+    }
+
+    func finishIdleProbe(for prefix: URL, probeID: UUID, prefixIsIdle: Bool) {
+        let key = prefix.standardizedFileURL.path
+        guard idleProbeIDs[key] == probeID else { return }
+        idleProbeIDs[key] = nil
+        if prefixIsIdle {
+            runtimeLeases[key] = nil
+            startingRuntimeLeases[key] = nil
+        } else {
+            runtimeLeases[key]?.remove(probeID)
+            if runtimeLeases[key]?.isEmpty == true {
+                runtimeLeases[key] = nil
+            }
+        }
     }
 
     func hasRuntimeLease(for prefix: URL) -> Bool {

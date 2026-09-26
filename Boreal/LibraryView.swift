@@ -525,6 +525,7 @@ struct LibraryToolbarControls: View {
 
 struct LibraryView: View {
     @Environment(BorealStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var searchText: String
     let style: ContentView.LibraryStyle
     let sort: LibrarySort
@@ -548,7 +549,12 @@ struct LibraryView: View {
     @State private var uninstallCandidate: StoreLibraryGame?
     @State private var libraryRemovalCandidate: LibraryItem?
     @State private var coverEditorState: LibraryCoverEditorState?
+    @State private var pendingFavoriteRemovals: Set<String> = []
     @State private var projectedLibrary = LibraryProjectionCache()
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     private var allItems: [LibraryItem] {
         projectedLibrary.items(
@@ -566,7 +572,7 @@ struct LibraryView: View {
             availability: rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self),
             compatibility: rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self),
             sort: sort, producer: producerFilter,
-            favorites: favoritesOnly ? store.favoriteKeys : [], favoritesOnly: favoritesOnly
+            favorites: favoritesOnly ? store.favoriteKeys.union(pendingFavoriteRemovals) : [], favoritesOnly: favoritesOnly
         )
     }
 
@@ -951,6 +957,7 @@ struct LibraryView: View {
             }
             .padding(32)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(motion.panel, value: pendingFavoriteRemovals)
         }
     }
 
@@ -1212,6 +1219,7 @@ struct LibraryView: View {
             gridItemCard(item, hovering: transitionPhase == .library && hovering)
         }
         .zIndex(isSelectedTransitionItem(item) ? 100 : 0)
+        .transition(.opacity.combined(with: .scale(scale: 0.97)))
     }
 
     private func gridItemCard(_ item: LibraryItem, hovering: Bool) -> some View {
@@ -1252,7 +1260,7 @@ struct LibraryView: View {
                             .padding(.vertical, 6)
                             .background(.black.opacity(0.58), in: Capsule())
                         Spacer(minLength: 8)
-                        favoriteButton(for: item)
+                        favoriteButton(for: item, isHovered: hovering)
                     }
 
                     Spacer(minLength: 40)
@@ -1328,7 +1336,8 @@ struct LibraryView: View {
                 hovering: hovering,
                 cornerRadius: isSelectedTransitionItem(item) ? 20 : 15,
                 contextMenu: contextMenu,
-                accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)"
+                accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)",
+                reduceMotion: reduceMotion
             )
         )
     }
@@ -1371,7 +1380,7 @@ struct LibraryView: View {
                 .matchedGeometryEffect(
                     id: game.id,
                     in: transitionNamespace,
-                    isSource: transitionPhase != .details
+                    isSource: transitionPhase != .closing
                 )
         } else {
             libraryCardArtwork(item)
@@ -1383,35 +1392,38 @@ struct LibraryView: View {
         return selectedTransitionGameID == game.id
     }
 
-    private func favoriteButton(for item: LibraryItem) -> some View {
+    private func favoriteButton(for item: LibraryItem, isHovered: Bool) -> some View {
         let favorite = store.isFavorite(key: item.favoriteKey)
-        return Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) {
-                store.toggleFavorite(key: item.favoriteKey)
-            }
-        } label: {
-            ZStack {
-                Image(systemName: "heart")
-                    .foregroundStyle(.white)
-                    .opacity(favorite ? 0 : 1)
-                    .scaleEffect(favorite ? 0.7 : 1)
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(.red)
-                    .opacity(favorite ? 1 : 0)
-                    .scaleEffect(favorite ? 1.16 : 0.55)
-            }
-            .font(.title3.weight(.semibold))
-            .shadow(color: .black.opacity(0.7), radius: 3)
-                .frame(width: 34, height: 34)
-                .background(.black.opacity(0.34), in: Circle())
+        return FavoriteButton(
+            isFavorite: favorite,
+            isHovered: isHovered,
+            revealsOnHover: true,
+            helpText: String(localized: favorite ? .Library.removeFromFavorites : .Library.addToFavorites),
+            accessibilityText: String(localized: favorite ? .Library.removeItemFromFavorites(item.name) : .Library.addItemToFavorites(item.name))
+        ) {
+            toggleFavorite(item, wasFavorite: favorite)
         }
-        .buttonStyle(.plain)
-        .padding(0)
-        .contentShape(Circle())
-        .help(Text(favorite ? .Library.removeFromFavorites : .Library.addToFavorites))
-        .accessibilityLabel(Text(favorite ? .Library.removeItemFromFavorites(item.name) : .Library.addItemToFavorites(item.name)))
-        .accessibilityAddTraits(favorite ? .isSelected : [])
-        .animation(.spring(response: 0.28, dampingFraction: 0.55), value: favorite)
+    }
+
+    private func toggleFavorite(_ item: LibraryItem, wasFavorite: Bool) {
+        let key = item.favoriteKey
+        withAnimation(motion.control) {
+            store.toggleFavorite(key: key)
+            if favoritesOnly, wasFavorite {
+                pendingFavoriteRemovals.insert(key)
+            } else {
+                pendingFavoriteRemovals.remove(key)
+            }
+        }
+
+        guard favoritesOnly, wasFavorite else { return }
+        let removalDelay = reduceMotion ? 0.08 : 0.18
+        DispatchQueue.main.asyncAfter(deadline: .now() + removalDelay) {
+            guard pendingFavoriteRemovals.contains(key) else { return }
+            withAnimation(motion.panel) {
+                pendingFavoriteRemovals.remove(key)
+            }
+        }
     }
 
     @ViewBuilder private func itemIcon(_ item: LibraryItem, compact: Bool) -> some View {
@@ -1476,20 +1488,24 @@ struct LibraryView: View {
     }
 
     private struct LibraryArtworkButtonStyle: ButtonStyle {
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
                 .scaleEffect(configuration.isPressed ? 0.975 : 1)
                 .opacity(configuration.isPressed ? 0.86 : 1)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+                .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).instant, value: configuration.isPressed)
         }
     }
 
     private struct LibraryPressButtonStyle: ButtonStyle {
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
                 .scaleEffect(configuration.isPressed ? 0.96 : 1)
                 .opacity(configuration.isPressed ? 0.88 : 1)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+                .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).instant, value: configuration.isPressed)
         }
     }
 
@@ -1498,6 +1514,7 @@ struct LibraryView: View {
         let cornerRadius: CGFloat
         let contextMenu: AnyView
         let accessibilityText: String
+        let reduceMotion: Bool
 
         func body(content: Content) -> some View {
             let shaped = content
@@ -1512,6 +1529,7 @@ struct LibraryView: View {
                     y: 5
                 )
                 .scaleEffect(hovering ? 1.012 : 1)
+                .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: hovering)
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .modifier(LibraryCardContextMenuModifier(menu: contextMenu))
                 .accessibilityLabel(Text(accessibilityText))
@@ -2087,6 +2105,7 @@ private final class LibraryProjectionCache {
 }
 
 private struct LibraryGridHoverContainer<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
     @ViewBuilder let content: (Bool) -> Content
 
@@ -2094,7 +2113,7 @@ private struct LibraryGridHoverContainer<Content: View>: View {
         content(hovering)
             .onHover { value in
                 guard value != hovering else { return }
-                withAnimation(.easeOut(duration: 0.14)) { hovering = value }
+                withAnimation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover) { hovering = value }
             }
     }
 }

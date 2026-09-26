@@ -21,7 +21,7 @@ Najważniejsze ustalenia audytu:
 - analiza PE rozpoznaje teraz także Delay Import Directory, a ścieżki wyboru API korzystają ze wspólnego detektora zachowującego kandydatów, confidence i dowody;
 - registry overrides są ograniczane do bibliotek właściwych dla wybranego backendu i API;
 - nowe receipts komponentów zapisują SHA-256 każdego zainstalowanego pliku i sprawdzają je przy odczycie; starsze receipts pozostają czytelne, ale bez weryfikacji plików;
-- mutacje prefixu i snapshot/restore są serializowane wspólną blokadą ścieżki; aktywacja DLL i registry ma snapshot poprzedniego stanu i próbę rollbacku;
+- mutacje prefixu i snapshot/restore są serializowane wspólną blokadą ścieżki; aktywna sesja Wine utrzymuje lease, który blokuje mutacje bez ubijania `wineserver`;
 - DXVK i VKD3D są obecnie rozpoznawane głównie po artefaktach DLL i metadanych komponentu, bez analogicznego testu urządzenia, swapchaina i prezentacji;
 - DXVK ma później kontrolę obecności części bibliotek zależną od wybranego API, ale ogólne wykrywanie możliwości runtime jest przede wszystkim oparte o wariant x64;
 - dla DXMT instalacja jest bardziej restrykcyjna: wymagane są warianty x64, warianty x86 dla runtime obsługującego x86, `winemetal.so` oraz pozytywny self-test;
@@ -147,9 +147,13 @@ Opcje niekwalifikujące się dla wybranego runtime są wyłączane i otrzymują 
 
 `ExecutableAnalysis.importantExecutables` wybiera wykonywalne pliki o rolach `.game`, `.launcher` i `.unknown`. Włączenie `.unknown` pozwala uwzględnić zagnieżdżony właściwy plik gry, na przykład `*-Win64-Shipping.exe` w instalacji Unreal, nawet gdy heurystyka nazwy nie potrafiła przypisać mu roli `.game`. `AutomaticRuntimeDependencyDetection` scala zależności wymagane przez te pliki.
 
-`RuntimeDependencyResolver` analizuje importy i nazwy bibliotek dla takich elementów jak legacy DirectX, VC++ 2010, VC++ 2015–2022, XACT, XInput, .NET Framework i PhysX. To analiza PE, niezależna od wyboru backendu renderującego DirectX: `d3d11.dll`/`d3d12.dll` opisuje API grafiki, natomiast np. `msvcp140.dll` wskazuje zależność VC++.
+`RuntimeDependencyResolver` analizuje importy i nazwy bibliotek dla legacy DirectX, Windows Media / DirectShow / Media Foundation, VC++ 2005/2008/2010/2012/2013/2015–2022, XACT, XAudio, XInput, .NET Framework, OpenAL, XNA, MSXML i PhysX. To analiza PE, niezależna od wyboru backendu renderującego DirectX: `d3d11.dll`/`d3d12.dll` opisuje API grafiki, natomiast np. `msvcp140.dll` wskazuje zależność VC++.
 
-Status zainstalowanych zależności jest odczytywany z bibliotek w prefixie i markerów `.boreal-dependencies/<dependency>`. Dla VC++ 2010 i VC++ 2015–2022 wymagany jest marker zapisany po pomyślnym zakończeniu instalacji przez winetricks. Wine zawiera własne kopie bibliotek o podobnych nazwach, więc samo ich znalezienie mogłoby błędnie oznaczyć natywny redystrybutor VC++ jako zainstalowany. Inne zależności mogą być potwierdzone bibliotekami lub markerem.
+`DependencyAnalyzer` korzysta dodatkowo z ograniczonego rekursywnego inventory instalacji (`*.exe`, `*.dll`, `*.sys` oraz plików multimedialnych) i logów prefixu. Windows Media ma wewnętrzne capabilities `mediaFoundation` i `directShow`, ale UI nadal pokazuje jeden pakiet. `.wmv`, `.asf` i `.wma` są silnym sygnałem rekomendowanym; `.mp4` jest brany pod uwagę dopiero przy potwierdzonym imporcie Media Foundation; `.avi` jest brany pod uwagę dopiero przy imporcie DirectShow i ma niższą wagę. Pliki `.bik` i `.bk2` nie są traktowane jako Windows Media, ponieważ Bink jest zwykle dostarczany przez grę. Import PE, log Wine albo profil użytkownika mają wyższą wagę niż sama obecność pliku, a rekomendacja jest wyliczana z proweniencji dowodów.
+
+`Windows Media Compatibility` jest pakietem meta. Dla `mediaFoundation` Boreal instaluje `mf`, a dla `directShow` agregat `directshow` z dostarczonego Winetricks. Nie są instalowane oba zestawy bez dowodu; `directshow` jest potwierdzonym verbem lokalnego helpera i obejmuje `amstream`, `qasf`, `qcap`, `qdvd`, `qedit` oraz `quartz`.
+
+Status zainstalowanych zależności jest odczytywany z trzech źródeł: receipt Boreal, `list-installed` Winetricks i rzeczywistych bibliotek w prefixie. Dla pakietów VC++ i pakietów złożonych wymagany jest marker zapisany po pomyślnym zakończeniu wszystkich verbów instalacyjnych przez winetricks. Po awarii pośredniego verbu marker `.partial` zachowuje informację o postępie. Wine zawiera własne kopie bibliotek o podobnych nazwach, więc samo ich znalezienie nie oznacza automatycznie pełnej instalacji; interfejs pokazuje wtedy stan wykryty, zewnętrznie zainstalowany, częściowy albo uszkodzony.
 
 ## 4. Resolver runtime i backendu
 
@@ -362,9 +366,13 @@ Manager backendu:
 
 Jeśli aktywacja plików nie powiedzie się, Boreal odtwarza poprzedni stan prefixu ze snapshotu — również ścieżki DLL, które nie należały do poprzedniego manifestu i byłyby nadpisane przez nowy komponent. Operacje inicjalizacji, konfiguracji, importu registry, instalacji zależności, zmian wskaźnika NGX, snapshotu/restore i usuwania środowiska są dodatkowo serializowane przez wspólną blokadę ścieżki prefixu. Aktory zarządzające środowiskiem lub snapshotami mogą przyjąć kolejne żądanie podczas oczekiwania na proces Wine albo I/O, więc aktor samodzielnie nie serializuje całej operacji.
 
+`PrefixUsageCoordinator` rozstrzyga także konflikt między uruchomieniem a mutacją. `WindowsProcessRunner` zdobywa lease dla prefixu przed przygotowaniem i startem procesu; jeżeli trwa mutacja albo mutacja czeka już na blokadę, start kończy się jawnym błędem zamiast wejść w wyścig. Gdy lease istnieje, operacje modyfikujące prefix (w tym konfiguracja backendu, registry, zależności, snapshot/restore i usunięcie środowiska) odmawiają wykonania komunikatem, że środowisko jest używane. Przy odzyskiwaniu zapisanych sesji po ponownym uruchomieniu aplikacji lease jest odtwarzany przed sprawdzeniem aktywności środowiska.
+
+Lease nie jest zwalniany tylko dlatego, że zakończył się początkowy proces-launcher: aplikacja może zostać uruchomiona jako jego proces potomny, a Steam utrzymuje `wineserver` także pomiędzy grami. Potwierdzanie bezczynności ma krótką barierę: w jej trakcie nowe uruchomienia są odrzucane. Jeśli uruchomienie pobrało lease, ale nie zakończyło jeszcze startu, sonda nie uznaje prefixu za bezczynny. Dopiero wynik `.inactive` atomowo usuwa dotychczasowe lease’y; `.active` lub `.unknown` zachowuje je. Dla `wineserver -w` bariera pozostaje aktywna przez cały wait. Boreal nie próbuje automatycznie kończyć `wineserver`. Installer, który pozostawił aktywne lub nierozpoznane procesy, zgłasza błąd i odkłada sprzątanie własnego, nieukończonego środowiska do chwili jego bezpiecznego zamknięcia.
+
 Zmiana backendu obejmuje także registry: przed aktywacją zapisywane są istniejące wartości obu wariantów nazw DLL (z `*` i bez), dopiero potem aktywowane są pliki i zmieniane overrides. Snapshot pozostaje niezatwierdzony do zakończenia instalacji wymaganych zależności i zapisu `environment.json`; błąd na tych etapach również wywołuje rollback DLL i overrides. Przy błędzie Boreal próbuje przywrócić poprzednie wartości registry oraz snapshot plików; jeśli rollback się nie powiedzie, zwracany jest osobny błąd o niepełnym odtworzeniu.
 
-Ta blokada serializuje operacje Boreal, ale sama nie wykrywa działającego procesu Wine używającego prefixu. Ochrona przed zmianą backendu podczas aktywnej sesji nadal zależy od zabezpieczeń warstwy aplikacji; manager nie ma niezależnego `wineserver`/process guard.
+Warstwa prefixu odmawia zmian, gdy istnieje aktywny lease procesu zarządzanego przez Boreal. Nie jest to systemowy rejestr wszystkich procesów Wine uruchomionych ręcznie poza Boreal; taki proces nie utworzy lease w tym aktorze. Podczas odzyskiwania zapisanych sesji Boreal rekonstruuje lease zanim udostępni środowisko do dalszych działań.
 
 Mapowanie plików jest następujące:
 
@@ -627,7 +635,7 @@ Najważniejsze miejsca implementacji:
 | modele runtime, capabilities, layout | `Boreal/RuntimeModels.swift` |
 | instalacja, walidacja, smoke test, probe | `Boreal/RuntimeManager.swift` |
 | prefix mode i konfiguracja środowiska | `Boreal/EnvironmentModels.swift` |
-| lifecycle prefixu i registry | `Boreal/EnvironmentManager.swift` |
+| lifecycle prefixu, lease runtime i registry | `Boreal/EnvironmentManager.swift`, `Boreal/WindowsProcessRunner.swift` |
 | backendy, API i stacki | `Boreal/Models.swift`, `Boreal/GameGraphicsProfiles.swift` |
 | wybór backendu | `GraphicsBackendResolver` w `Boreal/GameGraphicsProfiles.swift` |
 | aktywacja DLL i manifest prefixu | `Boreal/GraphicsBackendManager.swift` |
@@ -642,10 +650,10 @@ Najważniejsze miejsca implementacji:
 
 ## 16. Ostateczny werdykt
 
-Integracja wyboru runtime, prefixu, DirectX i backendu jest w kodzie zaprojektowana jako spójny, capability-aware pipeline. Najważniejsza ścieżka — wybór zgodnego runtime, przygotowanie prefixu, aktywacja DLL, registry overrides i uruchomienie przez `LaunchPlan` — jest obecna i wzajemnie połączona.
+Integracja wyboru runtime, prefixu, DirectX i backendu jest w kodzie zaprojektowana jako spójny, capability-aware pipeline. Najważniejsza ścieżka — wybór zgodnego runtime, przygotowanie prefixu, aktywacja DLL, registry overrides, lease aktywnego środowiska i uruchomienie przez `LaunchPlan` — jest obecna i wzajemnie połączona.
 
 Najsilniejszy poziom potwierdzenia dotyczy GPTK/D3DMetal i DXMT, ponieważ te ścieżki mają rzeczywisty probe D3D11. DXVK i VKD3D są poprawnie włączone w model, resolver, instalację komponentów i aktywację prefixu, ale ich obecna walidacja pozostaje deklaratywno-artefaktowa: system sprawdza capabilities i pliki, lecz standardowo nie potwierdza jeszcze urządzenia Vulkan ani prezentacji klatki.
 
 To rozróżnienie powinno być zachowane w diagnostyce i w UI: „backend dostępny” oznacza obecnie różny poziom dowodu zależnie od backendu.
 
-Z pełnej listy rekomendacji z analizy pozostają do wykonania cztery odrębne prace: uogólnienie probe na DX9/DX10/DX11/DX12, rzeczywiste Vulkan device/present verification dla DXVK/VKD3D, obserwator DLL/backendu załadowanego przez proces gry oraz trwały model dowodów i historii sukcesów per gra. Obecne flagi DXVK/VKD3D nadal opisują głównie wykryte capabilities i artefakty, nie dowód działania na adapterze hosta. Zmiany w tym wdrożeniu naprawiają PE imports/delay imports, ograniczają overrides, weryfikują integralność plików komponentów i transakcyjnie zabezpieczają modyfikacje prefixu/registry; nie oznaczają zamknięcia tych pozostałych luk.
+Z pełnej listy rekomendacji z analizy pozostają do wykonania cztery odrębne prace: uogólnienie probe na DX9/DX10/DX11/DX12, rzeczywiste Vulkan device/present verification dla DXVK/VKD3D, obserwator DLL/backendu załadowanego przez proces gry oraz trwały model dowodów i historii sukcesów per gra. Obecne flagi DXVK/VKD3D nadal opisują głównie wykryte capabilities i artefakty, nie dowód działania na adapterze hosta. Zmiany w tym wdrożeniu rozszerzają ochronę prefixu o runtime leases, dodają regresję macierzy overrides, naprawiają PE imports/delay imports, weryfikują integralność plików komponentów i transakcyjnie zabezpieczają modyfikacje prefixu/registry; nie oznaczają zamknięcia pozostałych luk w obserwacji i prezentacji grafiki.

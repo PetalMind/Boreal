@@ -28,6 +28,7 @@ struct StoreGameDetailView: View {
     }
 
     @Environment(BorealStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(ITADPriceService.apiKeyDefaultsKey) private var itadAPIKey = ""
     @AppStorage(ITADPriceService.countryCodeDefaultsKey) private var itadCountryCode = "PL"
     let game: StoreLibraryGame
@@ -46,6 +47,7 @@ struct StoreGameDetailView: View {
     @State private var showsActivityInfo = false
     @State private var showsAllActivitySessions = false
     @State private var selectedTab: DetailTab = .overview
+    @Namespace private var detailTabNamespace
     @State private var showsFullDescription = false
     @State private var compatibilityApplication: WindowsApplication?
     @State private var showsDiskStorageConfirmation = false
@@ -58,6 +60,10 @@ struct StoreGameDetailView: View {
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
     @State private var showsAllDependencies = false
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     private var currentGame: StoreLibraryGame {
         let linkedGame: StoreLibraryGame? = linkedApplication.flatMap { application in
@@ -95,7 +101,7 @@ struct StoreGameDetailView: View {
                         detailTabBar
                             .opacity(transitionContentVisible ? 1 : 0)
                             .offset(y: transitionContentVisible ? 0 : 8)
-                            .animation(.easeOut(duration: 0.25).delay(0.06), value: transitionContentVisible)
+                            .animation(motion.panel?.delay(0.06), value: transitionContentVisible)
                         VStack(alignment: .leading, spacing: 12) {
                             if currentGame.resolvedEntitlementState == .accountDisconnected {
                                 entitlementDisconnectedNotice
@@ -105,19 +111,22 @@ struct StoreGameDetailView: View {
                             }
                             if storeOperation != nil { operationStatus }
                             tabContent(width: contentWidth)
+                                .id(selectedTab)
+                                .transition(.opacity)
+                                .animation(motion.stateChange, value: selectedTab)
                             if !hasRail { detailsSidebar }
                         }
                         .padding(.top, 14)
                         .opacity(transitionContentVisible ? 1 : 0)
                         .offset(y: transitionContentVisible ? 0 : 10)
-                        .animation(.easeOut(duration: 0.25).delay(0.1), value: transitionContentVisible)
+                        .animation(motion.panel?.delay(0.1), value: transitionContentVisible)
                     }
                     .frame(width: contentWidth, alignment: .leading)
                     if hasRail {
                         detailsSidebar.frame(width: railWidth)
                             .opacity(transitionContentVisible ? 1 : 0)
                             .offset(y: transitionContentVisible ? 0 : 10)
-                            .animation(.easeOut(duration: 0.25).delay(0.1), value: transitionContentVisible)
+                            .animation(motion.panel?.delay(0.1), value: transitionContentVisible)
                     }
                 }
                 .padding(.horizontal, inset)
@@ -132,7 +141,7 @@ struct StoreGameDetailView: View {
                         startPoint: .topTrailing, endPoint: .bottomLeading
                     )
                     .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
-                    .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                    .animation(motion.panel?.delay(0.06), value: transitionPhase)
                     if isTransitioning {
                         GeometryReader { backgroundGeometry in
                             GameArtworkView(
@@ -146,12 +155,12 @@ struct StoreGameDetailView: View {
                             .blur(radius: 12)
                             .opacity(transitionPhase == .details ? 0.18 : 0)
                             .scaleEffect(transitionPhase == .details ? 1 : 1.035)
-                            .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                            .animation(motion.panel?.delay(0.06), value: transitionPhase)
                         }
                         .clipped()
                         Color.black
                             .opacity(transitionPhase == .details ? 0.42 : 0)
-                            .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                            .animation(motion.panel?.delay(0.06), value: transitionPhase)
                     }
                 }
             }
@@ -357,18 +366,18 @@ struct StoreGameDetailView: View {
                 .opacity(transitionContentVisible ? 1 : 0)
                 .offset(y: transitionContentVisible ? 0 : 14)
                 .scaleEffect(transitionContentVisible ? 1 : 0.98)
-                .animation(.easeOut(duration: 0.25), value: transitionContentVisible)
+                .animation(motion.panel, value: transitionContentVisible)
             }
             if width < 620 {
                 heroBadges
                     .opacity(transitionContentVisible ? 1 : 0)
                     .offset(y: transitionContentVisible ? 0 : 12)
-                    .animation(.easeOut(duration: 0.25), value: transitionContentVisible)
+                    .animation(motion.panel, value: transitionContentVisible)
                 primaryActions
                     .opacity(transitionContentVisible ? 1 : 0)
                     .offset(y: transitionContentVisible ? 0 : 10)
                     .scaleEffect(transitionContentVisible ? 1 : 0.97)
-                    .animation(.easeOut(duration: 0.25), value: transitionContentVisible)
+                    .animation(motion.panel, value: transitionContentVisible)
             }
         }
         .padding(width < 620 ? 16 : 20)
@@ -394,7 +403,7 @@ struct StoreGameDetailView: View {
                     }
                     .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
                     .scaleEffect(!isTransitioning || transitionPhase == .details ? 1 : 1.035)
-                    .animation(.easeOut(duration: 0.32).delay(0.06), value: transitionPhase)
+                    .animation(motion.panel?.delay(0.06), value: transitionPhase)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -414,7 +423,7 @@ struct StoreGameDetailView: View {
                 .matchedGeometryEffect(
                     id: game.id,
                     in: transitionNamespace,
-                    isSource: transitionPhase == .details
+                    isSource: transitionPhase == .closing
                 )
         } else {
             artwork
@@ -508,13 +517,23 @@ struct StoreGameDetailView: View {
                             .padding(.vertical, 12)
                             .contentShape(Rectangle())
                             .overlay(alignment: .bottom) {
-                                if selectedTab == tab { Capsule().fill(.blue).frame(height: 3) }
+                                if selectedTab == tab {
+                                    if reduceMotion {
+                                        Capsule().fill(.blue).frame(height: 3)
+                                    } else {
+                                        Capsule()
+                                            .fill(.blue)
+                                            .frame(height: 3)
+                                            .matchedGeometryEffect(id: "detail-tab-indicator", in: detailTabNamespace)
+                                    }
+                                }
                             }
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
                 }
             }
+            .animation(motion.control, value: selectedTab)
         }
         .scrollIndicators(.hidden)
         .overlay(alignment: .bottom) { Divider() }
@@ -749,7 +768,7 @@ struct StoreGameDetailView: View {
     private var dependenciesSection: some View {
         let environmentID = linkedEnvironment!.id
         let statuses = store.dependencyStatuses(for: environmentID, application: linkedApplication)
-        let readyCount = statuses.filter { $0.state == .installed }.count
+        let readyCount = statuses.filter { $0.state.satisfiesDependency }.count
         return detailCard(.Library.dependenciesTitle, symbol: "shippingbox.fill") {
             VStack(alignment: .leading, spacing: 10) {
                 Label {
@@ -793,10 +812,11 @@ struct StoreGameDetailView: View {
                     Spacer()
                     if status.state == .installing {
                         ProgressView().controlSize(.small)
-                    } else if status.state == .installed {
-                        Text(.Library.installed).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    } else if status.state.satisfiesDependency {
+                        Text(status.state == .installed ? String(localized: .Library.installed) : (status.state == .externallyInstalled ? "Externally installed" : "Detected"))
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                     } else {
-                        Button(status.state == .failed ? .Library.retry : .Library.install) {
+                        Button((status.state == .failed || status.state == .partial || status.state == .broken) ? .Library.retry : .Library.install) {
                             store.installDependency(status.dependency, for: environmentID)
                         }
                         .controlSize(.small)
@@ -812,6 +832,10 @@ struct StoreGameDetailView: View {
         case .missing: "circle"
         case .installing: "arrow.down.circle"
         case .failed: "xmark.circle.fill"
+        case .partial: "exclamationmark.arrow.circlepath"
+        case .broken: "exclamationmark.triangle.fill"
+        case .detected: "questionmark.circle.fill"
+        case .externallyInstalled: "checkmark.seal.fill"
         }
     }
 
@@ -821,6 +845,10 @@ struct StoreGameDetailView: View {
         case .missing: .secondary
         case .installing: .accentColor
         case .failed: .red
+        case .partial: .orange
+        case .broken: .red
+        case .detected: .orange
+        case .externallyInstalled: .green
         }
     }
 
@@ -841,7 +869,7 @@ struct StoreGameDetailView: View {
                 let required = store.dependencyStatuses(for: environment.id, application: application).filter { $0.recommendation == .required }
                 let componentStatus: LocalizedStringResource = if required.isEmpty {
                     .Library.noneRequired
-                } else if required.allSatisfy({ $0.state == .installed }) {
+                } else if required.allSatisfy({ $0.state.satisfiesDependency }) {
                     .Library.ready
                 } else {
                     .Library.requiresAttention
@@ -1019,59 +1047,63 @@ struct StoreGameDetailView: View {
 
     @ViewBuilder private var cloudSaveCompactStatus: some View {
         if discoveryGame == nil, currentGame.provider == .gog, linkedApplication != nil {
-            switch store.cloudSaveStatus(for: currentGame).state {
-            case .synced:
-                Label("Synced", systemImage: "icloud.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(.green.opacity(0.12), in: Capsule())
-            case .syncing:
-                Label("Syncing…", systemImage: "icloud.and.arrow.up")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.cyan)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(.cyan.opacity(0.12), in: Capsule())
-            case .conflict:
-                Label("Conflict", systemImage: "exclamationmark.icloud")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(.orange.opacity(0.12), in: Capsule())
-            case .unavailable, .needsConfiguration, .checking, .failed:
-                EmptyView()
+            let state = store.cloudSaveStatus(for: currentGame).state
+            Group {
+                switch state {
+                case .synced:
+                    Label("Synced", systemImage: "icloud.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(.green.opacity(0.12), in: Capsule())
+                case .syncing:
+                    Label("Syncing…", systemImage: "icloud.and.arrow.up")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.cyan)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(.cyan.opacity(0.12), in: Capsule())
+                case .conflict:
+                    Label("Conflict", systemImage: "exclamationmark.icloud")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(.orange.opacity(0.12), in: Capsule())
+                case .unavailable, .needsConfiguration, .checking, .failed:
+                    EmptyView()
+                }
             }
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            .animation(motion.stateChange, value: state)
         }
     }
 
     @ViewBuilder private var primaryLaunchAction: some View {
             if let discoveryGame, !isInLibrary {
-                Button(.Library.addToLibrary, systemImage: "plus") {
+                GamePrimaryActionButton(title: String(localized: .Library.addToLibrary), symbol: "plus", state: .ready) {
                     store.addDiscoveryGameToLibrary(discoveryGame, details: currentGame)
                 }
-                .buttonStyle(BorealPrimaryActionButtonStyle())
             } else if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
             } else if store.installation(for: currentGame)?.state == .volumeUnavailable {
                 primaryStatusButton("Volume unavailable", symbol: "externaldrive.badge.xmark")
             } else if game.provider == .steam {
                 if store.isInstalled(currentGame), store.installedPlatform(for: currentGame) == .nativeMacOS, store.installedLocation(for: currentGame) != nil {
-                    Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
-                        .buttonStyle(BorealPrimaryActionButtonStyle())
+                    GamePrimaryActionButton(title: String(localized: .Library.play), symbol: "play.fill", state: .ready, action: openNativeInstallation)
                 } else if let app = linkedApplication {
                     runtimeLaunchControl(for: app, playTitle: .Library.play)
                 } else if currentGame.supportsNativeMacOS == true {
-                    Button(store.isInstalled(currentGame) ? .Library.play : .Library.install, systemImage: store.isInstalled(currentGame) ? "play.fill" : "arrow.down.circle.fill") { openSteam() }
-                        .buttonStyle(BorealPrimaryActionButtonStyle())
+                    let title = store.isInstalled(currentGame) ? String(localized: .Library.play) : String(localized: .Library.install)
+                    let symbol = store.isInstalled(currentGame) ? "play.fill" : "arrow.down.circle.fill"
+                    GamePrimaryActionButton(title: title, symbol: symbol, state: .ready, action: openSteam)
                 } else if currentGame.supportsWindows == true, storeOperation == nil {
-                    Button(.Library.installWindowsVersion, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
-                        .buttonStyle(BorealPrimaryActionButtonStyle())
+                    GamePrimaryActionButton(title: String(localized: .Library.installWindowsVersion), symbol: "arrow.down.circle.fill", state: .ready) {
+                        showsInstallationOptions = true
+                    }
                 } else {
-                    Button(.Library.openInSteam, systemImage: "arrow.up.right.square") { openSteam() }
-                        .buttonStyle(BorealPrimaryActionButtonStyle())
+                    GamePrimaryActionButton(title: String(localized: .Library.openInSteam), symbol: "arrow.up.right.square", state: .ready, action: openSteam)
                 }
             } else if currentGame.resolvedEntitlementState == .accountDisconnected, linkedApplication == nil {
                 primaryStatusButton("Reconnect account…", symbol: "person.crop.circle.badge.exclamationmark")
@@ -1081,28 +1113,36 @@ struct StoreGameDetailView: View {
                 } else if store.usesManagedRuntime(for: currentGame), storeOperation == nil {
                     primaryStatusButton("Preparing compatibility…", symbol: "gearshape.2.fill")
                 } else if store.installedPlatform(for: currentGame) == .nativeMacOS {
-                    Button(.Library.play, systemImage: "play.fill") { openNativeInstallation() }
-                        .buttonStyle(BorealPrimaryActionButtonStyle())
+                    GamePrimaryActionButton(title: String(localized: .Library.play), symbol: "play.fill", state: .ready, action: openNativeInstallation)
                 } else if storeOperation == nil {
                     runtimePreparationMenu
                 }
             } else if storeOperation == nil {
-                Button(installButtonTitle, systemImage: "arrow.down.circle.fill") { showsInstallationOptions = true }
-                    .buttonStyle(BorealPrimaryActionButtonStyle())
+            GamePrimaryActionButton(title: String(localized: installButtonTitle), symbol: "arrow.down.circle.fill", state: .ready) {
+                    showsInstallationOptions = true
+                }
             }
     }
 
     private var secondaryHeroActions: some View {
         HStack(spacing: 10) {
-            Button {
+            FavoriteButton(
+                isFavorite: isFavorite,
+                showsBackground: false,
+                favoriteColor: .purple,
+                inactiveColor: .secondary,
+                helpText: String(localized: isFavorite ? .Library.removeFromFavorites : .Library.addToFavorites),
+                accessibilityText: String(localized: isFavorite ? .Library.removeFromFavorites : .Library.addToFavorites)
+            ) {
                 store.toggleFavorite(key: "\(currentGame.provider.rawValue):\(currentGame.externalID)")
-            } label: {
-                Image(systemName: isFavorite ? "heart.fill" : "heart")
             }
-            .buttonStyle(BorealSquareActionButtonStyle())
-            .foregroundStyle(isFavorite ? .purple : .secondary)
-            .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
-            .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+            .frame(width: 40, height: 40)
+            .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(.white.opacity(0.14))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             moreActionsMenu
         }
     }
@@ -1229,39 +1269,43 @@ struct StoreGameDetailView: View {
     @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: LocalizedStringResource) -> some View {
         switch app.status {
         case .running:
-            Button("Stop", systemImage: "stop.fill") { store.toggleRunning(app.id) }
-                .buttonStyle(BorealPrimaryActionButtonStyle())
+            GamePrimaryActionButton(title: "Stop", symbol: "stop.fill", state: .running) {
+                store.toggleRunning(app.id)
+            }
         case .preparing:
-            primaryStatusButton("Preparing…", symbol: "gearshape.2.fill")
+            primaryStatusButton("Preparing…", symbol: "gearshape.2.fill", state: .preparing)
         case .starting:
-            primaryStatusButton("Launching…", symbol: "play.circle.fill")
+            primaryStatusButton("Launching…", symbol: "play.circle.fill", state: .starting)
         case .installing:
-            primaryStatusButton("Installing…", symbol: "shippingbox.fill")
+            primaryStatusButton("Installing…", symbol: "shippingbox.fill", state: .installing)
         case .needsAttention:
-            Button("Retry", systemImage: "arrow.clockwise") { store.retry(app.id) }
-                .buttonStyle(BorealPrimaryActionButtonStyle())
+            GamePrimaryActionButton(title: "Retry", symbol: "arrow.clockwise", state: .failed) {
+                store.retry(app.id)
+            }
         case .unavailable:
-            primaryStatusButton("Unsupported", symbol: "xmark.octagon.fill")
+            primaryStatusButton("Unsupported", symbol: "xmark.octagon.fill", state: .failed)
         case .ready:
-            Button(playTitle, systemImage: "play.fill") { store.toggleRunning(app.id) }
-                .buttonStyle(BorealPrimaryActionButtonStyle())
+            GamePrimaryActionButton(title: String(localized: playTitle), symbol: "play.fill", state: .ready) {
+                store.toggleRunning(app.id)
+            }
         }
     }
 
     @ViewBuilder private func storeOperationPrimaryButton(_ operation: StoreGameOperationState) -> some View {
         switch operation {
         case .installing(let progress):
-            primaryStatusButton(operationTitle(for: progress), symbol: operationSymbol(for: progress))
+            primaryStatusButton(operationTitle(for: progress), symbol: operationSymbol(for: progress), state: .installing)
         case .preparingEnvironment:
-            primaryStatusButton("Preparing…", symbol: "gearshape.2.fill")
+            primaryStatusButton("Preparing…", symbol: "gearshape.2.fill", state: .preparing)
         case .paused:
-            Button("Queued", systemImage: "clock.fill") { store.resumeStoreGameOperation(currentGame) }
-                .buttonStyle(BorealPrimaryActionButtonStyle())
+            GamePrimaryActionButton(title: "Queued", symbol: "clock.fill", state: .preparing) {
+                store.resumeStoreGameOperation(currentGame)
+            }
                 .help("Resume installation")
         case .awaitingProvider:
-            primaryStatusButton("Queued", symbol: "clock.fill")
+            primaryStatusButton("Queued", symbol: "clock.fill", state: .preparing)
         case .failed:
-            Button("Retry", systemImage: "arrow.clockwise") {
+            GamePrimaryActionButton(title: "Retry", symbol: "arrow.clockwise", state: .failed) {
                 if store.canResumeStoreGameOperation(currentGame) {
                     store.resumeStoreGameOperation(currentGame)
                 } else {
@@ -1269,13 +1313,15 @@ struct StoreGameDetailView: View {
                     showsInstallationOptions = true
                 }
             }
-            .buttonStyle(BorealPrimaryActionButtonStyle())
         }
     }
 
-    private func primaryStatusButton(_ title: String, symbol: String) -> some View {
-        Button(title, systemImage: symbol) { }
-            .buttonStyle(BorealPrimaryActionButtonStyle())
+    private func primaryStatusButton(
+        _ title: String,
+        symbol: String,
+        state: GamePrimaryActionState = .preparing
+    ) -> some View {
+        GamePrimaryActionButton(title: title, symbol: symbol, state: state, action: {})
             .disabled(true)
     }
 
@@ -1714,7 +1760,7 @@ struct StoreGameDetailView: View {
                             showsAllActivitySessions ? .Library.showRecentSessions : .Library.showAllSessions,
                             systemImage: showsAllActivitySessions ? "chevron.up" : "chevron.down"
                         ) {
-                            withAnimation(.snappy) {
+                            withAnimation(motion.stateChange) {
                                 showsAllActivitySessions.toggle()
                             }
                         }
@@ -2332,7 +2378,7 @@ struct StoreGameDetailView: View {
     private var requiredActionsSection: some View {
         let environmentID = linkedEnvironment!.id
         let statuses = store.dependencyStatuses(for: environmentID, application: linkedApplication)
-        let actions = statuses.filter { $0.recommendation == .required && $0.state != .installed }
+        let actions = statuses.filter { $0.recommendation == .required && !$0.state.satisfiesDependency }
         return detailCard("Required actions", symbol: "exclamationmark.circle.fill") {
             if actions.isEmpty {
                 Label("No action is required before launch.", systemImage: "checkmark.circle.fill")
@@ -2349,7 +2395,7 @@ struct StoreGameDetailView: View {
                         Spacer()
                         if status.state == .installing { ProgressView().controlSize(.small) }
                         else {
-                            Button(status.state == .failed ? .Library.retry : .Library.install) {
+                            Button((status.state == .failed || status.state == .partial || status.state == .broken) ? .Library.retry : .Library.install) {
                                 store.installDependency(status.dependency, for: environmentID)
                             }
                             .controlSize(.small)
@@ -2452,7 +2498,7 @@ struct StoreGameDetailView: View {
     private var hasMissingRequiredDependencies: Bool {
         guard let environment = linkedEnvironment else { return false }
         return store.dependencyStatuses(for: environment.id, application: linkedApplication)
-            .contains { $0.recommendation == .required && $0.state != .installed }
+            .contains { $0.recommendation == .required && !$0.state.satisfiesDependency }
     }
 
     private var communityReportSummary: String {
@@ -2701,8 +2747,41 @@ private struct StoreGameCoverEditorState: Identifiable {
     var id: UUID { gameID }
 }
 
+private enum GamePrimaryActionState: Equatable {
+    case ready
+    case preparing
+    case starting
+    case running
+    case installing
+    case failed
+}
+
+private struct GamePrimaryActionButton: View {
+    let title: String
+    let symbol: String
+    let state: GamePrimaryActionState
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 156, alignment: .center)
+        }
+        .buttonStyle(BorealPrimaryActionButtonStyle())
+        .animation(motion.control, value: state)
+    }
+}
+
 private struct BorealSecondaryActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -2718,12 +2797,17 @@ private struct BorealSecondaryActionButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.01 : 1))
             .onHover { isHovered = $0 }
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: isHovered)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).control, value: configuration.isPressed)
     }
 }
 
 private struct BorealPrimaryActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.callout.weight(.semibold))
@@ -2742,10 +2826,15 @@ private struct BorealPrimaryActionButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .shadow(color: .blue.opacity(0.28), radius: 8, y: 3)
             .opacity(isEnabled ? 1 : 0.5)
+            .scaleEffect(configuration.isPressed ? 0.97 : (isHovered ? 1.01 : 1))
+            .onHover { isHovered = $0 }
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: isHovered)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).control, value: configuration.isPressed)
     }
 }
 
 private struct BorealSquareActionButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 16, weight: .semibold))
@@ -2756,6 +2845,8 @@ private struct BorealSquareActionButtonStyle: ButtonStyle {
                     .stroke(.white.opacity(0.14))
             }
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).control, value: configuration.isPressed)
     }
 }
 
@@ -2776,6 +2867,8 @@ private struct BorealRailActionButtonStyle: ButtonStyle {
 }
 
 struct BorealDownloadProgressStyle: ProgressViewStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         GeometryReader { proxy in
             let fraction = min(max(configuration.fractionCompleted ?? 0, 0), 1)
@@ -2795,7 +2888,10 @@ struct BorealDownloadProgressStyle: ProgressViewStyle {
             }
         }
         .frame(height: 12)
-        .animation(.smooth(duration: 0.25), value: configuration.fractionCompleted)
+        .animation(
+            reduceMotion ? .linear(duration: 0.08) : .linear(duration: 0.15),
+            value: configuration.fractionCompleted
+        )
     }
 }
 
@@ -3422,6 +3518,11 @@ private struct StoreMediaViewer: View {
     let selection: StoreMediaSelection
     let game: StoreLibraryGame
     let onDismiss: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var motion: BorealMotionEnvironment {
+        BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
 
     @State private var currentIndex: Int
     @State private var player = AVPlayer()
@@ -3600,7 +3701,7 @@ private struct StoreMediaViewer: View {
         .frame(maxWidth: .infinity)
         .background(Color.black.opacity(0.25))
         .clipped()
-        .animation(.easeInOut(duration: 0.16), value: currentItem.id)
+        .animation(motion.control, value: currentItem.id)
     }
 
     @ViewBuilder private var mediaContent: some View {
@@ -3757,7 +3858,7 @@ private struct StoreMediaViewer: View {
                         .padding(.bottom, 18)
                 }
             }
-            .animation(.easeInOut(duration: 0.16), value: currentItem.id)
+            .animation(motion.control, value: currentItem.id)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -3837,7 +3938,7 @@ private struct StoreMediaViewer: View {
     private func selectMedia(at index: Int) {
         guard selection.items.indices.contains(index), index != currentIndex else { return }
 
-        withAnimation(.easeInOut(duration: 0.16)) {
+        withAnimation(motion.control) {
             currentIndex = index
         }
     }
@@ -3850,7 +3951,7 @@ private struct StoreMediaViewer: View {
         }
 
         if animated {
-            withAnimation(.easeOut(duration: 0.16), action)
+            withAnimation(motion.instant, action)
         } else {
             action()
         }

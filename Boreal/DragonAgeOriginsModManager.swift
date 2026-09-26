@@ -961,7 +961,7 @@ private extension DragonAgeOriginsModManager {
                         throw ModManagerError.invalidRelativePath(file.relativePath)
                     }
                     target = String(file.relativePath.dropFirst(prefix.count))
-                case .witcher2CookedPC, .witcher2UserContent:
+                case .witcher2CookedPC, .witcher2UserContent, .witcher3GameRoot:
                     throw ModManagerError.deploymentFailed("The Dragon Age profile contains a non-Dragon Age mod.")
                 default:
                     throw ModManagerError.deploymentFailed("The Dragon Age profile contains a non-Dragon Age mod.")

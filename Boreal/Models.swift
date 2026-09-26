@@ -377,6 +377,10 @@ nonisolated struct GraphicsAPILaunchOption: Codable, Hashable, Sendable {
     var arguments: [String] = []
     var executable: String? = nil
     var requiredFile: String? = nil
+
+    var hasLaunchEffect: Bool {
+        !arguments.isEmpty || executable != nil || requiredFile != nil
+    }
 }
 
 nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
@@ -425,6 +429,13 @@ nonisolated struct GameGraphicsProfile: Codable, Hashable, Sendable {
 
     func launchOption(for api: GraphicsAPI) -> GraphicsAPILaunchOption? {
         launchOptions.first { $0.api == api }
+    }
+
+    /// A game API is user-selectable only when Boreal can change the launch
+    /// recipe for at least one choice. No-op profile metadata stays read-only.
+    var selectableLaunchOptions: [GraphicsAPILaunchOption] {
+        guard enforcedAPI == nil || enforcedAPI == .automatic else { return [] }
+        return launchOptions.filter(\.hasLaunchEffect)
     }
 }
 
@@ -481,7 +492,110 @@ nonisolated struct AuxiliaryExecutable: Codable, Hashable, Sendable, Identifiabl
     var id: String { executablePath.lowercased() }
 }
 
-nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
+/// A selectable Wine diagnostic verbosity. The default intentionally keeps
+/// Wine errors without enabling its high-volume `+all` trace.
+nonisolated enum WineLoggingLevel: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case errorsOnly
+    case compatibility
+    case graphics
+    case full
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .errorsOnly: "Errors only"
+        case .compatibility: "Compatibility"
+        case .graphics: "Graphics"
+        case .full: "Full"
+        }
+    }
+
+    var wineDebugChannels: String {
+        switch self {
+        case .errorsOnly: "err+all"
+        case .compatibility: "err+all,+seh,+tid,+loaddll"
+        case .graphics: "err+all,+seh,+tid,+loaddll,+d3d,+dxgi"
+        case .full: "+all"
+        }
+    }
+}
+
+nonisolated enum CompatibilitySettingScope: String, Codable, Sendable, Hashable {
+    case application
+    case launch
+    case environment
+    case runtime
+    case gameFiles
+}
+
+nonisolated enum CompatibilityChangeImpact: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case launchOnly
+    case sessionRestart
+    case environmentConfiguration
+    case environmentRebuild
+    case gameFilesModification
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .launchOnly: "Applies at next launch"
+        case .sessionRestart: "Requires a Wine session restart"
+        case .environmentConfiguration: "Updates the Wine environment"
+        case .environmentRebuild: "Rebuilds the Wine environment"
+        case .gameFilesModification: "May modify game files"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .launchOnly: "play.fill"
+        case .sessionRestart: "arrow.clockwise"
+        case .environmentConfiguration: "gearshape.2"
+        case .environmentRebuild: "shippingbox"
+        case .gameFilesModification: "doc.badge.gearshape"
+        }
+    }
+}
+
+nonisolated enum WineCompatibilitySetting: String, CaseIterable, Sendable, Hashable {
+    case runtimeSelection
+    case windowsVersion
+    case executableArchitecture
+    case prefixMode
+    case graphicsRenderer
+    case wineD3DRenderer
+    case synchronization
+    case retinaMode
+    case spatialUpscaling
+    case controllerMapping
+    case launchArguments
+    case launchWindow
+    case display
+    case diagnostics
+    case dependencyOverrides
+    case legacyWrapper
+    case componentsAndPatches
+
+    var scope: CompatibilitySettingScope {
+        switch self {
+        case .runtimeSelection: .runtime
+        case .windowsVersion, .executableArchitecture, .prefixMode, .graphicsRenderer,
+             .synchronization, .retinaMode, .controllerMapping,
+             .spatialUpscaling, .dependencyOverrides:
+            .environment
+        case .wineD3DRenderer, .launchArguments, .launchWindow, .display, .diagnostics:
+            .launch
+        case .legacyWrapper, .componentsAndPatches:
+            .gameFiles
+        }
+    }
+}
+
+/// Persisted user intent. Detected executable facts, game rules, resolved
+/// environment settings and per-launch overrides live in their own models.
+nonisolated struct CompatibilityIntent: Codable, Hashable, Sendable {
     var windowsVersion: WineWindowsVersion = .windows11
     var architecture: WinePrefixArchitecture = .win64
     /// Nil keeps profiles created before the prefix picker on automatic
@@ -507,20 +621,33 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     var overlayCompatibleFullscreen = true
     /// Selected CoreGraphics display ID for the Wine desktop; nil follows the main display.
     var overlayDisplayID: UInt32? = nil
-    var debugLoggingEnabled = false
+    var wineLoggingLevel: WineLoggingLevel = .errorsOnly
     var disableSteamInputEquivalent = false
     var forceXInput = true
     var launchArguments = ""
     var runtimeIDOverride: String? = nil
-    var requiredDependencies: Set<RuntimeDependency> = [.physX]
+    var dependencyOverrides: Set<RuntimeDependency> = []
+
+    /// Transitional source-compatibility for callers written before these
+    /// preferences were named explicitly as overrides.
+    var requiredDependencies: Set<RuntimeDependency> {
+        get { dependencyOverrides }
+        set { dependencyOverrides = newValue }
+    }
+
+    /// Transitional source-compatibility for the former boolean log switch.
+    var debugLoggingEnabled: Bool {
+        get { wineLoggingLevel != .errorsOnly }
+        set { wineLoggingLevel = newValue ? .full : .errorsOnly }
+    }
 
     private enum CodingKeys: String, CodingKey {
         case windowsVersion, architecture, prefixMode, graphicsBackend, graphicsFallback, wineD3DRenderer, legacyWrapper, legacyGraphicsAPI, graphicsAPI
-        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, overlayCompatibleFullscreen, overlayDisplayID, debugLoggingEnabled
-        case disableSteamInputEquivalent, forceXInput, launchArguments, runtimeIDOverride, requiredDependencies
+        case esyncEnabled, msyncEnabled, retinaModeEnabled, fullscreenFSREnabled, fullscreenFSRMode, fullscreenFSRStrength, fullscreenFSRCustomMode, upscalingBridge, temporalUpscaling, overlayCompatibleFullscreen, overlayDisplayID, wineLoggingLevel
+        case disableSteamInputEquivalent, forceXInput, launchArguments, runtimeIDOverride, dependencyOverrides
     }
 
-    static let `default` = WineCompatibilityProfile()
+    static let `default` = CompatibilityIntent()
 
     var parsedLaunchArguments: [String] {
         var result: [String] = []
@@ -554,9 +681,12 @@ nonisolated struct WineCompatibilityProfile: Codable, Hashable, Sendable {
     }
 }
 
-extension WineCompatibilityProfile {
+typealias WineCompatibilityProfile = CompatibilityIntent
+
+extension CompatibilityIntent {
     nonisolated init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyValues = try decoder.container(keyedBy: LegacyCodingKeys.self)
         windowsVersion = try values.decodeIfPresent(WineWindowsVersion.self, forKey: .windowsVersion) ?? .windows11
         architecture = try values.decodeIfPresent(WinePrefixArchitecture.self, forKey: .architecture) ?? .win64
         prefixMode = try values.decodeIfPresent(WinePrefixMode.self, forKey: .prefixMode)
@@ -585,12 +715,25 @@ extension WineCompatibilityProfile {
         }
         overlayCompatibleFullscreen = try values.decodeIfPresent(Bool.self, forKey: .overlayCompatibleFullscreen) ?? true
         overlayDisplayID = try values.decodeIfPresent(UInt32.self, forKey: .overlayDisplayID)
-        debugLoggingEnabled = try values.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
+        if let wineLoggingLevel = try values.decodeIfPresent(WineLoggingLevel.self, forKey: .wineLoggingLevel) {
+            self.wineLoggingLevel = wineLoggingLevel
+        } else {
+            self.wineLoggingLevel = (try legacyValues.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false)
+                ? .full
+                : .errorsOnly
+        }
         disableSteamInputEquivalent = try values.decodeIfPresent(Bool.self, forKey: .disableSteamInputEquivalent) ?? false
         forceXInput = try values.decodeIfPresent(Bool.self, forKey: .forceXInput) ?? true
         launchArguments = try values.decodeIfPresent(String.self, forKey: .launchArguments) ?? ""
         runtimeIDOverride = try values.decodeIfPresent(String.self, forKey: .runtimeIDOverride)
-        requiredDependencies = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies) ?? []
+        dependencyOverrides = try values.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .dependencyOverrides)
+            ?? legacyValues.decodeIfPresent(Set<RuntimeDependency>.self, forKey: .requiredDependencies)
+            ?? []
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case debugLoggingEnabled
+        case requiredDependencies
     }
 }
 

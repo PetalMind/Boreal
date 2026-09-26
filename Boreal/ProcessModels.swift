@@ -134,6 +134,7 @@ nonisolated struct WindowsLaunchPlan: Sendable, Hashable {
     var workingDirectory: URL
     var overlayCompatibleFullscreen = false
     var overlayDisplayID: UInt32? = nil
+    var wineLoggingLevel: WineLoggingLevel = .errorsOnly
     var sessionScope: SessionScope = .exclusiveEnvironment
     var processExecutableName: String? = nil
     var processExecutablePath: String? = nil
@@ -841,13 +842,15 @@ nonisolated protocol WindowsProcessRunning: Sendable {
     func forceQuit(_ session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws
     func gameProcessIDs(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [Int32]
     func adoptRuntimeLease(for session: WindowsProcessSession, environment: ManagedBorealEnvironment) async throws
-    func releaseRuntimeLeases(for environment: ManagedBorealEnvironment) async
+    func confirmPrefixIdle(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> EnvironmentSessionState
 }
 
 nonisolated extension WindowsProcessRunning {
     func gameProcessIDs(session: WindowsProcessSession, environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> [Int32] { [] }
     func adoptRuntimeLease(for session: WindowsProcessSession, environment: ManagedBorealEnvironment) async throws { }
-    func releaseRuntimeLeases(for environment: ManagedBorealEnvironment) async { }
+    func confirmPrefixIdle(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async -> EnvironmentSessionState {
+        await environmentSessionState(environment: environment, runtime: runtime)
+    }
 
     /// Runners that do not have a native process-group implementation retain
     /// the old launcher-stop behavior until they can provide one.

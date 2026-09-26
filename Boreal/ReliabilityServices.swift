@@ -73,12 +73,45 @@ nonisolated struct DependencyEvidence: Codable, Hashable, Sendable, Identifiable
         self.library = library
         self.detail = detail
     }
+
+    /// Evidence is weighted by provenance instead of treating a filename as
+    /// equivalent to a PE import. This is intentionally computed so older
+    /// persisted compatibility reports remain decodable.
+    var confidenceWeight: Double {
+        switch source {
+        case "user profile": 1.0
+        case "Wine log": 0.95
+        case "PE import table": 1.0
+        case "related PE import table": 0.85
+        case "bounded executable strings": 0.65
+        case "related game file strings": 0.5
+        case "game file inventory":
+            switch library.lowercased() {
+            case "wmv", "asf", "wma": 0.85
+            case "avi": 0.55
+            case "mp4": 0.45
+            default: 0.0
+            }
+        default: 0.4
+        }
+    }
+
+    var mediaCapability: MediaCompatibilityCapability? {
+        switch library.lowercased() {
+        case "mf.dll", "mfplat.dll", "mfreadwrite.dll", "mfplay.dll", "wmvcore.dll", "wmv9vcm.dll", "mp4":
+            .mediaFoundation
+        case "quartz.dll", "qasf.dll", "qedit.dll", "amstream.dll", "avi":
+            .directShow
+        default: nil
+        }
+    }
 }
 
 nonisolated struct DependencyRecommendation: Codable, Hashable, Sendable, Identifiable {
     let id: RuntimeDependency
     let dependency: RuntimeDependency
     let confidence: CompatibilityConfidence
+    let recommendation: RuntimeDependencyRecommendation
     let reason: String
     let evidence: [DependencyEvidence]
     let isInstalled: Bool
@@ -86,6 +119,7 @@ nonisolated struct DependencyRecommendation: Codable, Hashable, Sendable, Identi
     init(
         dependency: RuntimeDependency,
         confidence: CompatibilityConfidence,
+        recommendation: RuntimeDependencyRecommendation = .required,
         reason: String,
         evidence: [DependencyEvidence] = [],
         isInstalled: Bool = false
@@ -93,9 +127,15 @@ nonisolated struct DependencyRecommendation: Codable, Hashable, Sendable, Identi
         id = dependency
         self.dependency = dependency
         self.confidence = confidence
+        self.recommendation = recommendation
         self.reason = reason
         self.evidence = evidence
         self.isInstalled = isInstalled
+    }
+
+    var confidenceScore: Double { evidence.map(\.confidenceWeight).max() ?? 0 }
+    var mediaCapabilities: Set<MediaCompatibilityCapability> {
+        Set(evidence.compactMap(\.mediaCapability))
     }
 }
 
@@ -137,6 +177,7 @@ nonisolated struct CompatibilityResolutionRequest: Sendable {
     let installedRuntimes: [InstalledRuntime]
     let executableURL: URL?
     let relatedFiles: [URL]
+    let runtimeLogs: [URL]
     let prefixURL: URL?
 
     init(
@@ -150,6 +191,7 @@ nonisolated struct CompatibilityResolutionRequest: Sendable {
         installedRuntimes: [InstalledRuntime] = [],
         executableURL: URL? = nil,
         relatedFiles: [URL] = [],
+        runtimeLogs: [URL] = [],
         prefixURL: URL? = nil
     ) {
         self.applicationID = applicationID
@@ -162,6 +204,7 @@ nonisolated struct CompatibilityResolutionRequest: Sendable {
         self.installedRuntimes = installedRuntimes
         self.executableURL = executableURL
         self.relatedFiles = relatedFiles
+        self.runtimeLogs = runtimeLogs
         self.prefixURL = prefixURL
     }
 }
@@ -317,9 +360,12 @@ actor CompatibilityResolver {
 
     func resolve(_ request: CompatibilityResolutionRequest) async -> CompatibilityResolution {
         let architecture = resolveArchitecture(request)
+        let relatedFiles = request.relatedFiles.isEmpty
+            ? request.executableAnalysis?.relatedFiles ?? []
+            : request.relatedFiles
         let directX = DirectXDetector.detect(
             executable: request.executableURL,
-            relatedFiles: request.relatedFiles,
+            relatedFiles: relatedFiles,
             profile: request.gameProfile
         )
         let api = directX.api ?? request.gameProfile?.defaultAPI ?? request.userProfile.graphicsAPI ?? .automatic
@@ -348,16 +394,22 @@ actor CompatibilityResolver {
             )
         }
 
-        let dependencyRequirements = await dependencyAnalyzer.analyze(
+        let analyzedDependencies = await dependencyAnalyzer.analyze(
             executable: request.executableURL,
-            relatedFiles: request.relatedFiles,
+            relatedFiles: relatedFiles,
             prefixURL: request.prefixURL,
-            userDependencies: request.userProfile.requiredDependencies
+            userDependencies: request.userProfile.dependencyOverrides
         )
+        let logDependencies = await dependencyAnalyzer.analyzeLogs(
+            request.runtimeLogs,
+            prefixURL: request.prefixURL
+        )
+        let dependencyRequirements = mergeDependencyRequirements(analyzedDependencies + logDependencies)
         let dependencies = dependencyRequirements.map { requirement in
             DependencyRecommendation(
                 dependency: requirement.dependency,
                 confidence: requirement.confidence,
+                recommendation: requirement.recommendation,
                 reason: requirement.reason,
                 evidence: requirement.evidence,
                 isInstalled: requirement.isInstalled
@@ -503,6 +555,36 @@ actor CompatibilityResolver {
         if dependencies.contains(where: { !$0.isInstalled && $0.confidence == .high }) { return .medium }
         return directX.confidence == .high ? .high : .medium
     }
+
+    private func mergeDependencyRequirements(_ requirements: [DependencyRequirement]) -> [DependencyRequirement] {
+        var merged: [RuntimeDependency: DependencyRequirement] = [:]
+        for requirement in requirements {
+            guard let current = merged[requirement.dependency] else {
+                merged[requirement.dependency] = requirement
+                continue
+            }
+            let confidence = maxConfidence(current.confidence, requirement.confidence)
+            let recommendation = current.recommendation == .required || requirement.recommendation == .required
+                ? RuntimeDependencyRecommendation.required
+                : (current.recommendation == .recommended || requirement.recommendation == .recommended
+                    ? .recommended
+                    : .optional)
+            merged[requirement.dependency] = DependencyRequirement(
+                dependency: requirement.dependency,
+                confidence: confidence,
+                recommendation: recommendation,
+                reason: current.reason == requirement.reason ? current.reason : "\(current.reason) \(requirement.reason)",
+                evidence: current.evidence + requirement.evidence,
+                isInstalled: current.isInstalled || requirement.isInstalled
+            )
+        }
+        return merged.values.sorted { $0.dependency.rawValue < $1.dependency.rawValue }
+    }
+
+    private func maxConfidence(_ lhs: CompatibilityConfidence, _ rhs: CompatibilityConfidence) -> CompatibilityConfidence {
+        let rank: [CompatibilityConfidence: Int] = [.low: 0, .medium: 1, .high: 2, .verified: 3]
+        return rank[lhs, default: 0] >= rank[rhs, default: 0] ? lhs : rhs
+    }
 }
 
 // MARK: - Static dependency analysis
@@ -511,9 +593,59 @@ nonisolated struct DependencyRequirement: Codable, Hashable, Sendable, Identifia
     let id: RuntimeDependency
     let dependency: RuntimeDependency
     let confidence: CompatibilityConfidence
+    let recommendation: RuntimeDependencyRecommendation
     let reason: String
     let evidence: [DependencyEvidence]
     let isInstalled: Bool
+
+    init(
+        dependency: RuntimeDependency,
+        confidence: CompatibilityConfidence,
+        recommendation: RuntimeDependencyRecommendation = .required,
+        reason: String,
+        evidence: [DependencyEvidence],
+        isInstalled: Bool
+    ) {
+        id = dependency
+        self.dependency = dependency
+        self.confidence = confidence
+        self.recommendation = recommendation
+        self.reason = reason
+        self.evidence = evidence
+        self.isInstalled = isInstalled
+    }
+
+    var confidenceScore: Double { evidence.map(\.confidenceWeight).max() ?? 0 }
+    var mediaCapabilities: Set<MediaCompatibilityCapability> {
+        Set(evidence.compactMap(\.mediaCapability))
+    }
+}
+
+private func mediaEvidenceDetail(
+    extension mediaExtension: String,
+    fileName: String,
+    hasMediaFoundationImports: Bool,
+    hasDirectShowImports: Bool
+) -> String {
+    switch mediaExtension {
+    case "wmv", "asf", "wma":
+        return "Found \(fileName), a strong Windows Media asset signal."
+
+    case "mp4" where hasMediaFoundationImports:
+        return "Found \(fileName) together with Media Foundation imports."
+
+    case "mp4":
+        return "Found \(fileName), but no Media Foundation imports were detected."
+
+    case "avi" where hasDirectShowImports:
+        return "Found \(fileName) together with DirectShow imports."
+
+    case "avi":
+        return "Found \(fileName), but no DirectShow imports were detected."
+
+    default:
+        return "Found media asset \(fileName)."
+    }
 }
 
 actor DependencyAnalyzer {
@@ -535,20 +667,49 @@ actor DependencyAnalyzer {
             guard let data = read(file) else { continue }
             let inspection = WindowsPEInspection.inspect(file, fileManager: fileManager)
             let text = inspection.isPE ? nil : String(decoding: data, as: UTF8.self).lowercased()
-            for (dependency, libraries, reason) in Self.signatures {
-                for library in libraries where Self.matches(library, imports: inspection.imports, fallbackText: text) {
+            for signature in Self.signatures {
+                for library in signature.libraries where Self.matches(library, imports: inspection.imports, fallbackText: text) {
                     let source: String
                     if inspection.isPE {
                         source = file == executable ? "PE import table" : "related PE import table"
                     } else {
                         source = file == executable ? "bounded executable strings" : "related game file strings"
                     }
-                    evidenceByDependency[dependency, default: []].append(DependencyEvidence(
+                    evidenceByDependency[signature.dependency, default: []].append(DependencyEvidence(
                         source: source,
                         library: library,
-                        detail: "\(file.lastPathComponent) references \(library), which maps to \(dependency.displayName)."
+                        detail: "\(file.lastPathComponent) references \(library), which maps to \(signature.detail)."
                     ))
                 }
+            }
+
+            let mediaExtension = file.pathExtension.lowercased()
+            let mediaEvidence = evidenceByDependency[.windowsMediaCompatibility] ?? []
+            let hasMediaFoundationImport = mediaEvidence.contains {
+                $0.mediaCapability == .mediaFoundation && $0.source != "game file inventory"
+            }
+            let hasDirectShowImport = mediaEvidence.contains {
+                $0.mediaCapability == .directShow && $0.source != "game file inventory"
+            }
+            let shouldAddMediaAsset = switch mediaExtension {
+            case "wmv", "asf", "wma": true
+            case "mp4": hasMediaFoundationImport
+            case "avi": hasDirectShowImport
+            default: false
+            }
+            if shouldAddMediaAsset {
+                evidenceByDependency[.windowsMediaCompatibility, default: []].append(
+                    DependencyEvidence(
+                        source: "game file inventory",
+                        library: mediaExtension,
+                        detail: mediaEvidenceDetail(
+                            extension: mediaExtension,
+                            fileName: file.lastPathComponent,
+                            hasMediaFoundationImports: hasMediaFoundationImport,
+                            hasDirectShowImports: hasDirectShowImport
+                        )
+                    )
+                )
             }
         }
 
@@ -564,14 +725,34 @@ actor DependencyAnalyzer {
             }
             guard !evidence.isEmpty else { continue }
             let installed = prefixURL.map { Self.isInstalled(dependency, prefixURL: $0, fileManager: fileManager) } ?? false
-            let highConfidence = evidence.contains { $0.source == "PE import table" }
+            let hasMediaAsset = dependency == .windowsMediaCompatibility && evidence.contains { $0.source == "game file inventory" }
+            let confirmedRuntimeFailure = evidence.contains { $0.source == "Wine log" }
+            let confirmedImport = evidence.contains { $0.source == "PE import table" }
+            let recommendation: RuntimeDependencyRecommendation = userDependencies.contains(dependency) || confirmedRuntimeFailure
+                ? .required
+                : (hasMediaAsset ? .recommended : (confirmedImport ? .required : .recommended))
+            let reason: String
+            if userDependencies.contains(dependency) {
+                reason = "\(dependency.displayName) is required by the current compatibility profile."
+            } else if confirmedRuntimeFailure {
+                reason = "Wine logs report a missing or unloadable \(dependency.displayName) component."
+            } else if hasMediaAsset {
+                let capabilities = evidence.compactMap(\.mediaCapability)
+                let capabilityText = Set(capabilities).map(\.displayName).sorted().joined(separator: " + ")
+                reason = capabilityText.isEmpty
+                    ? "Game media suggests optional \(dependency.displayName) support."
+                    : "Game media and (capabilityText) evidence suggest optional \(dependency.displayName) support."
+            } else if confirmedImport {
+                reason = "\(dependency.displayName) is required by a Windows executable import."
+            } else {
+                reason = "Game files indicate possible use of \(dependency.displayName); Boreal will not install it automatically without a confirmed import."
+            }
+            let score = evidence.map(\.confidenceWeight).max() ?? 0
             results.append(DependencyRequirement(
-                id: dependency,
                 dependency: dependency,
-                confidence: highConfidence ? .high : .medium,
-                reason: highConfidence
-                    ? "A Windows executable import requires \(dependency.displayName)."
-                    : "A related game file indicates use of \(dependency.displayName).",
+                confidence: Self.confidence(for: score, dependency: dependency, hasMediaAsset: hasMediaAsset),
+                recommendation: recommendation,
+                reason: reason,
                 evidence: evidence,
                 isInstalled: installed
             ))
@@ -585,18 +766,18 @@ actor DependencyAnalyzer {
     ) -> [DependencyRequirement] {
         let values = logs.compactMap(read).map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n").lowercased()
         var result: [DependencyRequirement] = []
-        for (dependency, libraries, _) in Self.signatures {
-            let missing = libraries.first { library in
+        for signature in Self.signatures {
+            let missing = signature.libraries.first { library in
                 values.contains("not found") && values.contains(library.lowercased())
             }
             guard let missing else { continue }
             result.append(DependencyRequirement(
-                id: dependency,
-                dependency: dependency,
-                confidence: .high,
+                dependency: signature.dependency,
+                confidence: .verified,
+                recommendation: .required,
                 reason: "Wine logs report that \(missing) could not be loaded.",
                 evidence: [DependencyEvidence(source: "Wine log", library: missing, detail: "The library was reported as missing by the runtime.")],
-                isInstalled: prefixURL.map { Self.isInstalled(dependency, prefixURL: $0, fileManager: fileManager) } ?? false
+                isInstalled: prefixURL.map { Self.isInstalled(signature.dependency, prefixURL: $0, fileManager: fileManager) } ?? false
             ))
         }
         return result.sorted { $0.dependency.rawValue < $1.dependency.rawValue }
@@ -608,15 +789,49 @@ actor DependencyAnalyzer {
         return try? handle.read(upToCount: 32 * 1_024 * 1_024)
     }
 
-    private static let signatures: [(RuntimeDependency, [String], String)] = [
-        (.vc2015To2022, ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"], "Visual C++ 2015–2022"),
-        (.vc2010, ["msvcp100.dll", "msvcr100.dll"], "Visual C++ 2010"),
-        (.xinput, ["xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll"], "XInput"),
-        (.xact, ["xactengine3_7.dll", "xaudio2_7.dll", "x3daudio1_7.dll"], "XACT / legacy audio"),
-        (.legacyDirectX, ["d3dx9_", "d3dcompiler_43.dll"], "Legacy DirectX"),
-        (.physX, ["physxloader.dll", "physx3"], "PhysX"),
-        (.dotNetFramework, ["mscoree.dll"], ".NET Framework")
+    private static let signatures: [DependencySignature] = [
+        DependencySignature(.windowsMediaCompatibility, ["mf.dll", "mfplat.dll", "mfreadwrite.dll", "mfplay.dll", "wmvcore.dll", "wmv9vcm.dll"], "Windows Media / Media Foundation"),
+        DependencySignature(.windowsMediaCompatibility, ["quartz.dll", "qasf.dll", "qedit.dll", "amstream.dll"], "Windows Media / DirectShow"),
+        DependencySignature(.vc2005, ["vcruntime80.dll", "msvcp80.dll", "msvcr80.dll", "mfc80.dll"], "Visual C++ 2005"),
+        DependencySignature(.vc2008, ["vcruntime90.dll", "msvcp90.dll", "msvcr90.dll", "mfc90.dll"], "Visual C++ 2008 SP1"),
+        DependencySignature(.vc2015To2022, ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"], "Visual C++ 2015–2022"),
+        DependencySignature(.vc2010, ["msvcp100.dll", "msvcr100.dll"], "Visual C++ 2010"),
+        DependencySignature(.vc2012, ["msvcp110.dll", "msvcr110.dll", "mfc110.dll"], "Visual C++ 2012"),
+        DependencySignature(.vc2013, ["msvcp120.dll", "msvcr120.dll", "mfc120.dll"], "Visual C++ 2013"),
+        DependencySignature(.xinput, ["xinput1_3.dll", "xinput1_4.dll", "xinput9_1_0.dll"], "XInput"),
+        DependencySignature(.xact, ["xactengine3_7.dll", "xactengine2_0.dll"], "XACT"),
+        DependencySignature(.xaudio, ["xaudio2_7.dll", "xaudio2_8.dll", "xaudio2_9.dll", "x3daudio1_7.dll"], "XAudio"),
+        DependencySignature(.legacyDirectX, ["d3dx9_", "d3dcompiler_43.dll"], "Legacy DirectX"),
+        DependencySignature(.physX, ["physxloader.dll", "physx3"], "PhysX"),
+        DependencySignature(.dotNetFramework, ["mscoree.dll"], ".NET Framework"),
+        DependencySignature(.openAL, ["openal32.dll"], "OpenAL"),
+        DependencySignature(.xna, ["microsoft.xna.framework", "xnanative.dll"], "XNA Framework"),
+        DependencySignature(.msxml, ["msxml3.dll", "msxml4.dll", "msxml6.dll"], "MSXML")
     ]
+
+    private struct DependencySignature {
+        let dependency: RuntimeDependency
+        let libraries: [String]
+        let detail: String
+
+        init(_ dependency: RuntimeDependency, _ libraries: [String], _ detail: String) {
+            self.dependency = dependency
+            self.libraries = libraries
+            self.detail = detail
+        }
+    }
+
+    private static func confidence(
+        for score: Double,
+        dependency: RuntimeDependency,
+        hasMediaAsset: Bool
+    ) -> CompatibilityConfidence {
+        if dependency == .windowsMediaCompatibility && hasMediaAsset && score < 0.8 { return .medium }
+        if score >= 0.95 { return .verified }
+        if score >= 0.8 { return .high }
+        if score >= 0.5 { return .medium }
+        return .low
+    }
 
     private static func matches(_ signature: String, imports: Set<String>, fallbackText: String?) -> Bool {
         let normalized = signature.lowercased()
@@ -629,6 +844,13 @@ actor DependencyAnalyzer {
     }
 
     private static func isInstalled(_ dependency: RuntimeDependency, prefixURL: URL, fileManager: FileManager) -> Bool {
+        let marker = prefixURL.appending(path: ".boreal-dependencies/\(dependency.rawValue)")
+        let legacyMarker = dependency == .legacyDirectX
+            ? prefixURL.appending(path: ".boreal-dependencies/directXRuntime")
+            : nil
+        if fileManager.fileExists(atPath: marker.path) || legacyMarker.map({ fileManager.fileExists(atPath: $0.path) }) == true {
+            return true
+        }
         let roots = [
             prefixURL.appending(path: "drive_c/windows/system32", directoryHint: .isDirectory),
             prefixURL.appending(path: "drive_c/windows/syswow64", directoryHint: .isDirectory)

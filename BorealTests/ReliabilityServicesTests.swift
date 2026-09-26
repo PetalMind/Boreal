@@ -43,6 +43,62 @@ struct ReliabilityServicesTests {
         #expect(results.contains { $0.dependency == .xinput && $0.confidence == .high })
     }
 
+    @Test func dependencyAnalyzerRecommendsWindowsMediaForMediaAssetsButIgnoresBink() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-media-dependency-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let wmv = root.appending(path: "movies/intro.wmv")
+        let bink = root.appending(path: "movies/intro.bik")
+        let bink2 = root.appending(path: "movies/intro.bk2")
+        try FileManager.default.createDirectory(at: wmv.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("wmv asset".utf8).write(to: wmv)
+        try Data("bink asset".utf8).write(to: bink)
+        try Data("bink2 asset".utf8).write(to: bink2)
+
+        let results = await DependencyAnalyzer().analyze(relatedFiles: [wmv, bink, bink2])
+        let media = results.first { $0.dependency == .windowsMediaCompatibility }
+        #expect(media?.recommendation == .recommended)
+        #expect(media?.evidence.contains { $0.library == "wmv" })
+        #expect(media?.evidence.contains { $0.library == "bik" } == false)
+        #expect(media?.evidence.contains { $0.library == "bk2" } == false)
+        #expect(results.contains { $0.dependency == .windowsMediaCompatibility })
+    }
+
+    @Test func dependencyAnalyzerDoesNotPromoteMP4WithoutMediaFoundationEvidence() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-mp4-dependency-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let mp4 = root.appending(path: "movies/intro.mp4")
+        try FileManager.default.createDirectory(at: mp4.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("mp4 asset without imports".utf8).write(to: mp4)
+
+        let results = await DependencyAnalyzer().analyze(relatedFiles: [mp4])
+        #expect(results.contains { $0.dependency == .windowsMediaCompatibility } == false)
+    }
+
+    @Test func dependencyAnalyzerMarksAVIAsDirectShowRecommendationOnly() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "boreal-avi-dependency-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let relatedPE = root.appending(path: "movie-player.dll")
+        let avi = root.appending(path: "movies/intro.avi")
+        try FileManager.default.createDirectory(at: avi.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("quartz.dll".utf8).write(to: relatedPE)
+        try Data("avi asset".utf8).write(to: avi)
+
+        let media = await DependencyAnalyzer().analyze(relatedFiles: [relatedPE, avi]).first { $0.dependency == .windowsMediaCompatibility }
+        #expect(media?.recommendation == .recommended)
+        #expect(media?.confidence == .medium)
+        #expect(media?.mediaCapabilities.contains(.directShow) == true)
+    }
+
+    @Test func xactSelectionMatchesPrefixArchitecture() {
+        #expect(RuntimeDependency.xact.winetricksVerbs(prefixMode: .legacyWin32, executableArchitecture: "win32") == ["xact"])
+        #expect(RuntimeDependency.xact.winetricksVerbs(prefixMode: .legacyWin64, executableArchitecture: "win64") == ["xact_x64"])
+        #expect(RuntimeDependency.xact.winetricksVerbs(prefixMode: .wow64, executableArchitecture: "win32") == ["xact", "xact_x64"])
+        #expect(RuntimeDependency.xaudio.winetricksVerbs(prefixMode: .wow64, executableArchitecture: "win32") == ["xact", "xact_x64", "xaudio29"])
+    }
+
     @Test func snapshotRestoresEnvironmentAndBlocksActiveSession() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-snapshot-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
