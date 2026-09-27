@@ -42,7 +42,7 @@ struct FrameGenerationStatusView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .injected:
-                Text("OptiScaler is injected; waiting for the game's upscaler and frame-generation initialization.")
+                Text("Boreal is monitoring OptiScaler; game initialization has not been confirmed yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .waitingForUpscaler:
@@ -84,7 +84,7 @@ struct FrameGenerationStatusView: View {
         switch state {
         case .inactive: "Off"
         case .preparing: "Preparing"
-        case .injected: "Injected"
+        case .injected: "Monitoring"
         case .waitingForUpscaler: "Waiting"
         case .frameGenerationAvailable: "Ready"
         case .optiFGInitialized: "Initialized"

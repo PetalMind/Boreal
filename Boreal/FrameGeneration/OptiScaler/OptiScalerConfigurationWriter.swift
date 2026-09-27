@@ -195,9 +195,12 @@ nonisolated enum GraphicsExecutableResolver {
            !candidates.contains(where: { $0.standardizedFileURL == preferred.standardizedFileURL }) {
             candidates.append(preferred.standardizedFileURL)
         }
+        let preferredPath = preferred?.standardizedFileURL.path
         return candidates.sorted { lhs, rhs in
-            let leftScore = score(lhs)
-            let rightScore = score(rhs)
+            // When sibling builds exist, keep the caller's selected game
+            // executable ahead of an alphabetically earlier DX11/DX12 build.
+            let leftScore = score(lhs) + (lhs.standardizedFileURL.path == preferredPath ? 50 : 0)
+            let rightScore = score(rhs) + (rhs.standardizedFileURL.path == preferredPath ? 50 : 0)
             return leftScore == rightScore ? lhs.path < rhs.path : leftScore > rightScore
         }.first ?? preferred?.standardizedFileURL ?? gameRoot.appending(path: "game.exe")
     }

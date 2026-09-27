@@ -920,7 +920,7 @@ struct ModsView: View {
             }
 
             if mod.isExternallyDetected {
-                Text(state.adapter == .witcher3
+                Text(state?.adapter == .witcher3
                     ? "Detected files stay in place. Boreal can update this mod’s enabled state and priority in mods.settings."
                     : "External mods are read-only in Boreal.")
                     .font(.caption)

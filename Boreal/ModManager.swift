@@ -512,7 +512,7 @@ nonisolated enum ExternalModDiscovery {
             var value = detected
             if let previous = storedExternal[normalizedPath(detected.detectionKey ?? "")] {
                 value.id = previous.id
-                if detected.adapter == .witcher3 {
+                if detected.contentType == .witcher3Mod {
                     value.enabled = previous.enabled
                     value.priority = previous.priority
                 }

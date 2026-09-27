@@ -12,6 +12,7 @@ struct StoreGameDetailView: View {
         case offers
         case activity
         case files
+        case audio
         case mods
 
         var title: LocalizedStringResource {
@@ -22,6 +23,7 @@ struct StoreGameDetailView: View {
             case .offers: .Library.offersTab
             case .activity: .Library.activityTab
             case .files: .Library.filesTab
+            case .audio: LocalizedStringResource("Audio", defaultValue: "Audio", table: "Library")
             case .mods: LocalizedStringResource("Mods", defaultValue: "Mods", table: "Library")
             }
         }
@@ -60,6 +62,10 @@ struct StoreGameDetailView: View {
     @State private var priceHistory: [ITADPriceHistoryPoint] = []
     @State private var priceHistoryLoading = false
     @State private var showsAllDependencies = false
+    @State private var gogAudioLanguages: [String] = []
+    @State private var selectedGOGAudioLanguage = "pl-PL"
+    @State private var isLoadingGOGAudioLanguages = false
+    @State private var gogAudioLanguageError: String?
 
     private var motion: BorealMotionEnvironment {
         BorealMotionEnvironment(reduceMotion: reduceMotion)
@@ -189,6 +195,28 @@ struct StoreGameDetailView: View {
         }
         .task(id: game.id) {
             await store.loadCommunityCompatibility(for: game.id)
+        }
+        .task(id: "gog-audio-languages-\(currentGame.id.uuidString)-\(store.isInstalled(currentGame))") {
+            guard store.supportsGOGAudioLanguages(for: currentGame) else { return }
+            isLoadingGOGAudioLanguages = true
+            gogAudioLanguageError = nil
+            defer { isLoadingGOGAudioLanguages = false }
+            do {
+                let languages = try await store.availableGOGAudioLanguages(for: currentGame)
+                guard !Task.isCancelled else { return }
+                gogAudioLanguages = languages
+                if let installedLanguage = store.installation(for: currentGame)?.language,
+                   languages.contains(installedLanguage) {
+                    selectedGOGAudioLanguage = installedLanguage
+                } else if languages.contains("pl-PL") {
+                    selectedGOGAudioLanguage = "pl-PL"
+                } else if let first = languages.first {
+                    selectedGOGAudioLanguage = first
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                gogAudioLanguageError = error.localizedDescription
+            }
         }
         .task(id: diskReportTaskID) {
             store.refreshGameDiskStorage(for: currentGame)
@@ -500,6 +528,7 @@ struct StoreGameDetailView: View {
             case .activity: discoveryGame == nil
             case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: store.installedLocation(for: currentGame) != nil || linkedApplication != nil
+            case .audio: store.supportsGOGAudioLanguages(for: currentGame)
             case .mods: store.shouldShowModsTab(for: currentGame)
             case .cloudSaves: discoveryGame == nil && currentGame.provider == .gog
             }
@@ -560,11 +589,128 @@ struct StoreGameDetailView: View {
             activitySection
         case .files:
             installationFilesSection
+        case .audio:
+            gogAudioLanguageSection
         case .mods:
             ModsView(game: currentGame)
         case .cloudSaves:
             CloudSaveCard(game: currentGame)
         }
+    }
+
+    private var gogAudioLanguageSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label {
+                Text(LocalizedStringResource(
+                    "Choose a voice language from GOG",
+                    defaultValue: "Choose a voice language from GOG",
+                    table: "Library"
+                ))
+            } icon: {
+                Image(systemName: "waveform")
+            }
+            .font(.title3.weight(.semibold))
+
+            Text(LocalizedStringResource(
+                "GOG uses one language build for the game files; changing it may affect on-screen text as well as voice audio.",
+                defaultValue: "GOG uses one language build for the game files; changing it may affect on-screen text as well as voice audio.",
+                table: "Library"
+            ))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if isLoadingGOGAudioLanguages {
+                ProgressView {
+                    Text(LocalizedStringResource(
+                        "Loading GOG languages…",
+                        defaultValue: "Loading GOG languages…",
+                        table: "Library"
+                    ))
+                }
+            } else if let gogAudioLanguageError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label {
+                        Text(LocalizedStringResource(
+                            "Couldn’t load GOG languages",
+                            defaultValue: "Couldn’t load GOG languages",
+                            table: "Library"
+                        ))
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                    Text(gogAudioLanguageError)
+                        .font(.caption)
+                }
+                .font(.callout)
+                .foregroundStyle(.orange)
+            } else if gogAudioLanguages.isEmpty {
+                Text(LocalizedStringResource(
+                    "GOG did not report any voice languages for this build.",
+                    defaultValue: "GOG did not report any voice languages for this build.",
+                    table: "Library"
+                ))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker(selection: $selectedGOGAudioLanguage) {
+                    ForEach(gogAudioLanguages, id: \.self) { code in
+                        Text(Locale.current.localizedString(forIdentifier: code) ?? code)
+                            .tag(code)
+                    }
+                } label: {
+                    Text(LocalizedStringResource("Voice language", defaultValue: "Voice language", table: "Library"))
+                }
+                .frame(maxWidth: 420, alignment: .leading)
+
+                if let installedLanguage = store.installation(for: currentGame)?.language {
+                    HStack(spacing: 6) {
+                        Text(LocalizedStringResource(
+                            "Installed GOG language",
+                            defaultValue: "Installed GOG language",
+                            table: "Library"
+                        ))
+                        Text(Locale.current.localizedString(forIdentifier: installedLanguage) ?? installedLanguage)
+                            .fontWeight(.semibold)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Text(LocalizedStringResource(
+                    "GOG will keep this language selected for future updates. Files available only in the previous language may be removed.",
+                    defaultValue: "GOG will keep this language selected for future updates. Files available only in the previous language may be removed.",
+                    table: "Library"
+                ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    store.installGOGAudioLanguage(selectedGOGAudioLanguage, for: currentGame)
+                } label: {
+                    Label {
+                        Text(LocalizedStringResource(
+                            "Install selected GOG language",
+                            defaultValue: "Install selected GOG language",
+                            table: "Library"
+                        ))
+                    } icon: {
+                        Image(systemName: "arrow.down.circle.fill")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    storeOperation != nil
+                        || linkedApplication?.status.isBusy == true
+                        || !currentGame.resolvedEntitlementState.isUsable
+                        || selectedGOGAudioLanguage.isEmpty
+                        || store.installation(for: currentGame)?.language == selectedGOGAudioLanguage
+                )
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.08)) }
     }
 
     @ViewBuilder private func overviewMainColumn(width: CGFloat) -> some View {

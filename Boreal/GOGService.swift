@@ -54,18 +54,46 @@ nonisolated protocol GOGLibraryProviding: Sendable {
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
     func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate?
+    func availableLanguages(appID: String) async throws -> [String]
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func install(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL?
     func update(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
     func verify(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
+    func installLanguage(
+        appID: String,
+        installationURL: URL,
+        platform: StoreGameInstallationPlatform,
+        languageCode: String,
+        progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void
+    ) async throws
     func launchPlan(appID: String, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func launchPlan(appID: String, installationURL: URL, runtime: InstalledRuntime, environment: ManagedBorealEnvironment) async throws -> WindowsLaunchPlan
     func disconnect() async throws
 }
 
 extension GOGLibraryProviding {
+    func availableLanguages(appID: String) async throws -> [String] {
+        _ = appID
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func installLanguage(
+        appID: String,
+        installationURL: URL,
+        platform: StoreGameInstallationPlatform,
+        languageCode: String,
+        progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void
+    ) async throws {
+        _ = appID
+        _ = installationURL
+        _ = platform
+        _ = languageCode
+        _ = progress
+        throw CocoaError(.featureUnsupported)
+    }
+
     func update(appID: String, installationURL: URL, platform: StoreGameInstallationPlatform, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         _ = appID
         _ = installationURL
@@ -118,6 +146,8 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
     case helperUnavailable
     case notAuthenticated
     case localManifestUnavailable
+    case languageUpdateRequiresManifest
+    case languageUnavailable(String)
     case commandFailed(Int32)
     case noBuildsFound
     case invalidResponse
@@ -133,6 +163,8 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
         case .helperUnavailable: "Install GOG support before connecting your account."
         case .notAuthenticated: "Connect your GOG account, then refresh the Library."
         case .localManifestUnavailable: "This offline GOG installation has not been adopted by Boreal yet."
+        case .languageUpdateRequiresManifest: "Boreal can add a GOG language only when this installation has a managed GOG manifest."
+        case .languageUnavailable(let code): "GOG does not offer the (code) language for this game build."
         case .commandFailed(let code): "GOG support stopped with exit code \(code)."
         case .noBuildsFound: "GOG does not provide a downloadable build for the selected platform."
         case .invalidResponse: "GOG returned Library data in an unsupported format."
@@ -348,16 +380,80 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
         let platformName = platform == .nativeMacOS ? "macOS" : "Windows"
         await progress(StoreGameOperationProgress(message: "Preparing GOG \(platformName) download…", fractionCompleted: nil))
-        _ = try await run([
+        var arguments = [
             "download", appID,
             "--path", destination.path,
             "--platform", platform == .nativeMacOS ? "osx" : "windows",
-            "--skip-dlcs"
-        ], progress: progress)
+        ]
+        if platform == .windows, let languageCode = preferredLanguage(appID: appID) {
+            arguments += ["--lang", languageCode]
+        }
+        arguments.append("--skip-dlcs")
+        _ = try await run(arguments, progress: progress)
         try Task.checkCancellation()
         guard Self.findInstallation(appID: appID, containerURL: destination, platform: platform, fileManager: fileManager) != nil else {
             throw GOGServiceError.installationIncomplete(platform)
         }
+    }
+
+    func availableLanguages(appID: String) async throws -> [String] {
+        _ = try await credentials()
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidResponse }
+        let manifestURL = configURL.appending(path: "heroic_gogdl/manifests/\(appID)")
+        guard fileManager.isReadableFile(atPath: manifestURL.path) else {
+            throw GOGServiceError.languageUpdateRequiresManifest
+        }
+        let data = try await run([
+            "info", appID,
+            "--platform", "windows",
+            "--lang", "pl-PL",
+            "--skip-dlcs"
+        ])
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let languages = root["languages"] as? [String] else {
+            throw GOGServiceError.invalidResponse
+        }
+        return Array(Set(languages.filter { !$0.isEmpty })).sorted { lhs, rhs in
+            let left = Locale.current.localizedString(forIdentifier: lhs) ?? lhs
+            let right = Locale.current.localizedString(forIdentifier: rhs) ?? rhs
+            return left.localizedStandardCompare(right) == .orderedAscending
+        }
+    }
+
+    func installLanguage(
+        appID: String,
+        installationURL: URL,
+        platform: StoreGameInstallationPlatform,
+        languageCode: String,
+        progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void
+    ) async throws {
+        _ = try await credentials()
+        guard Self.isSafeAppID(appID), platform == .windows else { throw GOGServiceError.invalidResponse }
+        let path = installationURL.standardizedFileURL
+        guard fileManager.fileExists(atPath: path.path) else {
+            throw GOGServiceError.installationIncomplete(platform)
+        }
+        let manifestURL = configURL.appending(path: "heroic_gogdl/manifests/\(appID)")
+        guard fileManager.isReadableFile(atPath: manifestURL.path) else {
+            throw GOGServiceError.languageUpdateRequiresManifest
+        }
+        let available = try await availableLanguages(appID: appID)
+        guard available.contains(languageCode) else { throw GOGServiceError.languageUnavailable(languageCode) }
+
+        await progress(StoreGameOperationProgress(
+            message: "Preparing the GOG \(languageCode) language files…",
+            fractionCompleted: nil,
+            phase: .preparing
+        ))
+        _ = try await run([
+            "update", appID,
+            "--path", path.path,
+            "--platform", "windows",
+            "--lang", languageCode,
+            "--skip-dlcs"
+        ], progress: progress)
+        try Task.checkCancellation()
+        try savePreferredLanguage(languageCode, appID: appID)
     }
 
     func installationURL(appID: String, destinationRoot: URL, platform: StoreGameInstallationPlatform) async -> URL? {
@@ -395,12 +491,15 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             phase: command == "repair" ? .verifying : .preparing
         ))
         let platformArgument = platform == .nativeMacOS ? "osx" : "windows"
-        let arguments = [
+        var arguments = [
             command, appID,
             "--path", path.path,
             "--platform", platformArgument,
-            "--skip-dlcs",
         ]
+        if command == "update", let languageCode = preferredLanguage(appID: appID) {
+            arguments += ["--lang", languageCode]
+        }
+        arguments.append("--skip-dlcs")
         do {
             _ = try await run(arguments, progress: progress)
         } catch GOGServiceError.localManifestUnavailable where command == "repair" {
@@ -413,12 +512,16 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
                 fractionCompleted: nil,
                 phase: .verifying
             ))
-            _ = try await run([
+            var adoptionArguments = [
                 "download", appID,
                 "--path", path.path,
                 "--platform", platformArgument,
-                "--skip-dlcs",
-            ], progress: progress)
+            ]
+            if let languageCode = preferredLanguage(appID: appID) {
+                adoptionArguments += ["--lang", languageCode]
+            }
+            adoptionArguments.append("--skip-dlcs")
+            _ = try await run(adoptionArguments, progress: progress)
         }
         try Task.checkCancellation()
     }
@@ -879,6 +982,23 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
 
     private static func isSafeAppID(_ value: String) -> Bool {
         !value.isEmpty && value.allSatisfy(\.isNumber)
+    }
+
+    private func preferredLanguage(appID: String) -> String? {
+        let url = configURL.appending(path: "language-preferences/\(appID).txt")
+        guard let value = try? String(contentsOf: url, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func savePreferredLanguage(_ languageCode: String, appID: String) throws {
+        let directory = configURL.appending(path: "language-preferences", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(languageCode.utf8).write(
+            to: directory.appending(path: "\(appID).txt"),
+            options: .atomic
+        )
     }
 
     private nonisolated static func runProcess(

@@ -158,6 +158,7 @@ final class OptiScalerFrameGenerationProvider: FrameGenerationProvider {
     }
 
     private func publishEvidence(_ state: OptiScalerLogState, detail: String?) {
+        let installation = OptiScalerRecoveryManager.installationState(gameRoot: gameRoot ?? URL(fileURLWithPath: "/"))
         let log: FrameGenerationLogEvidence = switch state {
         case .noLog: .unknown
         case .waitingForUpscaler: .waiting
@@ -166,12 +167,20 @@ final class OptiScalerFrameGenerationProvider: FrameGenerationProvider {
         case .active: .active
         case .degraded: .failed
         }
+        let evidenceDetail: String?
+        if let detail {
+            evidenceDetail = detail
+        } else if installation == .notManaged {
+            evidenceDetail = String(localized: "No Boreal-managed OptiScaler deployment is recorded beside the game's graphics executable.")
+        } else {
+            evidenceDetail = nil
+        }
         runtimeEvidenceHandler?(
             FrameGenerationRuntimeEvidence(
-                installation: OptiScalerRecoveryManager.installationState(gameRoot: gameRoot ?? URL(fileURLWithPath: "/")),
+                installation: installation,
                 process: processState,
                 log: log,
-                detail: detail
+                detail: evidenceDetail
             )
         )
     }

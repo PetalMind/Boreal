@@ -2050,6 +2050,81 @@ final class BorealStore {
             || GTASAModLoaderAdapter.isDefinitiveEdition(game: game)
     }
 
+    func supportsGOGAudioLanguages(for game: StoreLibraryGame) -> Bool {
+        game.provider == .gog
+            && Witcher3Adapter.supports(game: game)
+            && isInstalled(game)
+            && installedPlatform(for: game) == .windows
+            && installedLocation(for: game) != nil
+    }
+
+    func availableGOGAudioLanguages(for game: StoreLibraryGame) async throws -> [String] {
+        guard supportsGOGAudioLanguages(for: game) else {
+            throw CocoaError(.featureUnsupported)
+        }
+        return try await services.gogLibrary.availableLanguages(appID: game.externalID)
+    }
+
+    func installGOGAudioLanguage(_ languageCode: String, for game: StoreLibraryGame) {
+        let key = storeOperationKey(for: game)
+        guard supportsGOGAudioLanguages(for: game),
+              game.resolvedEntitlementState.isUsable,
+              storeGameOperations[key] == nil,
+              linkedApplication(for: game)?.status.isBusy != true,
+              let installationURL = installedLocation(for: game) else { return }
+
+        let token = UUID()
+        storeOperationTokens[key] = token
+        storeGameOperations[key] = .installing(StoreGameOperationProgress(
+            message: "Preparing GOG audio language…",
+            fractionCompleted: nil,
+            phase: .preparing
+        ))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let update: @Sendable (StoreGameOperationProgress) async -> Void = { [weak self] progress in
+                    await self?.updateMaintenanceProgress(progress, key: key, token: token)
+                }
+                try await services.gogLibrary.installLanguage(
+                    appID: game.externalID,
+                    installationURL: installationURL,
+                    platform: .windows,
+                    languageCode: languageCode,
+                    progress: update
+                )
+                try Task.checkCancellation()
+                guard storeOperationTokens[key] == token else { return }
+                if let index = installations.firstIndex(where: {
+                    $0.gameID == game.id || $0.storeReference == game.storeReference
+                }) {
+                    installations[index].language = languageCode
+                    installations[index].installedSize = GameStorage.allocatedSize(of: installationURL)
+                    installations[index].lastSeenAt = .now
+                    installations[index].updatedAt = .now
+                }
+                storeGameOperations[key] = nil
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                save()
+                syncLibrary(game.provider)
+            } catch is CancellationError {
+                finishCancelledStoreOperation(key: key, token: token)
+            } catch {
+                guard storeOperationTokens[key] == token else { return }
+                storeGameOperations[key] = .failed(SecretRedactor.redact(error.localizedDescription))
+                storeOperationTasks[key] = nil
+                storeOperationTokens[key] = nil
+                present(
+                    error,
+                    title: "The GOG audio language couldn’t be installed",
+                    stage: "Updating the existing Witcher 3 installation"
+                )
+            }
+        }
+        storeOperationTasks[key] = task
+    }
+
     func modGameRoot(for game: StoreLibraryGame) -> URL? {
         modGameContext(for: game)?.gameRoot
     }
@@ -4329,10 +4404,46 @@ final class BorealStore {
         if temporalPlan.effective == .optiScaler {
             let executable = launchWindowsPlan.processExecutablePath.map { URL(fileURLWithPath: $0) }
                 ?? launchWindowsPlan.executable
-            _ = try? await services.optiScalerManager.reconfigure(
-                gameRoot: executable.deletingLastPathComponent().standardizedFileURL,
-                configuration: temporalPlan.requested.optiScaler
-            )
+            let gameRoot = executable.deletingLastPathComponent().standardizedFileURL
+            let configuration = temporalPlan.requested.optiScaler
+            let installation = OptiScalerRecoveryManager.installationState(gameRoot: gameRoot)
+            // The explicit process path identifies the game binary. Do not
+            // deploy beside Steam bootstrap or auxiliary executables.
+            if configuration.frameGenerationEnabled,
+               launchWindowsPlan.processExecutablePath != nil,
+               installation == .notManaged,
+               let reference = componentReferences.1 {
+                do {
+                    let receipt = try await services.optiScalerManager.inject(
+                        reference: reference,
+                        configuration: configuration,
+                        gameRoot: gameRoot,
+                        gameExecutable: executable,
+                        applicationID: applicationID,
+                        targetArchitecture: WindowsExecutableArchitecture.inspect(executable),
+                        antiCheat: temporalGame.antiCheat,
+                        confirmUnknownInjectionPolicy: true
+                    )
+                    frameGenerationLogger.info(
+                        "OptiScaler was deployed for enabled in-process Frame Generation; appID=\(applicationID.uuidString, privacy: .public), gameRoot=\(gameRoot.path, privacy: .public), receipt=\(receipt.id.uuidString, privacy: .public)"
+                    )
+                } catch {
+                    frameGenerationLogger.error(
+                        "OptiScaler could not be deployed for enabled in-process Frame Generation; appID=\(applicationID.uuidString, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            } else {
+                do {
+                    _ = try await services.optiScalerManager.reconfigure(
+                        gameRoot: gameRoot,
+                        configuration: configuration
+                    )
+                } catch {
+                    frameGenerationLogger.error(
+                        "OptiScaler settings could not be applied before launch; appID=\(applicationID.uuidString, privacy: .public), gameRoot=\(gameRoot.path, privacy: .public), error=\(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
         }
         temporalWindowsPlan.temporalUpscalingPlan = temporalPlan
         temporalWindowsPlan.configurationFingerprint = ConfigurationFingerprint.make(
