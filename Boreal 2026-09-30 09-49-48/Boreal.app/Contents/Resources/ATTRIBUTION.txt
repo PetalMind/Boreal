@@ -1,0 +1,11 @@
+The Witcher 3 Remastered 5.00b D3DMetal proxy is from the upstream project:
+https://github.com/tholtman1-del/witcher3-crossover-fix
+
+Upstream commit: dc6c8f60c48ed08b61400e5b0a7327b5fdba63b1
+Upstream license: MIT (see LICENSE.txt)
+Proxy SHA-256: 46862167d7471bd41deee3edb11665b3dcecc86f20fe4ddcd666764cefe1827a
+
+The DLL is an x86-64 Windows proxy for amd_fidelityfx_loader_dx12.dll. It
+forwards FidelityFX calls to the game's original loader and applies the
+upstream D3D12 pipeline and DPI workarounds. The source is included in
+ffxproxy.source.txt. Boreal verifies the pinned hash before installing it.

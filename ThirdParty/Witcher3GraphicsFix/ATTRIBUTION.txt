@@ -1,4 +1,4 @@
-The Witcher 3 Remastered 5.00b CrossOver fix proxy is from:
+The Witcher 3 Remastered 5.00b D3DMetal proxy is from the upstream project:
 https://github.com/tholtman1-del/witcher3-crossover-fix
 
 Upstream commit: dc6c8f60c48ed08b61400e5b0a7327b5fdba63b1

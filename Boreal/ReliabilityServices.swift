@@ -1229,6 +1229,11 @@ nonisolated struct EnvironmentSnapshot: Codable, Identifiable, Hashable, Sendabl
     }
 }
 
+nonisolated struct EnvironmentSnapshotPruneResult: Sendable {
+    var removedCount: Int = 0
+    var freedBytes: Int64 = 0
+}
+
 nonisolated enum SnapshotError: LocalizedError, Sendable {
     case activeSession
     case insufficientSpace
@@ -1323,6 +1328,115 @@ actor EnvironmentSnapshotManager {
             guard let data = try? Data(contentsOf: metadataURL), let value = try? JSONDecoder().decode(EnvironmentSnapshot.self, from: data), fileManager.fileExists(atPath: value.snapshotURL.path) else { return nil }
             return value
         }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// Keeps recent recovery points for environments that still exist and
+    /// removes old snapshots whose source environment has been deleted.
+    /// Every retained environment keeps at least its newest valid snapshot.
+    func pruneSnapshots(
+        retainingEnvironmentIDs: Set<UUID>,
+        maximumSnapshotsPerEnvironment: Int = 2,
+        maximumTotalBytes: Int64 = 8 * 1_024 * 1_024 * 1_024,
+        orphanGracePeriod: TimeInterval = 7 * 24 * 60 * 60,
+        now: Date = .now
+    ) -> EnvironmentSnapshotPruneResult {
+        guard let environmentDirectories = try? fileManager.contentsOfDirectory(
+            at: snapshotsRootURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: []
+        ) else { return EnvironmentSnapshotPruneResult() }
+
+        let cutoff = now.addingTimeInterval(-orphanGracePeriod)
+        let stagingCutoff = now.addingTimeInterval(-24 * 60 * 60)
+        let maximumPerEnvironment = max(maximumSnapshotsPerEnvironment, 1)
+        var result = EnvironmentSnapshotPruneResult()
+        var retainedByEnvironment: [UUID: [SnapshotPruneEntry]] = [:]
+
+        for environmentDirectory in environmentDirectories {
+            guard (try? environmentDirectory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { continue }
+            if environmentDirectory.lastPathComponent.hasSuffix(".staging") {
+                removeIfOlder(environmentDirectory, than: stagingCutoff, result: &result)
+                continue
+            }
+            if environmentDirectory.lastPathComponent.hasPrefix(".") { continue }
+            guard (try? environmentDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            guard let environmentID = UUID(uuidString: environmentDirectory.lastPathComponent) else {
+                removeIfOlder(environmentDirectory, than: cutoff, result: &result)
+                continue
+            }
+
+            guard retainingEnvironmentIDs.contains(environmentID) else {
+                removeIfOlder(environmentDirectory, than: cutoff, result: &result)
+                continue
+            }
+
+            guard let snapshotDirectories = try? fileManager.contentsOfDirectory(
+                at: environmentDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                options: []
+            ) else { continue }
+
+            var environmentSnapshots: [SnapshotPruneEntry] = []
+            for snapshotDirectory in snapshotDirectories {
+                guard (try? snapshotDirectory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { continue }
+                if snapshotDirectory.lastPathComponent.hasSuffix(".staging") {
+                    removeIfOlder(snapshotDirectory, than: stagingCutoff, result: &result)
+                    continue
+                }
+                if snapshotDirectory.lastPathComponent.hasPrefix(".") { continue }
+                guard (try? snapshotDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+                let metadataURL = snapshotDirectory.appending(path: "snapshot.json")
+                guard let data = try? Data(contentsOf: metadataURL),
+                      let snapshot = try? JSONDecoder().decode(EnvironmentSnapshot.self, from: data),
+                      snapshot.environmentID == environmentID,
+                      snapshot.snapshotURL.standardizedFileURL == snapshotDirectory.standardizedFileURL,
+                      fileManager.fileExists(atPath: snapshotDirectory.path) else {
+                    removeIfOlder(snapshotDirectory, than: cutoff, result: &result)
+                    continue
+                }
+                environmentSnapshots.append(SnapshotPruneEntry(
+                    directory: snapshotDirectory,
+                    environmentID: environmentID,
+                    createdAt: snapshot.createdAt,
+                    sizeBytes: snapshot.sizeBytes ?? allocatedSize(of: snapshotDirectory) ?? 0
+                ))
+            }
+
+            let newestFirst = environmentSnapshots.sorted { $0.createdAt > $1.createdAt }
+            var retainedForEnvironment = Array(newestFirst.prefix(maximumPerEnvironment))
+            for obsolete in newestFirst.dropFirst(maximumPerEnvironment) {
+                if !remove(obsolete.directory, count: 1, sizeBytes: obsolete.sizeBytes, result: &result) {
+                    retainedForEnvironment.append(obsolete)
+                }
+            }
+            retainedByEnvironment[environmentID] = retainedForEnvironment
+        }
+
+        var retainedBytes = retainedByEnvironment.values
+            .flatMap { $0 }
+            .reduce(Int64(0)) { $0 + $1.sizeBytes }
+        let olderOptionalSnapshots = retainedByEnvironment.values
+            .flatMap { snapshots in
+                let newest = snapshots.max { $0.createdAt < $1.createdAt }
+                return snapshots.filter { $0.directory != newest?.directory }
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+
+        for snapshot in olderOptionalSnapshots where retainedBytes > maximumTotalBytes {
+            guard let current = retainedByEnvironment[snapshot.environmentID], current.count > 1 else { continue }
+            if remove(snapshot.directory, count: 1, sizeBytes: snapshot.sizeBytes, result: &result) {
+                retainedByEnvironment[snapshot.environmentID] = current.filter { $0.directory != snapshot.directory }
+                retainedBytes -= snapshot.sizeBytes
+            }
+        }
+
+        for environmentDirectory in environmentDirectories {
+            guard (try? environmentDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                  let children = try? fileManager.contentsOfDirectory(atPath: environmentDirectory.path),
+                  children.isEmpty else { continue }
+            try? fileManager.removeItem(at: environmentDirectory)
+        }
+        return result
     }
 
     func restore(
@@ -1420,6 +1534,50 @@ actor EnvironmentSnapshotManager {
             total += Int64(values.fileAllocatedSize ?? values.fileSize ?? 0)
         }
         return total > 0 ? total : nil
+    }
+
+    private struct SnapshotPruneEntry {
+        let directory: URL
+        let environmentID: UUID
+        let createdAt: Date
+        let sizeBytes: Int64
+    }
+
+    private func removeIfOlder(_ url: URL, than cutoff: Date, result: inout EnvironmentSnapshotPruneResult) {
+        guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { return }
+        let modifiedAt = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        guard let modifiedAt, modifiedAt < cutoff else { return }
+        var snapshotCount = 1
+        if url.deletingLastPathComponent().standardizedFileURL == snapshotsRootURL.standardizedFileURL,
+           let children = try? fileManager.contentsOfDirectory(
+             at: url,
+             includingPropertiesForKeys: [.isDirectoryKey],
+             options: [.skipsHiddenFiles]
+           ) {
+            snapshotCount = max(children.filter {
+                (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }.count, 1)
+        }
+        remove(url, count: snapshotCount, sizeBytes: allocatedSize(of: url) ?? 0, result: &result)
+    }
+
+    @discardableResult
+    private func remove(
+        _ url: URL,
+        count: Int,
+        sizeBytes: Int64,
+        result: inout EnvironmentSnapshotPruneResult
+    ) -> Bool {
+        do {
+            try fileManager.removeItem(at: url)
+            result.removedCount += count
+            result.freedBytes += sizeBytes
+            return true
+        } catch {
+            // A locked or otherwise unavailable recovery point stays in place
+            // and will be considered during the next maintenance pass.
+            return false
+        }
     }
 }
 

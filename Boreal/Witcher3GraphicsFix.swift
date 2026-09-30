@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import SwiftUI
 
-nonisolated enum Witcher3D3DMetalFixManager {
+nonisolated enum Witcher3GraphicsFixManager {
     static let proxySHA256 = "46862167d7471bd41deee3edb11665b3dcecc86f20fe4ddcd666764cefe1827a"
 
     enum Status: Equatable, Sendable {
@@ -355,12 +355,13 @@ nonisolated enum Witcher3D3DMetalFixManager {
     }
 }
 
-struct Witcher3D3DMetalFixSection: View {
+struct Witcher3GraphicsFixSection: View {
     let gameRoot: URL
     let isD3DMetalEnabled: Bool
+    let isGameActive: Bool
     let isModOperationActive: Bool
 
-    @State private var status: Witcher3D3DMetalFixManager.Status = .available
+    @State private var status: Witcher3GraphicsFixManager.Status = .available
     @State private var isWorking = false
     @State private var operationMessage: String?
 
@@ -417,14 +418,14 @@ struct Witcher3D3DMetalFixSection: View {
                         run(primaryActionIsRestore ? .restore : .apply)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isWorking || isModOperationActive || (!primaryActionIsRestore && !isD3DMetalEnabled))
+                    .disabled(isWorking || isGameActive || isModOperationActive || (!primaryActionIsRestore && !isD3DMetalEnabled))
                 }
                 if status == .gameUpdated {
                     Button("Remove Stored Fix Files", systemImage: "trash") {
                         run(.restore)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isWorking || isModOperationActive)
+                    .disabled(isWorking || isGameActive || isModOperationActive)
                 }
                 if let operationMessage {
                     Text(operationMessage)
@@ -459,13 +460,14 @@ struct Witcher3D3DMetalFixSection: View {
         }
     }
 
-    private enum Operation: Sendable {
+    private enum Operation: Sendable, Equatable {
         case apply
         case restore
     }
 
     private func run(_ operation: Operation) {
-        guard let proxyURL = Witcher3D3DMetalFixManager.bundledProxyURL() else {
+        let proxyURL = Witcher3GraphicsFixManager.bundledProxyURL()
+        guard operation == .restore || proxyURL != nil else {
             operationMessage = "The bundled repair DLL is missing."
             return
         }
@@ -477,9 +479,12 @@ struct Witcher3D3DMetalFixSection: View {
                 let message = try await Task.detached(priority: .userInitiated) {
                     switch operation {
                     case .apply:
-                        try Witcher3D3DMetalFixManager.apply(to: gameRoot, proxyURL: proxyURL)
+                        guard let proxyURL else {
+                            throw Witcher3GraphicsFixManager.Failure.invalidBundledProxy
+                        }
+                        return try Witcher3GraphicsFixManager.apply(to: gameRoot, proxyURL: proxyURL)
                     case .restore:
-                        try Witcher3D3DMetalFixManager.restore(in: gameRoot)
+                        return try Witcher3GraphicsFixManager.restore(in: gameRoot)
                     }
                 }.value
                 operationMessage = message
@@ -493,7 +498,7 @@ struct Witcher3D3DMetalFixSection: View {
     @MainActor
     private func refreshStatus() async {
         let nextStatus = await Task.detached(priority: .utility) {
-            Witcher3D3DMetalFixManager.status(in: gameRoot)
+            Witcher3GraphicsFixManager.status(in: gameRoot)
         }.value
         status = nextStatus
     }

@@ -90,6 +90,7 @@ struct ModsView: View {
     }
 
     private var state: ModGameState? { store.modState(for: game) }
+    private var isGTAIVGame: Bool { GTAIVModAdapter.supports(game: game) }
     private var isUnsupportedDefinitiveEdition: Bool {
         GTASAModLoaderAdapter.isDefinitiveEdition(game: game) && !store.supportsMods(for: game)
     }
@@ -97,16 +98,21 @@ struct ModsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if isUnsupportedDefinitiveEdition {
+            if isGTAIVGame {
+                gtaIVXLiveLessSection
+            } else if isUnsupportedDefinitiveEdition {
                 definitiveEditionNotice
             } else if let state {
                 if state.adapter == .witcher3 {
                     witcher3Guide
                     if let installationRoot = store.installedLocation(for: game),
                        let gameRoot = Witcher3Adapter.gameRoot(installationRoot: installationRoot, executable: nil) {
-                        Witcher3D3DMetalFixSection(
+                        Witcher3GraphicsFixSection(
                             gameRoot: gameRoot,
-                            isD3DMetalEnabled: store.isWitcher3D3DMetalReady(for: game),
+                            isD3DMetalEnabled: store.isWitcher3GraphicsFixReady(for: game),
+                            isGameActive: store.linkedApplication(for: game).map {
+                                $0.status == .running || $0.status.isBusy
+                            } ?? false,
                             isModOperationActive: store.isModOperationActive(for: game)
                         )
                     }
@@ -159,7 +165,11 @@ struct ModsView: View {
             searchText = ""
             sort = .priority
             versionDraft = ""
-            store.refreshMods(for: game)
+            if isGTAIVGame {
+                store.refreshGTAIVXLiveLess(for: game)
+            } else {
+                store.refreshMods(for: game)
+            }
         }
         .onChange(of: store.modState(for: game)?.mods.map(\.id) ?? []) { _, _ in
             synchronizeSelection()
@@ -240,14 +250,16 @@ struct ModsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Mods")
                     .font(.title2.weight(.semibold))
-                Text(isUnsupportedDefinitiveEdition
+                Text(isGTAIVGame
+                    ? "Install the Wine compatibility patch for \(game.name)."
+                    : isUnsupportedDefinitiveEdition
                     ? "Definitive Edition detected; a verified mod runtime is not available."
                     : "Manage modifications for \(game.name). Stage changes safely, then deploy them to the game.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if !isUnsupportedDefinitiveEdition {
+            if !isUnsupportedDefinitiveEdition && !isGTAIVGame {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
@@ -263,15 +275,17 @@ struct ModsView: View {
                         .stroke(.white.opacity(0.10))
                 }
             }
-            Button("Import Mod…", systemImage: "arrow.down.to.line") {
-                showsImporter = true
+            if !isGTAIVGame {
+                Button("Import Mod…", systemImage: "arrow.down.to.line") {
+                    showsImporter = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    isUnsupportedDefinitiveEdition
+                        || state == nil
+                        || store.isModOperationActive(for: game)
+                )
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(
-                isUnsupportedDefinitiveEdition
-                    || state == nil
-                    || store.isModOperationActive(for: game)
-            )
             if state?.adapter == .witcher3 {
                 Button("Nexus Mods", systemImage: "safari") {
                     NSWorkspace.shared.open(Witcher3Adapter.nexusURL)
@@ -279,6 +293,103 @@ struct ModsView: View {
                 .buttonStyle(.bordered)
                 .help("Browse Witcher 3 mods on Nexus Mods. Download an archive, then import it into Boreal.")
             }
+        }
+    }
+
+    private var gtaIVXLiveLessSection: some View {
+        let status = store.gtaIVXLiveLessStatus(for: game)
+        let gameIsActive = store.linkedApplication(for: game).map {
+            $0.status == .running || $0.status.isBusy
+        } ?? false
+
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "wrench.and.screwdriver.fill")
+                    .font(.title2)
+                    .foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("XLiveLess for GTA IV")
+                        .font(.headline)
+                    Text("Games for Windows — LIVE is not supported by Wine. XLiveLess removes the GFWL dependency so the game can launch.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Label("GFWL and online play will be disabled. This also prevents using the patch to cheat online.", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .padding(11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            switch status {
+            case .checking:
+                ProgressView("Checking the GTA IV installation…")
+                    .font(.callout)
+            case .unavailable:
+                Label("Install GTA IV or locate its game folder before installing this patch.", systemImage: "folder.badge.questionmark")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            case .notInstalled:
+                Label("XLiveLess is not installed. Any existing xlive.dll will be backed up before replacement.", systemImage: "circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            case .installed:
+                Label("XLiveLess is installed and its xlive.dll matches Boreal’s installation record.", systemImage: "checkmark.circle.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.green)
+            case .missingFile:
+                Label("The installed xlive.dll is missing. You can reinstall the patch; Boreal will keep the original backup.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            case .externallyModified:
+                Label("xlive.dll changed outside Boreal. The patch was left untouched; review or restore the file before continuing.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            case .invalidReceipt:
+                Label("Boreal’s installation record or original backup is unavailable. The game file was left untouched.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+
+            HStack(spacing: 10) {
+                Button(status == .installed ? "Reinstall XLiveLess" : "Install XLiveLess", systemImage: "arrow.down.circle") {
+                    store.installGTAIVXLiveLess(for: game)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    gameIsActive
+                        || store.isModOperationActive(for: game)
+                        || [.checking, .unavailable, .externallyModified, .invalidReceipt].contains(status)
+                )
+
+                if status == .installed {
+                    Button("Restore Original", systemImage: "arrow.uturn.backward") {
+                        store.restoreOriginalGTAIVXLiveLess(for: game)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(gameIsActive || store.isModOperationActive(for: game))
+                }
+
+                Spacer()
+                if let sourceURL = URL(string: "https://appdb.winehq.org/objectManager.php?sClass=application&iId=8757") {
+                    Link("WineHQ AppDB", destination: sourceURL)
+                        .font(.callout)
+                }
+            }
+
+            if store.isModOperationActive(for: game) {
+                ProgressView("Downloading, checking, and installing xlive.dll…")
+                    .font(.callout)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.white.opacity(0.1))
         }
     }
 

@@ -348,8 +348,11 @@ nonisolated enum GameGraphicsProfiles {
         _ userSelection: WineGraphicsBackend,
         for gameProfile: GameGraphicsProfile?
     ) -> WineGraphicsBackend {
+        if let enforcedBackend = gameProfile?.enforcedBackend {
+            return enforcedBackend
+        }
         guard userSelection == .automatic else { return userSelection }
-        return gameProfile?.enforcedBackend ?? gameProfile?.preferredBackend ?? .automatic
+        return gameProfile?.preferredBackend ?? .automatic
     }
 
     static func preferredOptiScalerProxy(
@@ -401,8 +404,10 @@ nonisolated enum GameGraphicsProfiles {
             if currentProfile.graphicsAPI == nil || currentProfile.graphicsAPI == .automatic {
                 effective.graphicsAPI = builtIn.enforcedAPI ?? builtIn.defaultAPI
             }
-            if currentProfile.graphicsBackend == .automatic,
-               let preferredBackend = builtIn.enforcedBackend ?? builtIn.preferredBackend {
+            if let enforcedBackend = builtIn.enforcedBackend {
+                effective.graphicsBackend = enforcedBackend
+            } else if currentProfile.graphicsBackend == .automatic,
+                      let preferredBackend = builtIn.preferredBackend {
                 effective.graphicsBackend = preferredBackend
             }
             if let enforcedLegacyWrapper = builtIn.enforcedLegacyWrapper {
@@ -677,9 +682,8 @@ nonisolated enum GraphicsBackendResolver {
         architecture: WinePrefixArchitecture = .win64,
         fallback: WineGraphicsFallback = .none
     ) -> GraphicsStackResolution {
-        let effectiveRequested = requestedBackend == .automatic
-            ? (gameProfile?.enforcedBackend ?? .automatic)
-            : requestedBackend
+        let effectiveRequested = gameProfile?.enforcedBackend
+            ?? (requestedBackend == .automatic ? .automatic : requestedBackend)
         let eligible = GraphicsStackCatalog.all.filter {
             $0.supports(api: api, architecture: architecture)
                 && runtimeSupports($0, api: api, runtime: runtime, architecture: architecture)
@@ -723,10 +727,14 @@ nonisolated enum GraphicsBackendResolver {
                 return GraphicsStackResolution(
                     stack: explicit.withHostAPI(fallback == .wineD3DVulkan && explicit.backend == .wineD3D ? .vulkan : explicit.hostAPI),
                     score: 1_000,
-                    reasons: ["Explicit renderer selection"]
+                    reasons: [
+                        gameProfile?.enforcedBackend != nil
+                            ? "Enforced game profile renderer"
+                            : requestedBackend == .automatic ? "Game profile automatic preference" : "Explicit renderer selection"
+                    ]
                 )
             }
-            if requestedBackend != .automatic {
+            if requestedBackend != .automatic || gameProfile?.enforcedBackend != nil {
                 return GraphicsStackResolution(
                     stack: explicit,
                     score: -1_000,

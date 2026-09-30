@@ -7,6 +7,7 @@ nonisolated enum EnvironmentPurpose: String, Codable, Sendable, Hashable {
     case sharedStore
     case launcher
     case temporary
+    case manual
 }
 
 nonisolated enum WinePrefixMode: String, Codable, CaseIterable, Sendable, Equatable, Hashable, Identifiable {

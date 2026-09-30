@@ -176,7 +176,6 @@ struct WineCompatibilityConfigurator: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let application: WindowsApplication
     @State private var profile: WineCompatibilityProfile
-    @State private var detectedGraphicsAPI: GraphicsAPI?
     @State private var controllerManager = ControllerManager.shared
     @State private var showsComponentsPatches = false
     @State private var showsControllerSettings = false
@@ -194,7 +193,6 @@ struct WineCompatibilityConfigurator: View {
     init(application: WindowsApplication) {
         self.application = application
         _profile = State(initialValue: application.compatibilityProfile ?? application.resolvedCompatibilityProfile)
-        _detectedGraphicsAPI = State(initialValue: nil)
     }
 
     var body: some View {
@@ -264,13 +262,6 @@ struct WineCompatibilityConfigurator: View {
         .onReceive(NotificationCenter.default.publisher(for: .borealRuntimeImportCompleted)) { _ in
             Task { temporalInspector = await store.temporalUpscalingInspector(for: application.id) }
         }
-        .task(id: application.executablePath) {
-            guard graphicsProfile == nil, FileManager.default.fileExists(atPath: application.executablePath) else { return }
-            let executable = URL(fileURLWithPath: application.executablePath)
-            let detected = await Task.detached(priority: .utility) { GraphicsAPIDetector.detect(executable: executable) }.value
-            guard !Task.isCancelled else { return }
-            detectedGraphicsAPI = detected
-        }
         .task(id: application.environmentID) {
             environmentPrefixMode = store.configuredPrefixMode(for: currentApplication)
             temporalInspector = await store.temporalUpscalingInspector(for: application.id)
@@ -335,21 +326,13 @@ struct WineCompatibilityConfigurator: View {
                 .disabled(isSettingManaged(.runtimeSelection))
             }
             CompatibilityPickerRow(title: "Game API", detail: graphicsAPIExplanation) {
-                if selectableGraphicsAPIs.isEmpty {
-                    Text(readOnlyGameAPILabel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                } else {
-                    Picker("Game API", selection: graphicsAPIBinding) {
-                        Text("Automatic").tag(GraphicsAPI.automatic)
-                        ForEach(selectableGraphicsAPIs) { api in
-                            Text(compatibilityLocalizedGraphicsAPIName(api)).tag(api)
-                        }
+                Picker("Game API", selection: graphicsAPIBinding) {
+                    Text("Automatic").tag(GraphicsAPI.automatic)
+                    ForEach(selectableGraphicsAPIs) { api in
+                        Text(compatibilityLocalizedGraphicsAPIName(api)).tag(api)
                     }
-                    .labelsHidden()
                 }
+                .labelsHidden()
             }
             CompatibilityPickerRow(title: "Graphics renderer", detail: graphicsBackendExplanation) {
                 Picker("Graphics renderer", selection: $profile.graphicsBackend) {
@@ -991,7 +974,12 @@ struct WineCompatibilityConfigurator: View {
     private func runtimeLabel(_ runtime: RuntimeStatus) -> String {
         "\(runtime.name) · \(runtime.engine.displayName) \(runtime.wineVersion)"
     }
-    private var graphicsBackendIssue: String? { store.graphicsBackendIssue(effectiveRequestedBackend, for: currentApplication) }
+    private var graphicsBackendIssue: String? {
+        var requestedApplication = currentApplication
+        requestedApplication.compatibilityProfile = profile
+        return store.graphicsBackendIssue(effectiveRequestedBackend, for: requestedApplication)
+            ?? store.graphicsConfigurationIssue(profile: profile, for: currentApplication)
+    }
     private var prefixModeIssue: String? {
         guard profile.runtimeIDOverride == nil, let requestedMode = profile.prefixMode else { return nil }
         return store.prefixModeIssue(requestedMode, for: currentApplication)
@@ -1232,18 +1220,6 @@ struct WineCompatibilityConfigurator: View {
             gameProfile: graphicsProfile
         )
     }
-    private var readOnlyGameAPILabel: String {
-        if let enforced = graphicsProfile?.enforcedAPI, enforced != .automatic {
-            return "\(compatibilityLocalizedGraphicsAPIName(enforced)) · \(String(localized: "Enforced"))"
-        }
-        if let gameAPI = graphicsProfile?.defaultAPI, gameAPI != .automatic {
-            return "\(compatibilityLocalizedGraphicsAPIName(gameAPI)) · \(String(localized: "Game profile"))"
-        }
-        if let detected = detectedGraphicsAPI ?? GraphicsAPIDetector.detect(executable: URL(fileURLWithPath: application.executablePath)) {
-            return "\(compatibilityLocalizedGraphicsAPIName(detected)) · \(String(localized: "Detected"))"
-        }
-        return String(localized: "Not detected")
-    }
     private var graphicsBackendExplanation: String {
         if profile.graphicsBackend == .automatic,
            let preferredBackend = graphicsProfile?.enforcedBackend ?? graphicsProfile?.preferredBackend {
@@ -1256,22 +1232,6 @@ struct WineCompatibilityConfigurator: View {
         case .dxvk: String(localized: "Runs DirectX 9, 10, and 11 when the managed Vulkan component supplies the required DLLs.")
         case .vkd3d: String(localized: "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton.")
         case .wineD3D: String(localized: "A fallback to try if other renderers cause graphics problems.")
-        }
-    }
-    private func enforcedBackendExplanation(for backend: WineGraphicsBackend) -> String {
-        switch backend {
-        case .automatic:
-            return String(localized: "Automatic renderer selection is enforced for this game by its compatibility profile.")
-        case .d3dMetal:
-            return String(localized: "D3DMetal is enforced for this game by its compatibility profile.")
-        case .dxmt:
-            return String(localized: "DXMT is enforced for this game by its compatibility profile.")
-        case .dxvk:
-            return String(localized: "DXVK is enforced for this game by its compatibility profile.")
-        case .vkd3d:
-            return String(localized: "VKD3D-Proton is enforced for this game by its compatibility profile.")
-        case .wineD3D:
-            return String(localized: "WineD3D is enforced for this game by its compatibility profile.")
         }
     }
     private var graphicsAPIExplanation: String {

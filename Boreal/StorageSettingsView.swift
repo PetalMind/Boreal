@@ -6,6 +6,7 @@ struct StorageSettingsView: View {
     @AppStorage(BorealStore.gameInstallationRootDefaultsKey) private var customGameLocation = ""
     @State private var report: BorealStorageReport?
     @State private var isScanning = false
+    @State private var scanAgainWhenFinished = false
 
     private let categories: [BorealStorageCategory] = [.games, .environments, .runtimes, .caches, .downloads, .logs, .snapshots, .saveBackups]
 
@@ -14,6 +15,7 @@ struct StorageSettingsView: View {
             VStack(spacing: 14) {
                 gameLocationCard
                 overviewCard
+                automaticCleanupCard
                 if let report {
                     categoryCards(report)
                     safetyCard
@@ -28,6 +30,9 @@ struct StorageSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await scan() }
+        .onChange(of: store.automaticStorageMaintenanceSummary) { _, _ in
+            Task { await scan() }
+        }
     }
 
     private var gameLocationCard: some View {
@@ -202,7 +207,30 @@ struct StorageSettingsView: View {
             Divider()
             StorageRiskRow(title: "Regeneratable", description: "Shader and metadata caches may be rebuilt; the next launch can take longer.", color: .orange)
             Divider()
-            StorageRiskRow(title: "Destructive", description: "Games, environments and runtimes are shown for information only and are never part of automatic cleanup.", color: .red)
+            StorageRiskRow(title: "Protected", description: "Installed games, linked environments, selected runtimes and installed mods are preserved. Boreal trims older restore points and removes only stale failed or duplicate environments.", color: .green)
+        }
+    }
+
+    private var automaticCleanupCard: some View {
+        SettingsCard("Automatic cleanup", subtitle: "Runs in the background after Boreal checks the library and running sessions.", symbol: "sparkles") {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                Text(store.automaticStorageMaintenanceSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            Text("Keeps up to 2 recent snapshots per environment, with an 8 GB total target. Orphaned snapshots are kept for 7 days before removal.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Unlinked failed or incomplete environments are eligible after 24 hours once Wine reports them inactive; old duplicate game environments after 7 days use the same inactivity check. Unused older runtime versions are eligible after 30 days, while the newest version of each runtime engine stays installed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("New manually created environments, installed mod archives, game files, prefixes, and runtimes selected by game profiles are kept.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -259,11 +287,18 @@ struct StorageSettingsView: View {
     }
 
     private func scan() async {
-        guard !isScanning else { return }
+        guard !isScanning else {
+            scanAgainWhenFinished = true
+            return
+        }
         isScanning = true
         let value = await store.storageReport()
         report = value
         isScanning = false
+        if scanAgainWhenFinished {
+            scanAgainWhenFinished = false
+            await scan()
+        }
     }
 
     private func formatted(_ bytes: Int64) -> String {

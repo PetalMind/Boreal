@@ -32,7 +32,13 @@ nonisolated struct GameDiskStorageReport: Sendable {
 /// Discovers only data that Boreal owns or can identify as a cache. The scanner
 /// deliberately does not treat arbitrary folders named "Cache" as removable.
 nonisolated enum GameDiskStorage {
-    static func report(gameURL: URL?, prefixURL: URL?, applicationSupportURL: URL?, fileManager: FileManager = .default) -> GameDiskStorageReport {
+    static func report(
+        gameURL: URL?,
+        prefixURL: URL?,
+        applicationSupportURL: URL?,
+        environmentID: UUID? = nil,
+        fileManager: FileManager = .default
+    ) -> GameDiskStorageReport {
         let gameRoots = gameURL.map { [$0] } ?? []
         let prefixRoots = prefixURL.map { [$0] } ?? []
         let supportRoots = applicationSupportURL.map { [$0.appending(path: "Downloads"), $0.appending(path: ".downloads"), $0.appending(path: "Snapshots")] } ?? []
@@ -41,7 +47,12 @@ nonisolated enum GameDiskStorage {
                 + cacheDirectories(in: prefixURL, fileManager: fileManager)
         )
         let snapshotRoots = unique(
-            snapshotDirectories(under: applicationSupportURL?.appending(path: "Snapshots"), fileManager: fileManager)
+            (environmentID.map { id in
+                snapshotDirectories(
+                    under: applicationSupportURL?.appending(path: "Snapshots/\(id.uuidString)"),
+                    fileManager: fileManager
+                )
+            } ?? [])
                 + snapshotDirectories(under: prefixURL?.appending(path: "Snapshots"), fileManager: fileManager)
         )
         return GameDiskStorageReport(items: [

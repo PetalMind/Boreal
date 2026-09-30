@@ -101,11 +101,13 @@ final class BorealStore {
     var gameDiskReports: [UUID: GameDiskStorageReport] = [:]
     var diskStorageOperationIDs: Set<UUID> = []
     var gameRelocationProgress: String?
+    private(set) var automaticStorageMaintenanceSummary = "Automatic cleanup has not run yet."
     /// Per-game mod profiles are stored outside the Library database because
     /// they own staged files and deployment receipts, not library metadata.
     private(set) var modStates: [UUID: ModGameState] = [:]
     private(set) var modHealth: [UUID: ModDeploymentHealth] = [:]
     private(set) var modOperationGameIDs: Set<UUID> = []
+    private(set) var gtaIVXLiveLessStatuses: [UUID: GTAIVXLiveLessStatus] = [:]
     private let storageURL: URL
     private let storageLayout: BorealStorageLayout
     private let libraryRepository: LibraryRepository
@@ -113,6 +115,7 @@ final class BorealStore {
     private let services: BorealServices
     private let modManager: ModManager
     private let gtaModManager: GTASAModManager
+    private let gtaIVXLiveLessInstaller: GTAIVXLiveLessInstaller
     private let gtaDefinitiveEditionModManager: GTASADefinitiveEditionModManager
     private let dragonAgeOriginsModManager: DragonAgeOriginsModManager
     private let witcher2ModManager: Witcher2ModManager
@@ -196,6 +199,7 @@ final class BorealStore {
         self.services = services ?? .live(applicationSupportURL: (storageURL?.deletingLastPathComponent() ?? base.appending(path: "Boreal")))
         self.modManager = ModManager(applicationSupportURL: supportRoot)
         self.gtaModManager = GTASAModManager(applicationSupportURL: supportRoot)
+        self.gtaIVXLiveLessInstaller = GTAIVXLiveLessInstaller(applicationSupportURL: supportRoot)
         self.gtaDefinitiveEditionModManager = GTASADefinitiveEditionModManager(applicationSupportURL: supportRoot)
         self.dragonAgeOriginsModManager = DragonAgeOriginsModManager(applicationSupportURL: supportRoot)
         self.witcher2ModManager = Witcher2ModManager(applicationSupportURL: supportRoot)
@@ -272,10 +276,12 @@ final class BorealStore {
                 environmentSessionStates[applications[index].environmentID] = .unknown
             }
         }
-        if !recoveryAppIDs.isEmpty { Task { [weak self] in await self?.recoverPersistedSessions(appIDs: recoveryAppIDs) } }
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             await normalizeLauncherRedirectors()
             await refreshRuntimeStatuses()
+            if !recoveryAppIDs.isEmpty { await recoverPersistedSessions(appIDs: recoveryAppIDs) }
+            await performAutomaticStorageMaintenance()
             await refreshMissingAuxiliaryExecutables()
             await enrichInstalledApplicationMetadata()
         }
@@ -477,6 +483,18 @@ final class BorealStore {
         operationStates[traceID] = BorealOperationState(id: traceID, kind: .creatingSnapshot, progress: 0, phase: "Creating environment snapshot")
         do {
             let snapshot = try await services.environmentSnapshotManager.createSnapshot(for: managed, reason: reason, traceID: traceID)
+            if usesLayeredStorage {
+                let result = await services.environmentSnapshotManager.pruneSnapshots(
+                    retainingEnvironmentIDs: Set(environments.map(\.id)),
+                    maximumSnapshotsPerEnvironment: 2,
+                    maximumTotalBytes: 8 * 1_024 * 1_024 * 1_024,
+                    orphanGracePeriod: 7 * 24 * 60 * 60
+                )
+                if result.removedCount > 0 {
+                    let freed = result.freedBytes > 0 ? " Freed about \(formattedBytes(result.freedBytes))." : ""
+                    automaticStorageMaintenanceSummary = "Removed \(result.removedCount) older snapshot\(result.removedCount == 1 ? "" : "s").\(freed)"
+                }
+            }
             operationStates[traceID] = BorealOperationState(id: traceID, kind: .creatingSnapshot, progress: 1, phase: "Snapshot published")
             return snapshot
         } catch {
@@ -2075,7 +2093,7 @@ final class BorealStore {
         }
     }
 
-    func isWitcher3D3DMetalReady(for game: StoreLibraryGame) -> Bool {
+    func isWitcher3GraphicsFixReady(for game: StoreLibraryGame) -> Bool {
         guard Witcher3Adapter.supports(game: game),
               let application = linkedApplication(for: game),
               let environment = environment(id: application.environmentID) else { return false }
@@ -2092,9 +2110,7 @@ final class BorealStore {
               runtime.features?.hasVerifiedD3DMetal == true else { return false }
 
         let gameProfile = GameGraphicsProfiles.profile(for: application)
-        let backend = gameProfile?.enforcedBackend
-            ?? (profile.graphicsBackend == .automatic ? gameProfile?.preferredBackend : nil)
-            ?? profile.graphicsBackend
+        let backend = GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: gameProfile)
         if backend == .automatic {
             // Automatic chooses verified D3DMetal first for a GPTK runtime.
             return true
@@ -2112,6 +2128,7 @@ final class BorealStore {
     /// even if its verified mod runtime is not available for that edition.
     func shouldShowModsTab(for game: StoreLibraryGame) -> Bool {
         supportsMods(for: game)
+            || GTAIVModAdapter.supports(game: game)
             || Witcher2Adapter.supports(game: game)
             || Witcher3Adapter.supports(game: game)
             || GTASAModLoaderAdapter.isDefinitiveEdition(game: game)
@@ -2441,6 +2458,89 @@ final class BorealStore {
                 self?.present(error, title: "Mods couldn’t be loaded", stage: "Reading the mod profile")
             }
         }
+    }
+
+    func gtaIVXLiveLessStatus(for game: StoreLibraryGame) -> GTAIVXLiveLessStatus {
+        guard GTAIVModAdapter.supports(game: game) else { return .unavailable }
+        return gtaIVXLiveLessStatuses[game.id] ?? .checking
+    }
+
+    func refreshGTAIVXLiveLess(for game: StoreLibraryGame) {
+        guard GTAIVModAdapter.supports(game: game),
+              let gameRoot = gtaIVGameRoot(for: game) else {
+            gtaIVXLiveLessStatuses[game.id] = .unavailable
+            return
+        }
+        let installer = gtaIVXLiveLessInstaller
+        let gameID = game.id
+        gtaIVXLiveLessStatuses[gameID] = .checking
+        Task { @MainActor [weak self] in
+            let status = await Task.detached(priority: .utility) {
+                installer.status(gameID: gameID, gameRoot: gameRoot)
+            }.value
+            self?.gtaIVXLiveLessStatuses[gameID] = status
+        }
+    }
+
+    func installGTAIVXLiveLess(for game: StoreLibraryGame) {
+        guard GTAIVModAdapter.supports(game: game) else { return }
+        guard !isGameActive(for: game) else {
+            present(GTAIVXLiveLessError.gameActive, title: "XLiveLess couldn’t be installed", stage: "Close GTA IV before changing its game files")
+            return
+        }
+        guard let gameRoot = gtaIVGameRoot(for: game),
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let gameID = game.id
+        let installer = gtaIVXLiveLessInstaller
+        Task { @MainActor [weak self] in
+            defer {
+                self?.modOperationGameIDs.remove(gameID)
+                self?.refreshGTAIVXLiveLess(for: game)
+            }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try await installer.install(gameID: gameID, gameRoot: gameRoot)
+                }.value
+            } catch {
+                self?.present(error, title: "XLiveLess couldn’t be installed", stage: "Downloading, validating, and installing xlive.dll")
+            }
+        }
+    }
+
+    func restoreOriginalGTAIVXLiveLess(for game: StoreLibraryGame) {
+        guard GTAIVModAdapter.supports(game: game) else { return }
+        guard !isGameActive(for: game) else {
+            present(GTAIVXLiveLessError.gameActive, title: "XLiveLess couldn’t be removed", stage: "Close GTA IV before changing its game files")
+            return
+        }
+        guard let gameRoot = gtaIVGameRoot(for: game),
+              modOperationGameIDs.insert(game.id).inserted else { return }
+        let gameID = game.id
+        let installer = gtaIVXLiveLessInstaller
+        Task { @MainActor [weak self] in
+            defer {
+                self?.modOperationGameIDs.remove(gameID)
+                self?.refreshGTAIVXLiveLess(for: game)
+            }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try installer.restoreOriginal(gameID: gameID, gameRoot: gameRoot)
+                }.value
+            } catch {
+                self?.present(error, title: "XLiveLess couldn’t be removed", stage: "Restoring the original xlive.dll")
+            }
+        }
+    }
+
+    private func gtaIVGameRoot(for game: StoreLibraryGame) -> URL? {
+        GTAIVModAdapter.gameRoot(
+            installationRoot: installedLocation(for: game),
+            executable: linkedApplication(for: game).map { URL(fileURLWithPath: $0.executablePath) }
+        )
+    }
+
+    private func isGameActive(for game: StoreLibraryGame) -> Bool {
+        linkedApplication(for: game).map { $0.status == .running || $0.status.isBusy } ?? false
     }
 
     func inspectModArchive(_ archive: URL, for game: StoreLibraryGame) async -> ModInstallPreview? {
@@ -2895,18 +2995,320 @@ final class BorealStore {
 
     func refreshGameDiskStorage(for game: StoreLibraryGame) {
         let gameID = game.id
-        let gamePath = installations.first(where: {
+        let installation = installations.first(where: {
             $0.gameID == game.id || $0.storeReference == game.storeReference
-        }).map { InstallationStateResolver.resolvedLocation(for: $0, layout: storageLayout) }
-        let prefixPath = linkedApplication(for: game).flatMap { environment(id: $0.environmentID)?.prefixPath }.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        })
+        let gamePath = installation.map { InstallationStateResolver.resolvedLocation(for: $0, layout: storageLayout) }
+        let linked = linkedApplication(for: game)
+        let environmentID = linked?.environmentID ?? installation?.environmentID
+        let prefixPath = environmentID.flatMap { environment(id: $0)?.prefixPath }.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let supportPath = storageURL.deletingLastPathComponent()
         Task.detached(priority: .utility) { [weak self] in
-            let report = GameDiskStorage.report(gameURL: gamePath, prefixURL: prefixPath, applicationSupportURL: supportPath)
+            let report = GameDiskStorage.report(
+                gameURL: gamePath,
+                prefixURL: prefixPath,
+                applicationSupportURL: supportPath,
+                environmentID: environmentID
+            )
             await MainActor.run { self?.gameDiskReports[gameID] = report }
         }
     }
 
     func gameDiskReport(for game: StoreLibraryGame) -> GameDiskStorageReport? { gameDiskReports[game.id] }
+
+    private func performAutomaticStorageMaintenance(now: Date = .now) async {
+        guard usesLayeredStorage else { return }
+
+        let fileManager = FileManager.default
+        var removedEnvironmentCount = 0
+        var removedRuntimeCount = 0
+        var removedModPreviewCount = 0
+        var freedBytes: Int64 = 0
+        var skippedRuntimeCleanup = false
+        let incompleteAge: TimeInterval = 24 * 60 * 60
+        let duplicateAge: TimeInterval = 7 * 24 * 60 * 60
+
+        let installationEnvironmentIDs = Set(installations.compactMap(\.environmentID))
+        let applicationEnvironmentIDs = Set(applications.map(\.environmentID))
+        let inMemoryActiveEnvironmentIDs = Set(activeEnvironments.values.map(\.id))
+            .union(activeSessions.values.map(\.environmentID))
+        let linkedEnvironmentIDs = applicationEnvironmentIDs
+            .union(installationEnvironmentIDs)
+            .union(inMemoryActiveEnvironmentIDs)
+        let linkedNames = Set(environments
+            .filter { linkedEnvironmentIDs.contains($0.id) }
+            .flatMap { record in
+                [record.name, managedEnvironment(from: record)?.configuration.name]
+                    .compactMap { $0 }
+                    .map { automaticCleanupName($0) }
+            }
+            .filter { !$0.isEmpty })
+        let installedRuntimeLookup = try? await services.runtimeManager.installedRuntimes()
+        let installedRuntimes = installedRuntimeLookup ?? []
+        let runtimesByID = Dictionary(uniqueKeysWithValues: installedRuntimes.map { ($0.id, $0) })
+        skippedRuntimeCleanup = installedRuntimeLookup == nil
+
+        for record in environments {
+            guard !linkedEnvironmentIDs.contains(record.id),
+                  let managed = managedEnvironment(from: record),
+                  managed.rootURL.deletingLastPathComponent().standardizedFileURL == storageLayout.environmentsURL.standardizedFileURL,
+                  (try? managed.rootURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                  let modifiedAt = automaticCleanupDate(for: managed.rootURL.appending(path: "environment.json")),
+                  fileManager.fileExists(atPath: managed.rootURL.path) else { continue }
+
+            let isTemporary = managed.purpose == .temporary
+            let isIncomplete = ![.sharedStore, .launcher].contains(managed.purpose)
+                && [.created, .initializing, .invalid].contains(managed.state)
+            let isStaleDuplicate = managed.purpose == .game
+                && managed.state == .ready
+                && linkedNames.contains(automaticCleanupName(managed.configuration.name))
+            let requiredAge = isStaleDuplicate ? duplicateAge : incompleteAge
+            guard (isTemporary || isIncomplete || isStaleDuplicate),
+                  now.timeIntervalSince(modifiedAt) >= requiredAge else { continue }
+
+            guard let runtime = runtimesByID[managed.runtimeID] else { continue }
+            var probeEnvironment = managed
+            if managed.state == .initializing {
+                let stagingPrefix = managed.rootURL.appending(path: ".prefix-installing", directoryHint: .isDirectory)
+                guard fileManager.fileExists(atPath: stagingPrefix.path) else { continue }
+                probeEnvironment = ManagedBorealEnvironment(
+                    schemaVersion: managed.schemaVersion,
+                    id: managed.id,
+                    configuration: managed.configuration,
+                    runtimeID: managed.runtimeID,
+                    rootURL: managed.rootURL,
+                    prefixURL: stagingPrefix,
+                    logsURL: managed.logsURL,
+                    state: managed.state,
+                    purpose: managed.purpose
+                )
+            }
+            guard await services.processRunner.environmentSessionState(
+                environment: probeEnvironment,
+                runtime: runtime
+            ) == .inactive else { continue }
+            guard !isEnvironmentReferenced(managed.id) else { continue }
+
+            let environmentBytes = await automaticStorageSize(at: managed.rootURL)
+            guard !isEnvironmentReferenced(managed.id) else { continue }
+            do {
+                try await services.environmentManager.remove(managed)
+                environments.removeAll { $0.id == managed.id }
+                removedEnvironmentCount += 1
+                freedBytes += environmentBytes
+            } catch {
+                // Keep the record and retry on the next launch if filesystem or prefix coordination blocks removal.
+            }
+        }
+
+        if removedEnvironmentCount > 0 { save() }
+
+        let retainedEnvironmentIDs = Set(environments.map(\.id))
+        let snapshotResult = await services.environmentSnapshotManager.pruneSnapshots(
+            retainingEnvironmentIDs: retainedEnvironmentIDs,
+            maximumSnapshotsPerEnvironment: 2,
+            maximumTotalBytes: 8 * 1_024 * 1_024 * 1_024,
+            orphanGracePeriod: duplicateAge,
+            now: now
+        )
+        freedBytes += snapshotResult.freedBytes
+
+        let modPreviewResult = await pruneAbandonedModPreviews(olderThan: duplicateAge, now: now)
+        removedModPreviewCount = modPreviewResult.count
+        freedBytes += modPreviewResult.bytes
+
+        if let latestIDs = newestRuntimeIDsByEngine(in: installedRuntimes),
+           let onDiskEnvironmentRuntimeIDs = environmentRuntimeReferencesOnDisk() {
+            let referencedRuntimeIDs = Set(environments.compactMap(\.runtimeID))
+                .union(onDiskEnvironmentRuntimeIDs)
+                .union(applications.compactMap { $0.compatibilityProfile?.runtimeIDOverride })
+                .union(activeRuntimes.values.map(\.id))
+            let runtimeCutoff = now.addingTimeInterval(-30 * 24 * 60 * 60)
+            for runtime in installedRuntimes where !latestIDs.contains(runtime.id)
+                && !referencedRuntimeIDs.contains(runtime.id) {
+                guard runtime.origin == .catalog,
+                      let installedAt = automaticCleanupDate(for: runtime.rootURL),
+                      installedAt < runtimeCutoff,
+                      (try? runtime.rootURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                      !applications.contains(where: { $0.compatibilityProfile?.runtimeIDOverride == runtime.id }),
+                      !activeRuntimes.values.contains(where: { $0.id == runtime.id }),
+                      !environments.contains(where: { $0.runtimeID == runtime.id }) else { continue }
+                let runtimeBytes = await automaticStorageSize(at: runtime.rootURL)
+                guard !applications.contains(where: { $0.compatibilityProfile?.runtimeIDOverride == runtime.id }),
+                      !activeRuntimes.values.contains(where: { $0.id == runtime.id }),
+                      !environments.contains(where: { $0.runtimeID == runtime.id }) else { continue }
+                do {
+                    try await services.runtimeManager.remove(runtime)
+                    runtimeDisplayNameOverrides.removeValue(forKey: runtime.id)
+                    removedRuntimeCount += 1
+                    freedBytes += runtimeBytes
+                } catch {
+                    // Immutable or busy runtimes remain available and are retried on a later launch.
+                }
+            }
+            if removedRuntimeCount > 0 {
+                save()
+                await refreshRuntimeStatuses()
+            }
+        } else {
+            skippedRuntimeCleanup = true
+        }
+
+        var cleanupActions: [String] = []
+        let snapshotLabel = snapshotResult.removedCount == 1 ? "snapshot" : "snapshots"
+        if snapshotResult.removedCount > 0 { cleanupActions.append("\(snapshotResult.removedCount) old \(snapshotLabel)") }
+        if removedEnvironmentCount > 0 {
+            cleanupActions.append("\(removedEnvironmentCount) stale environment\(removedEnvironmentCount == 1 ? "" : "s")")
+        }
+        if removedRuntimeCount > 0 { cleanupActions.append("\(removedRuntimeCount) unused old runtime\(removedRuntimeCount == 1 ? "" : "s")") }
+        if removedModPreviewCount > 0 { cleanupActions.append("\(removedModPreviewCount) abandoned mod preview\(removedModPreviewCount == 1 ? "" : "s")") }
+
+        if cleanupActions.isEmpty {
+            automaticStorageMaintenanceSummary = skippedRuntimeCleanup
+                ? "No stale data was removed. Runtime cleanup was skipped because installed versions couldn’t be compared safely."
+                : "No stale data was removed. Boreal kept recent restore points and data within the inactivity checks."
+        } else {
+            let freed = freedBytes > 0 ? " Freed about \(formattedBytes(freedBytes))." : ""
+            let skipped = skippedRuntimeCleanup
+                ? " Runtime cleanup was skipped because installed versions or environment references couldn’t be checked safely."
+                : ""
+            automaticStorageMaintenanceSummary = "Removed \(cleanupActions.joined(separator: ", ")).\(freed)\(skipped)"
+        }
+    }
+
+    private func pruneAbandonedModPreviews(olderThan age: TimeInterval, now: Date) async -> (count: Int, bytes: Int64) {
+        let fileManager = FileManager.default
+        guard let gameDirectories = try? fileManager.contentsOfDirectory(
+            at: modManager.rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ) else { return (0, 0) }
+
+        var removedCount = 0
+        var freedBytes: Int64 = 0
+        for gameDirectory in gameDirectories {
+            guard let gameID = UUID(uuidString: gameDirectory.lastPathComponent),
+                  let gameValues = try? gameDirectory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  gameValues.isDirectory == true,
+                  gameValues.isSymbolicLink != true else { continue }
+            let pendingDirectory = modManager.rootURL
+                .appending(path: gameID.uuidString, directoryHint: .isDirectory)
+                .appending(path: "Archives/.pending", directoryHint: .isDirectory)
+            guard pendingDirectory.standardizedFileURL.path.hasPrefix(modManager.rootURL.standardizedFileURL.path + "/"),
+                  let pendingValues = try? pendingDirectory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  pendingValues.isDirectory == true,
+                  pendingValues.isSymbolicLink != true,
+                  let previews = try? fileManager.contentsOfDirectory(
+                    at: pendingDirectory,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                  ) else { continue }
+
+            for preview in previews {
+                guard let values = try? preview.resourceValues(forKeys: [.isSymbolicLinkKey, .contentModificationDateKey]),
+                      values.isSymbolicLink != true,
+                      let modifiedAt = values.contentModificationDate,
+                      !modOperationGameIDs.contains(gameID),
+                      now.timeIntervalSince(modifiedAt) >= age else { continue }
+                let previewBytes = await automaticStorageSize(at: preview)
+                guard !modOperationGameIDs.contains(gameID) else { continue }
+                do {
+                    try fileManager.removeItem(at: preview)
+                    removedCount += 1
+                    freedBytes += previewBytes
+                } catch {
+                    continue
+                }
+            }
+        }
+        return (removedCount, freedBytes)
+    }
+
+    private func automaticCleanupDate(for url: URL) -> Date? {
+        guard let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey]) else { return nil }
+        return values.contentModificationDate ?? values.creationDate
+    }
+
+    private func isEnvironmentReferenced(_ id: UUID) -> Bool {
+        applications.contains { $0.environmentID == id }
+            || installations.contains { $0.environmentID == id }
+            || activeEnvironments.values.contains { $0.id == id }
+            || activeSessions.values.contains { $0.environmentID == id }
+    }
+
+    private func automaticCleanupName(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private func environmentRuntimeReferencesOnDisk() -> Set<String>? {
+        let root = storageLayout.environmentsURL.standardizedFileURL
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: root.path) else { return [] }
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        var runtimeIDs = Set<String>()
+        for child in children {
+            guard (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            guard let expectedID = UUID(uuidString: child.lastPathComponent),
+                  let data = try? Data(contentsOf: child.appending(path: "environment.json")),
+                  let managed = try? JSONDecoder().decode(ManagedBorealEnvironment.self, from: data),
+                  managed.id == expectedID,
+                  managed.rootURL.standardizedFileURL == child.standardizedFileURL else { return nil }
+            runtimeIDs.insert(managed.runtimeID)
+        }
+        return runtimeIDs
+    }
+
+    private func newestRuntimeIDsByEngine(in runtimes: [InstalledRuntime]) -> Set<String>? {
+        var newestIDs = Set<String>()
+        for engine in RuntimeEngine.allCases {
+            let group = runtimes.filter { $0.resolvedEngine == engine }
+            guard !group.isEmpty else { continue }
+            let versions = group.compactMap { numericRuntimeVersion($0.wineVersion) }
+            guard versions.count == group.count, let firstVersion = versions.first else { return nil }
+            var newestVersion = firstVersion
+            for version in versions.dropFirst() where compareRuntimeVersions(version, newestVersion) == .orderedDescending {
+                newestVersion = version
+            }
+            newestIDs.formUnion(group.filter {
+                guard let version = numericRuntimeVersion($0.wineVersion) else { return false }
+                return compareRuntimeVersions(version, newestVersion) == .orderedSame
+            }.map(\.id))
+        }
+        return newestIDs
+    }
+
+    private func compareRuntimeVersions(_ lhs: [Int], _ rhs: [Int]) -> ComparisonResult {
+        for index in 0..<max(lhs.count, rhs.count) {
+            let left = index < lhs.count ? lhs[index] : 0
+            let right = index < rhs.count ? rhs[index] : 0
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    private func automaticStorageSize(at url: URL) async -> Int64 {
+        await Task.detached(priority: .utility) { () -> Int64 in
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]) else { return 0 }
+            if values.isRegularFile == true {
+                return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0)
+            }
+            return GameStorage.allocatedSize(of: url) ?? 0
+        }.value
+    }
+
+    private func numericRuntimeVersion(_ value: String) -> [Int]? {
+        guard let range = value.range(of: #"\d+(?:\.\d+){1,3}"#, options: .regularExpression) else { return nil }
+        let components = value[range].split(separator: ".")
+        let parsed = components.compactMap { Int($0) }
+        return parsed.count == components.count ? parsed : nil
+    }
 
     func clearGameDiskStorage(_ category: GameDiskStorageCategory, for game: StoreLibraryGame) {
         guard category != .gameFiles, category != .prefix,
@@ -3383,6 +3785,37 @@ final class BorealStore {
         }
     }
 
+    func graphicsConfigurationIssue(
+        profile: WineCompatibilityProfile,
+        for application: WindowsApplication
+    ) -> String? {
+        let gameProfile = GameGraphicsProfiles.profile(for: application)
+        let requestedBackend = GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: gameProfile)
+        let targetRuntimes: [RuntimeStatus]
+        if let runtimeID = profile.runtimeIDOverride {
+            targetRuntimes = runtimeStatuses.filter {
+                $0.id == runtimeID && $0.source == .installed && $0.state == .installed
+            }
+        } else {
+            let engine = GameRuntimeProfiles.requiredEngine(for: application)
+                ?? requestedBackend.requiredEngine
+                ?? runtimeEngine(for: application)
+            targetRuntimes = runtimeStatuses.filter {
+                $0.source == .installed
+                    && $0.state == .installed
+                    && (engine == nil || $0.engine == engine)
+            }
+            if targetRuntimes.isEmpty, engine != nil {
+                return "No installed runtime matches the selected renderer."
+            }
+        }
+        guard !targetRuntimes.isEmpty else { return nil }
+        let hasAvailableConfiguration = targetRuntimes.contains { runtime in
+            runtimeSelectionIssue(runtime.id, profile: profile, for: application) == nil
+        }
+        return hasAvailableConfiguration ? nil : "The selected renderer is unavailable for this DirectX version and runtime."
+    }
+
     func prefixModeIssue(_ mode: WinePrefixMode, for application: WindowsApplication) -> String? {
         guard let environment = environment(id: application.environmentID),
               let runtime = runtimeStatuses.first(where: {
@@ -3437,11 +3870,14 @@ final class BorealStore {
         let selectedRuntimeIssue = profile.runtimeIDOverride.flatMap {
             runtimeSelectionIssue($0, profile: profile, for: applications[index])
         }
-        let selectedBackendIssue = graphicsBackendIssue(requestedBackend, for: applications[index])
-        if selectedRuntimeIssue != nil || selectedBackendIssue != nil {
+        var requestedApplication = applications[index]
+        requestedApplication.compatibilityProfile = profile
+        let selectedBackendIssue = graphicsBackendIssue(requestedBackend, for: requestedApplication)
+        let selectedGraphicsIssue = graphicsConfigurationIssue(profile: profile, for: applications[index])
+        if selectedRuntimeIssue != nil || selectedBackendIssue != nil || selectedGraphicsIssue != nil {
             applications[index].compatibilityProfile = profile
             applications[index].windowsVersion = profile.windowsVersion.displayName
-            applications[index].lastResult = "Compatibility preferences saved; the selected runtime or renderer is unavailable."
+            applications[index].lastResult = "Compatibility preferences saved; the selected graphics configuration is unavailable."
             applications[index].lastErrorDetail = nil
             save()
             return
@@ -6532,7 +6968,8 @@ final class BorealStore {
             do {
                 guard let runtime = try await services.runtimeManager.installedRuntimes().first,
                       try await services.runtimeManager.validate(runtime).isReady else { throw InstallerServiceError.noRuntimeAvailable }
-                let managed = try await services.environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
+                var managed = try await services.environmentManager.create(configuration: EnvironmentConfiguration(name: name), runtime: runtime)
+                managed.purpose = .manual
                 try await services.environmentManager.initialize(managed, runtime: runtime)
                 environments.append(WindowsEnvironment(id: managed.id, name: name, runtime: runtimeDescription(for: runtime), graphics: runtime.graphicsName, runtimeID: runtime.id, rootPath: managed.rootURL.path, prefixPath: managed.prefixURL.path, logsPath: managed.logsURL.path))
                 save()

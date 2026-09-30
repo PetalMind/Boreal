@@ -3297,7 +3297,7 @@ struct StoreGameDetailView: View {
             Button {
                 selectGameAPI(.automatic, for: application)
             } label: {
-                if selectedAPI == nil { Label("Automatic", systemImage: "checkmark") }
+                if userAPI == nil { Label("Automatic", systemImage: "checkmark") }
                 else { Text("Automatic") }
             }
             Divider()
@@ -3305,7 +3305,7 @@ struct StoreGameDetailView: View {
                 Button {
                     selectGameAPI(api, for: application)
                 } label: {
-                    if selectedAPI == api { Label(api.displayName, systemImage: "checkmark") }
+                    if userAPI == api { Label(api.displayName, systemImage: "checkmark") }
                     else { Text(api.displayName) }
                 }
             }

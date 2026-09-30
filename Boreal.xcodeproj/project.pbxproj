@@ -9,10 +9,10 @@
 /* Begin PBXBuildFile section */
 		7A1B4E2C9D6F4800A3C17B52 /* BorealRuntimeProbe/BorealGraphicsProbe.exe in Resources */ = {isa = PBXBuildFile; fileRef = 7A1B4E2C9D6F4800A3C17B51 /* BorealRuntimeProbe/BorealGraphicsProbe.exe */; };
 		7A1B4E2C9D6F4800A3C17B54 /* BorealRuntimeProbe/BorealGraphicsProbe32.exe in Resources */ = {isa = PBXBuildFile; fileRef = 7A1B4E2C9D6F4800A3C17B53 /* BorealRuntimeProbe/BorealGraphicsProbe32.exe */; };
-		E31DA6C0A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/amd_fidelityfx_loader_dx12.dll in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C1A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/amd_fidelityfx_loader_dx12.dll */; };
-		E31DA6C2A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C3A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/LICENSE.txt */; };
-		E31DA6C4A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ffxproxy.source.txt in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C5A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ffxproxy.source.txt */; };
-		E31DA6C6A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ATTRIBUTION.txt in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C7A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ATTRIBUTION.txt */; };
+		E31DA6C0A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/amd_fidelityfx_loader_dx12.dll in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C1A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/amd_fidelityfx_loader_dx12.dll */; };
+		E31DA6C2A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C3A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/LICENSE.txt */; };
+		E31DA6C4A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ffxproxy.source.txt in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C5A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ffxproxy.source.txt */; };
+		E31DA6C6A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ATTRIBUTION.txt in Resources */ = {isa = PBXBuildFile; fileRef = E31DA6C7A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ATTRIBUTION.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,10 +38,10 @@
 		B4C2B177303C5306000C8CC5 /* Boreal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Boreal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4C2B184303C5307000C8CC5 /* BorealTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BorealTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4C2B18E303C5307000C8CC5 /* BorealUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BorealUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		E31DA6C1A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/amd_fidelityfx_loader_dx12.dll */ = {isa = PBXFileReference; lastKnownFileType = file; path = ThirdParty/Witcher3D3DMetalFix/amd_fidelityfx_loader_dx12.dll; sourceTree = SOURCE_ROOT; };
-		E31DA6C3A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Witcher3D3DMetalFix/LICENSE.txt; sourceTree = SOURCE_ROOT; };
-		E31DA6C5A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ffxproxy.source.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Witcher3D3DMetalFix/ffxproxy.source.txt; sourceTree = SOURCE_ROOT; };
-		E31DA6C7A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ATTRIBUTION.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Witcher3D3DMetalFix/ATTRIBUTION.txt; sourceTree = SOURCE_ROOT; };
+		E31DA6C1A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/amd_fidelityfx_loader_dx12.dll */ = {isa = PBXFileReference; lastKnownFileType = file; path = ThirdParty/Witcher3GraphicsFix/amd_fidelityfx_loader_dx12.dll; sourceTree = SOURCE_ROOT; };
+		E31DA6C3A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Witcher3GraphicsFix/LICENSE.txt; sourceTree = SOURCE_ROOT; };
+		E31DA6C5A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ffxproxy.source.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Witcher3GraphicsFix/ffxproxy.source.txt; sourceTree = SOURCE_ROOT; };
+		E31DA6C7A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ATTRIBUTION.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Witcher3GraphicsFix/ATTRIBUTION.txt; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -84,7 +84,7 @@
 		B4C2B16E303C5306000C8CC5 = {
 			isa = PBXGroup;
 			children = (
-				E31DA6C8A1F2472A8D3E5C91 /* Witcher3D3DMetalFix */,
+				E31DA6C8A1F2472A8D3E5C91 /* Witcher3GraphicsFix */,
 				B4C2B179303C5306000C8CC5 /* Boreal */,
 				B4C2B187303C5307000C8CC5 /* BorealTests */,
 				B4C2B191303C5307000C8CC5 /* BorealUITests */,
@@ -104,15 +104,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		E31DA6C8A1F2472A8D3E5C91 /* Witcher3D3DMetalFix */ = {
+		E31DA6C8A1F2472A8D3E5C91 /* Witcher3GraphicsFix */ = {
 			isa = PBXGroup;
 			children = (
-				E31DA6C1A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/amd_fidelityfx_loader_dx12.dll */,
-				E31DA6C3A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/LICENSE.txt */,
-				E31DA6C5A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ffxproxy.source.txt */,
-				E31DA6C7A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ATTRIBUTION.txt */,
+				E31DA6C1A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/amd_fidelityfx_loader_dx12.dll */,
+				E31DA6C3A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/LICENSE.txt */,
+				E31DA6C5A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ffxproxy.source.txt */,
+				E31DA6C7A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ATTRIBUTION.txt */,
 			);
-			name = Witcher3D3DMetalFix;
+			name = Witcher3GraphicsFix;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -228,10 +228,10 @@
 		B4C2B175303C5306000C8CC5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				E31DA6C0A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/amd_fidelityfx_loader_dx12.dll in Resources */,
-				E31DA6C2A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/LICENSE.txt in Resources */,
-				E31DA6C4A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ffxproxy.source.txt in Resources */,
-				E31DA6C6A1F2472A8D3E5C91 /* ThirdParty/Witcher3D3DMetalFix/ATTRIBUTION.txt in Resources */,
+				E31DA6C0A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/amd_fidelityfx_loader_dx12.dll in Resources */,
+				E31DA6C2A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/LICENSE.txt in Resources */,
+				E31DA6C4A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ffxproxy.source.txt in Resources */,
+				E31DA6C6A1F2472A8D3E5C91 /* ThirdParty/Witcher3GraphicsFix/ATTRIBUTION.txt in Resources */,
 				7A1B4E2C9D6F4800A3C17B52 /* BorealRuntimeProbe/BorealGraphicsProbe.exe in Resources */,
 				7A1B4E2C9D6F4800A3C17B54 /* BorealRuntimeProbe/BorealGraphicsProbe32.exe in Resources */,
 			);
@@ -443,6 +443,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Boreal uses Screen Recording to generate frames in a separate game overlay.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -480,6 +481,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Boreal uses Screen Recording to generate frames in a separate game overlay.";
 				LD_RUNPATH_SEARCH_PATHS = (
