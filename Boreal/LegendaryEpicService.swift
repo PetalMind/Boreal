@@ -319,7 +319,8 @@ actor LegendaryEpicService: EpicLibraryProviding {
             "-y", "install", appID,
             "--platform", platform == .nativeMacOS ? "Mac" : "Windows",
             "--base-path", destinationRoot.path,
-            "--skip-dlcs"
+            "--skip-dlcs",
+            "--max-workers", String(StoreDownloadConcurrency.maxWorkers),
         ], progress: progress)
         try Task.checkCancellation()
     }
@@ -351,7 +352,11 @@ actor LegendaryEpicService: EpicLibraryProviding {
             fractionCompleted: nil,
             phase: .preparing
         ))
-        _ = try await run(["-y", "install", appID, "--update-only", "--skip-dlcs"], progress: progress)
+        _ = try await run([
+            "-y", "install", appID,
+            "--update-only", "--skip-dlcs",
+            "--max-workers", String(StoreDownloadConcurrency.maxWorkers),
+        ], progress: progress)
         try Task.checkCancellation()
     }
 

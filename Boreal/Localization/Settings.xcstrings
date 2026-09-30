@@ -217,6 +217,42 @@
       },
       "extractionState": "manual"
     },
+    "downloadsSubtitle": {
+      "comment": "Settings navigation subtitle for download preferences.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queue and transfer behavior"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kolejka i sposób pobierania"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "downloadsTitle": {
+      "comment": "Settings navigation title for download preferences.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloads"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobieranie"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "fullscreenSubtitle": {
       "comment": "Settings navigation subtitle for fullscreen mode.",
       "localizations": {
@@ -1058,6 +1094,114 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nakładka"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "parallelDownloadsAutomatic": {
+      "comment": "Automatic option for the parallel download worker preference.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic (recommended)"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatycznie (zalecane)"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "parallelDownloadsCurrentLimit": {
+      "comment": "Display of the effective parallel worker limit per game download.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parallel workers per game"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poziom równoległości na grę"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "parallelDownloadsHelp": {
+      "comment": "Help text for choosing parallel download workers.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic mode selects 2–8 workers from the available CPU threads. Set a value from 2 to 8 to cap parallel work. Changes apply to new downloads; active downloads keep their current limit."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tryb automatyczny dobiera poziom równoległości (2–8) do liczby dostępnych wątków procesora. Ręcznie ustaw limit od 2 do 8. Zmiana dotyczy nowych pobrań; aktywne zachowują obecny limit."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "parallelDownloadsModeLabel": {
+      "comment": "Setting label for the parallel worker count.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workers per download"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limit równoległości"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "parallelDownloadsSubtitle": {
+      "comment": "Settings card subtitle for parallel downloads.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose how much parallel work each game download can use."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wybierz poziom równoległości podczas pobierania gry."
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "parallelDownloadsTitle": {
+      "comment": "Settings card title for parallel downloads.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parallel Downloads"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pobieranie równoległe"
           }
         }
       },

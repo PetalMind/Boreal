@@ -204,6 +204,9 @@ nonisolated struct ModFile: Codable, Hashable, Sendable, Identifiable {
     var relativePath: String
     var sha256: String
     var size: Int64
+    /// Original staged path retained when a legacy Witcher 3 archive wrapper
+    /// is flattened to the directory layout the game actually loads.
+    var stagedSourcePath: String? = nil
 
     var id: String { relativePath }
 }
@@ -537,17 +540,36 @@ nonisolated enum ModConflictKind: String, Codable, CaseIterable, Sendable, Hasha
     }
 }
 
+nonisolated enum ModConflictResolutionStrategy: Sendable, Hashable {
+    /// The Witcher 3 mod load order gives precedence to the earliest priority entry.
+    case priorityFirst
+    /// Boreal writes these files directly, so the last staged mod replaces earlier copies.
+    case priorityLast
+    /// Script Merger can combine some script and bundle conflicts, but needs a review for others.
+    case scriptMerger
+    /// The conflict is detected, but Boreal cannot identify a safe automatic resolution.
+    case manual
+}
+
 nonisolated struct ModConflict: Hashable, Sendable, Identifiable {
     let relativePath: String
     let modIDs: [UUID]
     let winnerModID: UUID
     let kind: ModConflictKind
+    let resolutionStrategy: ModConflictResolutionStrategy
 
-    init(relativePath: String, modIDs: [UUID], winnerModID: UUID, kind: ModConflictKind = .directReplacement) {
+    init(
+        relativePath: String,
+        modIDs: [UUID],
+        winnerModID: UUID,
+        kind: ModConflictKind = .directReplacement,
+        resolutionStrategy: ModConflictResolutionStrategy = .manual
+    ) {
         self.relativePath = relativePath
         self.modIDs = modIDs
         self.winnerModID = winnerModID
         self.kind = kind
+        self.resolutionStrategy = resolutionStrategy
     }
 
     var id: String { relativePath }
@@ -1091,7 +1113,8 @@ nonisolated enum ModConflictResolver {
                 relativePath: ordered.last?.file.relativePath ?? key,
                 modIDs: ordered.map { $0.mod.id },
                 winnerModID: winner.mod.id,
-                kind: conflictKind(for: ordered.last?.file.relativePath ?? key)
+                kind: conflictKind(for: ordered.last?.file.relativePath ?? key),
+                resolutionStrategy: .priorityLast
             )
         }.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
     }

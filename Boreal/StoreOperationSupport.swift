@@ -1,6 +1,24 @@
 import Darwin
 import Foundation
 
+nonisolated enum StoreDownloadConcurrency {
+    static let workersDefaultsKey = "storeDownloadWorkerLimit"
+    static let automaticPreference = 0
+    static let minimumWorkers = 2
+    static let maximumWorkers = 8
+
+    static var maxWorkers: Int {
+        effectiveWorkerCount(for: UserDefaults.standard.integer(forKey: workersDefaultsKey))
+    }
+
+    static func effectiveWorkerCount(for preference: Int) -> Int {
+        guard preference != automaticPreference else {
+            return min(max(ProcessInfo.processInfo.activeProcessorCount, minimumWorkers), maximumWorkers)
+        }
+        return min(max(preference, minimumWorkers), maximumWorkers)
+    }
+}
+
 /// Redacts credentials at the shared helper-output boundary. Provider
 /// services can keep their diagnostics useful without allowing an auth code,
 /// bearer token, or secret to reach progress state or persisted download logs.

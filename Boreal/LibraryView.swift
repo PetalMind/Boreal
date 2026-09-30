@@ -1375,7 +1375,8 @@ struct LibraryView: View {
     }
 
     @ViewBuilder private func transitionableLibraryArtwork(_ item: LibraryItem) -> some View {
-        if case .storeGame(let game) = item.kind {
+        if case .storeGame(let game) = item.kind,
+           (transitionPhase == .opening || transitionPhase == .closing) {
             libraryCardArtwork(item)
                 .matchedGeometryEffect(
                     id: game.id,

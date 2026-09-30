@@ -134,49 +134,119 @@ nonisolated enum Witcher3Adapter {
     static func append(_ relativePath: String, to root: URL) -> URL {
         relativePath.split(separator: "/").reduce(root) { $0.appending(path: String($1)) }
     }
+
+    /// Removes common archive wrappers such as
+    /// `Mods/Archive Name/mods/modActual/content/file` and
+    /// `Mods/Archive Name/dlc/dlcActual/content/file`, which the game does
+    /// not discover because their payload folders are nested below the game roots.
+    static func deploymentPath(for relativePath: String) -> String {
+        let components = relativePath.replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/")
+            .map(String.init)
+        guard components.count > 3,
+              ["Mods", "DLC"].contains(where: { components[0].caseInsensitiveCompare($0) == .orderedSame }),
+              let nestedRootIndex = components.indices.dropFirst(2).first(where: { index in
+                  let nestedRoot = components[index].lowercased()
+                  let expectedFolderPrefix = nestedRoot == "mods" ? "mod" : "dlc"
+                  return index < 6
+                      && ["mods", "dlc"].contains(nestedRoot)
+                      && components.indices.contains(index + 1)
+                      && components[index + 1].lowercased().hasPrefix(expectedFolderPrefix)
+                      && !components[2..<index].contains(where: {
+                          ["content", "bin", "dlc", "userdata", "userconfig"].contains($0.lowercased())
+                      })
+              }) else {
+            return relativePath
+        }
+        let targetRoot = components[nestedRootIndex].caseInsensitiveCompare("mods") == .orderedSame
+            ? "Mods"
+            : "DLC"
+        return ([targetRoot] + Array(components.dropFirst(nestedRootIndex + 1))).joined(separator: "/")
+    }
+
+    static func isScriptMergerOutput(_ mod: InstalledMod) -> Bool {
+        mod.files.contains { file in
+            let components = deploymentPath(for: file.relativePath).split(separator: "/")
+            return components.count >= 3
+                && components[0].caseInsensitiveCompare("Mods") == .orderedSame
+                && components[1].caseInsensitiveCompare("mod0000_MergedFiles") == .orderedSame
+        }
+    }
 }
 
 nonisolated enum Witcher3ConflictResolver {
     static func conflicts(in mods: [InstalledMod]) -> [ModConflict] {
         var owners: [String: [(mod: InstalledMod, file: ModFile)]] = [:]
+        var locations: [String: ConflictLocation] = [:]
         for mod in mods where mod.enabled {
             for file in mod.files {
-                let key = resourcePath(for: file.relativePath)
-                owners[key, default: []].append((mod, file))
+                let location = conflictLocation(for: file.relativePath)
+                locations[location.key] = location
+                owners[location.key, default: []].append((mod, file))
             }
         }
-        return owners.compactMap { path, values in
+
+        return owners.compactMap { key, values in
             let uniqueValues = values.reduce(into: [(mod: InstalledMod, file: ModFile)]()) { result, value in
                 guard !result.contains(where: { $0.mod.id == value.mod.id }) else { return }
                 result.append(value)
             }
             guard uniqueValues.count > 1,
-                  let winner = uniqueValues.max(by: { $0.mod.priority < $1.mod.priority }) else { return nil }
-            let extensionName = URL(fileURLWithPath: path).pathExtension.lowercased()
+                  let location = locations[key],
+                  !hasIdenticalPayloads(uniqueValues) else { return nil }
+
+            let ordered = uniqueValues.sorted {
+                if $0.mod.priority != $1.mod.priority { return $0.mod.priority < $1.mod.priority }
+                return $0.mod.name.localizedStandardCompare($1.mod.name) == .orderedAscending
+            }
+            guard let first = ordered.first, let last = ordered.last else { return nil }
+            let winner = location.strategy == .priorityLast ? last : first
             return ModConflict(
-                relativePath: path,
-                modIDs: uniqueValues.sorted { $0.mod.priority < $1.mod.priority }.map { $0.mod.id },
+                relativePath: location.displayPath,
+                modIDs: ordered.map { $0.mod.id },
                 winnerModID: winner.mod.id,
-                kind: extensionName == "ws" ? .mergeable : .directReplacement
+                kind: location.strategy == .scriptMerger ? .mergeable : .directReplacement,
+                resolutionStrategy: location.strategy
             )
         }.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
     }
 
-    private static func resourcePath(for path: String) -> String {
-        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+    private struct ConflictLocation {
+        let key: String
+        let displayPath: String
+        let strategy: ModConflictResolutionStrategy
+    }
+
+    private static func conflictLocation(for path: String) -> ConflictLocation {
+        let normalized = Witcher3Adapter.deploymentPath(for: path)
+            .replacingOccurrences(of: "\\", with: "/")
         let components = normalized.split(separator: "/").map(String.init)
-        guard components.count > 2 else { return normalized.lowercased() }
-        if components[0].caseInsensitiveCompare("Mods") == .orderedSame,
+        if components.count > 2,
+           components[0].caseInsensitiveCompare("Mods") == .orderedSame,
            components[1].lowercased().hasPrefix("mod") {
-            return components.dropFirst(2).joined(separator: "/").lowercased()
+            let modResource = components.dropFirst(2).joined(separator: "/")
+            let extensionName = URL(fileURLWithPath: modResource).pathExtension.lowercased()
+            let strategy: ModConflictResolutionStrategy = ["ws", "bundle"].contains(extensionName)
+                ? .scriptMerger
+                : .priorityFirst
+            return ConflictLocation(
+                key: "mods/\(modResource.lowercased())",
+                displayPath: "Mods/\(modResource)",
+                strategy: strategy
+            )
         }
-        if components[0].caseInsensitiveCompare("DLC") == .orderedSame,
-           components[1].lowercased().hasPrefix("dlc") {
-            return components.dropFirst(2).joined(separator: "/").lowercased()
-        }
-        if components[0].caseInsensitiveCompare("UserData") == .orderedSame {
-            return components.dropFirst().joined(separator: "/").lowercased()
-        }
-        return normalized.lowercased()
+
+        // DLC, user-data, and game-root files occupy different destinations
+        // and use file-copy precedence rather than mods.settings priority.
+        return ConflictLocation(
+            key: normalized.lowercased(),
+            displayPath: normalized,
+            strategy: .priorityLast
+        )
+    }
+
+    private static func hasIdenticalPayloads(_ values: [(mod: InstalledMod, file: ModFile)]) -> Bool {
+        let hashes = values.map { $0.file.sha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        return hashes.allSatisfy { !$0.isEmpty } && Set(hashes).count == 1
     }
 }

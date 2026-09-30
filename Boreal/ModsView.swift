@@ -102,6 +102,14 @@ struct ModsView: View {
             } else if let state {
                 if state.adapter == .witcher3 {
                     witcher3Guide
+                    if let installationRoot = store.installedLocation(for: game),
+                       let gameRoot = Witcher3Adapter.gameRoot(installationRoot: installationRoot, executable: nil) {
+                        Witcher3D3DMetalFixSection(
+                            gameRoot: gameRoot,
+                            isD3DMetalEnabled: store.isWitcher3D3DMetalReady(for: game),
+                            isModOperationActive: store.isModOperationActive(for: game)
+                        )
+                    }
                 }
                 profileControls(state)
                 if state.adapter == .gtaSanAndreas, let runtime = state.runtime {
@@ -282,8 +290,15 @@ struct ModsView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("The Witcher 3 load order")
                     .font(.headline)
-                Text("Boreal installs Mods and DLC folders, backs up replaced game files, and writes mod enablement and priority to Documents/The Witcher 3/mods.settings. Script conflicts are listed for review; merge them with Script Merger before playing.")
+                Text("Boreal installs Mods and DLC folders, backs up replaced game files, and writes mod enablement and priority to Documents/The Witcher 3/mods.settings. Priority 1 wins file conflicts between Mods folders. Script and bundle conflicts need review in Script Merger; Boreal does not merge them automatically.")
                     .font(.callout)
+                    .foregroundStyle(.secondary)
+                if let scriptMergerURL = URL(string: "https://www.nexusmods.com/witcher3/mods/484") {
+                    Link("Open Script Merger on Nexus Mods", destination: scriptMergerURL)
+                        .font(.callout)
+                }
+                Text("Steam Workshop files are stored outside the game’s Mods folder and are not included in Boreal’s conflict scan yet.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
@@ -532,7 +547,12 @@ struct ModsView: View {
                     Text("\(visibleMods.count) of \(state.mods.count)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Label("Lower rows win conflicts", systemImage: "arrow.down")
+                    Label(
+                        state.adapter == .witcher3
+                            ? "Lower priority number wins Mods-folder conflicts"
+                            : "Higher priority number wins file conflicts",
+                        systemImage: "arrow.down"
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -761,6 +781,16 @@ struct ModsView: View {
 
     private func modDetails(_ mod: InstalledMod, state: ModGameState) -> some View {
         let conflicts = state.conflicts.filter { $0.modIDs.contains(mod.id) }
+        let priorityStrategies = Set(conflicts.compactMap { conflict -> ModConflictResolutionStrategy? in
+            switch conflict.resolutionStrategy {
+            case .priorityFirst, .priorityLast: return conflict.resolutionStrategy
+            case .scriptMerger, .manual: return nil
+            }
+        })
+        let priorityStrategy = priorityStrategies.count == 1 ? priorityStrategies.first : nil
+        let shouldOfferPriorityRepair = priorityStrategy != nil && conflicts.contains {
+            $0.resolutionStrategy == priorityStrategy && $0.winnerModID != mod.id
+        }
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -815,16 +845,56 @@ struct ModsView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.orange)
                         ForEach(conflicts.prefix(4)) { conflict in
-                            Text(conflict.relativePath)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(conflict.relativePath)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                switch conflict.resolutionStrategy {
+                                case .priorityFirst, .priorityLast:
+                                    let winnerName = state.mods.first(where: { $0.id == conflict.winnerModID })?.name ?? "Unknown mod"
+                                    let title = conflict.resolutionStrategy == .priorityFirst
+                                        ? "Mods-folder winner"
+                                        : "Deployed-file winner"
+                                    Text("\(title): \(winnerName)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                case .scriptMerger:
+                                    Text("Review in Script Merger; Boreal does not merge this file automatically.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                case .manual:
+                                    Text("Manual review required; the winning contents cannot be predicted safely.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
                         }
                         if conflicts.count > 4 {
                             Text("and \(conflicts.count - 4) more…")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                        if shouldOfferPriorityRepair, let priorityStrategy {
+                            Button(
+                                priorityStrategy == .priorityFirst
+                                    ? "Make this mod win mod-folder conflicts"
+                                    : "Make this mod win direct file conflicts",
+                                systemImage: "arrow.up.to.line"
+                            ) {
+                                moveModToWinningPriority(mod, strategy: priorityStrategy, state: state)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(store.isModOperationActive(for: game))
+                            Text("This changes the mod’s global priority. Review its other conflicts, then deploy the staged changes.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        if conflicts.contains(where: { $0.resolutionStrategy == .scriptMerger }),
+                           let scriptMergerURL = URL(string: "https://www.nexusmods.com/witcher3/mods/484") {
+                            Link("Open Script Merger on Nexus Mods", destination: scriptMergerURL)
+                                .font(.caption)
                         }
                     }
                     .padding(10)
@@ -1022,6 +1092,29 @@ struct ModsView: View {
             withAnimation(motion.reorder) {
                 store.moveMod(from: IndexSet(integer: index), to: index + 2, for: game)
             }
+        }
+    }
+
+    private func moveModToWinningPriority(
+        _ mod: InstalledMod,
+        strategy: ModConflictResolutionStrategy,
+        state: ModGameState
+    ) {
+        guard !store.isModOperationActive(for: game) else { return }
+        guard strategy == .priorityFirst || strategy == .priorityLast else { return }
+        let ordered = state.mods.sorted { $0.priority < $1.priority }
+        guard let index = ordered.firstIndex(where: { $0.id == mod.id }) else { return }
+        let destination = strategy == .priorityFirst ? 0 : ordered.count
+        switch strategy {
+        case .priorityFirst:
+            guard index > 0 else { return }
+        case .priorityLast:
+            guard index < ordered.count - 1 else { return }
+        default:
+            return
+        }
+        withAnimation(motion.reorder) {
+            store.moveMod(from: IndexSet(integer: index), to: destination, for: game)
         }
     }
 

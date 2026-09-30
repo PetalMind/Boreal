@@ -7,6 +7,8 @@ struct DownloadsView: View {
     @Environment(BorealStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("developerMode") private var developerMode = false
+    @AppStorage(StoreDownloadConcurrency.workersDefaultsKey)
+    private var preferredDownloadWorkerCount = StoreDownloadConcurrency.automaticPreference
     @State private var showsRuntimeDetails = false
     @State private var d3d11SelfTest: D3D11SelfTestResult?
     @State private var d3d11SelfTestRuntimeID: String?
@@ -14,6 +16,10 @@ struct DownloadsView: View {
 
     private var motion: BorealMotionEnvironment {
         BorealMotionEnvironment(reduceMotion: reduceMotion)
+    }
+
+    private var effectiveDownloadWorkerCount: Int {
+        StoreDownloadConcurrency.effectiveWorkerCount(for: preferredDownloadWorkerCount)
     }
 
     var body: some View {
@@ -56,6 +62,14 @@ struct DownloadsView: View {
                 Text(downloadQueueSummary)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.left.arrow.right")
+                    Text(.Settings.parallelDownloadsCurrentLimit)
+                    Text(effectiveDownloadWorkerCount, format: .number)
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer()
             if store.hasPausableStoreGameOperations {

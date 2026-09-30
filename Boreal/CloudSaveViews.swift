@@ -55,6 +55,9 @@ struct CloudSaveCard: View {
             if oldValue == .preparingSupport, newValue == .disconnected {
                 beginGOGLogin()
             }
+            if case .connected = newValue {
+                store.refreshCloudSaveStatus(for: game)
+            }
         }
         .alert("Cloud Saves", isPresented: Binding(
             get: { message != nil },
@@ -165,6 +168,8 @@ struct CloudSaveCard: View {
                 unavailableView(reason: reason)
             case .failed(let reason):
                 syncFailureView(reason: reason)
+            case .reauthenticationRequired(let reason):
+                reauthenticationView(reason: reason)
             case .needsConfiguration:
                 pathConfigurationView
             case .synced, .syncing, .conflict:
@@ -413,8 +418,31 @@ struct CloudSaveCard: View {
         }
     }
 
+    private func reauthenticationView(reason: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Reconnect GOG", systemImage: "person.crop.circle.badge.exclamationmark")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            Text(reason).font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("Reconnect GOG account", systemImage: "link") {
+                    beginGOGLogin()
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Try again", systemImage: "arrow.clockwise") {
+                    store.refreshCloudSaveStatus(for: game)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
     private var isBusy: Bool {
-        switch status.state {
+        if let linkedApplication,
+           linkedApplication.status == .running || linkedApplication.status.isBusy {
+            return true
+        }
+        return switch status.state {
         case .checking, .syncing: true
         default: false
         }
@@ -458,7 +486,7 @@ struct CloudSaveCard: View {
             Label("GOG unavailable", systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
         case .connected:
-            if let setupMessage {
+            if setupMessage != nil {
                 Label("Setup required", systemImage: "wrench.and.screwdriver")
                     .foregroundStyle(.orange)
             } else {
@@ -475,6 +503,9 @@ struct CloudSaveCard: View {
                         .foregroundStyle(.secondary)
                 case .conflict:
                     Label("Conflict", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                case .reauthenticationRequired:
+                    Label("Sign-in required", systemImage: "person.crop.circle.badge.exclamationmark")
                         .foregroundStyle(.orange)
                 case .needsConfiguration:
                     Label("Path required", systemImage: "folder.badge.questionmark")
@@ -516,8 +547,10 @@ struct CloudSaveCard: View {
             HStack(spacing: 8) {
                 Button("Use Cloud") { pendingDirection = .useCloud }
                     .buttonStyle(.bordered)
+                    .disabled(isBusy)
                 Button("Use Local") { pendingDirection = .useLocal }
                     .buttonStyle(.bordered)
+                    .disabled(isBusy)
             }
         }
         .padding(14)

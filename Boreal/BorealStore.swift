@@ -30,6 +30,12 @@ private actor StoreSizeEstimateGate {
 @MainActor
 @Observable
 final class BorealStore {
+    private struct GOGAdditionalContentInstallTarget: Sendable {
+        let appID: String
+        let gameName: String
+        let installationRoot: URL
+    }
+
     private struct ActivePlaySession {
         var sessionID: UUID
         var checkpointInstant: ContinuousClock.Instant
@@ -65,6 +71,7 @@ final class BorealStore {
     var epicConnectionState: EpicConnectionState = .checking
     var gogConnectionState: GOGConnectionState = .checking
     var storeGameOperations: [String: StoreGameOperationState] = [:]
+    private(set) var gogAdditionalContentDownloads: [String: GOGAdditionalContentDownloadState] = [:]
     var installation = InstallationProgress()
     var presentedIssue: BorealIssue?
     var runtimeStatuses: [RuntimeStatus] = []
@@ -139,6 +146,8 @@ final class BorealStore {
     private(set) var lastLaunchDiagnoses: [UUID: LaunchFailureDiagnosis] = [:]
     private var playSessionCheckpointTasks: [UUID: Task<Void, Never>] = [:]
     private var storeOperationTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var gogAdditionalContentDownloadTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var gogAdditionalContentDownloadTokens: [String: UUID] = [:]
     private var storeOperationTokens: [String: UUID] = [:]
     private var storeDownloadRecords: [String: StoreDownloadRecord] = [:]
     private var lastDownloadRecordSave: [String: Date] = [:]
@@ -585,9 +594,10 @@ final class BorealStore {
                 let value = try await services.cloudSaveCoordinator.inspect(request)
                 cloudSaveStatuses[key] = value
             } catch {
-                var value = cloudSaveStatuses[key] ?? .unknown
-                value.state = .failed(SecretRedactor.redact(error.localizedDescription))
-                cloudSaveStatuses[key] = value
+                cloudSaveStatuses[key] = cloudSaveFailureStatus(
+                    error: error,
+                    existing: cloudSaveStatuses[key]
+                )
             }
         }
     }
@@ -627,7 +637,10 @@ final class BorealStore {
     }
 
     func syncCloudSaves(for game: StoreLibraryGame, direction: CloudSaveSyncDirection = .automatic) {
-        guard game.provider == .gog else { return }
+        guard game.provider == .gog,
+              let application = linkedApplication(for: game),
+              application.status != .running,
+              !application.status.isBusy else { return }
         let key = game.storeReference
         guard cloudSaveTasks[key] == nil else { return }
         var status = cloudSaveStatuses[key] ?? .unknown
@@ -717,6 +730,9 @@ final class BorealStore {
     private func syncCloudSavesBeforeLaunch(for game: StoreLibraryGame) async throws {
         let application = linkedApplication(for: game)
         guard let application else { return }
+        if let pendingTask = cloudSaveTasks[game.storeReference] {
+            await pendingTask.value
+        }
         let configuration = await services.advancedConfigurationStore.configuration(for: application.id)
         guard configuration.automaticCloudSaveSync else { return }
         guard let request = await makeCloudSaveRequest(for: game, requireLocalDirectory: false),
@@ -744,6 +760,9 @@ final class BorealStore {
             value.state = .conflict
             value.local = local
             value.cloud = cloud
+        } else if (error as? CloudSaveError)?.requiresReauthentication == true
+                    || (error as? GOGServiceError)?.requiresReauthentication == true {
+            value.state = .reauthenticationRequired(SecretRedactor.redact(error.localizedDescription))
         } else if case CloudSaveError.invalidConfiguration = error {
             value.state = .needsConfiguration
         } else {
@@ -2026,6 +2045,27 @@ final class BorealStore {
         storeGames[index].sizeEstimate = estimate
         save()
     }
+
+    func loadGOGContentSystemBuild(for game: StoreLibraryGame) async throws -> GOGContentSystemBuild {
+        guard game.provider == .gog else { throw GameStoreProviderError.unsupported(game.provider, "GOG Content System builds") }
+        let platform = installedPlatform(for: game) ?? preferredStoreInstallationPlatform(for: game)
+        return try await services.gogLibrary.contentSystemBuild(
+            appID: game.externalID,
+            platform: platform,
+            installationURL: installedLocation(for: game)
+        )
+    }
+
+    func loadGOGContentSystemFiles(for game: StoreLibraryGame, buildID: String) async throws -> [GOGContentSystemFile] {
+        guard game.provider == .gog else { throw GameStoreProviderError.unsupported(game.provider, "GOG Content System manifests") }
+        let platform = installedPlatform(for: game) ?? preferredStoreInstallationPlatform(for: game)
+        return try await services.gogLibrary.contentSystemFiles(
+            appID: game.externalID,
+            platform: platform,
+            buildID: buildID,
+            installationURL: installedLocation(for: game)
+        )
+    }
     func linkedApplication(for game: StoreLibraryGame) -> WindowsApplication? {
         applications.first {
             $0.status != .unavailable
@@ -2033,6 +2073,33 @@ final class BorealStore {
                 && $0.storeProvider == game.provider
                 && $0.storeExternalID == game.externalID
         }
+    }
+
+    func isWitcher3D3DMetalReady(for game: StoreLibraryGame) -> Bool {
+        guard Witcher3Adapter.supports(game: game),
+              let application = linkedApplication(for: game),
+              let environment = environment(id: application.environmentID) else { return false }
+        let profile = compatibilityProfile(for: application)
+        let runtimeID = profile.runtimeIDOverride ?? environment.runtimeID
+        guard let runtimeID,
+              let runtime = runtimeStatuses.first(where: {
+                  $0.id == runtimeID
+                      && $0.source == .installed
+                      && $0.state == .installed
+                      && $0.isVerified
+              }),
+              runtime.engine == .gamePortingToolkit,
+              runtime.features?.hasVerifiedD3DMetal == true else { return false }
+
+        let gameProfile = GameGraphicsProfiles.profile(for: application)
+        let backend = gameProfile?.enforcedBackend
+            ?? (profile.graphicsBackend == .automatic ? gameProfile?.preferredBackend : nil)
+            ?? profile.graphicsBackend
+        if backend == .automatic {
+            // Automatic chooses verified D3DMetal first for a GPTK runtime.
+            return true
+        }
+        return backend == .d3dMetal
     }
 
     // MARK: - Mods
@@ -2056,6 +2123,208 @@ final class BorealStore {
             && isInstalled(game)
             && installedPlatform(for: game) == .windows
             && installedLocation(for: game) != nil
+    }
+
+    func additionalGOGContent(for game: StoreLibraryGame) async throws -> [GOGAdditionalContentGroup] {
+        guard game.provider == .gog else { throw CocoaError(.featureUnsupported) }
+        return try await services.gogLibrary.additionalContent(appID: game.externalID)
+    }
+
+    func downloadedGOGAdditionalContentFiles(
+        for game: StoreLibraryGame,
+        groupID: String,
+        item: GOGAdditionalContentItem
+    ) -> [URL] {
+        let directory = gogAdditionalContentDirectory(for: game, groupID: groupID, item: item)
+        guard FileManager.default.fileExists(atPath: directory.path),
+              let enumerator = FileManager.default.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+              ) else { return [] }
+        return enumerator.compactMap { value in
+            guard let url = value as? URL,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+            return url
+        }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    func gogAdditionalContentDownloadState(
+        for game: StoreLibraryGame,
+        groupID: String,
+        item: GOGAdditionalContentItem
+    ) -> GOGAdditionalContentDownloadState? {
+        gogAdditionalContentDownloads[gogAdditionalContentDownloadKey(for: game, groupID: groupID, item: item)]
+    }
+
+    func isGOGAdditionalContentDownloaded(
+        for game: StoreLibraryGame,
+        groupID: String,
+        item: GOGAdditionalContentItem
+    ) -> Bool {
+        let directory = gogAdditionalContentDirectory(for: game, groupID: groupID, item: item)
+        let marker = directory.appending(path: ".boreal-gog-content-complete")
+        guard let data = try? Data(contentsOf: marker),
+              let relativePaths = try? JSONDecoder().decode([String].self, from: data),
+              !relativePaths.isEmpty else { return false }
+        return relativePaths.allSatisfy { relativePath in
+            let fileURL = directory.appending(path: relativePath).standardizedFileURL
+            guard fileURL.path.hasPrefix(directory.standardizedFileURL.path + "/"),
+                  let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else { return false }
+            return values.isRegularFile == true && (values.fileSize ?? 0) > 0
+        }
+    }
+
+    func downloadGOGAdditionalContent(
+        _ item: GOGAdditionalContentItem,
+        groupID: String,
+        for game: StoreLibraryGame
+    ) {
+        guard game.provider == .gog else { return }
+        let key = gogAdditionalContentDownloadKey(for: game, groupID: groupID, item: item)
+        guard gogAdditionalContentDownloadTasks[key] == nil else { return }
+        let totalBytes = !item.files.isEmpty && item.files.allSatisfy { $0.sizeBytes != nil }
+            ? item.files.compactMap(\.sizeBytes).reduce(Int64(0), +)
+            : nil
+        let token = UUID()
+        gogAdditionalContentDownloadTokens[key] = token
+        gogAdditionalContentDownloads[key] = GOGAdditionalContentDownloadState(
+            phase: .downloading,
+            totalBytes: totalBytes
+        )
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.services.gogLibrary.downloadAdditionalContent(
+                    appID: game.externalID,
+                    groupID: groupID,
+                    item: item,
+                    destinationRoot: self.gogAdditionalContentDirectory(for: game, groupID: groupID, item: item),
+                    progress: { transferredBytes, totalBytes, networkBytesPerSecond in
+                        await self.updateGOGAdditionalContentDownloadProgress(
+                            key: key,
+                            token: token,
+                            transferredBytes: transferredBytes,
+                            totalBytes: totalBytes,
+                            networkBytesPerSecond: networkBytesPerSecond
+                        )
+                    }
+                )
+                guard self.gogAdditionalContentDownloadTokens[key] == token else { return }
+                var state = self.gogAdditionalContentDownloads[key]
+                    ?? GOGAdditionalContentDownloadState(phase: .downloaded)
+                state.phase = .downloaded
+                if let totalBytes = state.totalBytes { state.transferredBytes = totalBytes }
+                state.error = nil
+                self.gogAdditionalContentDownloads[key] = state
+            } catch {
+                guard self.gogAdditionalContentDownloadTokens[key] == token else { return }
+                var state = self.gogAdditionalContentDownloads[key]
+                    ?? GOGAdditionalContentDownloadState(phase: .failed)
+                if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    state.phase = .cancelled
+                    state.error = nil
+                } else {
+                    state.phase = .failed
+                    state.error = error.localizedDescription
+                }
+                self.gogAdditionalContentDownloads[key] = state
+            }
+            self.gogAdditionalContentDownloadTasks[key] = nil
+            self.gogAdditionalContentDownloadTokens[key] = nil
+        }
+        gogAdditionalContentDownloadTasks[key] = task
+    }
+
+    func cancelGOGAdditionalContentDownload(
+        for game: StoreLibraryGame,
+        groupID: String,
+        item: GOGAdditionalContentItem
+    ) {
+        let key = gogAdditionalContentDownloadKey(for: game, groupID: groupID, item: item)
+        guard gogAdditionalContentDownloadTasks[key] != nil else { return }
+        gogAdditionalContentDownloadTokens[key] = nil
+        gogAdditionalContentDownloadTasks[key]?.cancel()
+        gogAdditionalContentDownloadTasks[key] = nil
+        var state = gogAdditionalContentDownloads[key]
+            ?? GOGAdditionalContentDownloadState(phase: .cancelled)
+        state.phase = .cancelled
+        state.error = nil
+        gogAdditionalContentDownloads[key] = state
+    }
+
+    private func updateGOGAdditionalContentDownloadProgress(
+        key: String,
+        token: UUID,
+        transferredBytes: Int64,
+        totalBytes: Int64?,
+        networkBytesPerSecond: Double?
+    ) {
+        guard gogAdditionalContentDownloadTokens[key] == token,
+              var state = gogAdditionalContentDownloads[key],
+              state.phase == .downloading else { return }
+        let isCurrentProgress = transferredBytes >= state.transferredBytes
+        state.transferredBytes = max(state.transferredBytes, transferredBytes)
+        if let totalBytes, totalBytes > 0 { state.totalBytes = totalBytes }
+        if isCurrentProgress, let networkBytesPerSecond, networkBytesPerSecond > 0 {
+            state.networkBytesPerSecond = networkBytesPerSecond
+        }
+        gogAdditionalContentDownloads[key] = state
+    }
+
+    private func gogAdditionalContentDownloadKey(
+        for game: StoreLibraryGame,
+        groupID: String,
+        item: GOGAdditionalContentItem
+    ) -> String {
+        "\(game.externalID):\(groupID):\(item.id)"
+    }
+
+    func installGOGAdditionalContent(_ installer: URL, for game: StoreLibraryGame) {
+        guard game.provider == .gog,
+              isInstalled(game),
+              installedPlatform(for: game) == .windows else { return }
+        let installationRoot = installedLocation(for: game)
+        guard let installationRoot, isDirectory(installationRoot) else {
+            presentedIssue = BorealIssue(
+                title: "\(game.name) installation couldn’t be found",
+                stage: "Preparing the GOG patch or DLC installer.",
+                recovery: "Verify or repair the GOG game installation, then try again.",
+                technicalDetails: "GOG app ID: \(game.externalID)\nExpected path: \(installationRoot?.path ?? "unavailable")"
+            )
+            return
+        }
+        guard let application = linkedApplication(for: game),
+              !application.isInstallerOnly,
+              !application.isSteamRuntimeHost,
+              application.status != .running,
+              !application.status.isBusy else { return }
+        let target = GOGAdditionalContentInstallTarget(
+            appID: game.externalID,
+            gameName: game.name,
+            installationRoot: installationRoot
+        )
+        Task { await runWindowsInstallerAsync(installer, for: application.id, gogTarget: target) }
+    }
+
+    private func gogAdditionalContentDirectory(
+        for game: StoreLibraryGame,
+        groupID: String,
+        item: GOGAdditionalContentItem
+    ) -> URL {
+        storageLayout.rootURL
+            .appending(path: "Downloads/GOG/Additional Content", directoryHint: .isDirectory)
+            .appending(path: Self.gogAdditionalContentPathComponent(game.externalID), directoryHint: .isDirectory)
+            .appending(path: Self.gogAdditionalContentPathComponent(groupID), directoryHint: .isDirectory)
+            .appending(path: Self.gogAdditionalContentPathComponent(item.id), directoryHint: .isDirectory)
+            .standardizedFileURL
+    }
+
+    private nonisolated static func gogAdditionalContentPathComponent(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        let result = value.unicodeScalars.map { allowed.contains($0) ? String($0) : "_" }.joined()
+        return result.isEmpty || result == "." || result == ".." ? "content" : result
     }
 
     func availableGOGAudioLanguages(for game: StoreLibraryGame) async throws -> [String] {
@@ -2995,9 +3264,7 @@ final class BorealStore {
             return "This runtime is not installed and ready."
         }
         let gameProfile = application.flatMap { GameGraphicsProfiles.profile(for: $0) }
-        let effectiveBackend = gameProfile?.enforcedBackend
-            ?? (profile.graphicsBackend == .automatic ? gameProfile?.preferredBackend : nil)
-            ?? profile.graphicsBackend
+        let effectiveBackend = GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: gameProfile)
         let requiredEngine = application.flatMap { GameRuntimeProfiles.requiredEngine(for: $0) }
             ?? effectiveBackend.requiredEngine
         if let requiredEngine, runtime.engine != requiredEngine {
@@ -3166,7 +3433,19 @@ final class BorealStore {
               !applications[index].status.isBusy else { return }
         var profile = requestedProfile
         let gameProfile = GameGraphicsProfiles.profile(for: applications[index])
-        let requestedBackend = gameProfile?.enforcedBackend ?? profile.graphicsBackend
+        let requestedBackend = GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: gameProfile)
+        let selectedRuntimeIssue = profile.runtimeIDOverride.flatMap {
+            runtimeSelectionIssue($0, profile: profile, for: applications[index])
+        }
+        let selectedBackendIssue = graphicsBackendIssue(requestedBackend, for: applications[index])
+        if selectedRuntimeIssue != nil || selectedBackendIssue != nil {
+            applications[index].compatibilityProfile = profile
+            applications[index].windowsVersion = profile.windowsVersion.displayName
+            applications[index].lastResult = "Compatibility preferences saved; the selected runtime or renderer is unavailable."
+            applications[index].lastErrorDetail = nil
+            save()
+            return
+        }
         if let features = compatibilityRuntimeFeatures(for: applications[index], backend: requestedBackend) {
             if !features.esync { profile.esyncEnabled = false }
             if !features.msync { profile.msyncEnabled = false }
@@ -3394,9 +3673,7 @@ final class BorealStore {
                 guard let primary = analysis.gameExecutable else {
                     throw CompatibilityPreparationError.noGameExecutable(analysisRoot)
                 }
-                let requestedBackend = gameProfile?.enforcedBackend
-                    ?? (profile.graphicsBackend == .automatic ? gameProfile?.preferredBackend : nil)
-                    ?? profile.graphicsBackend
+                let requestedBackend = GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: gameProfile)
                 let directXAPI = CompatibilityPreparationResolver.directXAPI(
                     executable: primary.url,
                     userProfile: profile,
@@ -4698,6 +4975,17 @@ final class BorealStore {
             }
     }
 
+    func importGOGPlaytime(for game: StoreLibraryGame) async throws -> Int {
+        guard game.provider == .gog else { throw CocoaError(.featureUnsupported) }
+        let importedMinutes = try await services.gogLibrary.importPlaytimeMinutes(appID: game.externalID)
+        guard let index = storeGames.firstIndex(where: {
+            $0.provider == .gog && $0.externalID == game.externalID
+        }) else { throw GOGServiceError.invalidResponse }
+        storeGames[index].playtimeMinutes = max(storeGames[index].playtimeMinutes, importedMinutes)
+        save()
+        return importedMinutes
+    }
+
     func syncLibrary(_ provider: GameLibraryProvider) {
         switch provider {
         case .steam: syncSteamLibrary()
@@ -5984,9 +6272,7 @@ final class BorealStore {
                 guard let primary = analysis.gameExecutable else {
                     throw CompatibilityPreparationError.noGameExecutable(analysisRoot)
                 }
-                let requestedBackend = gameProfile?.enforcedBackend
-                    ?? (compatibilityIntent.graphicsBackend == .automatic ? gameProfile?.preferredBackend : nil)
-                    ?? compatibilityIntent.graphicsBackend
+                let requestedBackend = GameGraphicsProfiles.requestedBackend(compatibilityIntent.graphicsBackend, for: gameProfile)
                 let directXAPI = CompatibilityPreparationResolver.directXAPI(
                     executable: primary.url,
                     userProfile: compatibilityIntent,
@@ -6645,11 +6931,10 @@ final class BorealStore {
         return URL(fileURLWithPath: application.executablePath).deletingLastPathComponent()
     }
 
-    /// Existing GOG installations can have their hidden game executable
-    /// stored as Boreal's custom primary executable. If the GOG manifest also
-    /// exposes a launcher, adopt that launcher only when it is unambiguously
-    /// paired with the selected executable. This preserves intentional custom
-    /// choices such as SKSE while repairing the common SkyrimSE.exe setup.
+    /// For existing GOG installations, hand off to the provider's declared
+    /// play task only when it is paired with the selected executable. This
+    /// preserves intentional custom choices such as SKSE while allowing
+    /// manifest-specific direct game tasks such as Witcher 3's.
     private func gogLauncherHandoffPlan(
         for application: WindowsApplication,
         environment: ManagedBorealEnvironment,
@@ -6672,10 +6957,20 @@ final class BorealStore {
         !expectedGamePath.isEmpty else { return nil }
 
         let normalizedPath: (URL) -> String = { $0.standardizedFileURL.path.lowercased() }
-        let selectedPath = normalizedPath(URL(fileURLWithPath: application.executablePath))
-        let expectedPath = normalizedPath(URL(fileURLWithPath: expectedGamePath))
+        let selectedExecutable = URL(fileURLWithPath: application.executablePath).standardizedFileURL
+        let expectedExecutable = URL(fileURLWithPath: expectedGamePath).standardizedFileURL
+        let selectedPath = normalizedPath(selectedExecutable)
+        let expectedPath = normalizedPath(expectedExecutable)
         let launcherPath = normalizedPath(candidate.executable)
-        guard selectedPath == expectedPath || selectedPath == launcherPath else { return nil }
+        let expectedWitcherRoot = expectedExecutable
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let isWitcher3REDprelauncher = externalID == "1207664643"
+            && selectedExecutable.lastPathComponent.caseInsensitiveCompare("REDprelauncher.exe") == .orderedSame
+            && expectedExecutable.lastPathComponent.caseInsensitiveCompare("witcher3.exe") == .orderedSame
+            && normalizedPath(selectedExecutable.deletingLastPathComponent()) == normalizedPath(expectedWitcherRoot)
+        guard selectedPath == expectedPath || selectedPath == launcherPath || isWitcher3REDprelauncher else { return nil }
         return candidate
     }
 
@@ -6955,7 +7250,11 @@ final class BorealStore {
         }
     }
 
-    private func runWindowsInstallerAsync(_ requestedInstaller: URL, for applicationID: UUID) async {
+    private func runWindowsInstallerAsync(
+        _ requestedInstaller: URL,
+        for applicationID: UUID,
+        gogTarget: GOGAdditionalContentInstallTarget? = nil
+    ) async {
         guard let index = applications.firstIndex(where: { $0.id == applicationID }) else { return }
         let application = applications[index]
         guard !application.isInstallerOnly,
@@ -6982,6 +7281,18 @@ final class BorealStore {
                   let runtime = try await runtime(for: environmentRecord) else {
                 throw InstallerServiceError.noRuntimeAvailable
             }
+            if let gogTarget,
+               (application.storeProvider != .gog
+                || application.storeExternalID != gogTarget.appID
+                || !isDirectory(gogTarget.installationRoot)) {
+                presentedIssue = BorealIssue(
+                    title: "\(gogTarget.gameName) installation couldn’t be found",
+                    stage: "Preparing the GOG patch or DLC installer.",
+                    recovery: "Verify or repair the GOG game installation, then try again.",
+                    technicalDetails: "GOG app ID: \(gogTarget.appID)\nExpected path: \(gogTarget.installationRoot.path)"
+                )
+                return
+            }
             let launchProfile = GameGraphicsProfiles.effectiveCompatibilityProfile(
                 application.resolvedCompatibilityProfile,
                 for: application
@@ -6993,12 +7304,19 @@ final class BorealStore {
             )
             managed.configuration.graphicsComponentReferences = existingComponentReferences
             managed = try await services.environmentManager.configure(managed, runtime: runtime)
+            if let gogTarget {
+                try await registerGOGGameLocation(
+                    gogTarget,
+                    in: managed,
+                    runtime: runtime
+                )
+            }
             let session = try await services.processRunner.run(
                 plan: WindowsLaunchPlan(
                     executable: installer,
                     arguments: [],
                     environment: [:],
-                    workingDirectory: installer.deletingLastPathComponent()
+                    workingDirectory: gogTarget?.installationRoot ?? installer.deletingLastPathComponent()
                 ),
                 environment: managed,
                 runtime: runtime
@@ -7025,9 +7343,71 @@ final class BorealStore {
             present(
                 error,
                 title: "\(installer.lastPathComponent) couldn’t open",
-                stage: "Starting the installer in \(application.name)’s Windows environment"
+                stage: gogTarget == nil
+                    ? "Starting the installer in \(application.name)’s Windows environment"
+                    : "Registering the GOG game location and starting the patch or DLC installer"
             )
         }
+    }
+
+    private func registerGOGGameLocation(
+        _ target: GOGAdditionalContentInstallTarget,
+        in environment: ManagedBorealEnvironment,
+        runtime: InstalledRuntime
+    ) async throws {
+        guard !target.appID.isEmpty, target.appID.allSatisfy(\.isNumber) else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+
+        let windowsPath = WineLaunchArguments.windowsPath(
+            for: target.installationRoot,
+            prefixURL: environment.prefixURL
+        )
+        guard !windowsPath.contains("\n"),
+              !windowsPath.contains("\r"),
+              !windowsPath.contains("\0"),
+              !target.gameName.contains("\n"),
+              !target.gameName.contains("\r"),
+              !target.gameName.contains("\0") else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+
+        func registryString(_ value: String) -> String {
+            value
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+
+        let appID = target.appID
+        let registryKeys = [
+            "HKEY_LOCAL_MACHINE\\Software\\GOG.com\\Games\\\(appID)",
+            "HKEY_LOCAL_MACHINE\\Software\\Wow6432Node\\GOG.com\\Games\\\(appID)",
+        ]
+        let values = "\"PATH\"=\"\(registryString(windowsPath))\"\r\n\"GAMENAME\"=\"\(registryString(target.gameName))\""
+        let registryText = "Windows Registry Editor Version 5.00\r\n\r\n"
+            + registryKeys.map { "[\($0)]\r\n\(values)" }.joined(separator: "\r\n\r\n")
+            + "\r\n"
+        guard let encodedRegistry = registryText.data(using: .utf16LittleEndian) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        var registryData = Data([0xFF, 0xFE])
+        registryData.append(encodedRegistry)
+
+        let registryFile = FileManager.default.temporaryDirectory
+            .appending(path: "boreal-gog-install-location-\(UUID().uuidString).reg")
+        defer { try? FileManager.default.removeItem(at: registryFile) }
+        try registryData.write(to: registryFile, options: .atomic)
+        try await services.environmentManager.importRegistry(
+            registryFile,
+            in: environment,
+            runtime: runtime
+        )
+    }
+
+    private func isDirectory(_ url: URL) -> Bool {
+        var isDirectory = ObjCBool(false)
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     private func toggleRunningAsync(_ id: UUID) async {
@@ -7312,16 +7692,17 @@ final class BorealStore {
                 if providerLaunchPlanOverride != nil {
                     usesExistingExecutable = false
                     applications[index].usesCustomLaunchExecutable = false
-                    applications[index].lastResult = "Using the GOG launcher and tracking the game process"
+                    applications[index].lastResult = "Using the GOG play task and tracking the game process"
                     save()
                 }
             }
+            applications[index].status = .starting
+            save()
             if applications[index].storeProvider == .gog,
                let appID = applications[index].storeExternalID,
                let storedGame = storeGames.first(where: { $0.provider == .gog && $0.externalID == appID }) {
                 try await syncCloudSavesBeforeLaunch(for: canonicalStoreGame(storedGame))
             }
-            applications[index].status = .starting
             let session: WindowsProcessSession
             if !usesExistingExecutable,
                let provider = applications[index].storeProvider,

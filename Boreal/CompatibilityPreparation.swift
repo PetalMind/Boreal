@@ -386,12 +386,10 @@ nonisolated enum CompatibilityPreparationResolver {
         userProfile: WineCompatibilityProfile,
         gameProfile: GameGraphicsProfile?
     ) -> GraphicsAPI {
-        if let enforced = gameProfile?.enforcedAPI, enforced != .automatic { return enforced }
-        if let user = userProfile.graphicsAPI,
-           user != .automatic,
-           gameProfile?.selectableLaunchOptions.contains(where: { $0.api == user }) == true {
+        if let user = userProfile.graphicsAPI, user != .automatic {
             return user
         }
+        if let enforced = gameProfile?.enforcedAPI, enforced != .automatic { return enforced }
         if let preferred = gameProfile?.defaultAPI, preferred != .automatic { return preferred }
         return GraphicsAPIDetector.detect(executable: executable) ?? .automatic
     }

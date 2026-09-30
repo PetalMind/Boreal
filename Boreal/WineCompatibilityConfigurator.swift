@@ -220,7 +220,7 @@ struct WineCompatibilityConfigurator: View {
             Divider()
             CompatibilitySettingsFooter(
                 restore: { profile = .default }, cancel: { dismiss() }, save: save,
-                saveDisabled: currentApplication.status == .running || currentApplication.status.isBusy || isApplying || graphicsBackendIssue != nil || prefixModeIssue != nil || selectedRuntimeIssue != nil,
+                saveDisabled: currentApplication.status == .running || currentApplication.status.isBusy || isApplying || prefixModeIssue != nil,
                 saveTitle: requiresEnvironmentRebuild ? "Apply & Rebuild" : "Save changes",
                 impacts: changeImpacts,
                 isApplying: isApplying,
@@ -310,7 +310,6 @@ struct WineCompatibilityConfigurator: View {
                     ForEach(availableRuntimes) { runtime in
                         Text(runtimeLabel(runtime))
                             .tag(Optional(runtime.id))
-                            .disabled(store.runtimeSelectionIssue(runtime.id, profile: profile, for: currentApplication) != nil)
                     }
                 }
                 .labelsHidden()
@@ -357,7 +356,7 @@ struct WineCompatibilityConfigurator: View {
                     ForEach(WineGraphicsBackend.allCases) { backend in Text(backendLabel(backend)).tag(backend) }
                 }
                 .labelsHidden()
-                .disabled(isSettingManaged(.graphicsRenderer) || graphicsProfile?.enforcedBackend != nil)
+                .disabled(isSettingManaged(.graphicsRenderer))
             }
             Group {
                 if profile.graphicsBackend == .wineD3D || graphicsBackendIssue != nil {
@@ -882,13 +881,10 @@ struct WineCompatibilityConfigurator: View {
         return fullscreenFSRUnavailableReason
     }
     private var resolvedRendererSummary: String {
-        if let enforced = graphicsProfile?.enforcedBackend {
-            return "\(compatibilityLocalizedBackendName(enforced)) · \(String(localized: "Game rule"))"
-        }
         if profile.graphicsBackend != .automatic {
             return compatibilityLocalizedBackendName(profile.graphicsBackend)
         }
-        if let preferred = graphicsProfile?.preferredBackend {
+        if let preferred = graphicsProfile?.enforcedBackend ?? graphicsProfile?.preferredBackend {
             return "Automatic · \(compatibilityLocalizedBackendName(preferred))"
         }
         let actual = currentApplication.graphics
@@ -1216,7 +1212,7 @@ struct WineCompatibilityConfigurator: View {
     }
     private func backendLabel(_ backend: WineGraphicsBackend) -> String { store.graphicsBackendIssue(backend, for: application) == nil ? compatibilityLocalizedBackendName(backend) : compatibilityLocalizedBackendName(backend) + " · " + String(localized: "Unavailable") }
     private var selectableGraphicsAPIs: [GraphicsAPI] {
-        graphicsProfile?.selectableLaunchOptions.map(\.api) ?? []
+        return GraphicsAPI.allCases.filter { $0 != .automatic }
     }
     private var graphicsAPIBinding: Binding<GraphicsAPI> {
         Binding(
@@ -1249,11 +1245,9 @@ struct WineCompatibilityConfigurator: View {
         return String(localized: "Not detected")
     }
     private var graphicsBackendExplanation: String {
-        if let enforcedBackend = graphicsProfile?.enforcedBackend {
-            return enforcedBackendExplanation(for: enforcedBackend)
-        }
-        if profile.graphicsBackend == .automatic, let preferredBackend = graphicsProfile?.preferredBackend {
-            return String(localized: "Automatic selection follows the game profile's (preferredBackend.displayName) preference when the selected runtime supports it.")
+        if profile.graphicsBackend == .automatic,
+           let preferredBackend = graphicsProfile?.enforcedBackend ?? graphicsProfile?.preferredBackend {
+            return "Automatic uses the game profile's \(compatibilityLocalizedBackendName(preferredBackend)) preference. Choose another renderer to override it."
         }
         return switch profile.graphicsBackend {
         case .automatic: String(localized: "Chooses an available renderer for this game.")
@@ -1281,15 +1275,10 @@ struct WineCompatibilityConfigurator: View {
         }
     }
     private var graphicsAPIExplanation: String {
-        if selectableGraphicsAPIs.isEmpty {
-            return String(localized: "Read-only game fact. Boreal has no verified launch option for changing this API; change it in the game's own settings if supported.")
-        }
-        return String(localized: "Choose only APIs with a game-specific Boreal launch option. Automatic keeps the game's default selection.")
+        return String(localized: "Choose the DirectX version Boreal should prepare the renderer for. A game changes its own API only when a verified game-specific launch option exists; otherwise change it in the game itself.")
     }
     private var effectiveRequestedBackend: WineGraphicsBackend {
-        if let enforced = graphicsProfile?.enforcedBackend { return enforced }
-        if profile.graphicsBackend == .automatic, let preferred = graphicsProfile?.preferredBackend { return preferred }
-        return profile.graphicsBackend
+        GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: graphicsProfile)
     }
 }
 

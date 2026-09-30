@@ -5,7 +5,64 @@ import Foundation
 nonisolated struct GOGInstalledGameIdentity: Equatable, Sendable {
     let externalID: String
     let name: String?
+    let buildID: String?
     let installationURL: URL
+}
+
+nonisolated struct GOGContentSystemBuild: Hashable, Sendable {
+    let buildID: String
+    let installedBuildID: String?
+    let updateAvailable: Bool?
+    let versionName: String?
+    let publishedAt: String?
+    let platform: StoreGameInstallationPlatform
+}
+
+nonisolated struct GOGContentSystemFile: Identifiable, Hashable, Sendable {
+    let path: String
+    let sizeBytes: Int64?
+    let checksum: String?
+
+    var id: String { path.lowercased() }
+}
+
+nonisolated struct GOGAdditionalContentItem: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let kind: String?
+    let sizeBytes: Int64?
+    let fileCount: Int
+    let files: [GOGAdditionalContentFile]
+}
+
+nonisolated struct GOGAdditionalContentFile: Identifiable, Hashable, Sendable {
+    let id: String
+    let fileName: String
+    let sizeBytes: Int64?
+    let downlink: URL?
+    let packageID: String?
+    let category: String?
+}
+
+nonisolated struct GOGAdditionalContentGroup: Identifiable, Hashable, Sendable {
+    let id: String
+    let items: [GOGAdditionalContentItem]
+}
+
+nonisolated struct GOGAdditionalContentDownloadState: Equatable, Sendable {
+    enum Phase: String, Equatable, Sendable {
+        case downloading
+        case downloaded
+        case failed
+        case cancelled
+    }
+
+    var phase: Phase
+    var transferredBytes: Int64 = 0
+    var totalBytes: Int64?
+    var networkBytesPerSecond: Double?
+    var error: String?
+    var startedAt: Date = .now
 }
 
 nonisolated enum GOGInstalledGameDetector {
@@ -24,10 +81,39 @@ nonisolated enum GOGInstalledGameDetector {
             return GOGInstalledGameIdentity(
                 externalID: externalID,
                 name: root["name"] as? String,
+                buildID: root["buildId"] as? String,
                 installationURL: directory
             )
         }
         return nil
+    }
+
+    static func buildID(
+        appID: String,
+        installationURL: URL?,
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard let installationURL,
+              appID.allSatisfy(\.isNumber),
+              !appID.isEmpty else { return nil }
+        let infoURL = installationURL.appending(path: "goggame-\(appID).info")
+        guard fileManager.isReadableFile(atPath: infoURL.path),
+              let data = try? Data(contentsOf: infoURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (root["buildId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    static func isDLCInstalled(
+        productID: String,
+        installationURL: URL?,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard let installationURL,
+              !productID.isEmpty,
+              productID.allSatisfy(\.isNumber) else { return false }
+        // GOG's SDK checks for this per-DLC mini-manifest in the game root.
+        let miniManifestURL = installationURL.appending(path: "goggame-\(productID).info")
+        return fileManager.fileExists(atPath: miniManifestURL.path)
     }
 }
 
@@ -48,11 +134,63 @@ private nonisolated final class GOGOutputBuffer: @unchecked Sendable {
     }
 }
 
+private nonisolated final class GOGAdditionalContentProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let transferredBytesBeforeFile: Int64
+    private let knownTotalBytes: Int64?
+    private let usesResponseTotal: Bool
+    private let startedAt = Date()
+    private let progress: @Sendable (Int64, Int64?, Double?) async -> Void
+
+    init(
+        transferredBytesBeforeFile: Int64,
+        knownTotalBytes: Int64?,
+        usesResponseTotal: Bool,
+        progress: @escaping @Sendable (Int64, Int64?, Double?) async -> Void
+    ) {
+        self.transferredBytesBeforeFile = transferredBytesBeforeFile
+        self.knownTotalBytes = knownTotalBytes
+        self.usesResponseTotal = usesResponseTotal
+        self.progress = progress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        let expectedBytes = knownTotalBytes
+            ?? (usesResponseTotal && totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil)
+        let totalTransferred = transferredBytesBeforeFile + totalBytesWritten
+        let elapsed = Date.now.timeIntervalSince(startedAt)
+        let speed = elapsed > 0 && totalBytesWritten > 0 ? Double(totalBytesWritten) / elapsed : nil
+        Task { await progress(totalTransferred, expectedBytes, speed) }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {}
+}
+
 nonisolated protocol GOGLibraryProviding: Sendable {
     func connectionState() async -> GOGConnectionState
     func prepareSupport() async throws
     func authenticate(authorizationCode: String) async throws -> String?
     func loadLibrary() async throws -> [StoreLibraryGame]
+    func importPlaytimeMinutes(appID: String) async throws -> Int
+    func additionalContent(appID: String) async throws -> [GOGAdditionalContentGroup]
+    func downloadAdditionalContent(
+        appID: String,
+        groupID: String,
+        item: GOGAdditionalContentItem,
+        destinationRoot: URL,
+        progress: @escaping @Sendable (Int64, Int64?, Double?) async -> Void
+    ) async throws -> [URL]
+    func contentSystemBuild(appID: String, platform: StoreGameInstallationPlatform, installationURL: URL?) async throws -> GOGContentSystemBuild
+    func contentSystemFiles(appID: String, platform: StoreGameInstallationPlatform, buildID: String, installationURL: URL?) async throws -> [GOGContentSystemFile]
     func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate?
     func availableLanguages(appID: String) async throws -> [String]
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws
@@ -74,6 +212,46 @@ nonisolated protocol GOGLibraryProviding: Sendable {
 }
 
 extension GOGLibraryProviding {
+    func importPlaytimeMinutes(appID: String) async throws -> Int {
+        _ = appID
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func contentSystemBuild(appID: String, platform: StoreGameInstallationPlatform, installationURL: URL?) async throws -> GOGContentSystemBuild {
+        _ = appID
+        _ = platform
+        _ = installationURL
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func contentSystemFiles(appID: String, platform: StoreGameInstallationPlatform, buildID: String, installationURL: URL?) async throws -> [GOGContentSystemFile] {
+        _ = appID
+        _ = platform
+        _ = buildID
+        _ = installationURL
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func additionalContent(appID: String) async throws -> [GOGAdditionalContentGroup] {
+        _ = appID
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func downloadAdditionalContent(
+        appID: String,
+        groupID: String,
+        item: GOGAdditionalContentItem,
+        destinationRoot: URL,
+        progress: @escaping @Sendable (Int64, Int64?, Double?) async -> Void
+    ) async throws -> [URL] {
+        _ = appID
+        _ = groupID
+        _ = item
+        _ = destinationRoot
+        _ = progress
+        throw CocoaError(.featureUnsupported)
+    }
+
     func availableLanguages(appID: String) async throws -> [String] {
         _ = appID
         throw CocoaError(.featureUnsupported)
@@ -145,6 +323,26 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
     case verificationFailed
     case helperUnavailable
     case notAuthenticated
+    case cloudRefreshTokenUnavailable
+    case cloudAuthorizationRejected
+    case cloudAuthorizationFailed(Int)
+    case cloudBuildsRequestFailed(Int)
+    case cloudBuildsResponseInvalid
+    case cloudMetadataRequestFailed(Int)
+    case cloudMetadataResponseInvalid
+    case cloudMetadataCredentialsMissing
+    case cloudTokenResponseInvalid
+    case credentialPersistenceFailed
+    case additionalContentRequestFailed(Int)
+    case additionalContentResponseInvalid
+    case additionalContentDownloadUnavailable
+    case additionalContentDownloadLinkInvalid
+    case additionalContentDownloadFailed(Int)
+    case playtimeRequestFailed(Int)
+    case playtimeResponseInvalid
+    case contentSystemRequestFailed(Int)
+    case contentSystemResponseInvalid
+    case contentSystemManifestInvalid
     case localManifestUnavailable
     case languageUpdateRequiresManifest
     case languageUnavailable(String)
@@ -162,15 +360,64 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
         case .verificationFailed: "The downloaded GOG support component failed SHA-256 verification and was not installed."
         case .helperUnavailable: "Install GOG support before connecting your account."
         case .notAuthenticated: "Connect your GOG account, then refresh the Library."
+        case .cloudRefreshTokenUnavailable:
+            "Your GOG account is connected, but Cloud Saves needs a refresh token. Reconnect the account in Boreal."
+        case .cloudAuthorizationRejected:
+            "GOG rejected the Cloud Saves authorization. Reconnect your GOG account in Boreal."
+        case .cloudAuthorizationFailed(let status):
+            "GOG could not refresh Cloud Saves authorization (HTTP \(status)). Try again later."
+        case .cloudBuildsRequestFailed(let status):
+            "GOG could not load Cloud Saves build information (HTTP \(status))."
+        case .cloudBuildsResponseInvalid:
+            "GOG returned Cloud Saves build information in an unsupported format."
+        case .cloudMetadataRequestFailed(let status):
+            "GOG could not load Cloud Saves metadata (HTTP \(status))."
+        case .cloudMetadataResponseInvalid:
+            "GOG returned Cloud Saves metadata in an unsupported format."
+        case .cloudMetadataCredentialsMissing:
+            "GOG’s Cloud Saves metadata did not include the game authorization credentials."
+        case .cloudTokenResponseInvalid:
+            "GOG returned an unsupported Cloud Saves authorization response."
+        case .credentialPersistenceFailed:
+            "Boreal could not save the refreshed GOG credentials. Reconnect your GOG account and try again."
+        case .additionalContentRequestFailed(let status):
+            "GOG could not load the additional content list (HTTP \(status))."
+        case .additionalContentResponseInvalid:
+            "GOG returned an unsupported additional content list."
+        case .additionalContentDownloadUnavailable:
+            "GOG does not provide downloadable files for this item."
+        case .additionalContentDownloadLinkInvalid:
+            "GOG returned an unsafe or unsupported additional content download link."
+        case .additionalContentDownloadFailed(let status):
+            "GOG could not download this additional content (HTTP \(status))."
+        case .playtimeRequestFailed(let status):
+            "GOG could not read account playtime (HTTP \(status)). The unofficial endpoint may be unavailable."
+        case .playtimeResponseInvalid:
+            "GOG returned account playtime in an unsupported format."
+        case .contentSystemRequestFailed(let status):
+            "GOG could not load Content System build information (HTTP \(status))."
+        case .contentSystemResponseInvalid:
+            "GOG returned unsupported Content System build information."
+        case .contentSystemManifestInvalid:
+            "GOG returned an unsupported Content System file manifest."
         case .localManifestUnavailable: "This offline GOG installation has not been adopted by Boreal yet."
         case .languageUpdateRequiresManifest: "Boreal can add a GOG language only when this installation has a managed GOG manifest."
         case .languageUnavailable(let code): "GOG does not offer the (code) language for this game build."
         case .commandFailed(let code): "GOG support stopped with exit code \(code)."
         case .noBuildsFound: "GOG does not provide a downloadable build for the selected platform."
-        case .invalidResponse: "GOG returned Library data in an unsupported format."
+        case .invalidResponse: "GOG returned data in an unsupported format."
         case .installationIncomplete(let platform):
             "GOG finished without creating a valid \(platform == .nativeMacOS ? "macOS" : "Windows") game installation."
         case .invalidLaunchPlan(let detail): "The installed GOG game has an unsafe or incomplete launch task: \(detail)"
+        }
+    }
+
+    var requiresReauthentication: Bool {
+        switch self {
+        case .notAuthenticated, .cloudRefreshTokenUnavailable, .cloudAuthorizationRejected, .credentialPersistenceFailed:
+            true
+        default:
+            false
         }
     }
 }
@@ -210,6 +457,19 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         var rating: StoreRating?
         var supportsWindows: Bool?
         var supportsNativeMacOS: Bool?
+    }
+
+    private struct ContentSystemBuildRecord: Sendable {
+        let buildID: String
+        let versionName: String?
+        let publishedAt: String?
+        let branch: String?
+        let isPublic: Bool
+        let generation: Int
+        let link: URL
+        let legacyBuildID: String?
+
+        var localBuildID: String { legacyBuildID ?? buildID }
     }
 
     private let fileManager: FileManager
@@ -272,7 +532,8 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         guard let credentials = try? JSONDecoder().decode(Credentials.self, from: data) else {
             throw GOGServiceError.notAuthenticated
         }
-        if let refreshToken = credentials.refreshToken {
+        cloudAuthorizationCache.removeAll()
+        if let refreshToken = credentials.refreshToken, !refreshToken.isEmpty {
             try? GOGCredentialKeychain.store(refreshToken: refreshToken)
         }
         return try? await userDisplayName(credentials: credentials)
@@ -329,8 +590,166 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         return GOGReleaseNormalizer.deduplicate(games)
     }
 
+    func importPlaytimeMinutes(appID: String) async throws -> Int {
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.playtimeResponseInvalid }
+        let credentials = try await credentials()
+        guard Self.isSafeAppID(credentials.userID),
+              let baseURL = URL(string: "https://gameplay.gog.com/clients/\(appID)/users/\(credentials.userID)/sessions") else {
+            throw GOGServiceError.playtimeResponseInvalid
+        }
+
+        var totalMinutes = 0
+        var pageToken: String?
+        var seenPageTokens: Set<String> = []
+        for _ in 0..<100 {
+            var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+            if let pageToken {
+                components?.queryItems = [URLQueryItem(name: "page_token", value: pageToken)]
+            }
+            guard let url = components?.url else { throw GOGServiceError.playtimeResponseInvalid }
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw GOGServiceError.playtimeResponseInvalid
+            }
+            guard httpResponse.statusCode == 200 else {
+                throw GOGServiceError.playtimeRequestFailed(httpResponse.statusCode)
+            }
+            let page = try Self.playtimePage(from: data)
+            totalMinutes += page.minutes
+            guard let nextPageToken = page.nextPageToken else { return totalMinutes }
+            guard seenPageTokens.insert(nextPageToken).inserted else {
+                throw GOGServiceError.playtimeResponseInvalid
+            }
+            pageToken = nextPageToken
+        }
+        throw GOGServiceError.playtimeResponseInvalid
+    }
+
     func install(appID: String, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         try await install(appID: appID, destinationRoot: gamesURL, progress: progress)
+    }
+
+    func contentSystemBuild(
+        appID: String,
+        platform: StoreGameInstallationPlatform,
+        installationURL: URL?
+    ) async throws -> GOGContentSystemBuild {
+        let credentials = try await credentials()
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.contentSystemResponseInvalid }
+        let builds = try await contentSystemBuilds(appID: appID, platform: platform, accessToken: credentials.accessToken)
+        guard let latest = builds
+            .filter({ $0.isPublic && Self.isMasterContentSystemBuild($0) })
+            .sorted(by: Self.isNewerContentSystemBuild)
+            .first else { throw GOGServiceError.noBuildsFound }
+
+        let installedBuildID = GOGInstalledGameDetector.buildID(
+            appID: appID,
+            installationURL: installationURL,
+            fileManager: fileManager
+        )
+        let installedBuild = installedBuildID.flatMap { buildID in
+            builds.first(where: {
+                $0.isPublic && Self.isMasterContentSystemBuild($0) && $0.localBuildID == buildID
+            })
+        }
+        let updateAvailable: Bool? = {
+            guard let installedBuildID, let installedBuild else { return nil }
+            guard installedBuildID != latest.localBuildID else { return false }
+            guard let latestPublishedAt = latest.publishedAt,
+                  let installedPublishedAt = installedBuild.publishedAt else { return nil }
+            return latestPublishedAt > installedPublishedAt
+        }()
+
+        return GOGContentSystemBuild(
+            buildID: latest.localBuildID,
+            installedBuildID: installedBuildID,
+            updateAvailable: updateAvailable,
+            versionName: latest.versionName,
+            publishedAt: latest.publishedAt,
+            platform: platform
+        )
+    }
+
+    func contentSystemFiles(
+        appID: String,
+        platform: StoreGameInstallationPlatform,
+        buildID: String,
+        installationURL: URL?
+    ) async throws -> [GOGContentSystemFile] {
+        let credentials = try await credentials()
+        guard Self.isSafeAppID(appID), !buildID.isEmpty else {
+            throw GOGServiceError.contentSystemResponseInvalid
+        }
+        let builds = try await contentSystemBuilds(appID: appID, platform: platform, accessToken: credentials.accessToken)
+        guard let build = builds.first(where: {
+            $0.isPublic
+                && Self.isMasterContentSystemBuild($0)
+                && ($0.localBuildID == buildID || $0.buildID == buildID)
+        }) else { throw GOGServiceError.contentSystemResponseInvalid }
+
+        let repositoryData = try await contentSystemData(at: build.link, accessToken: credentials.accessToken)
+        guard let repository = GOGCloudMetadataDecoder.object(from: repositoryData) as? [String: Any] else {
+            throw GOGServiceError.contentSystemManifestInvalid
+        }
+        let isGenerationTwo = build.generation >= 2
+        let depotList: [[String: Any]]
+        if isGenerationTwo {
+            depotList = repository["depots"] as? [[String: Any]] ?? []
+        } else {
+            depotList = (repository["product"] as? [String: Any])?["depots"] as? [[String: Any]] ?? []
+        }
+        guard !depotList.isEmpty else { throw GOGServiceError.contentSystemManifestInvalid }
+
+        let installedLanguages = Self.installedLanguages(appID: appID, installationURL: installationURL)
+        var filesByPath: [String: GOGContentSystemFile] = [:]
+        for depot in depotList {
+            if isGenerationTwo {
+                if let productID = Self.stringValue(depot["productId"]), productID != appID { continue }
+            } else if let gameIDs = depot["gameIDs"] as? [String], !gameIDs.isEmpty, !gameIDs.contains(appID) {
+                continue
+            }
+            guard Self.contentDepotMatchesInstalledLanguage(depot, installedLanguages: installedLanguages),
+                  let manifest = Self.stringValue(depot["manifest"]) else { continue }
+
+            let manifestURL: URL?
+            if isGenerationTwo {
+                manifestURL = Self.contentSystemV2MetadataURL(hash: manifest)
+            } else if let legacyBuildID = build.legacyBuildID ?? Int(build.buildID).map(String.init),
+                      manifest.range(of: #"^[A-Fa-f0-9-]+\.json$"#, options: .regularExpression) != nil {
+                manifestURL = URL(string: "https://cdn.gog.com/content-system/v1/manifests/\(appID)/\(platform == .nativeMacOS ? "osx" : "windows")/\(legacyBuildID)/\(manifest)")
+            } else {
+                manifestURL = nil
+            }
+            guard let manifestURL else { throw GOGServiceError.contentSystemManifestInvalid }
+            let manifestData = try await contentSystemData(at: manifestURL, accessToken: credentials.accessToken)
+            guard let root = GOGCloudMetadataDecoder.object(from: manifestData) as? [String: Any],
+                  let depotRoot = root["depot"] as? [String: Any] else {
+                throw GOGServiceError.contentSystemManifestInvalid
+            }
+            let manifestFiles: [[String: Any]]
+            if isGenerationTwo {
+                manifestFiles = depotRoot["items"] as? [[String: Any]] ?? []
+            } else {
+                manifestFiles = depotRoot["files"] as? [[String: Any]] ?? []
+            }
+            for item in manifestFiles {
+                guard let path = Self.stringValue(item["path"]), !path.isEmpty else { continue }
+                let chunks = item["chunks"] as? [[String: Any]] ?? []
+                let chunkSize = chunks.compactMap { Self.int64Value($0["size"]) }.reduce(0, +)
+                let size = Self.int64Value(item["size"]) ?? (chunkSize > 0 ? chunkSize : nil)
+                let file = GOGContentSystemFile(
+                    path: path.replacingOccurrences(of: "\\", with: "/"),
+                    sizeBytes: size,
+                    checksum: Self.stringValue(item[isGenerationTwo ? "md5" : "hash"])
+                )
+                filesByPath[file.id] = file
+            }
+        }
+        guard !filesByPath.isEmpty else { throw GOGServiceError.contentSystemManifestInvalid }
+        return filesByPath.values.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
     func loadSizeEstimate(appID: String, platform: StoreGameInstallationPlatform) async throws -> StoreGameSizeEstimate? {
@@ -363,6 +782,187 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         )
     }
 
+    func additionalContent(appID: String) async throws -> [GOGAdditionalContentGroup] {
+        let credentials = try await credentials()
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.additionalContentResponseInvalid }
+
+        var components = URLComponents(string: "https://api.gog.com/products/\(appID)")!
+        components.queryItems = [URLQueryItem(name: "expand", value: "downloads,expanded_dlcs")]
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GOGServiceError.additionalContentResponseInvalid
+        }
+        guard httpResponse.statusCode == 200 else {
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                throw GOGServiceError.notAuthenticated
+            }
+            throw GOGServiceError.additionalContentRequestFailed(httpResponse.statusCode)
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GOGServiceError.additionalContentResponseInvalid
+        }
+
+        var groups: [GOGAdditionalContentGroup] = []
+        let downloads = root["downloads"] as? [String: Any] ?? [:]
+        for key in ["bonus_content", "language_packs", "patches"] {
+            guard let entries = downloads[key] as? [[String: Any]] else { continue }
+            let items = entries.enumerated().compactMap { index, entry in
+                Self.additionalContentItem(entry, fallbackPrefix: key, index: index)
+            }
+            if !items.isEmpty {
+                groups.append(GOGAdditionalContentGroup(id: key, items: items))
+            }
+        }
+
+        if let dlcs = root["expanded_dlcs"] as? [[String: Any]] {
+            let items = dlcs.enumerated().compactMap { index, dlc in
+                Self.additionalContentItem(dlc, fallbackPrefix: "dlc", index: index)
+            }
+            if !items.isEmpty {
+                groups.append(GOGAdditionalContentGroup(id: "dlc", items: items))
+            }
+        }
+        return groups
+    }
+
+    func downloadAdditionalContent(
+        appID: String,
+        groupID: String,
+        item: GOGAdditionalContentItem,
+        destinationRoot: URL,
+        progress: @escaping @Sendable (Int64, Int64?, Double?) async -> Void
+    ) async throws -> [URL] {
+        let credentials = try await credentials()
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.additionalContentResponseInvalid }
+
+        var productID = appID
+        var files = item.files
+        if groupID == "dlc" {
+            guard Self.isSafeAppID(item.id) else { throw GOGServiceError.additionalContentResponseInvalid }
+            productID = item.id
+            let dlc = try await productMetadata(appID: productID, expand: "downloads", credentials: credentials)
+            let downloads = dlc["downloads"] as? [String: Any] ?? [:]
+            let dlcFiles = ["installers", "bonus_content", "language_packs", "patches"].flatMap { category in
+                let entries = downloads[category] as? [[String: Any]] ?? []
+                return entries.enumerated().flatMap { packageIndex, entry in
+                    let packageID = "\(category)-\(Self.stringValue(entry["id"]) ?? String(packageIndex + 1))"
+                    let packageFiles = entry["files"] as? [[String: Any]] ?? []
+                    return packageFiles.enumerated().compactMap { fileIndex, value in
+                        Self.additionalContentFile(
+                            value,
+                            fallbackPrefix: packageID,
+                            index: fileIndex,
+                            packageID: packageID,
+                            category: category
+                        )
+                    }
+                }
+            }
+            if !dlcFiles.isEmpty { files = dlcFiles }
+        }
+        guard !files.isEmpty else { throw GOGServiceError.additionalContentDownloadUnavailable }
+
+        try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        let completionMarker = destinationRoot.appending(path: ".boreal-gog-content-complete")
+        try? fileManager.removeItem(at: completionMarker)
+        let expectedSizes = files.map(\.sizeBytes)
+        let knownTotalBytes = !expectedSizes.isEmpty && expectedSizes.allSatisfy { $0 != nil }
+            ? expectedSizes.compactMap { $0 }.reduce(Int64(0), +)
+            : nil
+        var downloadedURLs: [URL] = []
+        var transferredBytes: Int64 = 0
+        for file in files {
+            try Task.checkCancellation()
+            let packageDirectory = file.packageID.map(Self.safePathComponent)
+                .map { destinationRoot.appending(path: $0, directoryHint: .isDirectory) }
+                ?? destinationRoot
+            try fileManager.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+            let indexURL = packageDirectory.appending(path: ".boreal-gog-content.json")
+            var downloadedFileNames = (try? Data(contentsOf: indexURL))
+                .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+            var destinationName = Self.safeAdditionalContentFilename(downloadedFileNames[file.id] ?? file.fileName)
+            var destination = packageDirectory.appending(path: destinationName)
+
+            if Self.isCompleteAdditionalContentFile(destination, expectedSize: file.sizeBytes) {
+                downloadedURLs.append(destination)
+                let fileBytes = file.sizeBytes ?? Self.additionalContentFileSize(destination)
+                transferredBytes += fileBytes
+                await progress(transferredBytes, knownTotalBytes, nil)
+                continue
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+
+            let category = file.category ?? (groupID == "dlc" ? "installers" : groupID)
+            let downlinkEndpoint = try Self.additionalContentDownlinkEndpoint(
+                file.downlink,
+                productID: productID,
+                category: category,
+                fileID: file.id
+            )
+            var downlinkRequest = URLRequest(url: downlinkEndpoint)
+            downlinkRequest.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+            downlinkRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            let (linkData, linkResponse) = try await session.data(for: downlinkRequest)
+            guard let linkHTTPResponse = linkResponse as? HTTPURLResponse else {
+                throw GOGServiceError.additionalContentResponseInvalid
+            }
+            if linkHTTPResponse.statusCode == 401 || linkHTTPResponse.statusCode == 403 {
+                throw GOGServiceError.notAuthenticated
+            }
+            guard (200..<300).contains(linkHTTPResponse.statusCode),
+                  let linkRoot = try? JSONSerialization.jsonObject(with: linkData) as? [String: Any],
+                  let signedLink = Self.stringValue(linkRoot["downlink"]),
+                  let downloadURL = URL(string: signedLink),
+                  downloadURL.scheme?.lowercased() == "https",
+                  downloadURL.host != nil else {
+                throw GOGServiceError.additionalContentDownloadLinkInvalid
+            }
+
+            let progressDelegate = GOGAdditionalContentProgressDelegate(
+                transferredBytesBeforeFile: transferredBytes,
+                knownTotalBytes: knownTotalBytes,
+                usesResponseTotal: files.count == 1,
+                progress: progress
+            )
+            let downloadRequest = URLRequest(url: downloadURL)
+            let (temporaryURL, response) = try await session.download(for: downloadRequest, delegate: progressDelegate)
+            try Task.checkCancellation()
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw GOGServiceError.additionalContentResponseInvalid
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw GOGServiceError.additionalContentDownloadFailed(httpResponse.statusCode)
+            }
+            if URL(fileURLWithPath: destinationName).pathExtension.isEmpty,
+               let suggestedFilename = httpResponse.suggestedFilename,
+               !URL(fileURLWithPath: suggestedFilename).pathExtension.isEmpty {
+                destinationName = Self.safeAdditionalContentFilename(suggestedFilename)
+                destination = packageDirectory.appending(path: destinationName)
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+            try fileManager.moveItem(at: temporaryURL, to: destination)
+            downloadedFileNames[file.id] = destinationName
+            if let indexData = try? JSONEncoder().encode(downloadedFileNames) {
+                try? indexData.write(to: indexURL, options: .atomic)
+            }
+            downloadedURLs.append(destination)
+            let fileBytes = file.sizeBytes ?? Self.additionalContentFileSize(destination)
+            transferredBytes += fileBytes
+            await progress(transferredBytes, knownTotalBytes, nil)
+        }
+        let relativePaths = downloadedURLs.map { String($0.path.dropFirst(destinationRoot.path.count + 1)) }
+        try JSONEncoder().encode(relativePaths).write(to: completionMarker, options: .atomic)
+        return downloadedURLs
+    }
+
     func install(appID: String, destinationRoot: URL, progress: @escaping @Sendable (StoreGameOperationProgress) async -> Void) async throws {
         try await install(appID: appID, destinationRoot: destinationRoot, platform: .windows, progress: progress)
     }
@@ -384,6 +984,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             "download", appID,
             "--path", destination.path,
             "--platform", platform == .nativeMacOS ? "osx" : "windows",
+            "--max-workers", String(StoreDownloadConcurrency.maxWorkers),
         ]
         if platform == .windows, let languageCode = preferredLanguage(appID: appID) {
             arguments += ["--lang", languageCode]
@@ -495,6 +1096,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             command, appID,
             "--path", path.path,
             "--platform", platformArgument,
+            "--max-workers", String(StoreDownloadConcurrency.maxWorkers),
         ]
         if command == "update", let languageCode = preferredLanguage(appID: appID) {
             arguments += ["--lang", languageCode]
@@ -516,6 +1118,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
                 "download", appID,
                 "--path", path.path,
                 "--platform", platformArgument,
+                "--max-workers", String(StoreDownloadConcurrency.maxWorkers),
             ]
             if let languageCode = preferredLanguage(appID: appID) {
                 adoptionArguments += ["--lang", languageCode]
@@ -599,9 +1202,18 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         guard let data = try? Data(contentsOf: infoURL),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tasks = root["playTasks"] as? [[String: Any]],
-              let task = tasks.first(where: { ($0["isPrimary"] as? Bool) == true && ($0["type"] as? String) != "URLTask" })
+              let primaryTask = tasks.first(where: { ($0["isPrimary"] as? Bool) == true && ($0["type"] as? String) != "URLTask" })
                 ?? tasks.first(where: { ($0["type"] as? String) != "URLTask" }),
-              let relativeExecutable = task["path"] as? String,
+              let primaryRelativeExecutable = primaryTask["path"] as? String,
+              !primaryRelativeExecutable.isEmpty else {
+            throw GOGServiceError.invalidLaunchPlan("no executable play task")
+        }
+        // The Witcher 3's official GOG task launches REDprelauncher, which
+        // opens REDlauncher. REDlauncher crashes under the Wine runtime used
+        // by Boreal before the game starts, even though GOG also provides a
+        // direct, hidden game task in the same manifest.
+        let task = Self.witcher3DirectLaunchTask(primaryTask: primaryTask, tasks: tasks) ?? primaryTask
+        guard let relativeExecutable = task["path"] as? String,
               !relativeExecutable.isEmpty else {
             throw GOGServiceError.invalidLaunchPlan("no executable play task")
         }
@@ -639,12 +1251,12 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         )
 
         // GOG metadata can expose a launcher as the primary task while the
-        // actual game is a hidden secondary task. Keep the launcher as the
-        // process Boreal starts, but identify the game process that owns the
-        // user-visible session after the launcher exits.
+        // actual game is a hidden secondary task. When the launcher is kept,
+        // identify the game process that owns the user-visible session after
+        // the launcher exits.
         if let gameExecutable = Self.gameExecutable(
             in: tasks,
-            primaryRelativePath: relativeExecutable,
+            primaryRelativePath: primaryRelativeExecutable,
             gameDirectory: gameDirectory
         ) {
             plan.processExecutableName = gameExecutable.lastPathComponent
@@ -715,26 +1327,46 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         buildsRequest.setValue("Bearer \(base.accessToken)", forHTTPHeaderField: "Authorization")
         buildsRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         let (buildsData, buildsResponse) = try await session.data(for: buildsRequest)
-        guard (buildsResponse as? HTTPURLResponse)?.statusCode == 200,
-              let buildsRoot = GOGCloudMetadataDecoder.object(from: buildsData) as? [String: Any],
+        guard let buildsHTTPResponse = buildsResponse as? HTTPURLResponse else {
+            throw GOGServiceError.cloudBuildsResponseInvalid
+        }
+        guard buildsHTTPResponse.statusCode == 200 else {
+            if buildsHTTPResponse.statusCode == 401 || buildsHTTPResponse.statusCode == 403 {
+                throw GOGServiceError.cloudAuthorizationRejected
+            }
+            throw GOGServiceError.cloudBuildsRequestFailed(buildsHTTPResponse.statusCode)
+        }
+        guard let buildsRoot = GOGCloudMetadataDecoder.object(from: buildsData) as? [String: Any],
               let items = buildsRoot["items"] as? [[String: Any]],
               let metadataLink = items.compactMap({ $0["link"] as? String }).first,
               let metadataURL = URL(string: metadataLink),
               metadataURL.scheme?.lowercased() == "https" else {
-            throw GOGServiceError.invalidResponse
+            throw GOGServiceError.cloudBuildsResponseInvalid
         }
 
         var metadataRequest = URLRequest(url: metadataURL)
         metadataRequest.setValue("Bearer \(base.accessToken)", forHTTPHeaderField: "Authorization")
         let (metadataData, metadataResponse) = try await session.data(for: metadataRequest)
-        guard (metadataResponse as? HTTPURLResponse)?.statusCode == 200,
-              let metadata = GOGCloudMetadataDecoder.object(from: metadataData) as? [String: Any],
-              let clientID = Self.stringValue(metadata["clientId"]),
+        guard let metadataHTTPResponse = metadataResponse as? HTTPURLResponse else {
+            throw GOGServiceError.cloudMetadataResponseInvalid
+        }
+        guard metadataHTTPResponse.statusCode == 200 else {
+            if metadataHTTPResponse.statusCode == 401 || metadataHTTPResponse.statusCode == 403 {
+                throw GOGServiceError.cloudAuthorizationRejected
+            }
+            throw GOGServiceError.cloudMetadataRequestFailed(metadataHTTPResponse.statusCode)
+        }
+        guard let metadata = GOGCloudMetadataDecoder.object(from: metadataData) as? [String: Any] else {
+            throw GOGServiceError.cloudMetadataResponseInvalid
+        }
+        guard let clientID = Self.stringValue(metadata["clientId"]),
               let clientSecret = Self.stringValue(metadata["clientSecret"]),
               !clientID.isEmpty,
-              !clientSecret.isEmpty,
-              let refreshToken = base.refreshToken else {
-            throw GOGServiceError.notAuthenticated
+              !clientSecret.isEmpty else {
+            throw GOGServiceError.cloudMetadataCredentialsMissing
+        }
+        guard let refreshToken = base.refreshToken, !refreshToken.isEmpty else {
+            throw GOGServiceError.cloudRefreshTokenUnavailable
         }
 
         var tokenComponents = URLComponents(string: "https://auth.gog.com/token")!
@@ -748,11 +1380,25 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         var tokenRequest = URLRequest(url: tokenComponents.url!)
         tokenRequest.httpMethod = "GET"
         let (tokenData, tokenResponse) = try await session.data(for: tokenRequest)
-        guard (tokenResponse as? HTTPURLResponse)?.statusCode == 200,
-              let tokenRoot = try? JSONSerialization.jsonObject(with: tokenData) as? [String: Any],
+        guard let httpResponse = tokenResponse as? HTTPURLResponse else {
+            throw GOGServiceError.cloudTokenResponseInvalid
+        }
+        guard httpResponse.statusCode == 200 else {
+            let oauthError = (try? JSONSerialization.jsonObject(with: tokenData) as? [String: Any])?["error"] as? String
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 || oauthError == "invalid_grant" {
+                throw GOGServiceError.cloudAuthorizationRejected
+            }
+            throw GOGServiceError.cloudAuthorizationFailed(httpResponse.statusCode)
+        }
+        guard let tokenRoot = try? JSONSerialization.jsonObject(with: tokenData) as? [String: Any],
               let accessToken = tokenRoot["access_token"] as? String,
               !accessToken.isEmpty else {
-            throw GOGServiceError.notAuthenticated
+            throw GOGServiceError.cloudTokenResponseInvalid
+        }
+        if let refreshedToken = Self.stringValue(tokenRoot["refresh_token"]),
+           !refreshedToken.isEmpty,
+           refreshedToken != refreshToken {
+            try persistRefreshToken(refreshedToken)
         }
         let userID = Self.stringValue(tokenRoot["user_id"]) ?? base.userID
         let expiresAt = (tokenRoot["expires_in"] as? NSNumber).map { Date().addingTimeInterval($0.doubleValue) }
@@ -762,7 +1408,9 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             clientID: clientID,
             expiresAt: expiresAt
         )
-        cloudAuthorizationCache[appID] = authorization
+        if expiresAt != nil {
+            cloudAuthorizationCache[appID] = authorization
+        }
         return authorization
     }
 
@@ -773,17 +1421,303 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
               !credentials.accessToken.isEmpty, !credentials.userID.isEmpty else {
             throw GOGServiceError.notAuthenticated
         }
-        if credentials.refreshToken == nil {
-            credentials.refreshToken = try? GOGCredentialKeychain.read()
+        if credentials.refreshToken?.isEmpty != false {
+            credentials.refreshToken = persistedRefreshToken() ?? (try? GOGCredentialKeychain.read())
         } else if let refreshToken = credentials.refreshToken {
             try? GOGCredentialKeychain.store(refreshToken: refreshToken)
         }
         return credentials
     }
 
+    private func persistedRefreshToken() -> String? {
+        guard let data = try? Data(contentsOf: authURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let refreshToken = Self.stringValue(root["refresh_token"]),
+              !refreshToken.isEmpty else { return nil }
+        return refreshToken
+    }
+
+    private func persistRefreshToken(_ refreshToken: String) throws {
+        guard let data = try? Data(contentsOf: authURL),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GOGServiceError.credentialPersistenceFailed
+        }
+        root["refresh_token"] = refreshToken
+        do {
+            let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+            try updatedData.write(to: authURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
+            try? GOGCredentialKeychain.store(refreshToken: refreshToken)
+        } catch {
+            throw GOGServiceError.credentialPersistenceFailed
+        }
+    }
+
     private static func sizeValues(_ value: Any?) -> (downloadBytes: Int64?, installedBytes: Int64?)? {
         guard let value = value as? [String: Any] else { return nil }
         return (int64Value(value["download_size"]), int64Value(value["disk_size"]))
+    }
+
+    private func contentSystemBuilds(
+        appID: String,
+        platform: StoreGameInstallationPlatform,
+        accessToken: String
+    ) async throws -> [ContentSystemBuildRecord] {
+        let os = platform == .nativeMacOS ? "osx" : "windows"
+        var components = URLComponents(string: "https://content-system.gog.com/products/\(appID)/os/\(os)/builds")!
+        components.queryItems = [URLQueryItem(name: "generation", value: "2")]
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GOGServiceError.contentSystemResponseInvalid
+        }
+        guard httpResponse.statusCode == 200 else {
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 { throw GOGServiceError.notAuthenticated }
+            throw GOGServiceError.contentSystemRequestFailed(httpResponse.statusCode)
+        }
+        guard let root = GOGCloudMetadataDecoder.object(from: data) as? [String: Any],
+              let items = root["items"] as? [[String: Any]] else {
+            throw GOGServiceError.contentSystemResponseInvalid
+        }
+        return items.compactMap { item in
+            guard let buildID = Self.stringValue(item["build_id"]),
+                  let linkValue = Self.stringValue(item["link"]),
+                  let link = URL(string: linkValue),
+                  link.scheme?.lowercased() == "https",
+                  link.host?.lowercased() == "cdn.gog.com" else { return nil }
+            return ContentSystemBuildRecord(
+                buildID: buildID,
+                versionName: Self.stringValue(item["version_name"]).flatMap { $0.isEmpty ? nil : $0 },
+                publishedAt: Self.stringValue(item["date_published"]),
+                branch: Self.stringValue(item["branch"]),
+                isPublic: (item["public"] as? Bool) ?? false,
+                generation: Self.intValue(item["generation"]) ?? 1,
+                link: link,
+                legacyBuildID: Self.stringValue(item["legacy_build_id"])
+            )
+        }
+    }
+
+    private func contentSystemData(at url: URL, accessToken: String) async throws -> Data {
+        guard url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "cdn.gog.com" else {
+            throw GOGServiceError.contentSystemManifestInvalid
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GOGServiceError.contentSystemManifestInvalid
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw GOGServiceError.contentSystemRequestFailed(httpResponse.statusCode)
+        }
+        return data
+    }
+
+    private static func isNewerContentSystemBuild(_ lhs: ContentSystemBuildRecord, _ rhs: ContentSystemBuildRecord) -> Bool {
+        if lhs.publishedAt != rhs.publishedAt { return (lhs.publishedAt ?? "") > (rhs.publishedAt ?? "") }
+        if lhs.generation != rhs.generation { return lhs.generation > rhs.generation }
+        return lhs.localBuildID > rhs.localBuildID
+    }
+
+    private static func isMasterContentSystemBuild(_ build: ContentSystemBuildRecord) -> Bool {
+        guard let branch = build.branch?.trimmingCharacters(in: .whitespacesAndNewlines), !branch.isEmpty else {
+            return true
+        }
+        return branch.caseInsensitiveCompare("master") == .orderedSame
+    }
+
+    private static func contentSystemV2MetadataURL(hash: String) -> URL? {
+        guard hash.range(of: #"^[A-Fa-f0-9]{32}$"#, options: .regularExpression) != nil else { return nil }
+        let normalized = hash.lowercased()
+        let first = normalized.prefix(2)
+        let second = normalized.dropFirst(2).prefix(2)
+        return URL(string: "https://cdn.gog.com/content-system/v2/meta/\(first)/\(second)/\(normalized)")
+    }
+
+    private static func installedLanguages(appID: String, installationURL: URL?) -> [String] {
+        guard let installationURL else { return [] }
+        let infoURL = installationURL.appending(path: "goggame-\(appID).info")
+        guard let data = try? Data(contentsOf: infoURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return (root["languages"] as? [String] ?? []) + [stringValue(root["language"])].compactMap { $0 }
+    }
+
+    private static func contentDepotMatchesInstalledLanguage(_ depot: [String: Any], installedLanguages: [String]) -> Bool {
+        let depotLanguages = depot["languages"] as? [String] ?? []
+        guard !depotLanguages.isEmpty else { return true }
+        if depotLanguages.contains(where: { ["*", "neutral"].contains($0.lowercased()) }) || installedLanguages.isEmpty {
+            return true
+        }
+        let installed = Set(installedLanguages.flatMap(contentLanguageAliases))
+        return depotLanguages.flatMap(contentLanguageAliases).contains(where: installed.contains)
+    }
+
+    private static func contentLanguageAliases(_ value: String) -> [String] {
+        let normalized = value.lowercased().replacingOccurrences(of: "_", with: "-")
+        let aliases: [String: String] = [
+            "english": "en", "french": "fr", "german": "de", "spanish": "es",
+            "italian": "it", "polish": "pl", "russian": "ru", "portuguese": "pt",
+            "brazilian": "pt-br", "japanese": "ja", "korean": "ko", "chinese": "zh",
+            "dutch": "nl", "czech": "cs", "hungarian": "hu", "turkish": "tr",
+            "ukrainian": "uk", "swedish": "sv", "norwegian": "no", "danish": "da",
+            "finnish": "fi", "thai": "th", "greek": "el", "arabic": "ar",
+        ]
+        let base = aliases[normalized] ?? normalized.split(separator: "-").first.map(String.init) ?? normalized
+        return [normalized, base]
+    }
+
+    private static func additionalContentItem(
+        _ value: [String: Any],
+        fallbackPrefix: String,
+        index: Int
+    ) -> GOGAdditionalContentItem? {
+        let files = value["files"] as? [[String: Any]] ?? []
+        let identifier = stringValue(value["id"])
+            ?? stringValue(value["product_id"])
+            ?? "\(fallbackPrefix)-\(index)"
+        let parsedFiles = files.enumerated().compactMap { fileIndex, file in
+            additionalContentFile(
+                file,
+                fallbackPrefix: identifier,
+                index: fileIndex,
+                category: fallbackPrefix == "dlc" ? nil : fallbackPrefix
+            )
+        }
+        let sizes = parsedFiles.compactMap(\.sizeBytes).filter { $0 > 0 }
+        let reportedSize = int64Value(value["total_size"]).flatMap { $0 > 0 ? $0 : nil }
+        let fallbackName = stringValue(value["id"]).map { identifier in
+            fallbackPrefix == "dlc" ? "DLC \(identifier)" : identifier
+        }
+        let name = localized(value["name"])
+            ?? localized(value["title"])
+            ?? fallbackName
+            ?? "\(fallbackPrefix) \(index + 1)"
+        return GOGAdditionalContentItem(
+            id: identifier,
+            name: name,
+            kind: stringValue(value["type"]),
+            sizeBytes: reportedSize ?? (sizes.isEmpty ? nil : sizes.reduce(0, +)),
+            fileCount: parsedFiles.count,
+            files: parsedFiles
+        )
+    }
+
+    private static func additionalContentFile(
+        _ value: [String: Any],
+        fallbackPrefix: String,
+        index: Int,
+        packageID: String? = nil,
+        category: String? = nil
+    ) -> GOGAdditionalContentFile? {
+        let identifier = stringValue(value["id"]) ?? "\(fallbackPrefix)-\(index + 1)"
+        let fileName = localized(value["name"])
+            ?? stringValue(value["file_name"])
+            ?? stringValue(value["filename"])
+            ?? identifier
+        let downlink = stringValue(value["downlink"]).flatMap(URL.init(string:))
+        return GOGAdditionalContentFile(
+            id: identifier,
+            fileName: fileName,
+            sizeBytes: int64Value(value["size"]).flatMap { $0 > 0 ? $0 : nil },
+            downlink: downlink,
+            packageID: packageID,
+            category: category
+        )
+    }
+
+    private func productMetadata(
+        appID: String,
+        expand: String,
+        credentials: Credentials
+    ) async throws -> [String: Any] {
+        guard Self.isSafeAppID(appID) else { throw GOGServiceError.additionalContentResponseInvalid }
+        var components = URLComponents(string: "https://api.gog.com/products/\(appID)")!
+        components.queryItems = [URLQueryItem(name: "expand", value: expand)]
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GOGServiceError.additionalContentResponseInvalid
+        }
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+            throw GOGServiceError.notAuthenticated
+        }
+        guard httpResponse.statusCode == 200 else {
+            throw GOGServiceError.additionalContentRequestFailed(httpResponse.statusCode)
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GOGServiceError.additionalContentResponseInvalid
+        }
+        return root
+    }
+
+    private static func additionalContentDownlinkEndpoint(
+        _ suppliedURL: URL?,
+        productID: String,
+        category: String,
+        fileID: String
+    ) throws -> URL {
+        guard isSafeAppID(productID) else { throw GOGServiceError.additionalContentDownloadLinkInvalid }
+        let endpoint: URL
+        if let suppliedURL {
+            endpoint = suppliedURL
+        } else {
+            let safeCategory = safePathComponent(category)
+            let safeFileID = safePathComponent(fileID)
+            guard safeCategory == category, safeFileID == fileID,
+                  let generated = URL(string: "https://api.gog.com/products/\(productID)/downlink/\(category)/\(fileID)") else {
+                throw GOGServiceError.additionalContentDownloadLinkInvalid
+            }
+            endpoint = generated
+        }
+        let parts = endpoint.pathComponents
+        guard endpoint.scheme?.lowercased() == "https",
+              endpoint.host?.lowercased() == "api.gog.com",
+              parts.count >= 5,
+              parts[1] == "products",
+              parts[2] == productID,
+              parts[3] == "downlink",
+              parts.dropFirst(4).allSatisfy({ safePathComponent($0) == $0 }) else {
+            throw GOGServiceError.additionalContentDownloadLinkInvalid
+        }
+        return endpoint
+    }
+
+    private nonisolated static func safePathComponent(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        let result = value.unicodeScalars.map { allowed.contains($0) ? String($0) : "_" }.joined()
+        return result.isEmpty || result == "." || result == ".." ? "content" : result
+    }
+
+    private nonisolated static func safeAdditionalContentFilename(_ value: String) -> String {
+        let basename = URL(fileURLWithPath: value.replacingOccurrences(of: "\\", with: "/")).lastPathComponent
+        let cleaned = basename.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        let result = String(String.UnicodeScalarView(cleaned))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty || result == "." || result == ".." ? "gog-content-file" : result
+    }
+
+    private nonisolated static func isCompleteAdditionalContentFile(
+        _ url: URL,
+        expectedSize: Int64?
+    ) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              let fileSize = values.fileSize,
+              fileSize > 0 else { return false }
+        return expectedSize.map { $0 == Int64(fileSize) } ?? true
+    }
+
+    private nonisolated static func additionalContentFileSize(_ url: URL) -> Int64 {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = values.fileSize else { return 0 }
+        return Int64(fileSize)
     }
 
     private static func positiveSum(_ first: Int64?, _ second: Int64?) -> Int64? {
@@ -936,6 +1870,25 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             ?? candidates.first(where: { $0.2 })?.0
     }
 
+    private static func witcher3DirectLaunchTask(
+        primaryTask: [String: Any],
+        tasks: [[String: Any]]
+    ) -> [String: Any]? {
+        guard (primaryTask["category"] as? String)?.caseInsensitiveCompare("launcher") == .orderedSame,
+              let launcherPath = primaryTask["path"] as? String,
+              URL(fileURLWithPath: launcherPath.replacingOccurrences(of: "\\", with: "/"))
+                .lastPathComponent.caseInsensitiveCompare("REDprelauncher.exe") == .orderedSame else {
+            return nil
+        }
+
+        return tasks.first { task in
+            guard (task["category"] as? String)?.caseInsensitiveCompare("game") == .orderedSame,
+                  let path = task["path"] as? String else { return false }
+            return URL(fileURLWithPath: path.replacingOccurrences(of: "\\", with: "/"))
+                .lastPathComponent.caseInsensitiveCompare("witcher3.exe") == .orderedSame
+        }
+    }
+
     private static func parseCommandLine(_ input: String) -> [String] {
         var result: [String] = []
         var current = ""
@@ -978,6 +1931,28 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         if let value = value as? NSNumber { return value.intValue }
         if let object = value as? [String: Any] { return intValue(object["score"]) }
         return nil
+    }
+
+    private static func playtimePage(from data: Data) throws -> (minutes: Int, nextPageToken: String?) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GOGServiceError.playtimeResponseInvalid
+        }
+        let nextPageToken = stringValue(root["next_page_token"]).flatMap { $0.isEmpty ? nil : $0 }
+        let sessions = root["items"] as? [[String: Any]] ?? root["sessions"] as? [[String: Any]]
+        if let sessions {
+            let sessionTimes = sessions.compactMap { session -> Int? in
+                intValue(session["time"]) ?? stringValue(session["time"]).flatMap(Int.init)
+            }
+            guard sessions.isEmpty || !sessionTimes.isEmpty else { throw GOGServiceError.playtimeResponseInvalid }
+            return (sessionTimes.reduce(0) { $0 + max(0, $1) }, nextPageToken)
+        }
+        if let totalMinutes = intValue(root["total_time_minutes"]) {
+            return (max(0, totalMinutes), nextPageToken)
+        }
+        if let totalSeconds = intValue(root["total_time_seconds"]) {
+            return (max(0, totalSeconds / 60), nextPageToken)
+        }
+        throw GOGServiceError.playtimeResponseInvalid
     }
 
     private static func isSafeAppID(_ value: String) -> Bool {

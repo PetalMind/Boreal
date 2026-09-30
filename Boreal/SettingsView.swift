@@ -97,6 +97,7 @@ struct BorealSettingsView: View {
     @ViewBuilder private var settingsContent: some View {
         switch selection {
         case .general: GeneralSettingsView()
+        case .downloads: DownloadSettingsView()
         case .storage: StorageSettingsView()
         case .runtime: RuntimeSettingsView()
         case .controllers: ControllerSettingsView()
@@ -163,13 +164,14 @@ struct SettingsRow<Content: View>: View {
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
-    case general, storage, runtime, controllers, fullscreen, overlay, advanced
+    case general, downloads, storage, runtime, controllers, fullscreen, overlay, advanced
 
     var id: Self { self }
 
     var title: LocalizedStringResource {
         switch self {
         case .general: .Settings.generalTitle
+        case .downloads: .Settings.downloadsTitle
         case .storage: .Settings.storageTitle
         case .runtime: .Settings.runtimeTitle
         case .controllers: .Settings.controllersTitle
@@ -182,6 +184,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     var subtitle: LocalizedStringResource {
         switch self {
         case .general: .Settings.generalSubtitle
+        case .downloads: .Settings.downloadsSubtitle
         case .storage: .Settings.storageSubtitle
         case .runtime: .Settings.runtimeSubtitle
         case .controllers: .Settings.controllersSubtitle
@@ -194,6 +197,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape.fill"
+        case .downloads: "arrow.down.circle.fill"
         case .storage: "internaldrive.fill"
         case .runtime: "gearshape.2.fill"
         case .controllers: "gamecontroller.fill"
@@ -285,6 +289,58 @@ struct GeneralSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: itadAPIKey) { _, _ in store.invalidateDiscoveryPrices() }
         .onChange(of: itadCountryCode) { _, _ in store.invalidateDiscoveryPrices() }
+    }
+}
+
+struct DownloadSettingsView: View {
+    @AppStorage(StoreDownloadConcurrency.workersDefaultsKey)
+    private var preferredWorkerCount = StoreDownloadConcurrency.automaticPreference
+
+    private var effectiveWorkerCount: Int {
+        StoreDownloadConcurrency.effectiveWorkerCount(for: preferredWorkerCount)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                SettingsCard(
+                    .Settings.parallelDownloadsTitle,
+                    subtitle: .Settings.parallelDownloadsSubtitle,
+                    symbol: "arrow.left.arrow.right"
+                ) {
+                    SettingsRow(.Settings.parallelDownloadsModeLabel) {
+                        Picker(selection: $preferredWorkerCount) {
+                            Text(.Settings.parallelDownloadsAutomatic)
+                                .tag(StoreDownloadConcurrency.automaticPreference)
+                            ForEach(
+                                StoreDownloadConcurrency.minimumWorkers...StoreDownloadConcurrency.maximumWorkers,
+                                id: \.self
+                            ) { workerCount in
+                                Text("\(workerCount)").tag(workerCount)
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+                        .labelsHidden()
+                        .frame(width: 220)
+                    }
+                    Divider()
+                    SettingsRow(.Settings.parallelDownloadsCurrentLimit) {
+                        Text(effectiveWorkerCount, format: .number)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    Text(.Settings.parallelDownloadsHelp)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 12)
+                }
+            }
+            .padding(.horizontal, 32)
+            .padding(.bottom, 28)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

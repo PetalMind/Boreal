@@ -353,7 +353,7 @@ struct GameArtworkView: View {
                     .clipped()
             }
         }
-        .task(id: remoteURL?.absoluteString ?? "") {
+        .task(id: remoteArtworkTaskID) {
             await loadRemoteArtwork()
         }
         .accessibilityHidden(true)
@@ -373,11 +373,11 @@ struct GameArtworkView: View {
     @ViewBuilder private var content: some View {
         if let image = localImage ?? remoteImage {
             renderedArtwork(image)
-        } else if remoteURL != nil && !remoteLoadFinished {
+        } else if !remoteURLs.isEmpty && !remoteLoadFinished {
             placeholder.overlay { BorealArtworkLoadingIndicator() }
         } else {
             placeholder.overlay {
-                if remoteURL != nil {
+                if !remoteURLs.isEmpty {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .padding(8)
@@ -422,7 +422,7 @@ struct GameArtworkView: View {
            ) {
             return image
         }
-        if kind == .hero, remoteURL != nil {
+        if kind == .hero, !remoteURLs.isEmpty {
             return nil
         }
         if let path = game.artworkPath, let image = ArtworkImageCache.image(at: path) {
@@ -431,15 +431,21 @@ struct GameArtworkView: View {
         return nil
     }
 
-    private var remoteURL: URL? {
-        let value: String?
+    private var remoteURLs: [URL] {
+        let values: [String?]
         switch kind {
         case .cover:
-            value = game.portraitImageURL ?? game.headerImageURL ?? game.backgroundImageURL
+            values = [game.portraitImageURL, game.headerImageURL, game.backgroundImageURL]
         case .hero:
-            value = game.backgroundImageURL ?? game.headerImageURL ?? game.portraitImageURL
+            values = [game.backgroundImageURL, game.headerImageURL, game.portraitImageURL]
         }
-        return value.flatMap(URL.init(string:))
+        var seen = Set<URL>()
+        return values.compactMap { $0.flatMap(URL.init(string:)) }
+            .filter { seen.insert($0).inserted }
+    }
+
+    private var remoteArtworkTaskID: String {
+        remoteURLs.map(\.absoluteString).joined(separator: "|")
     }
 
     private func resolvedDisplayMode(for image: NSImage) -> ArtworkDisplayMode {
@@ -467,13 +473,18 @@ struct GameArtworkView: View {
     private func loadRemoteArtwork() async {
         remoteImage = nil
         remoteLoadFinished = false
-        guard localImage == nil, let remoteURL else {
+        guard localImage == nil, !remoteURLs.isEmpty else {
             remoteLoadFinished = true
             return
         }
-        let image = await BorealArtworkImagePipeline.shared.image(for: remoteURL, maxPixelSize: 1600)
-        guard !Task.isCancelled else { return }
-        remoteImage = image
+        for url in remoteURLs {
+            let image = await BorealArtworkImagePipeline.shared.image(for: url, maxPixelSize: 1600)
+            guard !Task.isCancelled else { return }
+            if let image {
+                remoteImage = image
+                break
+            }
+        }
         remoteLoadFinished = true
     }
 

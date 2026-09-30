@@ -105,6 +105,7 @@ nonisolated enum CloudSaveSyncState: Equatable, Sendable {
     case syncing
     case synced
     case conflict
+    case reauthenticationRequired(String)
     case failed(String)
 }
 
@@ -192,7 +193,7 @@ nonisolated protocol CloudSaveProvider: Sendable {
         modifiedAt: Date?,
         for game: StoreLibraryGame,
         namespace: String
-    ) async throws
+    ) async throws -> String?
     func delete(
         _ file: CloudSaveFile,
         for game: StoreLibraryGame,
@@ -217,7 +218,7 @@ nonisolated enum CloudSaveError: LocalizedError, Sendable {
         case .providerUnavailable:
             "Native cloud save support is unavailable for this installation."
         case .notAuthenticated:
-            "Connect the GOG account before synchronizing cloud saves."
+            "Boreal could not authorize GOG Cloud Saves. Reconnect the GOG account in Boreal."
         case .invalidConfiguration:
             "Choose a valid Windows save location before synchronizing cloud saves."
         case .invalidResponse:
@@ -234,6 +235,17 @@ nonisolated enum CloudSaveError: LocalizedError, Sendable {
             "The downloaded cloud save failed integrity verification: \(path)"
         case .conflict:
             "Boreal could not reconcile the local and GOG cloud saves automatically. Choose which copy to use."
+        }
+    }
+
+    var requiresReauthentication: Bool {
+        switch self {
+        case .notAuthenticated:
+            true
+        case .httpStatus(let status, _):
+            status == 401 || status == 403
+        default:
+            false
         }
     }
 }
@@ -325,10 +337,16 @@ nonisolated enum CloudSavePathResolver {
             }
         }
 
-        guard let match = matches.sorted(by: { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.url.path.localizedStandardCompare(rhs.url.path) == .orderedAscending
-        }).first else { return nil }
+        let uniqueMatches = Dictionary(
+            matches.map { ($0.url.standardizedFileURL.path, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard let bestScore = uniqueMatches.values.map(\.score).max() else { return nil }
+        let bestMatches = uniqueMatches.values.filter { $0.score == bestScore }
+        // A lexical tie-breaker made ambiguous guesses look certain and could
+        // point sync at a sibling game's save directory. Ask for a manual path
+        // when multiple distinct directories have the same evidence.
+        guard bestMatches.count == 1, let match = bestMatches.first else { return nil }
         return CloudSavePathResolution(windowsPath: match.windowsPath, resolvedURL: match.url, source: .detected)
     }
 
@@ -337,7 +355,10 @@ nonisolated enum CloudSavePathResolver {
         guard normalized.range(of: #"^C:\\[^:]+$"#, options: .regularExpression) != nil else { return nil }
         let relative = String(normalized.dropFirst(3)).replacingOccurrences(of: "\\", with: "/")
         let components = relative.split(separator: "/").map(String.init)
-        guard !components.isEmpty, !components.contains(".."), !components.contains(where: { $0.isEmpty }) else { return nil }
+        guard !components.isEmpty,
+              !components.contains("."),
+              !components.contains(".."),
+              !relative.split(separator: "/", omittingEmptySubsequences: false).contains(where: \.isEmpty) else { return nil }
         let value = prefixURL.appending(path: "drive_c").appending(path: components.joined(separator: "/"))
         let root = prefixURL.appending(path: "drive_c", directoryHint: .isDirectory).standardizedFileURL
         let resolved = value.standardizedFileURL
@@ -453,6 +474,43 @@ nonisolated enum GOGCloudCompression {
         throw CompressionError.failed
     }
 
+    static func decompressZlib(_ input: Data) -> Data? {
+        guard input.count >= 6 else { return nil }
+        let cmf = input[input.startIndex]
+        let flags = input[input.startIndex + 1]
+        let zlibHeader = (UInt16(cmf) << 8) | UInt16(flags)
+        guard cmf & 0x0f == 8,
+              cmf >> 4 <= 7,
+              zlibHeader % 31 == 0,
+              flags & 0x20 == 0 else { return nil }
+
+        // Compression.COMPRESSION_ZLIB is used here as a raw DEFLATE codec,
+        // matching the existing gzip reader. GOG's metadata endpoint returns
+        // an RFC 1950 zlib stream, so strip its two-byte header and four-byte
+        // Adler-32 trailer before passing the DEFLATE payload to Compression.
+        let deflate = Data(input.dropFirst(2).dropLast(4))
+        guard let decoded = tryDecodeZlib(deflate) ?? streamDecodeZlib(deflate),
+              adler32(decoded) == readBigEndian(input, offset: input.count - 4) else { return nil }
+        return decoded
+    }
+
+    private static func adler32(_ data: Data) -> UInt32 {
+        var a: UInt32 = 1
+        var b: UInt32 = 0
+        for byte in data {
+            a = (a + UInt32(byte)) % 65_521
+            b = (b + a) % 65_521
+        }
+        return (b << 16) | a
+    }
+
+    private static func readBigEndian(_ data: Data, offset: Int) -> UInt32 {
+        (UInt32(data[offset]) << 24)
+            | (UInt32(data[offset + 1]) << 16)
+            | (UInt32(data[offset + 2]) << 8)
+            | UInt32(data[offset + 3])
+    }
+
     private static func encodeZlib(_ input: Data) throws -> Data {
         var capacity = max(64, input.count + 64)
         for _ in 0..<8 {
@@ -560,6 +618,10 @@ nonisolated enum GOGCloudCompression {
 nonisolated enum GOGCloudMetadataDecoder {
     static func object(from data: Data) -> Any? {
         if let value = try? JSONSerialization.jsonObject(with: data) { return value }
+        if let decoded = GOGCloudCompression.decompressZlib(data),
+           let value = try? JSONSerialization.jsonObject(with: decoded) {
+            return value
+        }
         guard let decoded = try? GOGCloudCompression.gunzip(data) else { return nil }
         return try? JSONSerialization.jsonObject(with: decoded)
     }
@@ -623,6 +685,8 @@ actor CloudSaveCoordinator {
     private let provider: (any CloudSaveProvider)?
     private let manifestRootURL: URL
     private let fileManager: FileManager
+    private var syncingKeys: Set<String> = []
+    private var syncWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
     init(
         applicationSupportURL: URL,
@@ -666,6 +730,17 @@ actor CloudSaveCoordinator {
         _ request: CloudSaveRequest,
         direction: CloudSaveSyncDirection
     ) async throws -> CloudSaveSyncResult {
+        let lockKey = "\(request.game.provider.rawValue.lowercased())/\(request.game.externalID)/\(request.namespace)"
+        await acquireSyncLock(for: lockKey)
+        defer { releaseSyncLock(for: lockKey) }
+
+        return try await performSync(request, direction: direction)
+    }
+
+    private func performSync(
+        _ request: CloudSaveRequest,
+        direction: CloudSaveSyncDirection
+    ) async throws -> CloudSaveSyncResult {
         guard let provider else { throw CloudSaveError.providerUnavailable }
         guard provider.provider == request.game.provider else { throw CloudSaveError.providerUnavailable }
         guard isSafeManifestComponent(request.game.externalID) else { throw CloudSaveError.invalidConfiguration }
@@ -683,6 +758,8 @@ actor CloudSaveCoordinator {
 
         let localFiles = local.files
         let remoteFiles = remote.files
+        var expectedUnchangedRemoteFiles = remoteFiles
+        var expectedLocalHashes = local.files.mapValues(\.hash)
         let filesToUpload: [CloudSaveFile]
         let filesToDownload: [CloudSaveFile]
         let remoteFilesToDelete: [CloudSaveFile]
@@ -696,16 +773,11 @@ actor CloudSaveCoordinator {
                 filesToDownload = []
                 remoteFilesToDelete = []
                 localPathsToDelete = []
-            case .upload(let upload, let delete):
+            case .merge(let upload, let download, let deleteRemote, let deleteLocal):
                 filesToUpload = upload
-                filesToDownload = []
-                remoteFilesToDelete = delete
-                localPathsToDelete = []
-            case .download(let download, let delete):
-                filesToUpload = []
                 filesToDownload = download
-                remoteFilesToDelete = []
-                localPathsToDelete = delete
+                remoteFilesToDelete = deleteRemote
+                localPathsToDelete = deleteLocal
             case .conflict:
                 throw CloudSaveError.conflict(local: summary(local), cloud: summary(remote))
             }
@@ -721,31 +793,66 @@ actor CloudSaveCoordinator {
             localPathsToDelete = []
         }
 
+        var expectedUploadedHashes: [String: String] = [:]
         for file in filesToUpload {
             let source = try safeLocalChild(file.relativePath, root: localDirectory)
-            try await provider.upload(
+            let uploadedProviderHash = try await provider.upload(
                 file: source,
                 relativePath: file.relativePath,
                 modifiedAt: file.modifiedAt,
                 for: request.game,
                 namespace: request.namespace
             )
+            if let uploadedProviderHash {
+                expectedUploadedHashes[file.relativePath] = uploadedProviderHash.lowercased()
+            }
+            expectedUnchangedRemoteFiles[file.relativePath] = nil
         }
         for file in remoteFilesToDelete {
             try await provider.delete(file, for: request.game, namespace: request.namespace)
+            expectedUnchangedRemoteFiles[file.relativePath] = nil
         }
         for file in filesToDownload {
             let destination = try safeLocalChild(file.relativePath, root: localDirectory)
             try await provider.download(file, for: request.game, namespace: request.namespace, to: destination)
+            let downloadedData: Data
+            do {
+                downloadedData = try Data(contentsOf: destination)
+            } catch {
+                throw CloudSaveError.transferFailed(error.localizedDescription)
+            }
+            expectedLocalHashes[file.relativePath] = SHA256.hash(data: downloadedData)
+                .map { String(format: "%02x", $0) }
+                .joined()
         }
         for relativePath in localPathsToDelete {
             let destination = try safeLocalChild(relativePath, root: localDirectory)
             if fileManager.fileExists(atPath: destination.path) { try fileManager.removeItem(at: destination) }
+            expectedLocalHashes[relativePath] = nil
         }
         let finalLocal = try localManifest(at: localDirectory)
         let finalRemote = try await provider.remoteManifest(for: request.game, namespace: request.namespace)
+        guard Set(expectedLocalHashes.keys) == Set(finalLocal.files.keys) else {
+            throw CloudSaveError.transferFailed("The local save files changed during synchronization.")
+        }
+        for (path, expectedHash) in expectedLocalHashes {
+            guard finalLocal.files[path]?.hash == expectedHash else {
+                throw CloudSaveError.transferFailed("The local save changed during synchronization: \(path)")
+            }
+        }
         guard finalLocal.files.keys == finalRemote.files.keys else {
             throw CloudSaveError.transferFailed("The local and remote file lists did not converge after synchronization.")
+        }
+        for (path, expectedHash) in expectedUploadedHashes {
+            guard let uploadedFile = finalRemote.files[path],
+                  (uploadedFile.providerHash ?? uploadedFile.hash).lowercased() == expectedHash else {
+                throw CloudSaveError.integrityMismatch(path)
+            }
+        }
+        for (path, expectedFile) in expectedUnchangedRemoteFiles {
+            guard let finalFile = finalRemote.files[path], sameRemote(finalFile, expectedFile) else {
+                throw CloudSaveError.transferFailed("The cloud save changed during synchronization: \(path)")
+            }
         }
         let finalFiles = finalLocal.files.mapValues { file in
             var value = file
@@ -782,8 +889,7 @@ actor CloudSaveCoordinator {
 
     private enum Decision {
         case none
-        case upload([CloudSaveFile], [CloudSaveFile])
-        case download([CloudSaveFile], [String])
+        case merge(upload: [CloudSaveFile], download: [CloudSaveFile], deleteRemote: [CloudSaveFile], deleteLocal: [String])
         case conflict
 
         var isNone: Bool {
@@ -799,8 +905,12 @@ actor CloudSaveCoordinator {
     ) -> Decision {
         if base == nil {
             if local.isEmpty, remote.isEmpty { return .none }
-            if local.isEmpty { return .download(remote.values.sorted { $0.relativePath < $1.relativePath }, []) }
-            if remote.isEmpty { return .upload(local.values.sorted { $0.relativePath < $1.relativePath }, []) }
+            if local.isEmpty {
+                return .merge(upload: [], download: remote.values.sorted { $0.relativePath < $1.relativePath }, deleteRemote: [], deleteLocal: [])
+            }
+            if remote.isEmpty {
+                return .merge(upload: local.values.sorted { $0.relativePath < $1.relativePath }, download: [], deleteRemote: [], deleteLocal: [])
+            }
             return .conflict
         }
         let base = base!
@@ -820,8 +930,7 @@ actor CloudSaveCoordinator {
         var download: [CloudSaveFile] = []
         var deleteRemote: [CloudSaveFile] = []
         var deleteLocal: [String] = []
-        var localChanged = false
-        var remoteChanged = false
+        var hasOverlappingChanges = false
 
         for path in Set(local.keys).union(remote.keys).union(base.keys) {
             let localFile = local[path]
@@ -829,9 +938,10 @@ actor CloudSaveCoordinator {
             let baseFile = base[path]
             let changedLocal = !sameLocal(localFile, baseFile)
             let changedRemote = !sameRemote(remoteFile, baseFile)
-            localChanged = localChanged || changedLocal
-            remoteChanged = remoteChanged || changedRemote
-            if changedLocal && changedRemote { continue }
+            if changedLocal && changedRemote {
+                hasOverlappingChanges = true
+                continue
+            }
             if changedLocal {
                 if let localFile { upload.append(localFile) } else if let remoteFile { deleteRemote.append(remoteFile) }
             } else if changedRemote {
@@ -840,10 +950,9 @@ actor CloudSaveCoordinator {
                 if let localFile { upload.append(localFile) } else if let remoteFile { download.append(remoteFile) }
             }
         }
-        if localChanged && remoteChanged { return .conflict }
+        if hasOverlappingChanges { return .conflict }
         if upload.isEmpty && deleteRemote.isEmpty && download.isEmpty && deleteLocal.isEmpty { return .none }
-        if !upload.isEmpty || !deleteRemote.isEmpty { return .upload(upload, deleteRemote) }
-        return .download(download, deleteLocal)
+        return .merge(upload: upload, download: download, deleteRemote: deleteRemote, deleteLocal: deleteLocal)
     }
 
     private func sameLocal(_ lhs: CloudSaveFile?, _ rhs: CloudSaveFile?) -> Bool {
@@ -865,11 +974,12 @@ actor CloudSaveCoordinator {
     private func localManifest(at directory: URL?) throws -> CloudSaveManifest {
         guard let directory else { return CloudSaveManifest(files: [:]) }
         if !fileManager.fileExists(atPath: directory.path) { return CloudSaveManifest(files: [:]) }
-        guard let enumerator = fileManager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return CloudSaveManifest(files: [:]) }
+        guard (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+              let enumerator = fileManager.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+              ) else { throw CloudSaveError.invalidConfiguration }
         var files: [String: CloudSaveFile] = [:]
         for case let item as URL in enumerator {
             let values = try item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey])
@@ -900,11 +1010,38 @@ actor CloudSaveCoordinator {
     }
 
     private func isSafeRelativePath(_ path: String) -> Bool {
-        !path.isEmpty && !path.hasPrefix("/") && !path.contains("\\") && !path.split(separator: "/").contains("..")
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\") else { return false }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { component in
+            !component.isEmpty
+                && component != "."
+                && component != ".."
+                && !component.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        }
     }
 
     private func isSafeManifestComponent(_ value: String) -> Bool {
-        value.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        value != "."
+            && value != ".."
+            && value.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+    }
+
+    private func acquireSyncLock(for key: String) async {
+        if syncingKeys.insert(key).inserted { return }
+        await withCheckedContinuation { continuation in
+            syncWaiters[key, default: []].append(continuation)
+        }
+    }
+
+    private func releaseSyncLock(for key: String) {
+        if var waiters = syncWaiters[key], !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            syncWaiters[key] = waiters.isEmpty ? nil : waiters
+            next.resume()
+        } else {
+            syncWaiters[key] = nil
+            syncingKeys.remove(key)
+        }
     }
 
     private func summary(_ manifest: CloudSaveManifest) -> CloudSaveSummary {
@@ -999,7 +1136,6 @@ actor GOGCloudSaveProvider: CloudSaveProvider {
         request.setValue("Bearer \(authorization.accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        if status == 404 { return CloudSaveManifest(productID: game.externalID, files: [:]) }
         guard status == 200 else { throw httpError(status: status, data: data) }
         guard let entries = GOGCloudMetadataDecoder.object(from: data) as? [[String: Any]] else { throw CloudSaveError.invalidResponse }
         let prefix = namespace.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/"
@@ -1055,8 +1191,11 @@ actor GOGCloudSaveProvider: CloudSaveProvider {
         let temporary = destination.deletingLastPathComponent().appending(path: ".\(destination.lastPathComponent).boreal-download-\(UUID().uuidString)")
         do {
             try payload.write(to: temporary, options: .atomic)
-            if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
-            try FileManager.default.moveItem(at: temporary, to: destination)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: destination)
+            }
             if let modifiedAt = file.modifiedAt { try? FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: destination.path) }
         } catch {
             try? FileManager.default.removeItem(at: temporary)
@@ -1070,7 +1209,7 @@ actor GOGCloudSaveProvider: CloudSaveProvider {
         modifiedAt: Date?,
         for game: StoreLibraryGame,
         namespace: String
-    ) async throws {
+    ) async throws -> String? {
         guard isSafeRelativePath(relativePath) else { throw CloudSaveError.unsafePath(relativePath) }
         let authorization = try await authorization(for: game)
         let payload: Data
@@ -1091,6 +1230,7 @@ actor GOGCloudSaveProvider: CloudSaveProvider {
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard (200..<300).contains(status) else { throw httpError(status: status, data: data) }
+        return md5(compressed)
     }
 
     func delete(_ file: CloudSaveFile, for game: StoreLibraryGame, namespace: String) async throws {
@@ -1146,7 +1286,7 @@ actor GOGCloudSaveProvider: CloudSaveProvider {
         }
         if let relativePath {
             guard isSafeRelativePath(relativePath) else { throw CloudSaveError.unsafePath(relativePath) }
-            let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))
+            let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))
             components.append(contentsOf: relativePath.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: allowed) ?? String($0) })
         }
         guard let url = URL(string: endpoint.absoluteString + "/" + components.joined(separator: "/")) else { throw CloudSaveError.invalidConfiguration }
@@ -1190,6 +1330,13 @@ actor GOGCloudSaveProvider: CloudSaveProvider {
     }
 
     private func isSafeRelativePath(_ path: String) -> Bool {
-        !path.isEmpty && !path.hasPrefix("/") && !path.contains("\\") && !path.split(separator: "/").contains("..")
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\") else { return false }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { component in
+            !component.isEmpty
+                && component != "."
+                && component != ".."
+                && !component.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        }
     }
 }

@@ -37,6 +37,32 @@ nonisolated enum GameGraphicsProfiles {
     static let builtIn: [GameGraphicsProfile] = [
         GameGraphicsProfile(
             provider: .gog,
+            externalID: "1207664643",
+            availableAPIs: [.directX12],
+            defaultAPI: .directX12,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX12, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            enforcedAPI: .directX12,
+            // The 5.00b D3DMetal fix skips the stream-output pipeline that
+            // previously hung startup on Boreal's Game Porting Toolkit path.
+            overlayCompatibleFullscreen: false,
+            enforcedOverlayCompatibleFullscreen: false
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
+            externalID: "292030",
+            availableAPIs: [.directX12],
+            defaultAPI: .directX12,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX12, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            enforcedAPI: .directX12,
+            overlayCompatibleFullscreen: false,
+            enforcedOverlayCompatibleFullscreen: false
+        ),
+        GameGraphicsProfile(
+            provider: .gog,
             externalID: "1711230643",
             availableAPIs: [.directX11],
             defaultAPI: .directX11,
@@ -318,6 +344,14 @@ nonisolated enum GameGraphicsProfiles {
         builtIn.first { $0.provider == provider && $0.externalID == externalID }
     }
 
+    static func requestedBackend(
+        _ userSelection: WineGraphicsBackend,
+        for gameProfile: GameGraphicsProfile?
+    ) -> WineGraphicsBackend {
+        guard userSelection == .automatic else { return userSelection }
+        return gameProfile?.enforcedBackend ?? gameProfile?.preferredBackend ?? .automatic
+    }
+
     static func preferredOptiScalerProxy(
         provider: GameLibraryProvider?,
         externalID: String?
@@ -364,14 +398,12 @@ nonisolated enum GameGraphicsProfiles {
     ) -> WineCompatibilityProfile {
         var effective = currentProfile
         if let builtIn = profile(for: application) {
-            if builtIn.enforcedBackend != nil || builtIn.enforcedAPI != nil {
-                effective.graphicsAPI = builtIn.defaultAPI
+            if currentProfile.graphicsAPI == nil || currentProfile.graphicsAPI == .automatic {
+                effective.graphicsAPI = builtIn.enforcedAPI ?? builtIn.defaultAPI
             }
-            if let enforcedAPI = builtIn.enforcedAPI {
-                effective.graphicsAPI = enforcedAPI
-            }
-            if let enforcedBackend = builtIn.enforcedBackend {
-                effective.graphicsBackend = enforcedBackend
+            if currentProfile.graphicsBackend == .automatic,
+               let preferredBackend = builtIn.enforcedBackend ?? builtIn.preferredBackend {
+                effective.graphicsBackend = preferredBackend
             }
             if let enforcedLegacyWrapper = builtIn.enforcedLegacyWrapper {
                 effective.legacyWrapper = enforcedLegacyWrapper
@@ -645,13 +677,15 @@ nonisolated enum GraphicsBackendResolver {
         architecture: WinePrefixArchitecture = .win64,
         fallback: WineGraphicsFallback = .none
     ) -> GraphicsStackResolution {
-        let effectiveRequested = gameProfile?.enforcedBackend ?? requestedBackend
+        let effectiveRequested = requestedBackend == .automatic
+            ? (gameProfile?.enforcedBackend ?? .automatic)
+            : requestedBackend
         let eligible = GraphicsStackCatalog.all.filter {
             $0.supports(api: api, architecture: architecture)
                 && runtimeSupports($0, api: api, runtime: runtime, architecture: architecture)
         }
 
-        let preferred = gameProfile?.preferredBackend
+        let preferred = gameProfile?.preferredBackend ?? gameProfile?.enforcedBackend
         let ranked = eligible.map { stack -> GraphicsStackResolution in
             var score = stack.priority + 20 + 10
             var reasons = [
@@ -692,14 +726,12 @@ nonisolated enum GraphicsBackendResolver {
                     reasons: ["Explicit renderer selection"]
                 )
             }
-            if gameProfile?.enforcedBackend != nil || requestedBackend != .automatic {
+            if requestedBackend != .automatic {
                 return GraphicsStackResolution(
                     stack: explicit,
                     score: -1_000,
                     reasons: [
-                        gameProfile?.enforcedBackend != nil
-                            ? "Enforced renderer is unavailable"
-                            : "User-selected renderer is unavailable"
+                        "User-selected renderer is unavailable"
                     ]
                 )
             }
