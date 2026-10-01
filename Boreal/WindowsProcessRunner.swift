@@ -272,6 +272,10 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             loggingLevel: launchPlan.wineLoggingLevel
         )
         processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        WineProcessEnvironment.applySynchronization(
+            to: &processEnvironment, configuration: environment.configuration, features: runtime.features
+        )
+        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &processEnvironment, runtime: runtime)
         Self.removeDeveloperToolsEnvironment(from: &processEnvironment)
         if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD != true {
             // A provider launch plan must not be able to opt into an
@@ -837,8 +841,10 @@ actor WindowsProcessRunner: WindowsProcessRunning {
                 }
             }
         }
-        if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
-        if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
+        WineProcessEnvironment.applySynchronization(
+            to: &values, configuration: environment.configuration, features: runtime.features
+        )
+        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &values, runtime: runtime)
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
             runtime: runtime,

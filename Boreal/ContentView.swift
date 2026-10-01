@@ -228,6 +228,7 @@ struct ContentView: View {
             guard application.status == .running,
                   !application.isSteamRuntimeHost,
                   !application.isInstallerOnly else { return nil }
+            let metadata = store.storeGames.first { $0.storeReference == application.storeReference }
             let graphics = store.overlayGraphics(for: application.id)
             return OverlayGame(
                 id: application.id,
@@ -239,7 +240,9 @@ struct ContentView: View {
                 gameAPI: graphics.gameAPI,
                 translator: graphics.translator,
                 hostAPI: graphics.hostAPI,
-                runtime: graphics.runtime
+                runtime: graphics.runtime,
+                discordArtworkURL: metadata?.portraitImageURL ?? metadata?.headerImageURL,
+                discordStoreURL: metadata?.discordStorePageURL
             )
         }
     }

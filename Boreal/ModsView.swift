@@ -694,6 +694,11 @@ struct ModsView: View {
                     .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 } else {
                     modTable(visibleMods, state: state)
+                    Text(sort == .priority
+                        ? "Drag rows to change mod priority. The profile is deployed automatically after reordering."
+                        : "Sort by Priority to change mod order by dragging rows.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(minWidth: 450, maxWidth: .infinity, alignment: .topLeading)
@@ -879,6 +884,15 @@ struct ModsView: View {
         } rows: {
             ForEach(mods) { mod in
                 TableRow(mod)
+                    .itemProvider {
+                        guard sort == .priority,
+                              !store.isModOperationActive(for: game),
+                              !mod.isExternallyDetected || state.adapter == .witcher3 else { return nil }
+                        return NSItemProvider(object: "\(modDragPrefix(profileID: state.profileID))\(mod.id.uuidString)" as NSString)
+                    }
+            }
+            .dropDestination(for: String.self) { destination, items in
+                reorderMods(items, to: destination, visibleMods: mods, profileID: state.profileID)
             }
         }
         .tableStyle(.inset)
@@ -1186,6 +1200,50 @@ struct ModsView: View {
             return
         }
         versionDraft = selectedMod.version ?? ""
+    }
+
+    private func modDragPrefix(profileID: String) -> String {
+        "boreal-mod:\(game.id.uuidString):\(profileID):"
+    }
+
+    private func reorderMods(_ items: [String], to visibleDestination: Int, visibleMods: [InstalledMod], profileID: String) {
+        guard sort == .priority,
+              !store.isModOperationActive(for: game),
+              let state = store.modState(for: game),
+              state.profileID == profileID,
+              filteredMods(from: state).map(\.id) == visibleMods.map(\.id),
+              (0...visibleMods.count).contains(visibleDestination),
+              !items.isEmpty else { return }
+
+        let prefix = modDragPrefix(profileID: profileID)
+        let ids = items.compactMap { item -> UUID? in
+            guard item.hasPrefix(prefix) else { return nil }
+            return UUID(uuidString: String(item.dropFirst(prefix.count)))
+        }
+        guard ids.count == items.count else { return }
+        let draggedIDs = Set(ids)
+        let visibleIDs = Set(visibleMods.map(\.id))
+        guard draggedIDs.isSubset(of: visibleIDs) else { return }
+
+        let ordered = state.mods.sorted { $0.priority < $1.priority }
+        let offsets = IndexSet(ordered.indices.filter { draggedIDs.contains(ordered[$0].id) })
+        guard offsets.count == draggedIDs.count,
+              !offsets.contains(where: { ordered[$0].isExternallyDetected && state.adapter != .witcher3 }) else { return }
+
+        // Table insertion positions refer to visible rows; persistence uses the full profile.
+        let destination: Int
+        if visibleDestination < visibleMods.count {
+            guard let index = ordered.firstIndex(where: { $0.id == visibleMods[visibleDestination].id }) else { return }
+            destination = index
+        } else {
+            guard let last = visibleMods.last,
+                  let index = ordered.firstIndex(where: { $0.id == last.id }) else { return }
+            destination = index + 1
+        }
+
+        withAnimation(motion.reorder) {
+            store.moveMod(from: offsets, to: destination, for: game)
+        }
     }
 
     private func moveMod(_ mod: InstalledMod, direction: Int, state: ModGameState) {

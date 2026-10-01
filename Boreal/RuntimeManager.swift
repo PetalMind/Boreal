@@ -1059,6 +1059,87 @@ actor RuntimeManager: RuntimeManaging {
         try await importLocalRuntime(candidate, requiresApplicationsFolder: false)
     }
 
+    func buildMSyncRuntime(dependencyPrefix: URL?, progress: @escaping @Sendable (String) async -> Void) async throws -> InstalledRuntime {
+        try prepareDirectories()
+        let id = localRuntimeID(name: "Wine MSync", version: WineMSyncBuilder.wineVersion, architecture: .x86_64)
+        guard !fileManager.fileExists(atPath: runtimesURL.appending(path: id).path) else {
+            throw RuntimeManagerError.alreadyInstalled(id)
+        }
+        let buildID = UUID().uuidString
+        // GNU make's Wine source paths must not include Application Support's
+        // spaces. Compiler outputs live in a private temporary directory;
+        // diagnostics are retained in Application Support.
+        let workspace = fileManager.temporaryDirectory
+            .appending(path: "Boreal-MSync-\(buildID)", directoryHint: .isDirectory)
+        let logs = runtimesURL.deletingLastPathComponent()
+            .appending(path: "RuntimeBuilds/MSync-\(buildID)/Logs", directoryHint: .isDirectory)
+        let builder = WineMSyncBuilder(executor: processExecutor, session: session)
+        let app = try await builder.build(in: workspace, dependencyPrefix: dependencyPrefix, logs: logs, progress: progress)
+        guard var candidate = makeLocalRuntimeCandidate(at: app) else {
+            throw RuntimeManagerError.localRuntimeInvalid("The compiled MSync runtime is incomplete. Build logs: \(logs.path)")
+        }
+        let runtime = InstalledRuntime(
+            id: candidate.id, displayName: candidate.displayName, wineVersion: candidate.wineVersion,
+            rootURL: workspace,
+            wineExecutable: app.appending(path: String(candidate.layout.wineExecutable.dropFirst("Runtime/Wine.app/".count))),
+            wineServerExecutable: app.appending(path: String(candidate.layout.wineServerExecutable.dropFirst("Runtime/Wine.app/".count))),
+            wineBootExecutable: app.appending(path: String(candidate.layout.wineBootExecutable.dropFirst("Runtime/Wine.app/".count))),
+            architecture: candidate.architecture, requirements: candidate.requirements,
+            origin: .localImport, engine: .wine, features: candidate.features
+        )
+        let synchronization = detectedSynchronization(in: runtime)
+        guard synchronization.msync else {
+            throw RuntimeManagerError.localRuntimeInvalid("The compiled server and client do not both contain MSync. Build logs: \(logs.path)")
+        }
+        candidate.features.esync = synchronization.esync
+        candidate.features.msync = synchronization.msync
+        await progress(String(localized: "Verifying MSync in an isolated Windows environment…"))
+        try await verifyMSync(runtimeWithFeatures(runtime, features: candidate.features), workspace: workspace, logs: logs)
+        await progress(String(localized: "Importing and validating the Wine MSync runtime…"))
+        let installed = try await importSelectedLocalRuntime(candidate)
+        // Sources and the patch remain in the imported app. Retain logs, but
+        // release the expensive compiler outputs after successful publication.
+        try? fileManager.removeItem(at: workspace)
+        return refreshingDetectedFeatures(of: installed)
+    }
+
+    private func verifyMSync(_ runtime: InstalledRuntime, workspace: URL, logs: URL) async throws {
+        let prefix = workspace.appending(path: "MSync-Probe", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: prefix, withIntermediateDirectories: true)
+        var environment = runtimeEnvironment(runtime)
+        environment["WINEPREFIX"] = prefix.path
+        environment["WINEMSYNC"] = "1"
+        environment["WINEDEBUG"] = "-all"
+        // The devel recipe contains MSync without ESync.
+        let request = ProcessLaunchRequest(
+            executable: runtime.wineExecutable, arguments: ["wineboot", "--init"],
+            environment: environment, currentDirectory: prefix,
+            stdoutLog: logs.appending(path: "msync-probe.stdout.log"),
+            stderrLog: logs.appending(path: "msync-probe.stderr.log")
+        )
+        do {
+            let receipt = try await processExecutor.launch(request)
+            let executor = processExecutor
+            let watchdog = Task {
+                do {
+                    try await Task.sleep(for: .seconds(120))
+                    try await executor.forceTerminate(receipt.id)
+                } catch { }
+            }
+            defer { watchdog.cancel() }
+            let result = try await processExecutor.waitForExit(receipt.id)
+            let output = (try? String(contentsOf: request.stderrLog, encoding: .utf8)) ?? ""
+            guard result.exitCode == 0, output.contains("msync: up and running.") else {
+                throw RuntimeManagerError.localRuntimeInvalid("MSync did not confirm startup in the isolated prefix. Logs: \(logs.path)")
+            }
+        } catch {
+            await stopWineServer(runtime, environment: environment, prefix: prefix)
+            throw error
+        }
+        await stopWineServer(runtime, environment: environment, prefix: prefix)
+        try? fileManager.removeItem(at: prefix)
+    }
+
     func importSelectedGPTKRuntime(from source: URL) async throws -> InstalledRuntime {
         let source = source.standardizedFileURL
         if source.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
@@ -2585,6 +2666,7 @@ actor RuntimeManager: RuntimeManaging {
         // makes the probe load the wrong interposer or prefix. Rebuild only
         // the runtime-owned values explicitly at each call site.
         WineProcessEnvironment.removeInheritedRuntimeConfiguration(from: &environment)
+        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &environment, runtime: runtime)
         let bin = runtime.wineExecutable.deletingLastPathComponent().path
         environment["PATH"] = bin + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
         return environment
@@ -2986,8 +3068,9 @@ actor RuntimeManager: RuntimeManaging {
         features.dxvk = hasGraphicsComponent("DXVK", requiredX64: ["d3d10core.dll", "d3d11.dll"], in: runtime)
             || hasGraphicsComponent("D9VK", requiredX64: ["d3d9.dll"], in: runtime)
         features.vkd3d = hasGraphicsComponent("VKD3D", requiredX64: ["d3d12.dll"], in: runtime)
-        features.esync = runtimePayloadContains("WINEESYNC", in: runtime)
-        features.msync = runtimePayloadContains("WINEMSYNC", in: runtime)
+        let synchronization = detectedSynchronization(in: runtime)
+        features.esync = synchronization.esync
+        features.msync = synchronization.msync
         let declaredFullscreenFSR = features.fullscreenFSRCapabilities
         let payloadHasFullscreenFSR = runtimePayloadContains("WINE_FULLSCREEN_FSR", in: runtime)
         features.fullscreenFSR = payloadHasFullscreenFSR && (declaredFullscreenFSR?.available ?? true)
@@ -3141,6 +3224,40 @@ actor RuntimeManager: RuntimeManaging {
                 && fileManager.fileExists(atPath: root.appending(path: "x64-unix/winemetal.so").path)
         }
         return hasFiles
+    }
+
+    private func detectedSynchronization(in runtime: InstalledRuntime) -> (esync: Bool, msync: Bool) {
+        let server = try? Data(contentsOf: runtime.wineServerExecutable, options: [.mappedIfSafe])
+        let clients = runtimeNTDLLCandidates(in: runtime).compactMap {
+            try? Data(contentsOf: $0, options: [.mappedIfSafe])
+        }
+        func supports(_ marker: String) -> Bool {
+            let needle = Data(marker.utf8)
+            // A server-only marker does not establish client-side support.
+            return server?.range(of: needle) != nil
+                && clients.contains { $0.range(of: needle) != nil }
+        }
+        return (supports("WINEESYNC"), supports("WINEMSYNC"))
+    }
+
+    private func runtimeNTDLLCandidates(in runtime: InstalledRuntime) -> [URL] {
+        let bundledRoot = runtime.rootURL.appending(path: "Runtime/Wine.app/Contents/Resources/wine", directoryHint: .isDirectory)
+        let executableRoot = runtime.wineExecutable.deletingLastPathComponent().deletingLastPathComponent()
+        var candidates = Set<URL>()
+        for root in Set([bundledRoot, executableRoot]) {
+            for directory in ["lib", "lib64"] {
+                guard let enumerator = fileManager.enumerator(
+                    at: root.appending(path: directory, directoryHint: .isDirectory),
+                    includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+                ) else { continue }
+                for case let url as URL in enumerator {
+                    if ["ntdll.so", "ntdll.dll", "ntdll.dylib", "ntdll.dll.so"].contains(url.lastPathComponent.lowercased()) {
+                        candidates.insert(url)
+                    }
+                }
+            }
+        }
+        return Array(candidates)
     }
 
     private func runtimePayloadContains(_ marker: String, in runtime: InstalledRuntime) -> Bool {

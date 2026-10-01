@@ -31,6 +31,20 @@ struct StoreGameDetailView: View {
         }
     }
 
+    private enum AdditionalContentFilter: String, CaseIterable, Identifiable {
+        case all, available, downloaded, installed
+
+        var id: Self { self }
+        var title: LocalizedStringResource {
+            switch self {
+            case .all: LocalizedStringResource("All content", table: "Library")
+            case .available: LocalizedStringResource("To download", table: "Library")
+            case .downloaded: LocalizedStringResource("Downloaded", table: "Library")
+            case .installed: LocalizedStringResource("Installed DLC", table: "Library")
+            }
+        }
+    }
+
     @Environment(BorealStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(ITADPriceService.apiKeyDefaultsKey) private var itadAPIKey = ""
@@ -75,6 +89,11 @@ struct StoreGameDetailView: View {
     @State private var gogAdditionalContentGameID: UUID?
     @State private var isLoadingGOGAdditionalContent = false
     @State private var gogAdditionalContentError: String?
+    @State private var gogAdditionalContentLoadedGameID: UUID?
+    @State private var gogAdditionalContentRequestID: UUID?
+    @State private var additionalContentSearch = ""
+    @State private var additionalContentFilter: AdditionalContentFilter = .all
+    @State private var collapsedAdditionalContentGroups: Set<String> = []
     @State private var gogContentSystemBuild: GOGContentSystemBuild?
     @State private var gogContentSystemBuildGameID: UUID?
     @State private var isLoadingGOGContentSystemBuild = false
@@ -200,6 +219,12 @@ struct StoreGameDetailView: View {
             gogAdditionalContent = []
             gogAdditionalContentGameID = nil
             gogAdditionalContentError = nil
+            gogAdditionalContentLoadedGameID = nil
+            gogAdditionalContentRequestID = nil
+            isLoadingGOGAdditionalContent = false
+            additionalContentSearch = ""
+            additionalContentFilter = .all
+            collapsedAdditionalContentGroups = []
             gogContentSystemBuild = nil
             gogContentSystemBuildGameID = nil
             gogContentSystemBuildError = nil
@@ -605,12 +630,7 @@ struct StoreGameDetailView: View {
             case .compatibility: currentGame.supportsNativeMacOS != true
             case .files: store.installedLocation(for: currentGame) != nil || linkedApplication != nil
             case .audio: store.supportsGOGAudioLanguages(for: currentGame)
-            case .additionalContent:
-                currentGame.provider == .gog
-                    && (gogAdditionalContentGameID == nil
-                        || isLoadingGOGAdditionalContent
-                        || (gogAdditionalContentGameID == currentGame.id
-                            && (!gogAdditionalContent.isEmpty || gogAdditionalContentError != nil)))
+            case .additionalContent: currentGame.provider == .gog
             case .mods: store.shouldShowModsTab(for: currentGame)
             case .cloudSaves: discoveryGame == nil && currentGame.provider == .gog
             }
@@ -854,15 +874,38 @@ struct StoreGameDetailView: View {
         }
     }
 
+    private var filteredGOGAdditionalContent: [GOGAdditionalContentGroup] {
+        let order = ["dlc", "patches", "language_packs", "bonus_content"]
+        let query = additionalContentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return gogAdditionalContent.sorted {
+            (order.firstIndex(of: $0.id) ?? order.count) < (order.firstIndex(of: $1.id) ?? order.count)
+        }.compactMap { group in
+            let items = group.items.filter { item in
+                guard query.isEmpty || item.name.localizedStandardContains(query) else { return false }
+                switch additionalContentFilter {
+                case .all: return true
+                case .available:
+                    return !store.isGOGAdditionalContentDownloaded(for: currentGame, groupID: group.id, item: item)
+                        && !(group.id == "dlc" && gogDLCInstallState(item) == true)
+                case .downloaded:
+                    return store.isGOGAdditionalContentDownloaded(for: currentGame, groupID: group.id, item: item)
+                case .installed: return group.id == "dlc" && gogDLCInstallState(item) == true
+                }
+            }
+            return items.isEmpty ? nil : GOGAdditionalContentGroup(id: group.id, items: items)
+        }
+    }
+
     private var gogAdditionalContentSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label(
-                    LocalizedStringResource("Content from GOG", defaultValue: "Content from GOG", table: "Library"),
-                    systemImage: "shippingbox"
-                )
-                .font(.title3.weight(.semibold))
+                Label(LocalizedStringResource("Content from GOG", table: "Library"), systemImage: "shippingbox")
+                    .font(.title3.weight(.semibold))
                 Spacer()
+                if isLoadingGOGAdditionalContent {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel(Text(LocalizedStringResource("Loading additional content…", table: "Library")))
+                }
                 Button {
                     Task { await loadGOGAdditionalContent(force: true) }
                 } label: {
@@ -872,226 +915,362 @@ struct StoreGameDetailView: View {
                 .disabled(isLoadingGOGAdditionalContent)
             }
 
-            if isLoadingGOGAdditionalContent || gogAdditionalContentGameID != currentGame.id {
-                ProgressView {
-                    Text(LocalizedStringResource(
-                        "Loading additional content…",
-                        defaultValue: "Loading additional content…",
-                        table: "Library"
-                    ))
-                }
-                .padding(.vertical, 10)
-            } else if let gogAdditionalContentError {
-                detailCard(
-                    LocalizedStringResource("Couldn’t load additional content", defaultValue: "Couldn’t load additional content", table: "Library"),
-                    symbol: "exclamationmark.triangle"
-                ) {
-                    Text(gogAdditionalContentError)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Button(
-                        LocalizedStringResource("Try again", defaultValue: "Try again", table: "Library"),
-                        systemImage: "arrow.clockwise"
-                    ) {
-                        Task { await loadGOGAdditionalContent(force: true) }
+            if let error = gogAdditionalContentError {
+                additionalContentLoadError(error)
+            }
+
+            if gogAdditionalContentLoadedGameID != currentGame.id {
+                if isLoadingGOGAdditionalContent || gogAdditionalContentError == nil {
+                    ProgressView {
+                        Text(LocalizedStringResource("Loading additional content…", table: "Library"))
                     }
-                    .buttonStyle(BorealSecondaryActionButtonStyle())
+                    .padding(.vertical, 10)
                 }
             } else if gogAdditionalContent.isEmpty {
-                detailCard(
-                    LocalizedStringResource("No additional content", defaultValue: "No additional content", table: "Library"),
-                    symbol: "shippingbox"
-                ) {
+                detailCard(LocalizedStringResource("No additional content", table: "Library"), symbol: "shippingbox") {
                     Text(LocalizedStringResource(
-                        "GOG has no DLC, language packs, patches, or bonus files listed for this game.",
-                        defaultValue: "GOG has no DLC, language packs, patches, or bonus files listed for this game.",
-                        table: "Library"
+                        "GOG has no DLC, language packs, patches, or bonus files listed for this game.", table: "Library"
                     ))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.secondary)
                 }
             } else {
-                ForEach(gogAdditionalContent) { group in
-                    detailCard(gogAdditionalContentTitle(group.id), symbol: gogAdditionalContentSymbol(group.id)) {
-                        VStack(spacing: 0) {
-                            ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                                if index > 0 { Divider().opacity(0.45) }
-                                let dlcIsInstalled = group.id == "dlc" ? gogDLCInstallState(item) : nil
-                                let localFiles = store.downloadedGOGAdditionalContentFiles(
-                                    for: currentGame,
-                                    groupID: group.id,
-                                    item: item
-                                )
-                                let isComplete = store.isGOGAdditionalContentDownloaded(
-                                    for: currentGame,
-                                    groupID: group.id,
-                                    item: item
-                                )
-                                let downloadState = store.gogAdditionalContentDownloadState(
-                                    for: currentGame,
-                                    groupID: group.id,
-                                    item: item
-                                )
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 12) {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(item.name)
-                                                .font(.callout.weight(.medium))
-                                                .fixedSize(horizontal: false, vertical: true)
-                                            HStack(spacing: 8) {
-                                                if let kind = item.kind, !kind.isEmpty {
-                                                    Text(kind.capitalized)
-                                                }
-                                                if item.fileCount > 0 {
-                                                    Text(LocalizedStringResource("Files: \(item.fileCount)", table: "Library"))
-                                                }
-                                                if let dlcIsInstalled {
-                                                    Label(
-                                                        dlcIsInstalled ? .Library.installed : .Library.notInstalled,
-                                                        systemImage: dlcIsInstalled ? "checkmark.circle.fill" : "circle"
-                                                    )
-                                                    .foregroundStyle(dlcIsInstalled ? .green : .secondary)
-                                                }
-                                            }
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        }
-                                        Spacer(minLength: 8)
-                                        if let sizeBytes = item.sizeBytes {
-                                            Text(ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file))
-                                                .font(.caption.monospacedDigit())
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        gogAdditionalContentActions(
-                                            groupID: group.id,
-                                            item: item,
-                                            localFiles: localFiles,
-                                            isComplete: isComplete,
-                                            downloadState: downloadState
-                                        )
-                                    }
-                                    if let error = downloadState?.error {
-                                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                                            .font(.caption)
-                                            .foregroundStyle(.red)
-                                    }
-                                }
-                                .padding(.vertical, 8)
-                            }
+                additionalContentToolbar
+                let groups = filteredGOGAdditionalContent
+                if groups.isEmpty {
+                    detailCard(LocalizedStringResource("No matching content", table: "Library"), symbol: "magnifyingglass") {
+                        Text(LocalizedStringResource("Change the search or filter to see more content.", table: "Library"))
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button(.Library.clearSearchAndFilters) {
+                            additionalContentSearch = ""
+                            additionalContentFilter = .all
                         }
+                        .buttonStyle(.bordered)
                     }
                 }
+                ForEach(groups) { group in
+                    additionalContentGroup(group)
+                }
+                .onChange(of: additionalContentSearch) { collapsedAdditionalContentGroups = [] }
+                .onChange(of: additionalContentFilter) { collapsedAdditionalContentGroups = [] }
             }
         }
     }
 
-    @ViewBuilder
-    private func gogAdditionalContentActions(
-        groupID: String,
-        item: GOGAdditionalContentItem,
-        localFiles: [URL],
-        isComplete: Bool,
-        downloadState: GOGAdditionalContentDownloadState?
-    ) -> some View {
-        if downloadState?.phase == .downloading {
-            VStack(alignment: .trailing, spacing: 5) {
-                if let totalBytes = downloadState?.totalBytes, totalBytes > 0 {
-                    ProgressView(
-                        value: Double(min(downloadState?.transferredBytes ?? 0, totalBytes)),
-                        total: Double(totalBytes)
-                    )
-                    .frame(width: 160)
-                } else {
-                    ProgressView().controlSize(.small).frame(width: 160)
-                }
-                VStack(alignment: .trailing, spacing: 3) {
-                    if let downloadState {
-                        Text(gogAdditionalContentProgressText(downloadState))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                        if let detail = gogAdditionalContentProgressDetail(downloadState) {
-                            Text(detail)
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.65)
-                        }
-                    }
-                }
-                .frame(width: 180, alignment: .trailing)
-                HStack(spacing: 6) {
-                    Button {
-                        store.cancelGOGAdditionalContentDownload(for: currentGame, groupID: groupID, item: item)
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(LocalizedStringResource(
-                        "cancelAdditionalContentDownload",
-                        defaultValue: "Cancel download",
-                        table: "Library"
-                    ))
-                    .accessibilityLabel(LocalizedStringResource(
-                        "cancelAdditionalContentDownload",
-                        defaultValue: "Cancel download",
-                        table: "Library"
-                    ))
-                }
+    private var additionalContentToolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                additionalContentSearchField.frame(minWidth: 180, maxWidth: 320)
+                Spacer(minLength: 0)
+                additionalContentFilterPicker
             }
-        } else {
-            HStack(spacing: 7) {
-                if isComplete {
-                    if let installer = installableGOGAdditionalContentFile(
-                        groupID: groupID,
-                        item: item,
-                        files: localFiles
-                    ) {
-                        Button {
-                            store.installGOGAdditionalContent(installer, for: currentGame)
-                        } label: {
-                            Label(.Library.install, systemImage: "shippingbox.and.arrow.backward")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.blue)
-                        .controlSize(.small)
-                    } else {
-                        Label(LocalizedStringResource(
-                            "downloadedAdditionalContent",
-                            defaultValue: "Downloaded",
-                            table: "Library"
-                        ), systemImage: "checkmark.circle.fill")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.green)
-                    }
-                } else {
-                    let downloadActionTitle = localFiles.isEmpty
-                        ? LocalizedStringResource("downloadAdditionalContent", defaultValue: "Download", table: "Library")
-                        : LocalizedStringResource("downloadRemainingAdditionalContent", defaultValue: "Download missing files", table: "Library")
-                    Button {
-                        store.downloadGOGAdditionalContent(item, groupID: groupID, for: currentGame)
-                    } label: {
-                        Label(downloadActionTitle, systemImage: "arrow.down.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                    .controlSize(.small)
+            VStack(alignment: .leading, spacing: 10) {
+                additionalContentSearchField
+                additionalContentFilterPicker
+            }
+        }
+    }
+
+    private var additionalContentSearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(text: $additionalContentSearch) {
+                Text(LocalizedStringResource("Search additional content", table: "Library"))
+            }
+            .textFieldStyle(.plain)
+            if !additionalContentSearch.isEmpty {
+                Button { additionalContentSearch = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
-                if !localFiles.isEmpty {
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting(localFiles)
-                    } label: {
-                        Image(systemName: "folder")
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(LocalizedStringResource("Clear search", table: "Library")))
+            }
+        }
+        .padding(9)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var additionalContentFilterPicker: some View {
+        Picker(selection: $additionalContentFilter) {
+            ForEach(AdditionalContentFilter.allCases) { filter in
+                Text(filter.title).tag(filter)
+            }
+        } label: {
+            Text(LocalizedStringResource("Content status", table: "Library"))
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+    }
+
+    private func additionalContentLoadError(_ error: String) -> some View {
+        detailCard(LocalizedStringResource("Couldn’t load additional content", table: "Library"), symbol: "exclamationmark.triangle") {
+            if gogAdditionalContentLoadedGameID == currentGame.id {
+                Text(LocalizedStringResource("The list could not be refreshed. Previously loaded content is still shown.", table: "Library"))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            DisclosureGroup {
+                Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            } label: {
+                Text(LocalizedStringResource("Error details", table: "Library"))
+            }
+            Button(LocalizedStringResource("Try again", table: "Library"), systemImage: "arrow.clockwise") {
+                Task { await loadGOGAdditionalContent(force: true) }
+            }
+            .buttonStyle(BorealSecondaryActionButtonStyle())
+            .disabled(isLoadingGOGAdditionalContent)
+        }
+    }
+
+    private func additionalContentGroup(_ group: GOGAdditionalContentGroup) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DisclosureGroup(isExpanded: Binding(
+                get: { !collapsedAdditionalContentGroups.contains(group.id) },
+                set: { expanded in
+                    if expanded { collapsedAdditionalContentGroups.remove(group.id) }
+                    else { collapsedAdditionalContentGroups.insert(group.id) }
+                }
+            )) {
+                VStack(spacing: 0) {
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 { Divider().opacity(0.45) }
+                        additionalContentRow(groupID: group.id, item: item)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(Text(.Library.showInFinder))
-                    .accessibilityLabel(Text(.Library.showInFinder))
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Label(gogAdditionalContentTitle(group.id), systemImage: gogAdditionalContentSymbol(group.id))
+                        .font(.headline)
+                    Text(group.items.count.formatted())
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
+    }
+
+    private func additionalContentRow(groupID: String, item: GOGAdditionalContentItem) -> some View {
+        let localFiles = store.downloadedGOGAdditionalContentFiles(for: currentGame, groupID: groupID, item: item)
+        let isComplete = store.isGOGAdditionalContentDownloaded(for: currentGame, groupID: groupID, item: item)
+        let downloadState = store.gogAdditionalContentDownloadState(for: currentGame, groupID: groupID, item: item)
+        let installed = groupID == "dlc" && gogDLCInstallState(item) == true
+        let installers = additionalContentInstallers(groupID: groupID, files: localFiles)
+        let installationReason = additionalContentInstallationBlockReason
+        return VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 20) {
+                    additionalContentSummary(item: item, installed: installed, isComplete: isComplete,
+                                             hasLocalFiles: !localFiles.isEmpty, hasInstaller: !installers.isEmpty, state: downloadState)
+                    Spacer(minLength: 12)
+                    gogAdditionalContentActions(groupID: groupID, item: item, localFiles: localFiles,
+                                                isComplete: isComplete, installed: installed, installers: installers,
+                                                installationReason: installationReason, downloadState: downloadState)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    additionalContentSummary(item: item, installed: installed, isComplete: isComplete,
+                                             hasLocalFiles: !localFiles.isEmpty, hasInstaller: !installers.isEmpty, state: downloadState)
+                    gogAdditionalContentActions(groupID: groupID, item: item, localFiles: localFiles,
+                                                isComplete: isComplete, installed: installed, installers: installers,
+                                                installationReason: installationReason, downloadState: downloadState)
+                }
+            }
+            if let state = downloadState, state.phase == .downloading {
+                additionalContentDownloadProgress(state)
+            }
+            if isComplete && !installed && !installers.isEmpty, let installationReason {
+                Label(installationReason, systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = downloadState?.error {
+                Label(LocalizedStringResource("Download failed. Try again to download the missing files.", table: "Library"),
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+                DisclosureGroup {
+                    Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                } label: {
+                    Text(LocalizedStringResource("Error details", table: "Library"))
+                }
+            }
+            additionalContentFiles(item, localFiles: localFiles, isComplete: isComplete)
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func additionalContentSummary(item: GOGAdditionalContentItem, installed: Bool, isComplete: Bool,
+                                          hasLocalFiles: Bool, hasInstaller: Bool,
+                                          state: GOGAdditionalContentDownloadState?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.name).font(.callout.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                if item.fileCount > 0 { Text(LocalizedStringResource("Files: \(item.fileCount)", table: "Library")) }
+                if let size = item.sizeBytes {
+                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)).monospacedDigit()
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            if installed {
+                Label(.Library.installed, systemImage: "checkmark.seal.fill")
+                    .font(.caption.weight(.medium)).foregroundStyle(.green)
+            }
+            if state?.phase == .downloading {
+                Label(LocalizedStringResource("Downloading…", table: "Library"), systemImage: "arrow.down.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if isComplete {
+                Label(hasInstaller ? LocalizedStringResource("Installer downloaded", table: "Library")
+                      : LocalizedStringResource("Downloaded", table: "Library"), systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if hasLocalFiles {
+                Label(LocalizedStringResource("Some files downloaded", table: "Library"), systemImage: "circle.lefthalf.filled")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !installed {
+                Text(LocalizedStringResource("Not downloaded", table: "Library"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if state?.phase == .cancelled {
+                Text(LocalizedStringResource("Download cancelled", table: "Library"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func additionalContentFiles(_ item: GOGAdditionalContentItem, localFiles: [URL], isComplete: Bool) -> some View {
+        if !item.files.isEmpty || !localFiles.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !isComplete && !localFiles.isEmpty {
+                        Text(LocalizedStringResource("Local files may be incomplete until the download finishes.", table: "Library"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if isComplete || item.files.isEmpty {
+                        ForEach(localFiles, id: \.self) { file in
+                            Text(file.lastPathComponent).font(.caption).textSelection(.enabled)
+                        }
+                    } else {
+                        ForEach(item.files) { file in
+                            HStack(alignment: .top) {
+                                Text(file.fileName).textSelection(.enabled)
+                                Spacer()
+                                if let size = file.sizeBytes {
+                                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text(LocalizedStringResource("Package files", table: "Library"))
+            }
+            .font(.caption)
+        } else {
+            Text(LocalizedStringResource("The package file list will be retrieved when the download starts.", table: "Library"))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private func gogAdditionalContentActions(
+        groupID: String, item: GOGAdditionalContentItem, localFiles: [URL], isComplete: Bool,
+        installed: Bool, installers: [URL], installationReason: LocalizedStringResource?,
+        downloadState: GOGAdditionalContentDownloadState?
+    ) -> some View {
+        HStack(spacing: 8) {
+            if downloadState?.phase == .downloading {
+                Button(LocalizedStringResource("cancelAdditionalContentDownload", defaultValue: "Cancel download", table: "Library"), systemImage: "xmark") {
+                    store.cancelGOGAdditionalContentDownload(for: currentGame, groupID: groupID, item: item)
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+            } else if isComplete && !installed && !installers.isEmpty {
+                if installers.count == 1, let installer = installers.first {
+                    Button(.Library.install, systemImage: "shippingbox.and.arrow.backward") {
+                        store.installGOGAdditionalContent(installer, for: currentGame)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.blue).controlSize(.small)
+                    .disabled(installationReason != nil)
+                } else {
+                    Menu {
+                        ForEach(installers, id: \.self) { installer in
+                            Button(installer.lastPathComponent) {
+                                store.installGOGAdditionalContent(installer, for: currentGame)
+                            }
+                        }
+                    } label: {
+                        Label(.Library.install, systemImage: "shippingbox.and.arrow.backward")
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .disabled(installationReason != nil)
+                    .help(LocalizedStringResource("Choose an installer from the downloaded package.", table: "Library"))
+                }
+            } else if !isComplete {
+                Button {
+                    store.downloadGOGAdditionalContent(item, groupID: groupID, for: currentGame)
+                } label: {
+                    Label(additionalContentDownloadTitle(installed: installed, hasLocalFiles: !localFiles.isEmpty, state: downloadState),
+                          systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderedProminent).tint(.blue).controlSize(.small)
+            }
+            if !localFiles.isEmpty {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting(localFiles)
+                } label: {
+                    Label(.Library.showInFinder, systemImage: "folder")
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+            }
+        }
+    }
+
+    private func additionalContentDownloadTitle(installed: Bool, hasLocalFiles: Bool,
+                                                state: GOGAdditionalContentDownloadState?) -> LocalizedStringResource {
+        if state?.phase == .failed { return LocalizedStringResource("Try again", table: "Library") }
+        if hasLocalFiles { return LocalizedStringResource("downloadRemainingAdditionalContent", defaultValue: "Download missing files", table: "Library") }
+        if installed { return LocalizedStringResource("Download installer", table: "Library") }
+        return LocalizedStringResource("downloadAdditionalContent", defaultValue: "Download", table: "Library")
+    }
+
+    private func additionalContentDownloadProgress(_ state: GOGAdditionalContentDownloadState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let total = state.totalBytes, total > 0 {
+                ProgressView(value: Double(min(state.transferredBytes, total)), total: Double(total))
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text(gogAdditionalContentProgressText(state)).font(.caption.monospacedDigit())
+            if let detail = gogAdditionalContentProgressDetail(state) {
+                Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func additionalContentInstallers(groupID: String, files: [URL]) -> [URL] {
+        guard ["patches", "language_packs", "dlc"].contains(groupID) else { return [] }
+        return files.filter { ["exe", "msi"].contains($0.pathExtension.lowercased()) }
+    }
+
+    private var additionalContentInstallationBlockReason: LocalizedStringResource? {
+        guard store.isInstalled(currentGame) else {
+            return LocalizedStringResource("Install the game before installing this content.", table: "Library")
+        }
+        guard store.installedPlatform(for: currentGame) == .windows else {
+            return LocalizedStringResource("Automatic installation is available for Windows game installations only. Open the files in Finder for manual installation.", table: "Library")
+        }
+        guard let application = store.linkedApplication(for: currentGame),
+              !application.isInstallerOnly, !application.isSteamRuntimeHost else {
+            return LocalizedStringResource("Link a Windows game installation before installing this content.", table: "Library")
+        }
+        if application.status == .running {
+            return LocalizedStringResource("Close the game before installing this content.", table: "Library")
+        }
+        if application.status.isBusy {
+            return LocalizedStringResource("Wait for the current game operation to finish before installing this content.", table: "Library")
+        }
+        return nil
     }
 
     private func gogAdditionalContentProgressText(_ state: GOGAdditionalContentDownloadState) -> String {
@@ -1119,39 +1298,30 @@ struct StoreGameDetailView: View {
         return details.isEmpty ? nil : details.joined(separator: " · ")
     }
 
-    private func installableGOGAdditionalContentFile(
-        groupID: String,
-        item: GOGAdditionalContentItem,
-        files: [URL]
-    ) -> URL? {
-        guard ["patches", "language_packs", "dlc"].contains(groupID),
-              !(groupID == "dlc" && gogDLCInstallState(item) == true),
-              store.isGOGAdditionalContentDownloaded(for: currentGame, groupID: groupID, item: item),
-              store.isInstalled(currentGame),
-              store.installedPlatform(for: currentGame) == .windows,
-              store.linkedApplication(for: currentGame) != nil else { return nil }
-        return files.first {
-            ["exe", "msi"].contains($0.pathExtension.lowercased())
-        }
-    }
-
     private func loadGOGAdditionalContent(force: Bool = false) async {
-        guard currentGame.provider == .gog else { return }
-        let requestedGameID = currentGame.id
-        guard force || gogAdditionalContentGameID != requestedGameID else { return }
+        guard currentGame.provider == .gog, !isLoadingGOGAdditionalContent else { return }
+        let requestedGame = currentGame
+        guard force || gogAdditionalContentGameID != requestedGame.id else { return }
+        let requestID = UUID()
+        gogAdditionalContentRequestID = requestID
         isLoadingGOGAdditionalContent = true
         gogAdditionalContentError = nil
-        defer { isLoadingGOGAdditionalContent = false }
+        defer {
+            if gogAdditionalContentRequestID == requestID { isLoadingGOGAdditionalContent = false }
+        }
 
         do {
-            let content = try await store.additionalGOGContent(for: currentGame)
-            guard !Task.isCancelled, currentGame.id == requestedGameID else { return }
+            let content = try await store.additionalGOGContent(for: requestedGame)
+            guard !Task.isCancelled, currentGame.id == requestedGame.id,
+                  gogAdditionalContentRequestID == requestID else { return }
             gogAdditionalContent = content
-            gogAdditionalContentGameID = requestedGameID
+            gogAdditionalContentGameID = requestedGame.id
+            gogAdditionalContentLoadedGameID = requestedGame.id
         } catch {
-            guard !Task.isCancelled, currentGame.id == requestedGameID else { return }
+            guard !Task.isCancelled, currentGame.id == requestedGame.id,
+                  gogAdditionalContentRequestID == requestID else { return }
             gogAdditionalContentError = error.localizedDescription
-            gogAdditionalContentGameID = requestedGameID
+            gogAdditionalContentGameID = requestedGame.id
         }
     }
 
@@ -3508,7 +3678,9 @@ struct StoreGameDetailView: View {
         if action == "rungameid", store.installedPlatform(for: currentGame) == .nativeMacOS, let path = store.installedLocation(for: currentGame)?.path {
             GameOverlayController.shared.expectNativeGame(
                 name: currentGame.name,
-                installationURL: URL(fileURLWithPath: path, isDirectory: true)
+                installationURL: URL(fileURLWithPath: path, isDirectory: true),
+                artworkURL: currentGame.portraitImageURL ?? currentGame.headerImageURL,
+                storeURL: currentGame.discordStorePageURL
             )
         }
         if let url = URL(string: "steam://\(action)/\(game.externalID)") { NSWorkspace.shared.open(url) }
@@ -3524,7 +3696,7 @@ struct StoreGameDetailView: View {
         ) {
             for case let candidate as URL in enumerator {
                 if candidate.pathExtension.caseInsensitiveCompare("app") == .orderedSame {
-                    GameOverlayController.shared.expectNativeGame(name: currentGame.name, installationURL: candidate)
+                    GameOverlayController.shared.expectNativeGame(name: currentGame.name, installationURL: candidate, artworkURL: currentGame.portraitImageURL ?? currentGame.headerImageURL, storeURL: currentGame.discordStorePageURL)
                     NSWorkspace.shared.open(candidate)
                     return
                 }

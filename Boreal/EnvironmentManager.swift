@@ -614,7 +614,14 @@ actor EnvironmentManager: EnvironmentManaging {
             let legacyMarker = dependency == .legacyDirectX
                 ? environment.prefixURL.appending(path: ".boreal-dependencies/directXRuntime")
                 : nil
-            let directories = ["system32", "syswow64"].map { environment.prefixURL.appending(path: "drive_c/windows/\($0)") }
+            var directories = ["system32", "syswow64"].map { environment.prefixURL.appending(path: "drive_c/windows/\($0)") }
+            if dependency == .physX {
+                // NVIDIA's system software keeps its loaders in PhysX/Common,
+                // rather than copying them into the Windows system directories.
+                directories += ["Program Files (x86)", "Program Files"].map {
+                    environment.prefixURL.appending(path: "drive_c/\($0)/NVIDIA Corporation/PhysX/Common")
+                }
+            }
             let hasLibraries = dependency.detectionLibraries.contains { library in
                 directories.contains { $0.appending(path: library).path.isEmpty == false && fileManager.fileExists(atPath: $0.appending(path: library).path) }
             }
@@ -873,8 +880,10 @@ actor EnvironmentManager: EnvironmentManaging {
         values.removeValue(forKey: "WINEMSYNC")
         values.removeValue(forKey: "WINE_FULLSCREEN_FSR")
         values.removeValue(forKey: "WINEDLLPATH")
-        if runtime.features?.esync == true { values["WINEESYNC"] = environment.configuration.esyncEnabled ? "1" : "0" }
-        if runtime.features?.msync == true { values["WINEMSYNC"] = environment.configuration.msyncEnabled ? "1" : "0" }
+        WineProcessEnvironment.applySynchronization(
+            to: &values, configuration: environment.configuration, features: runtime.features
+        )
+        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &values, runtime: runtime)
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(
             runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
         )

@@ -1327,6 +1327,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
     case requirementMissing(RuntimeRequirement)
     case downloadFailed(String)
     case localRuntimeInvalid(String)
+    case msyncBuildFailed(String)
     case incompatible32BitExecutable(runtime: String)
     case incompatible64BitExecutable
     case noCompatibleRuntime(String)
@@ -1372,6 +1373,7 @@ nonisolated enum RuntimeManagerError: LocalizedError, Sendable {
         case .requirementMissing(.gStreamerFramework): return "GStreamer.framework is required by this development runtime."
         case .downloadFailed(let reason): return "Runtime download failed: \(reason)"
         case .localRuntimeInvalid(let reason): return "The installed Wine app can’t be imported: \(reason)"
+        case .msyncBuildFailed(let reason): return reason
         case .incompatible32BitExecutable(let runtime): return "This game is 32-bit, but \(runtime) does not provide WoW64 support. Use a Wine runtime that supports 32-bit Windows applications."
         case .incompatible64BitExecutable: return "This application is 64-bit and cannot run in a 32-bit Wine prefix. Choose the Win64 architecture."
         case .noCompatibleRuntime(let detail): return "No compatible runtime is available. \(detail)"
@@ -1388,6 +1390,7 @@ nonisolated protocol RuntimeManaging: Sendable {
     func localRuntimeCandidate(at appURL: URL) async throws -> LocalRuntimeCandidate
     func importLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
     func importSelectedLocalRuntime(_ candidate: LocalRuntimeCandidate) async throws -> InstalledRuntime
+    func buildMSyncRuntime(dependencyPrefix: URL?, progress: @escaping @Sendable (String) async -> Void) async throws -> InstalledRuntime
     /// Imports either a GPTK `.app` bundle or Apple's mounted evaluation
     /// environment directory. GPTK 4 graphics are layered onto a complete,
     /// GPTK-capable Wine base before the snapshot is published.
@@ -1425,6 +1428,10 @@ nonisolated protocol RuntimeManaging: Sendable {
 }
 
 nonisolated extension RuntimeManaging {
+    func buildMSyncRuntime(dependencyPrefix: URL?, progress: @escaping @Sendable (String) async -> Void) async throws -> InstalledRuntime {
+        throw CocoaError(.featureUnsupported)
+    }
+
     func localRuntimeCandidate(at appURL: URL) async throws -> LocalRuntimeCandidate {
         throw RuntimeManagerError.localRuntimeInvalid("The selected runtime import is unavailable.")
     }

@@ -631,7 +631,7 @@ struct ConsoleModeView: View {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ), let app = enumerator.first(where: { ($0 as? URL)?.pathExtension.caseInsensitiveCompare("app") == .orderedSame }) as? URL {
-            GameOverlayController.shared.expectNativeGame(name: game.name, installationURL: app)
+            GameOverlayController.shared.expectNativeGame(name: game.name, installationURL: app, artworkURL: game.portraitImageURL ?? game.headerImageURL, storeURL: game.discordStorePageURL)
             NSWorkspace.shared.open(app)
         } else {
             NSWorkspace.shared.open(root)

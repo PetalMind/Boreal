@@ -202,6 +202,24 @@
         }
       }
     },
+    "All content" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All content"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wszystkie treści"
+          }
+        }
+      }
+    },
     "appleGamingWikiDisclaimer" : {
       "comment" : "Compatibility source disclaimer.",
       "extractionState" : "manual",
@@ -252,6 +270,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dubbing"
+          }
+        }
+      }
+    },
+    "Automatic installation is available for Windows game installations only. Open the files in Finder for manual installation." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatic installation is available for Windows game installations only. Open the files in Finder for manual installation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczna instalacja jest dostępna tylko dla gier zainstalowanych w wersji Windows. Otwórz pliki w Finderze, aby zainstalować je ręcznie."
           }
         }
       }
@@ -438,6 +474,42 @@
         }
       }
     },
+    "cancelAdditionalContentDownload" : {
+      "comment" : "Accessible label and tooltip for cancelling a GOG additional content download.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel download"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anuluj pobieranie"
+          }
+        }
+      }
+    },
+    "Change the search or filter to see more content." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change the search or filter to see more content."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmień wyszukiwanie lub filtr, aby zobaczyć więcej treści."
+          }
+        }
+      }
+    },
     "checkForUpdates" : {
       "comment" : "Action that checks a product for updates.",
       "extractionState" : "manual",
@@ -495,6 +567,24 @@
         }
       }
     },
+    "Choose an installer from the downloaded package." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose an installer from the downloaded package."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz instalator z pobranego pakietu."
+          }
+        }
+      }
+    },
     "clear" : {
       "comment" : "Action that clears product cached data.",
       "extractionState" : "manual",
@@ -509,6 +599,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyczyść"
+          }
+        }
+      }
+    },
+    "Clear search" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear search"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyczyść wyszukiwanie"
           }
         }
       }
@@ -563,6 +671,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyczyść wyszukiwanie i filtry"
+          }
+        }
+      }
+    },
+    "Close the game before installing this content." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close the game before installing this content."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknij grę przed instalacją tych treści."
           }
         }
       }
@@ -745,6 +871,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Treści z GOG"
+          }
+        }
+      }
+    },
+    "Content status" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Content status"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan treści"
           }
         }
       }
@@ -996,6 +1140,60 @@
         }
       }
     },
+    "Download cancelled" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download cancelled"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anulowano pobieranie"
+          }
+        }
+      }
+    },
+    "Download failed. Try again to download the missing files." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download failed. Try again to download the missing files."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobieranie nie powiodło się. Spróbuj ponownie, aby pobrać brakujące pliki."
+          }
+        }
+      }
+    },
+    "Download installer" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download installer"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobierz instalator"
+          }
+        }
+      }
+    },
     "downloadAdditionalContent" : {
       "comment" : "Action that downloads a GOG patch, DLC, language pack, or bonus file.",
       "extractionState" : "manual",
@@ -1010,6 +1208,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pobierz"
+          }
+        }
+      }
+    },
+    "Downloaded" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloaded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobrano"
+          }
+        }
+      }
+    },
+    "downloadedAdditionalContent" : {
+      "comment" : "Status shown after every file in a GOG additional content item is downloaded.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloaded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobrano"
+          }
+        }
+      }
+    },
+    "Downloading…" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloading…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobieranie…"
           }
         }
       }
@@ -1046,60 +1298,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pobierz brakujące pliki"
-          }
-        }
-      }
-    },
-    "cancelAdditionalContentDownload" : {
-      "comment" : "Accessible label and tooltip for cancelling a GOG additional content download.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cancel download"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Anuluj pobieranie"
-          }
-        }
-      }
-    },
-    "downloadedAdditionalContent" : {
-      "comment" : "Status shown after every file in a GOG additional content item is downloaded.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Downloaded"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pobrano"
-          }
-        }
-      }
-    },
-    "Remaining: %@" : {
-      "comment" : "Remaining byte count in a GOG additional content download.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Remaining: %@"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozostało: %@"
           }
         }
       }
@@ -1226,6 +1424,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Epic Games"
+          }
+        }
+      }
+    },
+    "Error details" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Error details"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szczegóły błędu"
           }
         }
       }
@@ -1570,24 +1786,6 @@
         }
       }
     },
-    "importGOGPlaytime" : {
-      "comment" : "Button that imports the account-reported GOG playtime total.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Import playtime from GOG"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Importuj czas gry z GOG"
-          }
-        }
-      }
-    },
     "gogStatusUnavailable" : {
       "comment" : "Shown when GOG Revived status cannot be loaded.",
       "extractionState" : "manual",
@@ -1754,6 +1952,24 @@
         }
       }
     },
+    "importGOGPlaytime" : {
+      "comment" : "Button that imports the account-reported GOG playtime total.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import playtime from GOG"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Importuj czas gry z GOG"
+          }
+        }
+      }
+    },
     "importingLibrary" : {
       "comment" : "Progress tooltip while a provider library is being imported.",
       "extractionState" : "manual",
@@ -1811,6 +2027,24 @@
         }
       }
     },
+    "Install the game before installing this content." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install the game before installing this content."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj grę przed instalacją tych treści."
+          }
+        }
+      }
+    },
     "installationTitle" : {
       "comment" : "Product installation card title.",
       "extractionState" : "manual",
@@ -1855,6 +2089,24 @@
       "comment" : "A label that indicates that the installed build is the same as the latest build.",
       "isCommentAutoGenerated" : true
     },
+    "Installed DLC" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installed DLC"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstalowane DLC"
+          }
+        }
+      }
+    },
     "Installed GOG language" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1868,6 +2120,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zainstalowany język GOG"
+          }
+        }
+      }
+    },
+    "Installer downloaded" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installer downloaded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Instalator pobrany"
           }
         }
       }
@@ -2126,6 +2396,24 @@
         }
       }
     },
+    "Link a Windows game installation before installing this content." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link a Windows game installation before installing this content."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powiąż instalację gry Windows przed instalacją tych treści."
+          }
+        }
+      }
+    },
     "list" : {
       "comment" : "Library list view command.",
       "extractionState" : "manual",
@@ -2249,6 +2537,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ładowanie historii cen…"
+          }
+        }
+      }
+    },
+    "Local files may be incomplete until the download finishes." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local files may be incomplete until the download finishes."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lokalne pliki mogą być niekompletne do czasu zakończenia pobierania."
           }
         }
       }
@@ -2614,6 +2920,24 @@
         }
       }
     },
+    "No matching content" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No matching content"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak pasujących treści"
+          }
+        }
+      }
+    },
     "noActivity" : {
       "comment" : "Activity heatmap legend for no activity.",
       "extractionState" : "manual",
@@ -2916,6 +3240,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ten sklep nie udostępnia opisu."
+          }
+        }
+      }
+    },
+    "Not downloaded" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not downloaded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie pobrano"
           }
         }
       }
@@ -3240,6 +3582,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przegląd"
+          }
+        }
+      }
+    },
+    "Package files" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Package files"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pliki w pakiecie"
           }
         }
       }
@@ -3754,6 +4114,24 @@
         }
       }
     },
+    "Remaining: %@" : {
+      "comment" : "Remaining byte count in a GOG additional content download.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remaining: %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozostało: %@"
+          }
+        }
+      }
+    },
     "remove" : {
       "comment" : "Action that removes an imported application.",
       "extractionState" : "manual",
@@ -4096,6 +4474,24 @@
         }
       }
     },
+    "Search additional content" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search additional content"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Szukaj dodatkowych treści"
+          }
+        }
+      }
+    },
     "secondsShort" : {
       "comment" : "Short localized seconds unit used in playtime values.",
       "extractionState" : "manual",
@@ -4370,6 +4766,24 @@
         }
       }
     },
+    "Some files downloaded" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some files downloaded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pobrano część plików"
+          }
+        }
+      }
+    },
     "someActivity" : {
       "comment" : "Activity heatmap legend for some activity.",
       "extractionState" : "manual",
@@ -4640,6 +5054,42 @@
         }
       }
     },
+    "The list could not be refreshed. Previously loaded content is still shown." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The list could not be refreshed. Previously loaded content is still shown."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się odświeżyć listy. Nadal wyświetlane są wcześniej wczytane treści."
+          }
+        }
+      }
+    },
+    "The package file list will be retrieved when the download starts." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The package file list will be retrieved when the download starts."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lista plików pakietu zostanie pobrana po rozpoczęciu pobierania."
+          }
+        }
+      }
+    },
     "thisWeek" : {
       "comment" : "Activity dashboard current week card title.",
       "extractionState" : "manual",
@@ -4654,6 +5104,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ten tydzień"
+          }
+        }
+      }
+    },
+    "To download" : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To download"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Do pobrania"
           }
         }
       }
@@ -5033,6 +5501,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Język dubbingu"
+          }
+        }
+      }
+    },
+    "Wait for the current game operation to finish before installing this content." : {
+      "comment" : "GOG additional content interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for the current game operation to finish before installing this content."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poczekaj na zakończenie bieżącej operacji na grze przed instalacją tych treści."
           }
         }
       }

@@ -40,8 +40,8 @@ struct DownloadsView: View {
                     }
                 } else {
                     gameOperations
-                    componentsSection
                 }
+                componentsSection
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -177,8 +177,6 @@ struct DownloadsView: View {
                     InspectorAction(title: "Remove from Queue", symbol: "xmark", role: .destructive, action: { store.clearStoreGameOperation(for: operation.game) })
                 }
             }
-
-            componentsSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -357,85 +355,93 @@ struct DownloadsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             }
-            VStack(spacing: 0) {
-            ForEach(Array(store.runtimeStatuses.enumerated()), id: \.element.id) { index, runtime in
-                HStack(spacing: 14) {
-                    Image(systemName: runtime.isVerified ? "checkmark.seal.fill" : "shippingbox.fill")
-                        .font(.title2)
-                        .foregroundStyle(runtime.isVerified ? Color.green : Color.accentColor)
-                        .frame(width: 36)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(runtime.name).font(.headline)
-                        Text(runtimeDetail(runtime)).font(.callout).foregroundStyle(.secondary)
-                        if developerMode {
-                            Text("\(runtime.engine.displayName) \(runtime.wineVersion) · \(runtime.architecture.rawValue) · \(runtime.engine.graphicsName)")
-                                .font(.caption).foregroundStyle(.tertiary)
-                            if runtime.features?.dxmt == true {
-                                let verification = runtime.features?.d3d11Verified == true
-                                    ? "passed"
-                                    : "not verified for all supported architectures"
-                                Text("DXMT D3D11 verification: " + verification)
-                                    .font(.caption).foregroundStyle(.tertiary)
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 360), spacing: 12, alignment: .top)],
+                alignment: .leading,
+                spacing: 12
+            ) {
+                ForEach(store.runtimeStatuses) { runtime in
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: runtime.isVerified ? "checkmark.seal.fill" : "shippingbox.fill")
+                                .font(.title2)
+                                .foregroundStyle(runtime.isVerified ? Color.green : Color.accentColor)
+                                .frame(width: 36)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(runtime.name).font(.headline)
+                                Text(runtimeDetail(runtime)).font(.callout).foregroundStyle(.secondary)
+                                if developerMode {
+                                    Text("\(runtime.engine.displayName) \(runtime.wineVersion) · \(runtime.architecture.rawValue) · \(runtime.engine.graphicsName)")
+                                        .font(.caption).foregroundStyle(.tertiary)
+                                    if runtime.features?.dxmt == true {
+                                        let verification = runtime.features?.d3d11Verified == true
+                                            ? "passed"
+                                            : "not verified for all supported architectures"
+                                        Text("DXMT D3D11 verification: " + verification)
+                                            .font(.caption).foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        HStack(spacing: 12) {
+                            runtimeAction(runtime)
+                                .fixedSize()
+                            Spacer(minLength: 12)
+                            if runtime.source == .installed, runtime.engine == .wine {
+                                Menu {
+                                    Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
+                                    Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: runtime.id) }
+                                    Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
+                                    Button("Install Dd7to9") { store.downloadLegacyWrapper(.dd7to9, into: runtime.id) }
+                                    Button("Install dgVoodoo2") { store.downloadLegacyWrapper(.dgVoodoo2, into: runtime.id) }
+                                    Divider()
+                                    Menu("Advanced") {
+                                        Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
+                                        Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
+                                        Button("Import Dd7to9 Package…") { selectLegacyWrapperPackage(.dd7to9, for: runtime) }
+                                        Button("Import dgVoodoo2 Package…") { selectLegacyWrapperPackage(.dgVoodoo2, for: runtime) }
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                }
+                                .menuStyle(.borderlessButton)
+                                .help("Manage graphics translation components")
+                            }
+                            if developerMode, runtime.source == .installed {
+                                Menu {
+                                    Button("Win64") { runD3D11SelfTest(for: runtime, architecture: .x86_64) }
+                                    if runtime.engine != .gamePortingToolkit,
+                                       runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true {
+                                        Button("Win32") { runD3D11SelfTest(for: runtime, architecture: .x86) }
+                                    }
+                                } label: {
+                                    Image(systemName: d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true && d3d11SelfTest == nil
+                                        ? "progress.indicator"
+                                        : "waveform.path.ecg")
+                                }
+                                .menuStyle(.borderlessButton)
+                                .help("Run the independent D3D11 device, swapchain, clear, and Present self-test")
                             }
                         }
-                    }
-                    Spacer()
-                    runtimeAction(runtime)
-                    if runtime.source == .installed, runtime.engine == .wine {
-                        Menu {
-                            Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
-                            Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: runtime.id) }
-                            Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
-                            Button("Install Dd7to9") { store.downloadLegacyWrapper(.dd7to9, into: runtime.id) }
-                            Button("Install dgVoodoo2") { store.downloadLegacyWrapper(.dgVoodoo2, into: runtime.id) }
-                            Divider()
-                            Menu("Advanced") {
-                                Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
-                                Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
-                                Button("Import Dd7to9 Package…") { selectLegacyWrapperPackage(.dd7to9, for: runtime) }
-                                Button("Import dgVoodoo2 Package…") { selectLegacyWrapperPackage(.dgVoodoo2, for: runtime) }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
+                        if developerMode, let result = d3d11SelfTest,
+                           d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true {
+                            D3D11SelfTestCard(result: result)
                         }
-                        .menuStyle(.borderlessButton)
-                        .help("Manage graphics translation components")
-                    }
-                    if developerMode, runtime.source == .installed {
-                        Menu {
-                            Button("Win64") { runD3D11SelfTest(for: runtime, architecture: .x86_64) }
-                            if runtime.engine != .gamePortingToolkit,
-                               runtime.features?.resolvedArchitectureCapabilities.canRunX86 == true {
-                                Button("Win32") { runD3D11SelfTest(for: runtime, architecture: .x86) }
-                            }
-                        } label: {
-                            Image(systemName: d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true && d3d11SelfTest == nil
-                                ? "progress.indicator"
-                                : "waveform.path.ecg")
+                        if developerMode, let error = d3d11SelfTestError,
+                           d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
                         }
-                        .menuStyle(.borderlessButton)
-                        .help("Run the independent D3D11 device, swapchain, clear, and Present self-test")
                     }
-                }.padding(16)
-                if developerMode, let result = d3d11SelfTest,
-                   d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true {
-                    D3D11SelfTestCard(result: result)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(16)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13))
+                    .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
                 }
-                if developerMode, let error = d3d11SelfTestError,
-                   d3d11SelfTestRuntimeID?.hasPrefix(runtime.id) == true {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
-                }
-                if index < store.runtimeStatuses.count - 1 { Divider().padding(.leading, 66) }
             }
-            }
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(.separator.opacity(0.7), lineWidth: 0.5))
 
             if !store.runtimeComponentUpdates.isEmpty {
                 VStack(spacing: 0) {
@@ -758,7 +764,7 @@ private struct DownloadOperationCard: View {
                 HStack(spacing: 8) {
                     Label(game.provider.rawValue, systemImage: providerSymbol)
                     if let platform = record?.platform {
-                        Label(platform == .nativeMacOS ? "Native macOS" : "Windows", systemImage: platform == .nativeMacOS ? "apple.logo" : "windows")
+                        Label(platform == .nativeMacOS ? "Native macOS" : "Windows", systemImage: platform == .nativeMacOS ? "apple.logo" : "pc")
                     }
                 }
                 .font(.caption)

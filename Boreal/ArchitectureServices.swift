@@ -32,7 +32,8 @@ nonisolated enum InstallationStateResolver {
         fileManager: FileManager = .default
     ) -> InstallationState {
         guard installation.state != .uninstalled else { return .uninstalled }
-        if let volumeUUID = installation.volumeIdentity?.volumeUUID,
+        if case .external = installation.location,
+           let volumeUUID = installation.volumeIdentity?.volumeUUID,
            !mountedVolumeUUIDs(fileManager: fileManager).contains(volumeUUID) {
             return .volumeUnavailable
         }

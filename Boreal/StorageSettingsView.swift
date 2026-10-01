@@ -4,6 +4,8 @@ import SwiftUI
 struct StorageSettingsView: View {
     @Environment(BorealStore.self) private var store
     @AppStorage(BorealStore.gameInstallationRootDefaultsKey) private var customGameLocation = ""
+    @AppStorage(ApplicationDataLocation.pendingPathKey) private var pendingDataLocation = ""
+    @State private var locationError: String?
     @State private var report: BorealStorageReport?
     @State private var isScanning = false
     @State private var scanAgainWhenFinished = false
@@ -13,6 +15,7 @@ struct StorageSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
+                applicationDataLocationCard
                 gameLocationCard
                 overviewCard
                 automaticCleanupCard
@@ -33,6 +36,61 @@ struct StorageSettingsView: View {
         .onChange(of: store.automaticStorageMaintenanceSummary) { _, _ in
             Task { await scan() }
         }
+        .alert("Couldn’t change the data location", isPresented: Binding(
+            get: { locationError != nil },
+            set: { if !$0 { locationError = nil } }
+        )) {
+            Button("OK") { locationError = nil }
+        } message: {
+            Text(locationError ?? "")
+        }
+    }
+
+    private var applicationDataLocationCard: some View {
+        SettingsCard("Application Data Location", subtitle: "Choose where Boreal stores its managed data.", symbol: "folder.badge.gearshape") {
+            Text(ApplicationDataLocation.currentRoot.path)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+            Text("Includes the library, Wine environments, runtimes, downloads, logs, backups and games in the default location. Games in custom folders and Steam libraries keep their own locations. macOS preferences and Keychain credentials stay in the system.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Choose…") { chooseApplicationDataLocation() }
+                    .buttonStyle(.borderedProminent)
+                Button("Show in Finder", systemImage: "folder") {
+                    NSWorkspace.shared.open(ApplicationDataLocation.currentRoot)
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+            }
+            if !pendingDataLocation.isEmpty {
+                Divider()
+                Text("After restarting Boreal, data will be moved to:")
+                    .font(.callout)
+                Text(pendingDataLocation)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                Text("Close games and installers before quitting. Moving data can take time and requires enough free space for a copy. The original data is removed only after the move succeeds.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Cancel Location Change") { ApplicationDataLocation.cancel() }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func chooseApplicationDataLocation() {
+        let panel = NSOpenPanel()
+        panel.title = String(localized: "Choose Application Data Location")
+        panel.prompt = String(localized: "Choose")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = ApplicationDataLocation.currentRoot.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let selected = panel.url else { return }
+        do { try ApplicationDataLocation.schedule(parent: selected) }
+        catch { locationError = error.localizedDescription }
     }
 
     private var gameLocationCard: some View {
@@ -154,7 +212,7 @@ struct StorageSettingsView: View {
                 Text("Managed location")
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 16)
-                Text(store.managedStorageLayout.rootURL.path)
+                Text(store.managedStorageLayout.rootURL.resolvingSymlinksInPath().path)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

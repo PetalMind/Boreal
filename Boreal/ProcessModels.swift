@@ -15,6 +15,31 @@ nonisolated struct ProcessExecutionResult: Sendable, Equatable {
 /// injected into the app process and make D3DMetal validation fail before the
 /// runtime has a chance to initialize its own device.
 nonisolated enum WineProcessEnvironment {
+    static func applyBundledSynchronizationLibraries(to values: inout [String: String], runtime: InstalledRuntime) {
+        guard runtime.features?.msync == true else { return }
+        let libraries = runtime.wineExecutable.deletingLastPathComponent().deletingLastPathComponent().appending(path: "lib")
+        guard FileManager.default.isReadableFile(atPath: libraries.appending(path: "libgnutls.30.dylib").path) else { return }
+        values["DYLD_FALLBACK_LIBRARY_PATH"] = libraries.path + ":/usr/lib"
+    }
+
+    /// The same synchronization mode must reach wineboot, wineserver and all
+    /// clients of a prefix. Reapply after provider/custom environment merging.
+    static func applySynchronization(
+        to values: inout [String: String],
+        configuration: EnvironmentConfiguration,
+        features: RuntimeFeatures?
+    ) {
+        values.removeValue(forKey: "WINEESYNC")
+        values.removeValue(forKey: "WINEMSYNC")
+        let usesMSync = features?.msync == true && configuration.msyncEnabled
+        if features?.esync == true {
+            values["WINEESYNC"] = configuration.esyncEnabled && !usesMSync ? "1" : "0"
+        }
+        if features?.msync == true {
+            values["WINEMSYNC"] = usesMSync ? "1" : "0"
+        }
+    }
+
     static let metalHUDEnvironmentKeys = [
         "MTL_HUD_ENABLED",
         "MTL_HUD_LOG_ENABLED",

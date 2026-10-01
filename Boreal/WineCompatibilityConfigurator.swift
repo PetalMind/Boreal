@@ -703,11 +703,13 @@ struct WineCompatibilityConfigurator: View {
             }
             DisclosureGroup("Performance") {
                 VStack(spacing: 10) {
-                    CompatibilityToggleRow(title: "ESync", detail: nil, isOn: $profile.esyncEnabled, disabled: isSettingManaged(.synchronization) || runtimeFeatures?.esync != true)
-                    CompatibilityToggleRow(title: "MSync", detail: "These options can reduce CPU overhead. Support depends on the Wine runtime.", isOn: $profile.msyncEnabled, disabled: isSettingManaged(.synchronization) || runtimeFeatures?.msync != true)
-                    if runtimeFeatures?.esync != true || runtimeFeatures?.msync != true {
-                        CompatibilityCallout(text: String(localized: "Unavailable switches are not exported to Wine."), symbol: "exclamationmark.triangle.fill", tint: .orange)
+                    CompatibilityToggleRow(title: "ESync", detail: "Reduces synchronization overhead when supported by the selected Wine runtime.", isOn: synchronizationBinding(\.esyncEnabled, supported: runtimeFeatures?.esync == true), disabled: isSettingManaged(.synchronization) || runtimeFeatures?.esync != true)
+                    CompatibilityToggleRow(title: "MSync", detail: "Uses Mach semaphores on macOS. Takes priority over ESync when both are enabled.", isOn: synchronizationBinding(\.msyncEnabled, supported: runtimeFeatures?.msync == true), disabled: isSettingManaged(.synchronization) || runtimeFeatures?.msync != true)
+                    if let synchronizationUnavailableDetail {
+                        CompatibilityCallout(text: synchronizationUnavailableDetail, symbol: "info.circle.fill", tint: .secondary)
                     }
+                    Text("Synchronization changes apply after all Windows processes in this environment have stopped.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 8)
             }
             DisclosureGroup("Launch and diagnostics") {
@@ -963,6 +965,29 @@ struct WineCompatibilityConfigurator: View {
         return Int(exactly: Double(value.rounded()))
     }
     private var graphicsProfile: GameGraphicsProfile? { GameGraphicsProfiles.profile(for: application) }
+    private func synchronizationBinding(_ keyPath: WritableKeyPath<WineCompatibilityProfile, Bool>, supported: Bool) -> Binding<Bool> {
+        Binding(
+            get: { supported && profile[keyPath: keyPath] },
+            set: { if supported { profile[keyPath: keyPath] = $0 } }
+        )
+    }
+
+    private var synchronizationUnavailableDetail: String? {
+        guard let features = runtimeFeatures else {
+            return String(localized: "Select an installed Wine runtime to check synchronization support.")
+        }
+        if !features.esync && !features.msync {
+            return String(localized: "This Wine runtime does not contain ESync or MSync. Import a Wine build with these features and select it in Runtime. Unavailable options are not passed to Wine.")
+        }
+        if !features.msync {
+            return String(localized: "This Wine runtime does not contain MSync. To use it, import a Wine build with MSync and select it in Runtime.")
+        }
+        if !features.esync {
+            return String(localized: "This Wine runtime does not contain ESync. MSync can be used independently.")
+        }
+        return nil
+    }
+
     private var legacyWrapperDecision: LegacyWrapperDecision {
         GameGraphicsProfiles.legacyWrapperDecision(for: application, requested: profile)
     }

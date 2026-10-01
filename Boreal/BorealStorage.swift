@@ -79,7 +79,7 @@ nonisolated struct InstallationVolumeIdentity: Codable, Hashable, Sendable {
             }
         }
         let bookmark: Data?
-        if case .external = location {
+        if case .external = location, FileManager.default.fileExists(atPath: url.path) {
             bookmark = try? url.bookmarkData(
                 options: [.withSecurityScope],
                 includingResourceValuesForKeys: nil,
@@ -652,6 +652,10 @@ nonisolated enum BorealStorageScanner {
         let discoveryBytes = discoveryFiles.compactMap { fileSize(of: $0, fileManager: fileManager) }.reduce(0, +)
         if discoveryBytes > 0 {
             result.append(BorealStorageItem(category: .caches, name: "Metadata cache", detail: "Discovery and price data", bytes: discoveryBytes, risk: .regeneratable, isEstimated: false, location: layout.rootURL.appending(path: "Discovery")))
+        }
+        let artworkRoot = layout.rootURL.appending(path: "Discovery/Artwork", directoryHint: .isDirectory)
+        if let bytes = size(of: artworkRoot, excluding: [], fileManager: fileManager), bytes > 0 {
+            result.append(BorealStorageItem(category: .caches, name: "Artwork cache", detail: "Discovery images", bytes: bytes, risk: .regeneratable, isEstimated: false, location: artworkRoot))
         }
         return result
     }

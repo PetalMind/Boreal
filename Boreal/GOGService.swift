@@ -992,9 +992,46 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         arguments.append("--skip-dlcs")
         _ = try await run(arguments, progress: progress)
         try Task.checkCancellation()
+        if platform == .windows,
+           Self.findInstallation(appID: appID, containerURL: destination, platform: platform, fileManager: fileManager) == nil,
+           let recoveryURL = incompleteInstallationRecoveryURL(appID: appID, containerURL: destination) {
+            // A retained gogdl manifest can make download report "Nothing to do"
+            // even after the installation has been removed. Repair checks the
+            // actual files. Unlike download, it needs the game directory itself.
+            await progress(StoreGameOperationProgress(
+                message: "Restoring missing GOG game files…",
+                fractionCompleted: nil,
+                phase: .verifying
+            ))
+            _ = try await run([
+                "repair", appID,
+                "--path", recoveryURL.path,
+                "--platform", "windows",
+                "--max-workers", String(StoreDownloadConcurrency.maxWorkers),
+                "--skip-dlcs"
+            ], progress: progress)
+            try Task.checkCancellation()
+        }
         guard Self.findInstallation(appID: appID, containerURL: destination, platform: platform, fileManager: fileManager) != nil else {
             throw GOGServiceError.installationIncomplete(platform)
         }
+    }
+
+    private func incompleteInstallationRecoveryURL(appID: String, containerURL: URL) -> URL? {
+        let manifestURL = configURL.appending(path: "heroic_gogdl/manifests/\(appID)")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              manifest["platform"] as? String == "windows",
+              manifest["baseProductId"] as? String == appID,
+              let directory = manifest["installDirectory"] as? String,
+              !directory.isEmpty,
+              directory != ".", directory != "..",
+              !directory.contains("/"), !directory.contains("\\") else { return nil }
+        let container = containerURL.standardizedFileURL.resolvingSymlinksInPath()
+        let recoveryURL = container.appending(path: directory, directoryHint: .isDirectory)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard recoveryURL.path.hasPrefix(container.path + "/") else { return nil }
+        return recoveryURL
     }
 
     func availableLanguages(appID: String) async throws -> [String] {
@@ -1805,9 +1842,22 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         guard fileManager.isExecutableFile(atPath: helperURL.path) else { throw GOGServiceError.helperUnavailable }
         try fileManager.createDirectory(at: accountURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: configURL, withIntermediateDirectories: true)
+        var helperArguments = arguments
+        if let command = arguments.first,
+           ["download", "update", "repair"].contains(command),
+           arguments.count > 1, Self.isSafeAppID(arguments[1]),
+           !arguments.contains("--support") {
+            // gogdl 1.3.0 leaves support_path empty by default. During repair,
+            // its case-insensitive path lookup loops forever for missing relative
+            // support files. All lifecycle commands must use the same absolute root.
+            let supportURL = configURL.appending(path: "heroic_gogdl/gog-support/\(arguments[1])", directoryHint: .isDirectory)
+                .standardizedFileURL
+            try fileManager.createDirectory(at: supportURL, withIntermediateDirectories: true)
+            helperArguments += ["--support", supportURL.path]
+        }
         return try await Self.runProcess(
             executable: helperURL,
-            arguments: ["--auth-config-path", authURL.path] + arguments,
+            arguments: ["--auth-config-path", authURL.path] + helperArguments,
             environment: ["GOGDL_CONFIG_PATH": configURL.path],
             progress: progress
         )

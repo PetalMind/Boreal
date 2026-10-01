@@ -103,6 +103,7 @@ struct BorealSettingsView: View {
         case .controllers: ControllerSettingsView()
         case .fullscreen: ConsoleModeSettingsView()
         case .overlay: GameOverlaySettingsView()
+        case .integrations: DiscordSettingsView()
         case .advanced: AdvancedSettingsView()
         }
     }
@@ -164,7 +165,7 @@ struct SettingsRow<Content: View>: View {
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
-    case general, downloads, storage, runtime, controllers, fullscreen, overlay, advanced
+    case general, downloads, storage, runtime, controllers, fullscreen, overlay, integrations, advanced
 
     var id: Self { self }
 
@@ -177,6 +178,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .controllers: .Settings.controllersTitle
         case .fullscreen: .Settings.fullscreenTitle
         case .overlay: .Settings.overlayTitle
+        case .integrations: "Integrations"
         case .advanced: .Settings.advancedTitle
         }
     }
@@ -190,6 +192,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .controllers: .Settings.controllersSubtitle
         case .fullscreen: .Settings.fullscreenSubtitle
         case .overlay: .Settings.overlaySubtitle
+        case .integrations: "Discord Rich Presence"
         case .advanced: .Settings.advancedSubtitle
         }
     }
@@ -203,6 +206,7 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
         case .controllers: "gamecontroller.fill"
         case .fullscreen: "rectangle.inset.filled"
         case .overlay: "gauge.with.dots.needle.67percent"
+        case .integrations: "link"
         case .advanced: "wrench.and.screwdriver.fill"
         }
     }
@@ -351,6 +355,7 @@ struct RuntimeSettingsView: View {
     @AppStorage("automaticVKD3DUpdates") private var automaticVKD3DUpdates = true
     @State private var runtimeToEdit: RuntimeStatus?
     @State private var runtimeToRemove: RuntimeStatus?
+    @State private var showsMSyncBuilder = false
 
     var body: some View {
         ScrollView {
@@ -364,11 +369,26 @@ struct RuntimeSettingsView: View {
                     SettingsRow(.Settings.automaticVKD3DupdatesLabel) { Toggle("", isOn: $automaticVKD3DUpdates).labelsHidden() }
                 }
                 runtimeImportCard
+                SettingsCard("Wine with MSync", subtitle: "Build an additional Wine 9.15 runtime from source with the official MSync patch.", symbol: "hammer.fill") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Requires Xcode tools, Bison, Flex and MinGW. Intel libraries are prepared automatically. Apple silicon also requires Rosetta. Compilation can take a long time.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button("Prepare Wine with MSync…", systemImage: "hammer") { showsMSyncBuilder = true }
+                            .buttonStyle(.bordered)
+                            .disabled(store.runtimeOperationDetail != nil)
+                    }
+                }
                 installedRuntimesCard
             }
             .padding(.horizontal, 32).padding(.bottom, 28)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await store.refreshRuntimeStatuses() }
+        .sheet(isPresented: $showsMSyncBuilder) {
+            WineMSyncBuildSheet { prefix in
+                showsMSyncBuilder = false
+                store.buildMSyncRuntime(dependencyPrefix: prefix)
+            }
+        }
         .sheet(item: $runtimeToEdit) { runtime in
             RuntimeEditorSheet(runtime: runtime) { name in
                 store.renameRuntime(id: runtime.id, to: name)

@@ -83,6 +83,7 @@ final class BorealStore {
     var runtimeComponentUpdates: [RuntimeComponentUpdate] = []
     var runtimeComponentUpdateError: String?
     var discoverySearchMessage: String?
+    private(set) var discoverySearchState: AppleGamingWikiDiscoveryState = .idle
     private var discoverySearchResults: [AppleGamingWikiGame] = []
     private var discoverySearchQuery = ""
     var discoveryProducerResults: [AppleGamingWikiGame] = []
@@ -92,6 +93,7 @@ final class BorealStore {
     private let discoveryMetadataGate = StoreSizeEstimateGate(limit: 4)
     private let discoveryPriceGate = StoreSizeEstimateGate(limit: 4)
     var discoveryCatalog: AppleGamingWikiCatalog?
+    private(set) var discoveryCatalogRevision = 0
     var discoveryState: AppleGamingWikiDiscoveryState = .idle
     var discoveryPaginationState: AppleGamingWikiDiscoveryState = .idle
     var discoveryMetadata: [String: DiscoveryGameMetadata] = [:]
@@ -1228,6 +1230,12 @@ final class BorealStore {
         discoveryLoadTask = Task { [weak self] in
             guard let self else { return }
             do {
+                if discoveryCatalog == nil, var saved = await services.discoveryCatalog.savedCatalog() {
+                    guard !Task.isCancelled else { return }
+                    saved.isStale = true
+                    saved.sourceNotice = "Showing the last saved catalog."
+                    applyDiscoveryCatalog(saved)
+                }
                 let catalog = try await services.discoveryCatalog.loadCatalog(forceRefresh: false)
                 guard !Task.isCancelled else { return }
                 applyDiscoveryCatalog(catalog)
@@ -1341,33 +1349,44 @@ final class BorealStore {
         }
     }
 
+    func prepareDiscoverySearch(_ query: String) {
+        let hadSearchResults = !discoverySearchResults.isEmpty
+        discoverySearchQuery = query
+        discoverySearchResults = []
+        discoverySearchState = .loading
+        discoverySearchMessage = String(localized: "Searching the live Steam macOS catalog…")
+        if hadSearchResults { rebuildDiscoveryCatalog() }
+    }
+
     func searchDiscoveryGames(_ query: String) async {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             clearDiscoverySearch()
             return
         }
-        discoverySearchQuery = query
-        discoverySearchMessage = "Searching the live Steam macOS catalog…"
+        prepareDiscoverySearch(query)
         do {
             let games = try await services.discoveryCatalog.searchMacGames(named: query)
             guard !Task.isCancelled, discoverySearchQuery == query else { return }
             discoverySearchResults = games
-            rebuildDiscoveryCatalog()
-            discoverySearchMessage = "\(games.count) macOS results from Steam; combined with local compatibility records."
+            discoverySearchState = .loaded
+            if !games.isEmpty { rebuildDiscoveryCatalog() }
+            discoverySearchMessage = games.count.formatted() + " " + String(localized: "macOS results from Steam; combined with local compatibility records.")
         } catch {
             guard !Task.isCancelled, discoverySearchQuery == query else { return }
             discoverySearchResults = []
-            rebuildDiscoveryCatalog()
-            discoverySearchMessage = "Live Steam search is unavailable. Showing matches in the saved catalog."
+            discoverySearchState = .failed(String(localized: "Live Steam search is unavailable."))
+            discoverySearchMessage = String(localized: "Live Steam search is unavailable. Showing matches in the saved catalog.")
         }
     }
 
     func clearDiscoverySearch() {
+        let hadSearchResults = !discoverySearchResults.isEmpty
         discoverySearchQuery = ""
         discoverySearchResults = []
+        discoverySearchState = .idle
         discoverySearchMessage = nil
-        rebuildDiscoveryCatalog()
+        if hadSearchResults { rebuildDiscoveryCatalog() }
     }
 
     func searchDiscoveryGames(developer: String) async {
@@ -1405,23 +1424,39 @@ final class BorealStore {
 
     private func rebuildDiscoveryCatalog() {
         guard var value = discoverySourceCatalog else { return }
-        value.games = AppleGamingWikiDiscoveryService.merge(value.games, discoverySearchResults).map { game in
-            guard let metadata = discoveryMetadata[game.id] else { return game }
-            var enriched = game
-            enriched.steamAppID = metadata.steamAppID ?? game.steamAppID
-            enriched.coverURL = metadata.coverImageURL ?? game.coverURL
-            enriched.genres = game.genres?.isEmpty == false ? game.genres : metadata.genres
+        var enrichmentChanged = false
+        value.games = value.games.map { game in
+            let enriched = enrichedDiscoveryGame(game)
+            if enriched != game { enrichmentChanged = true }
             return enriched
         }
+        // Preserve lightweight fields after the full metadata leaves the bounded cache.
+        // Otherwise eviction changes filters and causes cards to jump while browsing.
+        if enrichmentChanged { discoverySourceCatalog = value }
+        if !discoverySearchResults.isEmpty {
+            value.games = AppleGamingWikiDiscoveryService.merge(value.games, discoverySearchResults.map(enrichedDiscoveryGame))
+        }
+        guard discoveryCatalog != value else { return }
         discoveryCatalog = value
+        discoveryCatalogRevision &+= 1
+    }
+
+    private func enrichedDiscoveryGame(_ game: AppleGamingWikiGame) -> AppleGamingWikiGame {
+        guard let metadata = discoveryMetadata[game.id] else { return game }
+        var enriched = game
+        enriched.steamAppID = metadata.steamAppID ?? game.steamAppID
+        enriched.coverURL = metadata.coverImageURL ?? game.coverURL
+        enriched.genres = game.genres?.isEmpty == false ? game.genres : metadata.genres
+        return enriched
     }
 
     private func scheduleDiscoveryCatalogEnrichment() {
-        discoveryEnrichmentTask?.cancel()
+        guard discoveryEnrichmentTask == nil else { return }
         discoveryEnrichmentTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(200))
-            guard !Task.isCancelled else { return }
-            self?.rebuildDiscoveryCatalog()
+            do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            discoveryEnrichmentTask = nil
+            rebuildDiscoveryCatalog()
         }
     }
 
@@ -2661,14 +2696,19 @@ final class BorealStore {
     }
 
     func moveMod(from offsets: IndexSet, to destination: Int, for game: StoreLibraryGame) {
-        guard var state = modStates[game.id] else { return }
+        guard !isModOperationActive(for: game), var state = modStates[game.id] else { return }
         var mods = state.mods.sorted { $0.priority < $1.priority }
+        let previousOrder = mods.map(\.id)
         guard state.adapter == .witcher3
             || !offsets.contains(where: { mods.indices.contains($0) && mods[$0].isExternallyDetected }) else { return }
         mods = reordered(mods, from: offsets, to: destination)
+        guard mods.map(\.id) != previousOrder else { return }
         for index in mods.indices { mods[index].priority = index }
         state.mods = mods
         persistModState(state, for: game)
+        if modStates[game.id]?.mods.map(\.id) == mods.map(\.id) {
+            deployMods(for: game)
+        }
     }
 
     func setPluginEnabled(_ enabled: Bool, pluginID: String, for game: StoreLibraryGame) {
@@ -3883,8 +3923,8 @@ final class BorealStore {
             return
         }
         if let features = compatibilityRuntimeFeatures(for: applications[index], backend: requestedBackend) {
-            if !features.esync { profile.esyncEnabled = false }
-            if !features.msync { profile.msyncEnabled = false }
+            // Keep synchronization preferences when switching runtimes.
+            // Unsupported modes are filtered when building the Wine environment.
             if !features.wineBusControllerMapping { profile.forceXInput = false }
             if !features.dd7to9, profile.legacyWrapper == .dd7to9,
                GameGraphicsProfiles.profile(for: applications[index])?.enforcedLegacyWrapper != .some(.dd7to9) {
@@ -9216,6 +9256,30 @@ final class BorealStore {
                 present(error, title: "Boreal Runtime couldn’t be installed", stage: "Downloading, verifying, or preparing the runtime")
             }
         }
+    }
+
+    func buildMSyncRuntime(dependencyPrefix: URL?) {
+        guard runtimeOperationDetail == nil else { return }
+        runtimeOperationDetail = String(localized: "Preparing Wine with MSync…")
+        Task {
+            let scoped = dependencyPrefix?.startAccessingSecurityScopedResource() ?? false
+            defer { if scoped { dependencyPrefix?.stopAccessingSecurityScopedResource() } }
+            do {
+                _ = try await services.runtimeManager.buildMSyncRuntime(dependencyPrefix: dependencyPrefix) { [self] detail in
+                    await updateMSyncBuildDetail(detail)
+                }
+                runtimeOperationDetail = nil
+                await refreshRuntimeStatuses()
+                NotificationCenter.default.post(name: .borealRuntimeImportCompleted, object: nil)
+            } catch {
+                runtimeOperationDetail = nil
+                present(error, title: String(localized: "Wine MSync couldn’t be prepared"), stage: String(localized: "Building and validating Wine with MSync"))
+            }
+        }
+    }
+
+    private func updateMSyncBuildDetail(_ detail: String) {
+        runtimeOperationDetail = detail
     }
 
     func importLocalRuntime(id: String) {

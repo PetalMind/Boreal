@@ -193,7 +193,8 @@ nonisolated struct AppleGamingWikiGame: Codable, Hashable, Sendable, Identifiabl
         return nil
     }
     var bestMethod: String {
-        availableRatings.first(where: { $0.rating.isPlayable })?.title ?? (hasMacSupport ? "macOS" : "Unverified")
+        availableRatings.filter { $0.rating.isPlayable }
+            .min(by: { $0.rating.rank < $1.rating.rank })?.title ?? (hasMacSupport ? "macOS" : "Unverified")
     }
     var bestRating: AppleGamingWikiRating {
         availableRatings.map(\.rating).min(by: { $0.rank < $1.rank }) ?? .unknown
@@ -276,6 +277,7 @@ nonisolated enum AppleGamingWikiDiscoveryState: Equatable, Sendable {
 }
 
 nonisolated protocol DiscoveryCatalogLoading: Sendable {
+    func savedCatalog() async -> AppleGamingWikiCatalog?
     func loadCatalog(forceRefresh: Bool) async throws -> AppleGamingWikiCatalog
     func cachedMetadata(for games: [AppleGamingWikiGame]) async -> [String: DiscoveryGameMetadata]
     func metadata(for game: AppleGamingWikiGame, forceRefresh: Bool) async -> DiscoveryGameMetadata?
@@ -285,6 +287,8 @@ nonisolated protocol DiscoveryCatalogLoading: Sendable {
 }
 
 extension DiscoveryCatalogLoading {
+    func savedCatalog() async -> AppleGamingWikiCatalog? { nil }
+
     func cachedMetadata(for games: [AppleGamingWikiGame]) async -> [String: DiscoveryGameMetadata] {
         _ = games
         return [:]
@@ -439,6 +443,10 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
         unavailableMetadataCacheURL = applicationSupportURL?.appending(path: "Discovery/applegamingwiki-unavailable.json", directoryHint: .notDirectory)
     }
 
+    func savedCatalog() async -> AppleGamingWikiCatalog? {
+        readCache() ?? Self.bundledCatalog()
+    }
+
     func loadCatalog(forceRefresh: Bool) async throws -> AppleGamingWikiCatalog {
         let cached = readCache() ?? Self.bundledCatalog()
         if !forceRefresh,
@@ -456,6 +464,12 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
             var catalog = wiki ?? cached ?? AppleGamingWikiCatalog(games: [], fetchedAt: .now)
             catalog.isStale = wiki == nil
             catalog.sourceNotice = wiki == nil ? "AppleGamingWiki unavailable; showing saved compatibility and live Steam data." : wiki?.sourceNotice
+            if let cached, wiki != nil {
+                // A refresh fetches only the first Steam page, not the entire store.
+                // Keep previously discovered store records rather than dropping thousands.
+                let savedSteamGames = cached.games.filter { $0.macOSStoreSupport == true && $0.steamAppID != nil }
+                catalog.games = Self.merge(catalog.games, savedSteamGames)
+            }
             if let steam {
                 catalog.games = Self.merge(catalog.games, steam.games)
                 catalog.steamOffset = steam.offset
@@ -499,6 +513,9 @@ actor AppleGamingWikiDiscoveryService: DiscoveryCatalogLoading {
             return metadata
         }
         guard !Task.isCancelled else { return nil }
+        guard URL(string: game.pageURL)?.host == "www.applegamingwiki.com" else {
+            return cachedOrMarkUnavailable(game.id)
+        }
 
         guard var components = URLComponents(string: "https://www.applegamingwiki.com/w/api.php") else { return nil }
         components.queryItems = [
@@ -882,10 +899,11 @@ extension AppleGamingWikiDiscoveryService {
         matches(#"(<a\s[^>]*class="search_result_row.*?</a>)"#, in: html)
     }
 
+    nonisolated private static let steamTags: [String: String] = Bundle.main.url(forResource: "DiscoveryTags", withExtension: "json")
+        .flatMap { try? Data(contentsOf: $0) }
+        .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+
     private static func parseSteamGames(_ rows: [String]) -> [AppleGamingWikiGame] {
-        let tags: [String: String] = Bundle.main.url(forResource: "DiscoveryTags", withExtension: "json")
-            .flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
         return rows.compactMap { row in
             guard let id = firstMatch(#"data-ds-appid="(\d+)""#, in: row),
                   let title = firstMatch(#"<span class="title">(.*?)</span>"#, in: row),
@@ -896,30 +914,34 @@ extension AppleGamingWikiDiscoveryService {
                 native: .unknown, rosetta2: .unknown, crossover: .unknown, wine: .unknown,
                 parallels: .unknown, linuxARM: .unknown, steamAppID: id,
                 coverURL: firstMatch(#"<img src="([^"]+)""#, in: row),
-                genres: tagIDs.compactMap { tags[$0] }, macOSStoreSupport: true
+                genres: tagIDs.compactMap { steamTags[$0] }, macOSStoreSupport: true
             )
         }
     }
 
     static func merge(_ existing: [AppleGamingWikiGame], _ incoming: [AppleGamingWikiGame]) -> [AppleGamingWikiGame] {
         var result = existing
+        var pageIndices = Dictionary(result.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         var steamIndices = Dictionary(
             result.enumerated().compactMap { item in item.element.steamAppID.map { ($0, item.offset) } },
             uniquingKeysWith: { first, _ in first }
         )
+        var titleIndices = Dictionary(grouping: result.indices, by: { normalizedTitle(result[$0].title) })
         for game in incoming {
             let titleKey = normalizedTitle(game.title)
-            let titleMatches = result.indices.filter { normalizedTitle(result[$0].title) == titleKey }
-            let index = game.steamAppID.flatMap { steamIndices[$0] }
+            let titleMatches = titleIndices[titleKey] ?? []
+            let index = pageIndices[game.id] ?? game.steamAppID.flatMap { steamIndices[$0] }
                 ?? (titleMatches.count == 1 && result[titleMatches[0]].steamAppID == nil ? titleMatches[0] : nil)
             if let index {
                 result[index].steamAppID = game.steamAppID ?? result[index].steamAppID
                 result[index].coverURL = game.coverURL ?? result[index].coverURL
-                result[index].genres = game.genres ?? result[index].genres
+                if let genres = game.genres, !genres.isEmpty { result[index].genres = genres }
                 result[index].macOSStoreSupport = game.macOSStoreSupport ?? result[index].macOSStoreSupport
                 if let steamAppID = result[index].steamAppID { steamIndices[steamAppID] = index }
             } else {
+                pageIndices[game.id] = result.count
                 if let steamAppID = game.steamAppID { steamIndices[steamAppID] = result.count }
+                titleIndices[titleKey, default: []].append(result.count)
                 result.append(game)
             }
         }
@@ -993,6 +1015,129 @@ extension AppleGamingWikiDiscoveryService {
 
 // MARK: - Discovery view
 
+// The immutable filter snapshot can be evaluated without blocking SwiftUI layout.
+nonisolated private struct DiscoveryFilters: Hashable, Sendable {
+    var scope: DiscoveryScope
+    var windowsMethod: AppleGamingWikiPlatform
+    var genre: String
+    var rating: String
+    var storefront: String
+    var sortOrder: String
+    var hasCompatibilityReportOnly: Bool
+    var query: String
+
+    func project(_ catalog: AppleGamingWikiCatalog) -> DiscoveryProjection {
+        var result = DiscoveryProjection()
+        result.filters = self
+        result.trackedCount = catalog.games.count
+        var genres = Set<String>()
+        var entries: [(game: AppleGamingWikiGame, score: Int)] = []
+        entries.reserveCapacity(catalog.games.count)
+        let needsRecommendedOrder = sortOrder == "Recommended" || (scope == .recommended && query.isEmpty)
+        for (index, game) in catalog.games.enumerated() {
+            if index.isMultiple(of: 128), Task.isCancelled { return result }
+            genres.formUnion(game.genres ?? [])
+            if !game.isTested { result.unknownCount += 1 }
+            if game.hasMacSupport { result.macSupportCount += 1 }
+            if matchesFilters(game) {
+                entries.append((game, needsRecommendedOrder ? recommendationScore(game) : 0))
+            }
+        }
+        result.genres = genres.sorted()
+        var recommendedOrder = entries
+        if needsRecommendedOrder {
+            recommendedOrder.sort { left, right in
+                if left.score != right.score { return left.score > right.score }
+                if (left.game.coverURL != nil) != (right.game.coverURL != nil) { return left.game.coverURL != nil }
+                let comparison = left.game.title.localizedStandardCompare(right.game.title)
+                return comparison == .orderedSame ? left.game.id < right.game.id : comparison == .orderedAscending
+            }
+        }
+        guard !Task.isCancelled else { return result }
+        if scope == .recommended && query.isEmpty {
+            result.recommended = Array(recommendedOrder.lazy.map(\.game)
+                .filter { compatibilityRatings(for: $0).contains(.perfect) }.prefix(4))
+        }
+        if sortOrder == "Recommended" {
+            result.games = recommendedOrder.map(\.game)
+        } else {
+            result.games = entries.map(\.game).sorted {
+                let comparison = $0.title.localizedStandardCompare($1.title)
+                return comparison == .orderedSame ? $0.id < $1.id
+                    : comparison == (sortOrder == "Name Z–A" ? .orderedDescending : .orderedAscending)
+            }
+        }
+        return result
+    }
+
+    private func matchesFilters(_ game: AppleGamingWikiGame) -> Bool {
+        matchesScope(game)
+            && matchesWindowsMethod(game)
+            && (query.isEmpty || game.title.localizedCaseInsensitiveContains(query))
+            && (!hasCompatibilityReportOnly || compatibilityRatings(for: game).contains { $0 != .unknown && $0 != .notApplicable })
+            && (rating == "All ratings" || (rating == AppleGamingWikiRating.unknown.rawValue
+                ? !compatibilityRatings(for: game).contains { $0 != .unknown && $0 != .notApplicable }
+                : compatibilityRatings(for: game).contains { $0.rawValue == rating }))
+            && (genre == "All genres" || (genre == "Not provided" ? game.genres?.isEmpty != false : game.genres?.contains(genre) == true))
+            && (storefront == "All stores" || (storefront == "Steam" ? game.steamAppID != nil : game.steamAppID == nil))
+    }
+
+    private func matchesScope(_ game: AppleGamingWikiGame) -> Bool {
+        switch scope {
+        case .recommended, .all: true
+        case .mac: game.hasMacSupport
+        case .windows: [game.crossover, game.wine, game.parallels].contains { $0 != .unknown && $0 != .notApplicable }
+        }
+    }
+
+    private func matchesWindowsMethod(_ game: AppleGamingWikiGame) -> Bool {
+        guard scope == .windows, windowsMethod != .all else { return true }
+        guard let report = game.rating(for: windowsMethod) else { return false }
+        return report != .unknown && report != .notApplicable
+    }
+
+    private func compatibilityRatings(for game: AppleGamingWikiGame) -> [AppleGamingWikiRating] {
+        switch scope {
+        case .mac: [game.native, game.rosetta2]
+        case .windows:
+            switch windowsMethod {
+            case .crossover: [game.crossover]
+            case .wine: [game.wine]
+            case .parallels: [game.parallels]
+            case .all: [game.crossover, game.wine, game.parallels]
+            case .native, .rosetta2, .perfect: []
+            }
+        case .recommended, .all: game.availableRatings.map(\.rating)
+        }
+    }
+
+    private func recommendationScore(_ game: AppleGamingWikiGame) -> Int {
+        let ratings = compatibilityRatings(for: game)
+        let perfectPathScore = ratings
+            .enumerated()
+            .first(where: { $0.element == .perfect })
+            .map { 100 - ($0.offset * 5) } ?? 0
+        // Artwork is presentation quality, not compatibility evidence.
+        return perfectPathScore - (ratings.min(by: { $0.rank < $1.rank })?.rank ?? AppleGamingWikiRating.unknown.rank)
+    }
+
+}
+
+nonisolated private struct DiscoveryProjection: Sendable {
+    var filters: DiscoveryFilters?
+    var games: [AppleGamingWikiGame] = []
+    var recommended: [AppleGamingWikiGame] = []
+    var genres: [String] = []
+    var trackedCount = 0
+    var unknownCount = 0
+    var macSupportCount = 0
+}
+
+nonisolated private struct DiscoveryProjectionRequest: Hashable, Sendable {
+    var revision: Int
+    var filters: DiscoveryFilters
+}
+
 struct DiscoveryView: View {
     @Environment(BorealStore.self) private var store
     @Binding var searchText: String
@@ -1006,65 +1151,123 @@ struct DiscoveryView: View {
     @State private var hasCompatibilityReportOnly = false
     @AppStorage("discoveryListLayout") private var listLayout = false
     @State private var showGuide = false
+    @State private var projection = DiscoveryProjection()
+    @State private var page = 0
+    @State private var pageInput = "1"
+    private let pageSize = 60
+    private let macProfile = DiscoveryMacProfile.current
+
+    private var projectionRequest: DiscoveryProjectionRequest {
+        DiscoveryProjectionRequest(revision: store.discoveryCatalogRevision, filters: DiscoveryFilters(
+            scope: scope, windowsMethod: windowsMethod, genre: genre, rating: rating,
+            storefront: storefront, sortOrder: sortOrder,
+            hasCompatibilityReportOnly: hasCompatibilityReportOnly, query: query
+        ))
+    }
+
+    private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24, pinnedViews: [.sectionHeaders]) {
-                header
-                if let catalog = store.discoveryCatalog {
-                    catalogSummary(catalog)
-                    Section {
-                        if !searchText.isEmpty, let message = store.discoverySearchMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+        GeometryReader { geometry in
+            let contentWidth = max(1, min(1600, geometry.size.width - 40))
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20, pinnedViews: [.sectionHeaders]) {
+                        header
+                        if let catalog = store.discoveryCatalog {
+                            catalogSummary(catalog)
+                            Section {
+                                if !query.isEmpty, let message = store.discoverySearchMessage {
+                                    Label(message, systemImage: "magnifyingglass")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                }
+                                if let notice = catalog.sourceNotice {
+                                    Label(LocalizedStringKey(notice), systemImage: "info.circle")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                                }
+                                if case .failed(let message) = store.discoveryState {
+                                    Label(message, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange)
+                                }
+                                if query.isEmpty && scope == .recommended && projection.filters == projectionRequest.filters && !projection.recommended.isEmpty {
+                                    recommended(projection.recommended, width: contentWidth)
+                                }
+                                catalogContent(catalog, width: contentWidth)
+                            } header: {
+                                filters(catalog, width: contentWidth)
+                                    .padding(.vertical, 10)
+                                    .padding(.horizontal, 12)
+                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.primary.opacity(0.08)))
+                                    .id("discovery-results")
+                            }
+                        } else {
+                            ContentUnavailableView {
+                                Label(.Navigation.discoveryTitle, systemImage: "gamecontroller")
+                            } description: {
+                                if case .failed(let message) = store.discoveryState { Text(message) }
+                                else { ProgressView("Loading catalog…") }
+                            } actions: {
+                                Button("Retry") { store.refreshDiscoveryCatalog() }.disabled(store.discoveryState == .loading)
+                            }
                         }
-                        if case .failed(let message) = store.discoveryState {
-                            Label(message, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange)
-                        }
-                        if case .failed(let message) = store.discoveryPaginationState {
-                            Label(message, systemImage: "wifi.exclamationmark").font(.caption).foregroundStyle(.orange)
-                        }
-                        if searchText.isEmpty && !recommendedGames(in: catalog).isEmpty {
-                            recommended(recommendedGames(in: catalog))
-                        }
-                        catalogContent(catalog)
-                    } header: {
-                        filters(catalog)
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 2)
-                            .background(Color(red: 0.045, green: 0.065, blue: 0.095))
                     }
-                } else {
-                    ContentUnavailableView {
-                        Label(.Navigation.discoveryTitle, systemImage: "gamecontroller")
-                    } description: {
-                        if case .failed(let message) = store.discoveryState { Text(message) }
-                        else { ProgressView("Loading catalog…") }
-                    } actions: {
-                        Button("Retry") { store.refreshDiscoveryCatalog() }.disabled(store.discoveryState == .loading)
-                    }
+                    .frame(width: contentWidth, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                }
+                .onChange(of: projectionRequest.filters) { _, _ in
+                    page = 0
+                    scrollProxy.scrollTo("discovery-results", anchor: .top)
+                }
+                .onChange(of: page) { _, value in
+                    pageInput = String(value + 1)
+                    scrollProxy.scrollTo("discovery-results", anchor: .top)
                 }
             }
-            .frame(maxWidth: 1600, alignment: .leading)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
         }
-        .background(Color(red: 0.045, green: 0.065, blue: 0.095))
+        .background(Color(nsColor: .windowBackgroundColor))
         .task { if store.discoveryCatalog == nil { store.loadDiscoveryCatalog() } }
+        .task(id: projectionRequest) {
+            guard let catalog = store.discoveryCatalog else { return }
+            let request = projectionRequest
+            if request.filters.query != projection.filters?.query && !request.filters.query.isEmpty {
+                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            }
+            let work = Task.detached(priority: .userInitiated) { request.filters.project(catalog) }
+            let prepared = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            guard !Task.isCancelled, request == projectionRequest else { return }
+            projection = prepared
+            page = min(page, max(0, (prepared.games.count - 1) / pageSize))
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Refresh Discovery", systemImage: "arrow.clockwise") { store.refreshDiscoveryCatalog() }
-                    .disabled(store.discoveryState == .loading)
+                if store.discoveryState == .loading {
+                    ProgressView("Loading catalog…").controlSize(.small)
+                } else {
+                    Button("Refresh Discovery", systemImage: "arrow.clockwise") { store.refreshDiscoveryCatalog() }
+                }
             }
         }
         .sheet(isPresented: $showGuide) {
             VStack { guide; Button("Done") { showGuide = false }.keyboardShortcut(.cancelAction) }.padding(28).frame(width: 410)
         }
-        .task(id: searchText) {
+        .onChange(of: scope) { _, value in
+            if value == .recommended { sortOrder = "Recommended" }
+        }
+        .task(id: query) {
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else {
                 store.clearDiscoverySearch()
                 return
             }
+            store.prepareDiscoverySearch(query)
             do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
             await store.searchDiscoveryGames(query)
         }
@@ -1088,56 +1291,61 @@ struct DiscoveryView: View {
                     .help("View Discovery data sources")
             }
 
-            HStack(spacing: 8) {
-                Label(macProfile.summary, systemImage: "laptopcomputer")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.primary.opacity(0.86))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.white.opacity(0.07), in: Capsule())
-                    .overlay(Capsule().stroke(.white.opacity(0.1)))
-                Spacer(minLength: 8)
-                Text("Community catalog")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    macProfileLabel
+                    Spacer(minLength: 8)
+                    Text("Community catalog").font(.caption).foregroundStyle(.tertiary)
+                }
+                macProfileLabel
             }
         }
-        .padding(18)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.08)))
+        .padding(20)
+        .background(
+            LinearGradient(colors: [.accentColor.opacity(0.13), .accentColor.opacity(0.025)], startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 18)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.primary.opacity(0.08)))
+    }
+
+    private var macProfileLabel: some View {
+        Label(macProfile.summary, systemImage: "laptopcomputer")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.primary.opacity(0.86))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.primary.opacity(0.05), in: Capsule())
+            .overlay(Capsule().stroke(.primary.opacity(0.08)))
     }
 
     private func catalogSummary(_ catalog: AppleGamingWikiCatalog) -> some View {
-        let unknownCount = catalog.games.filter { !$0.isTested }.count
-        return HStack(spacing: 10) {
+        let unknownCount = projection.unknownCount
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], alignment: .leading, spacing: 10) {
             summaryStat(
-                value: catalog.trackedCount.formatted(),
+                value: projection.trackedCount.formatted(),
                 label: "games",
                 symbol: "gamecontroller.fill"
             )
             summaryStat(
-                value: catalog.macSupportCount.formatted(),
+                value: projection.macSupportCount.formatted(),
                 label: "Mac paths",
                 symbol: "apple.logo"
             )
-            if catalog.trackedCount - unknownCount > 0 {
+            if projection.trackedCount - unknownCount > 0 {
                 summaryStat(
-                    value: (catalog.trackedCount - unknownCount).formatted(),
+                    value: (projection.trackedCount - unknownCount).formatted(),
                     label: "games with reports",
                     symbol: "checkmark.seal"
                 )
             }
-            Spacer(minLength: 0)
             if unknownCount > 0 {
-                Text(unknownCount.formatted() + " " + String(localized: "without compatibility report"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                summaryStat(value: unknownCount.formatted(), label: "without compatibility report", symbol: "questionmark.circle")
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(catalog.trackedCount) \(String(localized: "games")), "
-                + "\(catalog.macSupportCount) \(String(localized: "Mac paths")), "
+            "\(projection.trackedCount) \(String(localized: "games")), "
+                + "\(projection.macSupportCount) \(String(localized: "Mac paths")), "
                 + "\(unknownCount) \(String(localized: "without compatibility report"))"
         )
     }
@@ -1151,13 +1359,14 @@ struct DiscoveryView: View {
         } icon: {
             Image(systemName: symbol).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.07)))
+        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.05)))
     }
 
-    private func filters(_ catalog: AppleGamingWikiCatalog) -> some View {
+    private func filters(_ catalog: AppleGamingWikiCatalog, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker("Browse", selection: $scope) {
                 ForEach(DiscoveryScope.allCases, id: \.self) { value in
@@ -1168,14 +1377,15 @@ struct DiscoveryView: View {
             .labelsHidden()
             .controlSize(.large)
 
-            ViewThatFits(in: .horizontal) {
+            if width >= 960 {
                 HStack(spacing: 8) {
                     filterMenus(catalog)
                     Spacer(minLength: 8)
                     sortMenu
                     layoutPicker
                 }
-                VStack(alignment: .leading, spacing: 8) {
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
                     filterMenus(catalog)
                     HStack {
                         Spacer(minLength: 0)
@@ -1252,7 +1462,7 @@ struct DiscoveryView: View {
     }
 
     private func genreMenu(_ catalog: AppleGamingWikiCatalog) -> some View {
-        let genres = Set(catalog.games.flatMap { $0.genres ?? [] }).sorted()
+        let genres = projection.genres
         return Menu {
             filterOption("All genres", selected: genre == "All genres") { genre = "All genres" }
             ForEach(genres, id: \.self) { value in
@@ -1318,7 +1528,9 @@ struct DiscoveryView: View {
     private var sortMenu: some View {
         Menu {
             ForEach(["Recommended", "Name A–Z", "Name Z–A"], id: \.self) { value in
-                filterOption(value, selected: sortOrder == value) { sortOrder = value }
+                filterOption(value, selected: sortOrder == value) {
+                    sortOrder = value
+                }
             }
         } label: {
             Label(sortLabel, systemImage: "arrow.up.arrow.down")
@@ -1360,7 +1572,7 @@ struct DiscoveryView: View {
         }
     }
 
-    private func recommended(_ games: [AppleGamingWikiGame]) -> some View {
+    private func recommended(_ games: [AppleGamingWikiGame], width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -1368,47 +1580,71 @@ struct DiscoveryView: View {
                     Text("Strongest available community compatibility reports.").font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("\(games.count) \(String(localized: "results"))").font(.callout).foregroundStyle(.secondary)
+                Text("\(min(4, games.count)) \(String(localized: "results"))").font(.callout).foregroundStyle(.secondary)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(Array(games.prefix(4))) { game in
-                        DiscoveryGameTile(game: game, horizontal: true) { selectGame(game) }.frame(width: 340)
+                        DiscoveryGameTile(game: game, scope: scope, windowsMethod: windowsMethod) { selectGame(game) }.frame(width: min(280, width))
                     }
                 }
             }
         }
     }
 
-    private func catalogContent(_ catalog: AppleGamingWikiCatalog) -> some View {
-        let games = catalog.games.filter(matchesFilters).sorted {
-            let effectiveSort = scope == .recommended ? "Recommended" : sortOrder
-            if effectiveSort == "Recommended" { return recommendationPrecedes($0, $1) }
-            return effectiveSort == "Name Z–A" ? $0.title.localizedStandardCompare($1.title) == .orderedDescending : $0.title.localizedStandardCompare($1.title) == .orderedAscending
-        }
+    private func catalogContent(_ catalog: AppleGamingWikiCatalog, width: CGFloat) -> some View {
+        let games = projection.games
+        let start = min(page * pageSize, games.count)
+        let end = min(start + pageSize, games.count)
+        let visibleGames = Array(games[start..<end])
+        let columnCount = max(1, Int((width + 16) / 256))
+        let cardWidth = max(1, (width - CGFloat(columnCount - 1) * 16) / CGFloat(columnCount))
+        let columns = Array(repeating: GridItem(.fixed(cardWidth), spacing: 16), count: columnCount)
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text(scope.title).font(.title3.bold())
                 Text("\(games.count.formatted()) \(String(localized: "results"))").foregroundStyle(.secondary)
                 Spacer()
             }
-            if games.isEmpty {
+            if games.count > pageSize && projection.filters == projectionRequest.filters {
+                pageControls(resultCount: games.count)
+            }
+            if projection.filters != projectionRequest.filters || games.isEmpty && (!query.isEmpty && store.discoverySearchState == .loading || store.discoveryState == .loading) {
+                ProgressView("Searching…").frame(maxWidth: .infinity).padding(32)
+            } else if games.isEmpty {
                 ContentUnavailableView("No games found", systemImage: "magnifyingglass", description: Text("Try another search or reset your filters."))
-                if hasActiveFilters {
+                if hasActiveFilters || !query.isEmpty {
                     Button("Reset filters") { resetFilters() }
                 }
             } else if listLayout {
                 LazyVStack(spacing: 8) {
-                    ForEach(games) { game in
-                        DiscoveryGameTile(game: game, horizontal: true) { selectGame(game) }
+                    ForEach(visibleGames) { game in
+                        DiscoveryGameTile(game: game, horizontal: width >= 480, scope: scope, windowsMethod: windowsMethod, artworkWidth: 176) { selectGame(game) }
                     }
                 }
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 250, maximum: 290), spacing: 16)], spacing: 16) {
-                    ForEach(games) { game in
-                        DiscoveryGameTile(game: game) { selectGame(game) }
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                    ForEach(visibleGames) { game in
+                        DiscoveryGameTile(game: game, scope: scope, windowsMethod: windowsMethod) { selectGame(game) }
+                            .frame(width: cardWidth)
                     }
                 }
+            }
+            if !games.isEmpty && projection.filters == projectionRequest.filters {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) {
+                        Text("Showing \(start + 1)–\(end) of \(games.count.formatted()) results")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        pageControls(resultCount: games.count)
+                    }
+                    VStack(spacing: 12) {
+                        Text("Showing \(start + 1)–\(end) of \(games.count.formatted()) results")
+                            .font(.caption).foregroundStyle(.secondary)
+                        pageControls(resultCount: games.count)
+                    }
+                }
+                .padding(.vertical, 12)
             }
             loadMoreTrigger(catalog)
             Text(catalog.isStale ? "Showing the last saved catalog." : "Updated \(catalog.fetchedAt.formatted(date: .abbreviated, time: .omitted))")
@@ -1416,81 +1652,47 @@ struct DiscoveryView: View {
         }
     }
 
+    private func pageControls(resultCount: Int) -> some View {
+        HStack(spacing: 12) {
+            Button("Previous", systemImage: "chevron.left") { page = max(0, page - 1) }
+                .disabled(page == 0)
+            TextField("Page", text: $pageInput)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.center)
+                .frame(width: 52)
+                .accessibilityLabel("Page")
+                .help("Enter a page number and press Return")
+                .onSubmit {
+                    if let requested = Int(pageInput) {
+                        page = min(max(1, requested), max(1, (resultCount + pageSize - 1) / pageSize)) - 1
+                    }
+                    pageInput = String(page + 1)
+                }
+            Text("/ \(max(1, (resultCount + pageSize - 1) / pageSize))")
+                .font(.callout.monospacedDigit())
+            Button("Next", systemImage: "chevron.right") { page = min(page + 1, max(0, (resultCount - 1) / pageSize)) }
+                .disabled((page + 1) * pageSize >= resultCount)
+        }
+        .buttonStyle(.bordered)
+    }
+
     @ViewBuilder private func loadMoreTrigger(_ catalog: AppleGamingWikiCatalog) -> some View {
-        if (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? 0) {
+        if query.isEmpty, (catalog.steamOffset ?? 0) < (catalog.steamTotal ?? 0) {
             if store.discoveryPaginationState == .loading {
                 ProgressView("Loading more games…")
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity).padding(.vertical, 16)
+            } else if case .failed(let message) = store.discoveryPaginationState {
+                VStack(spacing: 10) {
+                    Label(message, systemImage: "wifi.exclamationmark")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Retry", systemImage: "arrow.clockwise") { store.loadMoreDiscoveryGames() }
+                }
+                .frame(maxWidth: .infinity).padding(16)
             } else {
-                Color.clear.frame(height: 2)
-                    .onAppear { store.loadMoreDiscoveryGames() }
+                Button("Load more games", systemImage: "arrow.down") { store.loadMoreDiscoveryGames() }
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
             }
         }
-    }
-
-    private func matchesFilters(_ game: AppleGamingWikiGame) -> Bool {
-        matchesScope(game)
-            && matchesWindowsMethod(game)
-            && (searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || game.title.localizedCaseInsensitiveContains(searchText.trimmingCharacters(in: .whitespacesAndNewlines)))
-            && (!hasCompatibilityReportOnly || game.isTested)
-            && (rating == "All ratings" || compatibilityRatings(for: game).contains { $0.rawValue == rating })
-            && (genre == "All genres" || (genre == "Not provided" ? game.genres?.isEmpty != false : game.genres?.contains(genre) == true))
-            && (storefront == "All stores" || (storefront == "Steam" ? game.steamAppID != nil : game.steamAppID == nil))
-    }
-
-    private func matchesScope(_ game: AppleGamingWikiGame) -> Bool {
-        switch scope {
-        case .recommended, .all: true
-        case .mac: game.hasMacSupport
-        case .windows: [game.crossover, game.wine, game.parallels].contains { $0 != .unknown && $0 != .notApplicable }
-        }
-    }
-
-    private func matchesWindowsMethod(_ game: AppleGamingWikiGame) -> Bool {
-        guard scope == .windows, windowsMethod != .all else { return true }
-        return game.matches(windowsMethod)
-    }
-
-    private func compatibilityRatings(for game: AppleGamingWikiGame) -> [AppleGamingWikiRating] {
-        switch scope {
-        case .mac: [game.native, game.rosetta2]
-        case .windows:
-            switch windowsMethod {
-            case .crossover: [game.crossover]
-            case .wine: [game.wine]
-            case .parallels: [game.parallels]
-            case .all: [game.crossover, game.wine, game.parallels]
-            case .native, .rosetta2, .perfect: []
-            }
-        case .recommended, .all: game.availableRatings.map(\.rating)
-        }
-    }
-
-    private func recommendedGames(in catalog: AppleGamingWikiCatalog) -> [AppleGamingWikiGame] {
-        catalog.games.filter {
-            ($0.native == .perfect || $0.rosetta2 == .perfect || $0.crossover == .perfect || $0.wine == .perfect || $0.parallels == .perfect)
-                && matchesFilters($0)
-        }
-        .sorted(by: recommendationPrecedes)
-    }
-
-    private func recommendationScore(_ game: AppleGamingWikiGame) -> Int {
-        let perfectPathScore = [game.native, game.rosetta2, game.crossover, game.wine, game.parallels]
-            .enumerated()
-            .first(where: { $0.element == .perfect })
-            .map { 100 - ($0.offset * 5) } ?? 0
-        // Artwork is presentation quality, not compatibility evidence.
-        return perfectPathScore - game.bestRating.rank
-    }
-
-    private func recommendationPrecedes(_ lhs: AppleGamingWikiGame, _ rhs: AppleGamingWikiGame) -> Bool {
-        let lhsScore = recommendationScore(lhs)
-        let rhsScore = recommendationScore(rhs)
-        if lhsScore != rhsScore { return lhsScore > rhsScore }
-
-        // Artwork is only a deterministic tie-breaker after compatibility is equal.
-        if (lhs.coverURL != nil) != (rhs.coverURL != nil) { return lhs.coverURL != nil }
-        return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
     }
 
     private var guide: some View {
@@ -1538,7 +1740,6 @@ struct DiscoveryView: View {
         searchText = ""
     }
 
-    private var macProfile: DiscoveryMacProfile { .current }
 }
 
 private struct DiscoveryMacProfile: Sendable {
@@ -1548,7 +1749,7 @@ private struct DiscoveryMacProfile: Sendable {
 
     var summary: String { "\(chip) · \(memory) · \(os)" }
 
-    static var current: Self {
+    static let current: Self = {
         let processor = hardwareString("machdep.cpu.brand_string") ?? hardwareString("hw.model") ?? "This Mac"
         let chip: String
         if processor.hasPrefix("Apple ") {
@@ -1562,7 +1763,7 @@ private struct DiscoveryMacProfile: Sendable {
         let version = ProcessInfo.processInfo.operatingSystemVersion
         let os = "macOS \(version.majorVersion).\(version.minorVersion)"
         return Self(chip: chip, memory: "\(memoryGB) GB", os: os)
-    }
+    }()
 
     private static func hardwareString(_ name: String) -> String? {
         var size = 0
@@ -1579,6 +1780,9 @@ struct DiscoveryGameTile: View {
     @AppStorage(ITADPriceService.countryCodeDefaultsKey) private var itadCountryCode = "PL"
     let game: AppleGamingWikiGame
     var horizontal = false
+    var scope: DiscoveryScope = .all
+    var windowsMethod: AppleGamingWikiPlatform = .all
+    var artworkWidth: CGFloat = 105
     let open: () -> Void
     @State private var isHovered = false
     private var metadata: DiscoveryGameMetadata? { store.discoveryMetadata(for: game) }
@@ -1587,23 +1791,29 @@ struct DiscoveryGameTile: View {
         Group {
             if horizontal {
                 HStack(alignment: .top, spacing: 12) {
-                    artwork.frame(width: 105)
+                    artwork.frame(width: artworkWidth)
                     details.layoutPriority(1)
                     Spacer(minLength: 0)
                 }
-                    .padding(9)
+                    .padding(12)
             } else {
-                VStack(alignment: .leading, spacing: 0) { artwork; details.padding(10) }
+                VStack(alignment: .leading, spacing: 0) { artwork; details.padding(14) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(isHovered ? 0.075 : 0.045), in: RoundedRectangle(cornerRadius: 11))
-        .clipShape(RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(isHovered ? 0.16 : 0.09)))
+        .background(.primary.opacity(isHovered ? 0.075 : 0.035), in: RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.primary.opacity(isHovered ? 0.16 : 0.08)))
+        .animation(.easeOut(duration: 0.16), value: isHovered)
         .shadow(color: .black.opacity(isHovered ? 0.18 : 0), radius: 12, y: 3)
         .onHover { isHovered = $0 }
         .task(id: "\(game.id)-\(itadAPIKey)-\(itadCountryCode)") {
-            await store.ensureDiscoveryMetadata(for: game)
+            // Catalog rows already carry artwork, tags and store identity for Steam games.
+            // Fetch full descriptions on the detail screen instead of for every card.
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            if game.steamAppID == nil || game.genres?.isEmpty != false {
+                await store.ensureDiscoveryMetadata(for: game)
+            }
             guard !Task.isCancelled else { return }
             if !itadAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 await store.ensureDiscoveryPrice(for: game)
@@ -1655,20 +1865,14 @@ struct DiscoveryGameTile: View {
             }
             .buttonStyle(.plain)
 
-            Text((game.genres ?? metadata?.genres)?.prefix(2).joined(separator: " · ") ?? "Genre not provided")
+            Text(genreDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
-            HStack(spacing: 8) {
-                platformBadge
-                if game.isTested {
-                    DiscoveryRatingLabel(title: "Compatibility", rating: game.bestRating)
-                } else {
-                    Label("No compatibility data", systemImage: "circle")
-                        .font(horizontal ? .caption : .caption2)
-                        .foregroundStyle(.tertiary)
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { platformBadge; compatibilityBadge }
+                VStack(alignment: .leading, spacing: 6) { platformBadge; compatibilityBadge }
             }
 
             discoveryPrice
@@ -1677,7 +1881,40 @@ struct DiscoveryGameTile: View {
                 Spacer(minLength: 2)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: horizontal ? 118 : 198, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: horizontal ? 118 : 168, alignment: .topLeading)
+    }
+
+    private var genreDescription: String {
+        let genres = game.genres?.isEmpty == false ? game.genres : metadata?.genres
+        guard let genres, !genres.isEmpty else { return String(localized: "Genre not provided") }
+        return genres.prefix(2).joined(separator: " · ")
+    }
+
+    @ViewBuilder private var compatibilityBadge: some View {
+        if let rating = reportedRatings.min(by: { $0.rating.rank < $1.rating.rank })?.rating {
+            DiscoveryRatingLabel(title: "Compatibility", rating: rating)
+        } else {
+            Label("No compatibility data", systemImage: "questionmark.circle")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private var reportedRatings: [AppleGamingWikiRatingEntry] {
+        game.availableRatings.filter { entry in
+            switch scope {
+            case .mac: ["Native", "Rosetta 2"].contains(entry.title)
+            case .windows:
+                windowsMethod == .all
+                    ? ["CrossOver", "Wine", "Parallels"].contains(entry.title)
+                    : entry.title.lowercased() == windowsMethod.rawValue
+            case .all, .recommended: true
+            }
+        }
+    }
+
+    private var bestMethod: String {
+        reportedRatings.filter { $0.rating.isPlayable }
+            .min(by: { $0.rating.rank < $1.rating.rank })?.title ?? "Unverified"
     }
 
     private var platformBadge: some View {
@@ -1690,6 +1927,12 @@ struct DiscoveryGameTile: View {
     }
 
     private var platformTitle: String {
+        if scope == .windows {
+            return isWindowsPath ? "\(String(localized: "Windows")) · \(localizedBestMethod)" : String(localized: "Windows")
+        }
+        if isWindowsPath { return "\(String(localized: "Windows")) · \(localizedBestMethod)" }
+        if bestMethod == "Native" { return String(localized: "Native macOS") }
+        if bestMethod == "Rosetta 2" { return String(localized: .Compatibility.rosetta2Title) }
         if let macSupportKind = game.macSupportKind {
             if macSupportKind == .macOS, isWindowsPath {
                 return "\(macSupportKind.title) · \(localizedBestMethod)"
@@ -1700,23 +1943,25 @@ struct DiscoveryGameTile: View {
     }
 
     private var isWindowsPath: Bool {
-        ["CrossOver", "Wine", "Parallels"].contains(game.bestMethod)
+        ["CrossOver", "Wine", "Parallels"].contains(bestMethod)
     }
 
     private var localizedBestMethod: String {
-        switch game.bestMethod {
+        switch bestMethod {
         case "CrossOver": String(localized: .Compatibility.crossOverTitle)
         case "Wine": String(localized: .Compatibility.wineTitle)
         case "Parallels": String(localized: .Compatibility.parallelsTitle)
         case "Rosetta 2": String(localized: .Compatibility.rosetta2Title)
         case "Native": String(localized: .Compatibility.nativeTitle)
-        default: game.bestMethod
+        default: bestMethod
         }
     }
 
     private var platformSymbol: String {
-        if let macSupportKind = game.macSupportKind { return macSupportKind.symbol }
-        switch game.bestMethod {
+        if bestMethod == "Native" { return "apple.logo" }
+        if bestMethod == "Rosetta 2" { return "cpu" }
+        if !isWindowsPath, scope != .windows, let macSupportKind = game.macSupportKind { return macSupportKind.symbol }
+        switch bestMethod {
         case "CrossOver": return "rectangle.2.swap"
         case "Parallels": return "rectangle.split.3x1"
         case "Wine": return "wineglass"
@@ -1789,7 +2034,7 @@ struct SavedDiscoveryGamesView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Saved from Discovery").font(.headline)
             ScrollView(.horizontal) {
-                HStack(spacing: 12) {
+                LazyHStack(spacing: 12) {
                     ForEach(store.savedDiscoveryGames.filter { searchText.isEmpty || $0.title.localizedCaseInsensitiveContains(searchText) }) { game in
                         DiscoveryGameTile(game: game, horizontal: true) { selectedGame = game }.frame(width: 320)
                     }
@@ -1810,25 +2055,32 @@ private struct DiscoveryArtwork: View {
     @State private var attemptedLoad = false
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [.indigo.opacity(0.78), .cyan.opacity(0.34)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            if let loadedImage {
-                Image(nsImage: loadedImage).resizable().scaledToFill()
-            } else if imageURL != nil && !attemptedLoad {
-                placeholder.overlay { ProgressView().tint(.white) }
-            } else if isLoading {
-                placeholder.overlay { ProgressView().tint(.white) }
-            } else {
-                placeholder
+        // Layout uses the card's proposed width, never the bitmap's intrinsic size.
+        GeometryReader { geometry in
+            ZStack {
+                LinearGradient(
+                    colors: [.indigo.opacity(0.78), .cyan.opacity(0.34)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                if let loadedImage {
+                    Image(nsImage: loadedImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: height)
+                        .clipped()
+                } else if imageURL != nil && !attemptedLoad {
+                    placeholder.overlay { ProgressView().tint(.white) }
+                } else if isLoading {
+                    placeholder.overlay { ProgressView().tint(.white) }
+                } else {
+                    placeholder
+                }
             }
+            .frame(width: geometry.size.width, height: height)
+            .clipped()
         }
-        .frame(maxWidth: .infinity)
         .frame(height: height)
-        .clipped()
         .accessibilityLabel("Cover for \(title)")
         .task(id: "\(imageURL ?? "")|\(fallbackImageURL ?? "")") {
             loadedImage = nil
@@ -1860,6 +2112,35 @@ private struct DiscoveryArtwork: View {
     }
 }
 
+private actor DiscoveryArtworkGate {
+    private var active = 0
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+
+    func acquire() async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if active < 6 { active += 1; return true }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume(returning: false) }
+                else { waiters.append((id, continuation)) }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
+    }
+
+    func release() {
+        if waiters.isEmpty { active = max(0, active - 1) }
+        else { waiters.removeFirst().continuation.resume(returning: true) }
+    }
+}
+
 private actor DiscoveryImagePipeline {
     static let shared = DiscoveryImagePipeline()
 
@@ -1874,11 +2155,18 @@ private actor DiscoveryImagePipeline {
     private static let diskCacheLimitBytes: UInt64 = 512 * 1_024 * 1_024
     private static let diskCacheTrimTargetBytes: UInt64 = 384 * 1_024 * 1_024
     private var diskWriteCount = 0
-    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+    private struct ImageLoad {
+        let id: UUID
+        let task: Task<NSImage?, Never>
+        var consumers: Set<UUID>
+    }
+    private var inFlight: [URL: ImageLoad] = [:]
+    private var failedLoads: [URL: Date] = [:]
+    private let downloadGate = DiscoveryArtworkGate()
 
     init() {
-        diskCacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appending(
-            path: "Boreal/Discovery/Artwork",
+        diskCacheDirectory = ApplicationDataLocation.logicalRoot.appending(
+            path: "Discovery/Artwork",
             directoryHint: .isDirectory
         )
     }
@@ -1889,24 +2177,66 @@ private actor DiscoveryImagePipeline {
             cache.setObject(cached, forKey: url as NSURL, cost: Self.imageCost(cached))
             return cached
         }
-        if let task = inFlight[url] { return await task.value }
+        guard !Task.isCancelled else { return nil }
+        if let load = inFlight[url] { return await consume(load, for: url, maxPixelSize: maxPixelSize) }
+        if let failedAt = failedLoads[url], Date.now.timeIntervalSince(failedAt) < 120 { return nil }
 
+        let gate = downloadGate
         let task = Task.detached(priority: .utility) { () -> NSImage? in
+            guard await gate.acquire() else { return nil }
+            guard !Task.isCancelled else { await gate.release(); return nil }
             var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
             request.setValue("image/*", forHTTPHeaderField: "Accept")
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  !Task.isCancelled else { return nil }
-            return Self.downsampledImage(from: data, maxPixelSize: maxPixelSize)
+            let image: NSImage?
+            if let (data, response) = try? await URLSession.shared.data(for: request),
+               (response as? HTTPURLResponse)?.statusCode == 200, !Task.isCancelled {
+                image = Self.downsampledImage(from: data, maxPixelSize: maxPixelSize)
+            } else {
+                image = nil
+            }
+            await gate.release()
+            return image
         }
-        inFlight[url] = task
-        let image = await task.value
-        inFlight[url] = nil
+        let load = ImageLoad(id: UUID(), task: task, consumers: [])
+        inFlight[url] = load
+        return await consume(load, for: url, maxPixelSize: maxPixelSize)
+    }
+
+    private func consume(_ load: ImageLoad, for url: URL, maxPixelSize: Int) async -> NSImage? {
+        let consumer = UUID()
+        inFlight[url]?.consumers.insert(consumer)
+        let image = await withTaskCancellationHandler {
+            await load.task.value
+        } onCancel: {
+            Task { await self.removeConsumer(consumer, loadID: load.id, for: url) }
+        }
+        removeConsumer(consumer, loadID: load.id, for: url)
+        guard !Task.isCancelled else { return nil }
         if let image {
-            cache.setObject(image, forKey: url as NSURL, cost: Self.imageCost(image))
-            writeDiskImage(image, for: url, maxPixelSize: maxPixelSize)
+            failedLoads.removeValue(forKey: url)
+            if cache.object(forKey: url as NSURL) == nil {
+                cache.setObject(image, forKey: url as NSURL, cost: Self.imageCost(image))
+                writeDiskImage(image, for: url, maxPixelSize: maxPixelSize)
+            }
+        } else {
+            failedLoads = failedLoads.filter { Date.now.timeIntervalSince($0.value) < 120 }
+            if failedLoads.count >= 256, let oldest = failedLoads.min(by: { $0.value < $1.value })?.key {
+                failedLoads.removeValue(forKey: oldest)
+            }
+            failedLoads[url] = .now
         }
         return image
+    }
+
+    private func removeConsumer(_ consumer: UUID, loadID: UUID, for url: URL) {
+        guard var load = inFlight[url], load.id == loadID else { return }
+        load.consumers.remove(consumer)
+        if load.consumers.isEmpty {
+            load.task.cancel()
+            inFlight[url] = nil
+        } else {
+            inFlight[url] = load
+        }
     }
 
     private static func downsampledImage(from data: Data, maxPixelSize: Int) -> NSImage? {
@@ -2017,23 +2347,31 @@ struct DiscoveryGameDetailView: View {
     var onSelectProducer: (String) -> Void = { _ in }
     @State private var details: StoreLibraryGame?
     @State private var finishedLoading = false
+    @State private var retryCount = 0
 
     var body: some View {
         Group {
             if let details {
                 StoreGameDetailView(game: details, discoveryGame: game, onSelectProducer: onSelectProducer)
             } else if finishedLoading {
-                ContentUnavailableView(
-                    "Game details unavailable",
-                    systemImage: "gamecontroller",
-                    description: Text("Boreal could not match \(game.title) to an unambiguous store record.")
-                )
+                ContentUnavailableView {
+                    Label("Game details unavailable", systemImage: "gamecontroller")
+                } description: {
+                    Text("Boreal could not match \(game.title) to an unambiguous store record.")
+                } actions: {
+                    Button("Retry", systemImage: "arrow.clockwise") { retryCount += 1 }
+                    if let url = URL(string: game.pageURL) {
+                        Link("Open source page", destination: url)
+                    }
+                }
             } else {
                 ProgressView("Loading details from Steam and compatibility sources…")
             }
         }
         .frame(minWidth: 900, minHeight: 650)
-        .task(id: game.id) {
+        .task(id: "\(game.id)|\(retryCount)") {
+            finishedLoading = false
+            details = nil
             await store.ensureDiscoveryMetadata(for: game)
             guard !Task.isCancelled else { return }
             details = await store.discoveryStoreDetails(for: game)

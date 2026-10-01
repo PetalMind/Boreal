@@ -30,9 +30,9 @@ Wiersz paska bocznego może pokazywać liczbę rekordów z aktualnego katalogu (
 3. szeroki przełącznik zakresu przeglądania;
 4. osobny pasek filtrów oraz po prawej sortowanie i przełącznik siatka/lista;
 5. opcjonalny pasek informacji o wyszukiwaniu lub źródle danych;
-6. karuzela rekomendacji, gdy nie ma aktywnego wyszukiwania;
+6. karuzela rekomendacji w zakresie „Polecane”, gdy nie ma aktywnego wyszukiwania;
 7. katalog w układzie siatki albo listy;
-8. automatyczne doładowywanie kolejnych wyników Steam;
+8. nawigacja po stronach po 60 wyników oraz jawny przycisk pobrania kolejnej strony danych Steam;
 9. informacja o dacie danych albo o użyciu ostatniego zapisanego katalogu.
 
 Przycisk **Data sources** otwiera krótki przewodnik. Wyjaśnia on pochodzenie raportów, metadanych, cen i ograniczenia znaczenia ratingów. Przycisk **Refresh Discovery** uruchamia wymuszone odświeżenie katalogu. Podczas przewijania przypięta pozostaje wyłącznie sekcja zakresu i filtrów; hero oraz statystyki mogą zniknąć, dzięki czemu sterowanie katalogiem jest dostępne bez przypinania dużego panelu.
@@ -41,7 +41,7 @@ Przycisk **Data sources** otwiera krótki przewodnik. Wyjaśnia on pochodzenie r
 
 Warstwa widoku zachowuje natywny, spokojny charakter macOS. Główny zakres jest pokazany jako jeden szeroki segmented control, a filtry są od niego oddzielone. Po wybraniu filtra pojawia się chip z nazwą i przyciskiem usunięcia; **Reset filters** jest widoczne tylko wtedy, gdy istnieje aktywny filtr. Sortowanie i wybór siatka/lista znajdują się po prawej stronie paska filtrów, a przy węższym oknie układ przechodzi do dwóch wierszy.
 
-Siatka używa adaptacyjnych kolumn o minimalnej szerokości 250 px i maksymalnej 290 px, z odstępem 16 px. Zawartość ma maksymalną szerokość 1600 px, co ogranicza liczbę kart na ultrapanoramicznych ekranach do czytelnych 5–6 kolumn zamiast bardzo drobnych kafelków.
+Liczba kolumn siatki wynika z aktualnej szerokości widoku (około 240 px minimum, odstęp 16 px). Elastyczne kolumny wypełniają dostępne miejsce bez pustych pasów. Przy bardzo wąskim widoku lista przechodzi do pionowego układu kart; etykiety platformy i zgodności mogą zajmować dwa wiersze. Zawartość ma maksymalną szerokość 1600 px, co ogranicza liczbę kart na ultrapanoramicznych ekranach do czytelnych 5–6 kolumn zamiast bardzo drobnych kafelków.
 
 Teksty widoku korzystają z katalogów lokalizacji. W języku polskim zakresy mają nazwy **Polecane**, **Wszystkie**, **Mac** i **Windows**, przycisk zapisu to **Zapisz**, a zapisany stan **Zapisano**. Brak raportu jest opisywany jako **Brak danych o zgodności**, bez sugerowania negatywnego wyniku.
 
@@ -61,16 +61,16 @@ Przełącznik **Browse** ma cztery wartości:
 
 | Zakres | Działanie |
 | --- | --- |
-| **Recommended** | Pokazuje wszystkie pasujące rekordy, ale wymusza sortowanie rekomendowane. Przy pustym wyszukiwaniu widok może dodatkowo pokazać sekcję „Best compatibility”. |
+| **Recommended** | Pokazuje wszystkie pasujące rekordy, a wejście do tego zakresu ustawia sortowanie rekomendowane. Użytkownik może następnie wybrać sortowanie po nazwie. Przy pustym wyszukiwaniu widok może dodatkowo pokazać sekcję „Best compatibility”. |
 | **All Games** | Pokazuje wszystkie rekordy katalogu po zastosowaniu pozostałych filtrów. |
 | **Mac** | Pokazuje wpisy z natywnym ratingiem, grywalnym ratingiem Rosetta 2 albo deklarowanym wsparciem macOS po stronie Steam. |
 | **Windows** | Pokazuje gry, dla których istnieje znany wpis dla CrossOver, Wine albo Parallels. Znany wpis może mieć również status ograniczony, menu-only albo unplayable. |
 
-Sekcja **Best compatibility** jest niezależna od wybranego zakresu: może pojawić się przy pustym wyszukiwaniu, jeśli po bieżących filtrach istnieją gry z co najmniej jednym ratingiem `Perfect`.
+Sekcja **Best compatibility** pojawia się w zakresie **Recommended** przy pustym wyszukiwaniu i pokazuje do czterech kart z ratingiem `Perfect`. Licznik odpowiada liczbie widocznych propozycji.
 
 W zakresie **Mac** badge rozróżnia trzy sytuacje: `Native macOS` pochodzi z grywalnego ratingu Native, `Rosetta 2` z grywalnego ratingu Rosetta 2, a `macOS` oznacza deklarację wsparcia macOS bez wystarczających danych o architekturze. Boreal nie przedstawia samej deklaracji Steam jako pewnego natywnego Apple Silicon.
 
-W zakresie **Windows** pojawia się dodatkowy filtr **Windows path**. Wartość `All Windows paths` pozostawia wszystkie znane ścieżki. Wybór CrossOver, Wine albo Parallels wymaga już ratingu grywalnego dla konkretnej metody, czyli `Perfect` albo `Playable`.
+W zakresie **Windows** pojawia się dodatkowy filtr **Windows path**. Wartość `All Windows paths` pozostawia wszystkie znane ścieżki. Wybór CrossOver, Wine albo Parallels wymaga raportu dla konkretnej metody. Zachowane są także `Runs`, `Menu` i `Unplayable`, aby filtr oceny mógł pokazać problemy tej ścieżki.
 
 ## Filtry i sortowanie
 
@@ -79,7 +79,7 @@ Filtry są nakładane jednocześnie na każdy rekord:
 - **Genre** — lista gatunków jest budowana z gatunków obecnych w aktualnym katalogu; `Not provided` oznacza brak gatunków (`nil` albo pusta tablica);
 - **Compatibility** — sprawdza ratingi właściwe dla bieżącego zakresu. Dla `Mac` używane są ratingi Native i Rosetta 2; deklaracja macOS bez ratingu pozostaje bez wyniku kompatybilności. Dla `Windows` używana jest wybrana ścieżka albo wszystkie trzy ścieżki Windows, a dla `Recommended` i `All Games` — wszystkie dostępne ratingi;
 - **Store** — `Steam` oznacza obecność `steamAppID`, a `Other / unknown` jego brak;
-- **Has compatibility report** — zostawia wpisy, które mają co najmniej jeden rating różny od `Unknown` i `N/A`. Oznacza to obecność raportu źródłowego, a nie test wykonany przez Boreal;
+- **Has compatibility report** — zostawia wpisy, które mają co najmniej jeden rating różny od `Unknown` i `N/A` w aktualnym zakresie i wybranej metodzie. Oznacza to obecność raportu źródłowego, a nie test wykonany przez Boreal;
 - **Reset filters** — przywraca zakres `All Games`, wszystkie wartości filtrów i sortowania oraz czyści wyszukiwanie. Nie zmienia zapisanego wyboru siatki/listy.
 
 Tekst wyszukiwania dopasowuje tytuł bez rozróżniania wielkości liter. Po zmianie tekstu widok odczekuje 400 ms, aby nie wykonywać żądania dla każdego naciśnięcia klawisza. Jeśli tekst nie jest pusty, wykonywane jest również wyszukiwanie w bieżącym katalogu Steam dla macOS.
@@ -130,7 +130,7 @@ Steam uzupełnia katalog o żywe wyniki wyszukiwania macOS i metadane sklepu:
 - deklarację wsparcia macOS;
 - opis, dewelopera i inne metadane używane na ekranie szczegółów.
 
-Pierwsze pobranie katalogu pobiera pierwszą stronę wyników Steam po 100 rekordów i zapisuje `steamOffset` oraz `steamTotal`. Kolejne strony są pobierane automatycznie, gdy niewidoczny element na końcu katalogu pojawi się na ekranie. Mechanizm nie ładuje następnej strony równolegle z innym ładowaniem i zatrzymuje się po osiągnięciu `steamTotal`.
+Pierwsze pobranie katalogu pobiera pierwszą stronę wyników Steam po 100 rekordów i zapisuje `steamOffset` oraz `steamTotal`. Kolejne strony są pobierane wyłącznie po użyciu przycisku **Load more games**. Pojawienie się stopki nie uruchamia sieci. Paginacja widoku po 60 pozycji działa na już zapisanych rekordach i jest niezależna od pobierania stron Steam. Mechanizm nie ładuje następnej strony równolegle z innym ładowaniem i zatrzymuje się po osiągnięciu `steamTotal`.
 
 Rekordy Steam są scalane z AppleGamingWiki:
 
@@ -187,7 +187,7 @@ Cache metadanych ma żywotność 24 godzin. Nieudane wyszukanie metadanych ma os
 
 ## Lifecycle i pamięć
 
-Katalog około 2800 lekkich rekordów pozostaje tablicą w pamięci i plikiem JSON. Na tym rozmiarze koszt samej listy jest mały, więc nie ma jeszcze migracji do SQLite. Ważne jest to, że ładowanie katalogu nie hydratuje już wszystkich metadanych: pełny opis, identyfikator Steam i obraz są pobierane dopiero przez widoczną kartę albo ekran szczegółów.
+Katalog może obejmować dziesiątki tysięcy lekkich rekordów. Pozostaje tablicą w pamięci i plikiem JSON, ale `ForEach` dostaje najwyżej 60 wyników bieżącej strony. Wyszukiwanie i filtry nadal działają na całym katalogu. Zmiana filtrów wraca na pierwszą stronę, a zmiana strony przewija do paska filtrów, tak aby przypięty nagłówek nie zasłaniał początku wyników. Numer strony można wpisać bezpośrednio i zatwierdzić Return. Karta z identyfikatorem Steam i gatunkami używa danych katalogu bez pobierania pełnego opisu; opis jest ładowany w szczegółach. Pobieranie brakujących metadanych przez kartę zaczyna się po 150 ms, co ogranicza żądania podczas szybkiego przewijania.
 
 Working set danych jest ograniczony niezależnie od długości przewijania:
 
@@ -319,3 +319,37 @@ Discovery odpowiada na pytanie „jakie gry i raportowane sposoby uruchomienia w
 - cena może być nieobecna, opóźniona albo zależna od skonfigurowanego regionu;
 - dodanie do zapisanych pozycji i dodanie do właściwej biblioteki to dwa różne działania;
 - instalacja i uruchomienie następują dopiero po użyciu akcji sklepu albo konfiguracji środowiska.
+
+## Responsywność i stany ładowania
+
+Podsumowanie katalogu zawija się w adaptacyjnej siatce. Pasek filtrów jest przypięty do góry i korzysta z systemowego materiału; poniżej 960 px szerokości treści filtry oraz sortowanie zajmują osobne wiersze. Powierzchnie widoku reagują na jasny i ciemny wygląd systemu.
+
+Przy pierwszym wejściu lokalny cache lub katalog dołączony do aplikacji jest prezentowany przed zakończeniem odświeżania sieciowego. Stan ten jest opisany jako zapisany katalog. Informacja o niedostępnym źródle jest widoczna bez otwierania przewodnika.
+
+Zmiana frazy od razu usuwa wyniki poprzedniego wyszukiwania Steam i ustawia stan wyszukiwania, a żądanie nadal jest opóźnione o 400 ms. Brak wyników jest pokazywany po zakończeniu wyszukiwania. Podczas wyszukiwania doładowanie ogólnego katalogu Steam jest ukryte. Doładowanie danych Steam zawsze wymaga kliknięcia; po błędzie ponowienie wymaga użycia przycisku Retry.
+
+Łączenie katalogów korzysta z indeksów identyfikatorów Steam i znormalizowanych tytułów. Puste gatunki z nowej strony nie usuwają istniejących danych. Metoda uruchomienia na karcie odpowiada najlepszej dostępnej grywalnej ocenie; przy równych ocenach zachowana jest kolejność metod źródłowych.
+
+W zakresach Mac i Windows ocena na karcie dotyczy wyłącznie metod właściwych dla zakresu, a przy wybranej ścieżce Windows — tej konkretnej metody. Rating Native nie zastępuje raportu Wine ani odwrotnie.
+
+## Przygotowanie danych i wydajność
+
+Widok przechowuje przygotowany wynik filtrowania, sortowania, cztery rekomendacje, listę gatunków i liczniki. Przygotowanie odbywa się poza głównym aktorem na niezmiennym katalogu. Klucz zadania zawiera rewizję katalogu i ustawienia filtrów; zmiana szerokości, układu siatka/lista czy stanu ładowania cen nie uruchamia ponownego sortowania. Zastąpione zadania są anulowane, a ich wynik nie może nadpisać nowszych filtrów.
+
+Punktacja jest wyliczana raz na wpis przed sortowaniem rekomendowanym. Przy sortowaniu po nazwie bez karuzeli rekomendacji punktacja i sortowanie rekomendowane są pomijane. Profil sprzętowy oraz słownik tagów Steam są odczytywane raz na proces.
+
+Metadane są dopisywane do katalogu zbiorczo w oknach 200 ms. Rewizja katalogu zmienia się tylko, gdy wynik rzeczywiście się zmienił. Lekkie uzupełnienia identyfikatora, artworku i gatunków zostają w katalogu źródłowym po usunięciu pełnych metadanych z cache. Przygotowanie lub wyczyszczenie wyszukiwania nie przebudowuje katalogu, jeśli nie usuwa żadnych wyników. Przy zmianie frazy przygotowanie lokalnych wyników ma dodatkowe 180 ms opóźnienia, niezależnie od 400 ms dla sieci.
+
+Pipeline grafik współdzieli trwające żądania oraz istniejący cache pamięci i dysku. Maksymalnie sześć pobrań/dekodowań działa jednocześnie. Nieudane adresy są pamiętane przez dwie minuty (do 256 wpisów), aby przewijanie nie powodowało ciągłego ponawiania niedostępnych grafik.
+
+
+## Korekty dużego katalogu — 2026-10-01
+
+- Odświeżanie zachowuje wcześniej odkryte rekordy Steam; pierwsza świeża strona nie zastępuje całego lokalnego katalogu sklepu. Offset świeżej sesji pochodzi z odpowiedzi Steam, ponieważ pozycje w sklepie mogą zmieniać kolejność.
+- Scalanie sprawdza tożsamość strony przed identyfikatorem Steam i tytułem. Remisy sortowania rozstrzyga ID, zapewniając stabilną kolejność identycznych tytułów.
+- Filtr `Unknown` oznacza brak znanego raportu w aktualnym zakresie/metodzie; brak oceny Wine nie jest zastępowany oceną Native.
+- Pobrania okładek mają licznik odbiorców. Gdy znika ostatni odbiorca, wspólne zadanie jest anulowane, także podczas oczekiwania na jeden z sześciu slotów. Zniknięcie jednej karty nie anuluje pobrania potrzebnego innej karcie.
+- Brak metadanych Steam nie uruchamia zapytania AppleGamingWiki z adresem strony Steam jako nazwą artykułu.
+- Stan błędu szczegółów pozwala ponowić pobieranie i przejść do strony źródłowej. Pasek zapisanych gier korzysta z `LazyHStack`.
+
+Szczegółowe ustalenia i granice weryfikacji: [Discovery-Analysis-2026-10-01.md](Discovery-Analysis-2026-10-01.md).

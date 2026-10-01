@@ -20,6 +20,8 @@ nonisolated struct OverlayGame: Hashable, Sendable {
     let translator: String
     let hostAPI: String
     let runtime: String
+    let discordArtworkURL: String?
+    let discordStoreURL: String?
 
     init(
         id: UUID,
@@ -31,7 +33,9 @@ nonisolated struct OverlayGame: Hashable, Sendable {
         gameAPI: String = "—",
         translator: String? = nil,
         hostAPI: String = "—",
-        runtime: String = "—"
+        runtime: String = "—",
+        discordArtworkURL: String? = nil,
+        discordStoreURL: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -43,6 +47,8 @@ nonisolated struct OverlayGame: Hashable, Sendable {
         self.translator = translator ?? graphics
         self.hostAPI = hostAPI
         self.runtime = runtime
+        self.discordArtworkURL = discordArtworkURL
+        self.discordStoreURL = discordStoreURL
     }
 }
 
@@ -182,7 +188,7 @@ final class GameOverlayController {
     private var activeGames: [OverlayGame] = []
     private var managedGames: [OverlayGame] = []
     private var nativeGame: OverlayGame?
-    private var expectedNativeGame: (id: UUID, name: String, installationURL: URL)?
+    private var expectedNativeGame: (id: UUID, name: String, installationURL: URL, artworkURL: String?, storeURL: String?)?
     private var nativeGameProcessID: pid_t?
     private var isTemporarilyHidden = false
     private var preferredGameScreen: NSScreen?
@@ -226,6 +232,7 @@ final class GameOverlayController {
     func synchronize(games: [OverlayGame]) {
         managedGames = games
         activeGames = (games + [nativeGame].compactMap { $0 }).sorted { $0.launchedAt > $1.launchedAt }
+        DiscordPresence.shared.synchronize(games: activeGames)
         if activeGames.isEmpty {
             stopRecording()
             isTemporarilyHidden = false
@@ -252,8 +259,8 @@ final class GameOverlayController {
         show()
     }
 
-    func expectNativeGame(name: String, installationURL: URL) {
-        let expectation = (id: UUID(), name: name, installationURL: installationURL.standardizedFileURL)
+    func expectNativeGame(name: String, installationURL: URL, artworkURL: String? = nil, storeURL: String? = nil) {
+        let expectation = (id: UUID(), name: name, installationURL: installationURL.standardizedFileURL, artworkURL: artworkURL, storeURL: storeURL)
         expectedNativeGame = expectation
         if let application = NSWorkspace.shared.runningApplications.first(where: { matches($0, installationURL: expectation.installationURL) }) {
             activateNativeGame(expectation, application: application)
@@ -351,7 +358,7 @@ final class GameOverlayController {
     }
 
     private func activateNativeGame(
-        _ expectation: (id: UUID, name: String, installationURL: URL),
+        _ expectation: (id: UUID, name: String, installationURL: URL, artworkURL: String?, storeURL: String?),
         application: NSRunningApplication
     ) {
         nativeGameProcessID = application.processIdentifier
@@ -365,7 +372,9 @@ final class GameOverlayController {
             gameAPI: "Native",
             translator: "Native",
             hostAPI: "Metal",
-            runtime: "macOS"
+            runtime: "macOS",
+            discordArtworkURL: expectation.artworkURL,
+            discordStoreURL: expectation.storeURL
         )
         expectedNativeGame = nil
         updatePreferredGameScreen(for: application)
