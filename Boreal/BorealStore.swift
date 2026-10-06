@@ -3021,7 +3021,7 @@ final class BorealStore {
         guard let installation = installation(for: game) else { return game }
         var value = game
         value.isInstalled = installation.state.representsAnInstallation
-        value.installPath = StoragePathResolver.resolve(installation.location, layout: storageLayout).path
+        value.installPath = InstallationStateResolver.resolvedLocation(for: installation, layout: storageLayout).path
         value.installedPlatform = installation.platform
         value.storageBytes = installation.installedSize
         return value
@@ -7098,6 +7098,7 @@ final class BorealStore {
     /// its provider link are intentionally retained.
     private func reconcileInstallationState() {
         installations = installations.map { installation in
+            guard installation.state != .installing else { return installation }
             var value = InstallationStateResolver.resolve(installation, layout: storageLayout)
             let hasPreparedApplication = applications.contains { application in
                 guard !application.isSteamRuntimeHost, !application.isInstallerOnly else { return false }
@@ -7119,6 +7120,25 @@ final class BorealStore {
             storeGames[index].installPath = StoragePathResolver.resolve(installation.location, layout: storageLayout).path
             storeGames[index].installedPlatform = installation.platform
             storeGames[index].storageBytes = installation.installedSize
+        }
+        for index in applications.indices {
+            let application = applications[index]
+            guard !application.isInstallerOnly, !application.isSteamRuntimeHost,
+                  [.gog, .epic].contains(application.storeProvider),
+                  !FileManager.default.fileExists(atPath: application.executablePath),
+                  let installation = installations.first(where: { $0.storeReference == application.storeReference }),
+                  installation.state == .installed else { continue }
+            let root = InstallationStateResolver.resolvedLocation(for: installation, layout: storageLayout)
+            // Preserve the chosen game/launcher/custom executable. Recover
+            // only a path already recorded for this installation.
+            guard let executable = installation.executables.first(where: {
+                application.executablePath.hasSuffix("/" + $0.relativePath)
+            }) else { continue }
+            let candidate = root.appending(path: executable.relativePath).standardizedFileURL
+            guard candidate.path.hasPrefix(root.standardizedFileURL.path + "/"),
+                  FileManager.default.fileExists(atPath: candidate.path) else { continue }
+            applications[index].executablePath = candidate.path
+            applications[index].auxiliaryExecutables = nil
         }
     }
 
@@ -7149,14 +7169,23 @@ final class BorealStore {
                 // turn `.installing` into `.installed` during an intermediate
                 // save.
                 if current.state != .installing && current.state != .broken {
-                    let locationChanged = current.location != legacy.location
-                    current.location = legacy.location
-                    current.platform = legacy.platform
-                    current.installedSize = legacy.installedSize
-                    if locationChanged || current.state == .unknown {
+                    current = InstallationStateResolver.resolve(current, layout: storageLayout)
+                    let currentURL = StoragePathResolver.resolve(current.location, layout: storageLayout)
+                    let legacyURL = StoragePathResolver.resolve(legacy.location, layout: storageLayout)
+                    // A legacy application may still contain the path from
+                    // before a move. Keep a recovered canonical location.
+                    if current.state != .volumeUnavailable,
+                       !FileManager.default.fileExists(atPath: currentURL.path),
+                       FileManager.default.fileExists(atPath: legacyURL.path) {
+                        current.location = legacy.location
+                        current.platform = legacy.platform
+                        current.volumeIdentity = InstallationVolumeIdentity.capture(at: legacyURL, location: legacy.location)
                         current.state = .installed
                     }
-                    if !legacy.executables.isEmpty { current.executables = legacy.executables }
+                    current.installedSize = legacy.installedSize
+                    if current.executables.isEmpty {
+                        current.executables = legacy.executables
+                    }
                 }
                 current.updatedAt = .now
                 byGameID[legacy.gameID] = current
@@ -9002,6 +9031,7 @@ final class BorealStore {
 
     private func save() {
         synchronizeInstallationCompatibilityBridge()
+        reconcileInstallationState()
         if usesLayeredStorage {
             let snapshot = BorealStorageSnapshot(
                 applications: applications,

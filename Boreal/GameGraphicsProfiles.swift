@@ -438,6 +438,13 @@ nonisolated enum GameGraphicsProfiles {
             effective.runtimeIDOverride = nil
         }
         if application.storeProvider == .gog,
+           application.storeExternalID == "1949616134" {
+            // A stale Vulkan retry must not reconfigure DAO's known-working
+            // OpenGL prefix on the next launch. Keep the selected Wine runtime.
+            effective.graphicsFallback = .none
+            effective.wineD3DRenderer = .openGL
+        }
+        if application.storeProvider == .gog,
            application.storeExternalID == "2015389384" {
             // Discard renderer choices persisted by the earlier D9VK and
             // WineD3D/Vulkan recovery attempts. The built-in profile above

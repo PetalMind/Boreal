@@ -38,6 +38,9 @@ actor WineMSyncBuilder {
         for key in ["CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "SDKROOT", "ARCHFLAGS"] {
             environment.removeValue(forKey: key)
         }
+        // Wine 9.15 uses identifiers such as `bool` that became keywords in C23.
+        // Its configure script applies CROSSCFLAGS to both Windows architectures.
+        environment["CROSSCFLAGS"] = "-g -O2 -std=gnu17"
         await progress(String(localized: "Checking Wine build tools and x86_64 libraries…"))
         let requiredTools = ["bison", "flex", "make", "pkg-config", "x86_64-w64-mingw32-gcc", "i686-w64-mingw32-gcc"]
         let missingTools = requiredTools.filter { name in
@@ -89,6 +92,22 @@ actor WineMSyncBuilder {
         try await run("patch-check", executable: "/usr/bin/patch", arguments: ["--dry-run"] + patchArguments, directory: source, environment: environment, logs: logs)
         try await run("patch", executable: "/usr/bin/patch", arguments: patchArguments, directory: source, environment: environment, logs: logs)
 
+        // Newer binutils make .idata read-only. Backport Wine's paired fixes
+        // so delay-load IAT writes use .data and negative IAT offsets stay valid.
+        let compatibilityPatches = [
+            (revision: "fd59962827a715d321f91c9bdb43f3e61f9ebbcb", name: "signed-delay-iat", sha256: "44a51734ef42fe88d9a0ff9a743a4884306de69f26d594d778cf7c15627e749f"),
+            (revision: "c9519f68ea04915a60704534ab3afec5ec1b8fd7", name: "writable-delay-imports", sha256: "e4d98232241b01beea4f5608ccee1233533d9be8482bff0e91c8d8286b0911ef")
+        ]
+        var compatibilityInputs: [URL] = []
+        for fix in compatibilityPatches {
+            let input = workspace.appending(path: fix.name + ".patch")
+            try await download("https://github.com/wine-mirror/wine/commit/\(fix.revision).patch", sha256: fix.sha256, to: input)
+            let arguments = ["--batch", "--forward", "--fuzz=0", "-p1", "-i", input.path]
+            try await run("patch-check-" + fix.name, executable: "/usr/bin/patch", arguments: ["--dry-run"] + arguments, directory: source, environment: environment, logs: logs)
+            try await run("patch-" + fix.name, executable: "/usr/bin/patch", arguments: arguments, directory: source, environment: environment, logs: logs)
+            compatibilityInputs.append(input)
+        }
+
         let build = workspace.appending(path: "Build", directoryHint: .isDirectory)
         let install = workspace.appending(path: "Install", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: build, withIntermediateDirectories: true)
@@ -122,11 +141,12 @@ actor WineMSyncBuilder {
         if requestedPrefix == nil {
             try await dependencies.bundle(from: dependencyPrefix, into: resources.appending(path: "wine/lib"), provenance: provenance, logs: logs)
         }
-        for input in [sourceArchive, patch] {
+        for input in [sourceArchive, patch] + compatibilityInputs {
             try fileManager.copyItem(at: input, to: provenance.appending(path: input.lastPathComponent))
         }
         let receipt: [String: String] = [
             "wineVersion": Self.wineVersion, "msyncRevision": Self.patchRevision,
+            "compatibilityRevisions": compatibilityPatches.map(\.revision).joined(separator: ","),
             "dependencyPrefix": dependencyPrefix.path,
             "sourceProject": "https://github.com/wine-mirror/wine",
             "patchProject": "https://github.com/marzent/wine-msync",

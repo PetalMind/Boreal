@@ -350,6 +350,9 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
     case noBuildsFound
     case invalidResponse
     case installationIncomplete(StoreGameInstallationPlatform)
+    case installationFolderMissing(String)
+    case launchManifestMissing(String)
+    case launchManifestInvalid(String)
     case invalidLaunchPlan(String)
 
     var errorDescription: String? {
@@ -408,6 +411,12 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
         case .invalidResponse: "GOG returned data in an unsupported format."
         case .installationIncomplete(let platform):
             "GOG finished without creating a valid \(platform == .nativeMacOS ? "macOS" : "Windows") game installation."
+        case .installationFolderMissing(let path):
+            "The GOG installation folder is missing. Reconnect the disk or locate the installed game again: \(path)"
+        case .launchManifestMissing(let path):
+            "The GOG launch manifest is missing or unreadable. Locate the correct installation or verify the game files: \(path)"
+        case .launchManifestInvalid(let path):
+            "The GOG launch manifest contains invalid data. Verify the game files: \(path)"
         case .invalidLaunchPlan(let detail): "The installed GOG game has an unsafe or incomplete launch task: \(detail)"
         }
     }
@@ -1222,6 +1231,10 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         _ = environment
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.invalidLaunchPlan("invalid game ID") }
         let requestedDirectory = installationURL.resolvingSymlinksInPath().standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: requestedDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw GOGServiceError.installationFolderMissing(requestedDirectory.path)
+        }
         let gameDirectory: URL
         if fileManager.fileExists(atPath: requestedDirectory.appending(path: "goggame-\(appID).info").path) {
             gameDirectory = requestedDirectory
@@ -1236,9 +1249,13 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             gameDirectory = requestedDirectory
         }
         let infoURL = gameDirectory.appending(path: "goggame-\(appID).info")
-        guard let data = try? Data(contentsOf: infoURL),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tasks = root["playTasks"] as? [[String: Any]],
+        guard let data = try? Data(contentsOf: infoURL) else {
+            throw GOGServiceError.launchManifestMissing(infoURL.path)
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GOGServiceError.launchManifestInvalid(infoURL.path)
+        }
+        guard let tasks = root["playTasks"] as? [[String: Any]],
               let primaryTask = tasks.first(where: { ($0["isPrimary"] as? Bool) == true && ($0["type"] as? String) != "URLTask" })
                 ?? tasks.first(where: { ($0["type"] as? String) != "URLTask" }),
               let primaryRelativeExecutable = primaryTask["path"] as? String,

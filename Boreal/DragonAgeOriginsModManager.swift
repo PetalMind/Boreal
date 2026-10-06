@@ -160,10 +160,31 @@ nonisolated enum DragonAgeOriginsAdapter {
         try fileManager.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
         let configurationURL = settingsDirectory.appending(path: "DragonAge.ini")
 
-        let originalData = try? Data(contentsOf: configurationURL)
-        let original = originalData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        // An unreadable file must never be mistaken for an empty configuration:
+        // Documents can be protected by macOS privacy permissions.
+        let originalData: Data?
+        do {
+            originalData = try Data(contentsOf: configurationURL)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            originalData = nil
+        }
+        let encoding: String.Encoding
+        if let originalData, originalData.starts(with: [0xff, 0xfe]) || originalData.starts(with: [0xfe, 0xff]) {
+            encoding = .utf16
+        } else {
+            encoding = .utf8
+        }
+        let original: String
+        if let originalData {
+            guard let decoded = String(data: originalData, encoding: encoding) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            original = decoded
+        } else {
+            original = ""
+        }
         let newline = original.contains("\r\n") ? "\r\n" : "\n"
-        let updated = updatingINISection(
+        var updated = updatingINISection(
             original,
             section: "VideoOptions",
             values: [
@@ -173,15 +194,63 @@ nonisolated enum DragonAgeOriginsAdapter {
             ],
             newline: newline
         )
+
+        // Apply the performance baseline once in the game's own INI, rather
+        // than once per Wine prefix (Documents may be shared across prefixes).
+        // Subsequent user choices remain editable in DAOriginsConfig.exe.
+        if iniValue(in: original, section: "Boreal", key: "OpenGLPerformanceVersion") != "1" {
+            let currentDetail = iniValue(in: original, section: "VideoOptions", key: "GraphicsDetailLevel")
+                .flatMap(Int.init) ?? 1
+            var values = [
+                "UseVSync": "0",
+                "GraphicsDetailLevel": String(min(max(currentDetail, 0), 1))
+            ]
+            if let width = iniValue(in: original, section: "VideoOptions", key: "ResolutionWidth").flatMap(Int.init),
+               let height = iniValue(in: original, section: "VideoOptions", key: "ResolutionHeight").flatMap(Int.init),
+               width >= 800, height >= 600 {
+                let scale = min(1.0, min(1600.0 / Double(width), 1000.0 / Double(height)))
+                let scaledWidth = Int((Double(width) * scale).rounded())
+                let scaledHeight = Int((Double(height) * scale).rounded())
+                if scale < 1, scaledWidth >= 800, scaledHeight >= 600 {
+                    values["ResolutionWidth"] = String(scaledWidth)
+                    values["ResolutionHeight"] = String(scaledHeight)
+                }
+            }
+            updated = updatingINISection(updated, section: "VideoOptions", values: values, newline: newline)
+            updated = updatingINISection(
+                updated, section: "Boreal", values: ["OpenGLPerformanceVersion": "1"], newline: newline
+            )
+        }
         guard updated != original else { return }
 
         if let originalData {
+            let performanceBackup = settingsDirectory.appending(path: "DragonAge.ini.boreal-before-opengl-performance-v1")
+            if !fileManager.fileExists(atPath: performanceBackup.path) {
+                try originalData.write(to: performanceBackup, options: .atomic)
+            }
             let backupURL = settingsDirectory.appending(path: "DragonAge.ini.boreal-before-opengl-framebuffer-fix")
             if !fileManager.fileExists(atPath: backupURL.path) {
                 try originalData.write(to: backupURL, options: .atomic)
             }
         }
-        try updated.data(using: .utf8)?.write(to: configurationURL, options: .atomic)
+        guard let updatedData = updated.data(using: encoding) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        try updatedData.write(to: configurationURL, options: .atomic)
+    }
+
+    private static func iniValue(in source: String, section: String, key: String) -> String? {
+        var inSection = false
+        for line in source.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("["), trimmed.hasSuffix("]") {
+                inSection = trimmed.caseInsensitiveCompare("[\(section)]") == .orderedSame
+            } else if inSection, let separator = trimmed.firstIndex(of: "="),
+                      trimmed[..<separator].trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(key) == .orderedSame {
+                return trimmed[trimmed.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
     }
 
     private static func updatingINISection(
@@ -214,8 +283,9 @@ nonisolated enum DragonAgeOriginsAdapter {
             for index in (sectionStart + 1)..<insertionIndex {
                 guard let separator = lines[index].firstIndex(of: "=") else { continue }
                 let key = lines[index][..<separator].trimmingCharacters(in: .whitespaces)
-                guard let matchedKey = pending.keys.first(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) else { continue }
-                lines[index] = "\(matchedKey)=\(pending.removeValue(forKey: matchedKey)!)"
+                guard let matchedKey = values.keys.first(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) else { continue }
+                lines[index] = "\(matchedKey)=\(values[matchedKey]!)"
+                pending.removeValue(forKey: matchedKey)
             }
         }
         lines.insert(contentsOf: pending.keys.sorted().map { "\($0)=\(pending[$0]!)" }, at: insertionIndex)

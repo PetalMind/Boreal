@@ -16,6 +16,9 @@ nonisolated enum InstallationStateResolver {
         let persistedLocation = StoragePathResolver.resolve(installation.location, layout: layout)
         if location.standardizedFileURL.path != persistedLocation.standardizedFileURL.path {
             resolved.location = StoragePathResolver.location(for: location, layout: layout)
+            if fileManager.fileExists(atPath: location.path) {
+                resolved.volumeIdentity = InstallationVolumeIdentity.capture(at: location, location: resolved.location)
+            }
             resolved.updatedAt = .now
         }
         let nextState = resolveState(installation, layout: layout, fileManager: fileManager)
@@ -62,13 +65,16 @@ nonisolated enum InstallationStateResolver {
         guard case .external = installation.location,
               let identity = installation.volumeIdentity else { return persisted }
 
+        var volumeLocation: URL?
         if let volumeUUID = identity.volumeUUID,
            let volumeURL = mountedVolumeURL(withUUID: volumeUUID, fileManager: fileManager),
            let relativePath = identity.relativePath {
             let relative = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            return relative.isEmpty
+            let candidate = relative.isEmpty
                 ? volumeURL.standardizedFileURL
                 : volumeURL.appendingPathComponent(relative, isDirectory: true).standardizedFileURL
+            volumeLocation = candidate
+            if fileManager.fileExists(atPath: candidate.path) { return candidate }
         }
 
         if let bookmark = identity.securityScopedBookmark {
@@ -78,11 +84,18 @@ nonisolated enum InstallationStateResolver {
                 options: [.withoutUI, .withSecurityScope],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
-            ), !isStale {
+            ), fileManager.fileExists(atPath: bookmarked.path) {
                 return bookmarked.standardizedFileURL
             }
         }
-        return persisted
+        if fileManager.fileExists(atPath: persisted.path) {
+            // Do not adopt a different disk mounted under the old disk's name.
+            let persistedVolumeUUID = try? persisted.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+            if identity.volumeUUID == nil || persistedVolumeUUID == identity.volumeUUID {
+                return persisted
+            }
+        }
+        return volumeLocation ?? persisted
     }
 
     private static func mountedVolumeUUIDs(fileManager: FileManager) -> Set<String> {

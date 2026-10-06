@@ -1110,6 +1110,9 @@ actor RuntimeManager: RuntimeManaging {
         environment["WINEPREFIX"] = prefix.path
         environment["WINEMSYNC"] = "1"
         environment["WINEDEBUG"] = "-all"
+        // This probe checks Wine/MSync startup, without interactive downloads
+        // of optional Mono and Gecko components in its disposable prefix.
+        environment["WINEDLLOVERRIDES"] = "mscoree,mshtml=d"
         // The devel recipe contains MSync without ESync.
         let request = ProcessLaunchRequest(
             executable: runtime.wineExecutable, arguments: ["wineboot", "--init"],
@@ -1130,7 +1133,11 @@ actor RuntimeManager: RuntimeManaging {
             let result = try await processExecutor.waitForExit(receipt.id)
             let output = (try? String(contentsOf: request.stderrLog, encoding: .utf8)) ?? ""
             guard result.exitCode == 0, output.contains("msync: up and running.") else {
-                throw RuntimeManagerError.localRuntimeInvalid("MSync did not confirm startup in the isolated prefix. Logs: \(logs.path)")
+                let reason = output.contains("msync: up and running.")
+                    ? "MSync started, but Wine failed to initialize the isolated prefix."
+                    : "MSync did not confirm startup in the isolated prefix."
+                let diagnostics = output.split(separator: "\n").suffix(12).joined(separator: "\n")
+                throw RuntimeManagerError.localRuntimeInvalid("\(reason) Exit code: \(result.exitCode).\n\(diagnostics)\nLogs: \(logs.path)")
             }
         } catch {
             await stopWineServer(runtime, environment: environment, prefix: prefix)
