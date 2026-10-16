@@ -200,6 +200,11 @@ nonisolated struct LibraryItem: Identifiable, Hashable, Sendable {
     var statusText: String { status.searchTitle }
     var localizedStatusText: LocalizedStringResource { status.title }
 
+    var localizedCompatibilityText: LocalizedStringResource {
+        if supportsNativeMacOS { return .Compatibility.nativeTitle }
+        return compatibility == .unknown ? .Library.notProvided : compatibility.localizedTitle
+    }
+
     var favoriteKey: String {
         switch kind {
         case .application(let app): "application:\(app.id.uuidString)"
@@ -1253,9 +1258,12 @@ struct LibraryView: View {
 
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top) {
-                        Label(item.localizedStatusText, systemImage: statusSymbol(item))
+                        Label(
+                            item.localizedCompatibilityText,
+                            systemImage: item.supportsNativeMacOS ? "apple.logo" : item.compatibility.symbol
+                        )
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(statusColor(item))
+                            .foregroundStyle(compatibilityColor(item))
                             .padding(.horizontal, 9)
                             .padding(.vertical, 6)
                             .background(.black.opacity(0.58), in: Capsule())
@@ -1278,7 +1286,7 @@ struct LibraryView: View {
 
                             HStack(spacing: 8) {
                                 Label(
-                                    item.readyToPlay ? .Library.installed : item.localizedStatusText,
+                                    item.readyToPlay ? .Library.installed : (item.status == .available ? .Library.notInstalled : item.localizedStatusText),
                                     systemImage: item.readyToPlay ? "checkmark.circle.fill" : statusSymbol(item)
                                 )
                                     .foregroundStyle(item.readyToPlay ? .green : statusColor(item))
@@ -1336,7 +1344,7 @@ struct LibraryView: View {
                 hovering: hovering,
                 cornerRadius: isSelectedTransitionItem(item) ? 20 : 15,
                 contextMenu: contextMenu,
-                accessibilityText: "\(item.name), \(item.source.title), \(item.localizedStatusText)",
+                accessibilityText: "\(item.name), \(item.source.title), \(item.localizedCompatibilityText), \(item.localizedStatusText)",
                 reduceMotion: reduceMotion
             )
         )
@@ -1690,7 +1698,11 @@ struct LibraryView: View {
                 store.toggleRunning(app.id)
             }
         case .storeGame(let game):
-            if let app = store.linkedApplication(for: game) {
+            if game.provider == .steam, store.usesSteamOnM1Wine, store.isInstalled(game),
+               store.linkedApplication(for: game)?.status != .running,
+               let url = URL(string: "steam://rungameid/\(game.externalID)") {
+                store.openSteam(url, launchArguments: store.linkedApplication(for: game)?.resolvedCompatibilityProfile.parsedLaunchArguments ?? [])
+            } else if let app = store.linkedApplication(for: game) {
                 if app.status == .needsAttention || app.status == .unavailable || app.status.isBusy {
                     selectStoreGameAction(game.id)
                 } else {
@@ -1698,7 +1710,7 @@ struct LibraryView: View {
                 }
             } else if game.provider == .steam, store.isInstalled(game),
                       let url = URL(string: "steam://rungameid/\(game.externalID)") {
-                if !NSWorkspace.shared.open(url) {
+                if !store.openSteam(url) {
                     // A Steam catalog entry can exist without a registered
                     // Steam URL handler. Keep the action useful by opening the
                     // game details instead of silently doing nothing.
@@ -1741,6 +1753,17 @@ struct LibraryView: View {
         if item.needsAttention { return .orange }
         if item.readyToPlay { return .green }
         return .secondary
+    }
+
+    private func compatibilityColor(_ item: LibraryItem) -> Color {
+        if item.supportsNativeMacOS { return .mint }
+        switch item.compatibility {
+        case .excellent: return .green
+        case .good: return .teal
+        case .limited: return .orange
+        case .unsupported: return .red
+        case .unknown: return .white.opacity(0.72)
+        }
     }
 
     private func playtime(_ minutes: Int?) -> LocalizedStringResource {

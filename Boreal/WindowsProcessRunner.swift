@@ -226,7 +226,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             let bounds = CGDisplayBounds(candidate)
             return CGDisplayIsOnline(candidate) != 0 && !bounds.isEmpty ? candidate : nil
         } ?? CGMainDisplayID()
-        var launchPlan = plan
+        var launchPlan = CounterStrike16Compatibility.applying(to: plan, runtime: runtime)
         let cleoRuntime = GTASACLEOLaunchSupport.runtime(for: plan)
         if let cleoExecutable = cleoRuntime?.executable {
             // CLEO resolves its boot directory and relative configuration
@@ -271,7 +271,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
             runtime: runtime,
             loggingLevel: launchPlan.wineLoggingLevel
         )
-        processEnvironment.merge(plan.environment) { _, providerValue in providerValue }
+        processEnvironment.merge(launchPlan.environment) { _, providerValue in providerValue }
         WineProcessEnvironment.applySynchronization(
             to: &processEnvironment, configuration: environment.configuration, features: runtime.features
         )

@@ -386,8 +386,17 @@ nonisolated enum CompatibilityPreparationResolver {
         userProfile: WineCompatibilityProfile,
         gameProfile: GameGraphicsProfile?
     ) -> GraphicsAPI {
-        if let user = userProfile.graphicsAPI, user != .automatic {
+        let wrapper = gameProfile?.enforcedLegacyWrapper ?? userProfile.legacyWrapper
+        if let user = userProfile.graphicsAPI, user != .automatic,
+           wrapper == .none || (user != .directDraw && user != .directX8) {
             return user
+        }
+        // The renderer consumes the wrapper's output API, not the old API
+        // imported by the game. Manual API choices still take precedence.
+        switch wrapper {
+        case .dd7to9: return .directX9
+        case .dgVoodoo2, .borealLegacyGraphics: return .directX11
+        case .none: break
         }
         if let enforced = gameProfile?.enforcedAPI, enforced != .automatic { return enforced }
         if let preferred = gameProfile?.defaultAPI, preferred != .automatic { return preferred }
@@ -400,6 +409,7 @@ nonisolated enum CompatibilityPreparationResolver {
         gameProfile: GameGraphicsProfile?,
         runtime: InstalledRuntime,
         architecture: WinePrefixArchitecture,
+        executableArchitecture: WinePrefixArchitecture? = nil,
         fallback: WineGraphicsFallback = .none
     ) -> GraphicsStackResolution {
         GraphicsBackendResolver.resolve(
@@ -408,6 +418,7 @@ nonisolated enum CompatibilityPreparationResolver {
             gameProfile: gameProfile,
             runtime: runtime,
             architecture: architecture,
+            executableArchitecture: executableArchitecture,
             fallback: fallback
         )
     }
@@ -435,6 +446,7 @@ nonisolated enum CompatibilityPreparationResolver {
             gameProfile: gameProfile,
             runtime: runtime,
             architecture: prefixArchitecture,
+            executableArchitecture: primary.architecture == .x86 ? .win32 : .win64,
             fallback: userProfile.graphicsFallback
         )
         guard resolution.isAvailable else {
@@ -522,7 +534,9 @@ nonisolated enum CompatibilityPreparationResolver {
             requestedBackend: request.requestedBackend,
             gameProfile: request.gameProfile,
             runtime: runtime,
-            architecture: prefixArchitecture
+            architecture: prefixArchitecture,
+            executableArchitecture: request.architectures.count == 1
+                ? (request.architectures.first == .x86 ? .win32 : .win64) : nil
         )
         return resolution.isAvailable
     }
@@ -539,7 +553,9 @@ nonisolated enum CompatibilityPreparationResolver {
             requestedBackend: request.requestedBackend,
             gameProfile: request.gameProfile,
             runtime: runtime,
-            architecture: prefixArchitecture
+            architecture: prefixArchitecture,
+            executableArchitecture: request.architectures.count == 1
+                ? (request.architectures.first == .x86 ? .win32 : .win64) : nil
         ).score
         return score
     }

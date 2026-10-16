@@ -3,7 +3,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 private func compatibilityLocalizedBackendName(_ backend: WineGraphicsBackend) -> String {
-    backend == .automatic ? String(localized: "Automatic") : backend.displayName
+    switch backend {
+    case .automatic: String(localized: "Automatic")
+    case .dxvk: "DXVK (MoltenVK)"
+    case .wineD3D: "WineD3D (Compatibility)"
+    default: backend.displayName
+    }
 }
 
 private func compatibilityLocalizedGraphicsAPIName(_ api: GraphicsAPI) -> String {
@@ -184,6 +189,9 @@ struct WineCompatibilityConfigurator: View {
     @State private var saveError: String?
     @State private var temporalInspector: TemporalUpscalingInspectorSnapshot?
     @State private var environmentPrefixMode: WinePrefixMode?
+    @State private var graphicsRuntimes: [InstalledRuntime]?
+    @State private var graphicsExecutableDigest: String?
+
     @AppStorage("developerMode") private var developerMode = false
 
     private var motion: BorealMotionEnvironment {
@@ -260,10 +268,20 @@ struct WineCompatibilityConfigurator: View {
             .frame(minWidth: 620, idealWidth: 720, minHeight: 600, idealHeight: 760)
         }
         .onReceive(NotificationCenter.default.publisher(for: .borealRuntimeImportCompleted)) { _ in
-            Task { temporalInspector = await store.temporalUpscalingInspector(for: application.id) }
+            Task {
+                graphicsRuntimes = try? await store.installedRuntimesForGraphicsConfiguration()
+                temporalInspector = await store.temporalUpscalingInspector(for: application.id)
+            }
+        }
+        .task(id: application.executablePath) {
+            let executable = URL(fileURLWithPath: application.executablePath)
+            graphicsExecutableDigest = await Task.detached(priority: .utility) {
+                GraphicsResolutionReport.executableDigest(executable)
+            }.value
         }
         .task(id: application.environmentID) {
             environmentPrefixMode = store.configuredPrefixMode(for: currentApplication)
+            graphicsRuntimes = try? await store.installedRuntimesForGraphicsConfiguration()
             temporalInspector = await store.temporalUpscalingInspector(for: application.id)
         }
         .onChange(of: currentApplication.status) { _, status in
@@ -336,11 +354,17 @@ struct WineCompatibilityConfigurator: View {
             }
             CompatibilityPickerRow(title: "Graphics renderer", detail: graphicsBackendExplanation) {
                 Picker("Graphics renderer", selection: $profile.graphicsBackend) {
-                    ForEach(WineGraphicsBackend.allCases) { backend in Text(backendLabel(backend)).tag(backend) }
+                    Text(compatibilityLocalizedBackendName(.automatic)).tag(WineGraphicsBackend.automatic)
+                    Divider()
+                    ForEach(WineGraphicsBackend.allCases.filter { $0 != .automatic }) { backend in
+                        Text(backendLabel(backend)).tag(backend)
+                    }
                 }
+                .pickerStyle(.menu)
                 .labelsHidden()
                 .disabled(isSettingManaged(.graphicsRenderer))
             }
+            graphicsResolutionDetails
             Group {
                 if profile.graphicsBackend == .wineD3D || graphicsBackendIssue != nil {
                     VStack(alignment: .leading, spacing: 12) {
@@ -660,7 +684,7 @@ struct WineCompatibilityConfigurator: View {
                     }
                 }.padding(.top, 8)
             }
-            DisclosureGroup("Legacy compatibility") {
+            DisclosureGroup("Legacy Graphics Compatibility") {
                 VStack(spacing: 10) {
                     CompatibilityPickerRow(title: "Compatibility fix", detail: nil) {
                         Picker("Compatibility fix", selection: $profile.legacyWrapper) {
@@ -676,18 +700,20 @@ struct WineCompatibilityConfigurator: View {
                     if let legacyWrapperAvailabilityMessage {
                         CompatibilityCallout(text: legacyWrapperAvailabilityMessage, symbol: "exclamationmark.triangle.fill", tint: .orange)
                     }
-                    CompatibilityPickerRow(
-                        title: "Legacy graphics test profile",
-                        detail: selectedLegacyTestProfile.detail
-                    ) {
-                        Picker("Legacy graphics test profile", selection: legacyTestProfileBinding) {
-                            ForEach(LegacyGraphicsTestProfile.allCases) { testProfile in
-                                Text(testProfile.title)
-                                    .tag(testProfile)
-                                    .disabled(!legacyTestProfileAvailable(testProfile))
+                    if developerMode {
+                        CompatibilityPickerRow(
+                            title: "Legacy graphics test profile",
+                            detail: selectedLegacyTestProfile.detail
+                        ) {
+                            Picker("Legacy graphics test profile", selection: legacyTestProfileBinding) {
+                                ForEach(LegacyGraphicsTestProfile.allCases) { testProfile in
+                                    Text(testProfile.title)
+                                        .tag(testProfile)
+                                        .disabled(!legacyTestProfileAvailable(testProfile))
+                                }
                             }
+                            .labelsHidden()
                         }
-                        .labelsHidden()
                     }
                     if profile.legacyWrapper != .none {
                         CompatibilityPickerRow(title: "Older graphics API", detail: legacyWrapperDetail) {
@@ -869,11 +895,10 @@ struct WineCompatibilityConfigurator: View {
         if profile.graphicsBackend != .automatic {
             return compatibilityLocalizedBackendName(profile.graphicsBackend)
         }
-        if let preferred = graphicsProfile?.enforcedBackend ?? graphicsProfile?.preferredBackend {
-            return "Automatic · \(compatibilityLocalizedBackendName(preferred))"
+        if let resolved = automaticGraphicsResolution, resolved.isAvailable {
+            return "\(String(localized: "Automatic")) · \(graphicsBackendName(resolved.stack.backend))"
         }
-        let actual = currentApplication.graphics
-        return actual.isEmpty ? String(localized: "Automatic") : "Automatic · \(actual)"
+        return String(localized: "Automatic")
     }
     private var resolvedPrefixSummary: String {
         if let selected = profile.prefixMode { return compatibilityLocalizedPrefixModeName(selected) }
@@ -997,7 +1022,7 @@ struct WineCompatibilityConfigurator: View {
         return store.runtimeSelectionIssue(runtimeID, profile: profile, for: currentApplication)
     }
     private func runtimeLabel(_ runtime: RuntimeStatus) -> String {
-        "\(runtime.name) · \(runtime.engine.displayName) \(runtime.wineVersion)"
+        runtime.selectionName
     }
     private var graphicsBackendIssue: String? {
         var requestedApplication = currentApplication
@@ -1163,15 +1188,118 @@ struct WineCompatibilityConfigurator: View {
     }
 
     private var fullscreenFSRResolvedBackend: GraphicsBackend {
-        switch effectiveRequestedBackend {
+        switch profile.graphicsBackend {
         case .automatic:
-            let api = effectiveGraphicsAPI
-            if runtimeFeatures?.hasVerifiedD3DMetal == true, (api == .directX11 || api == .directX12) { return .d3dMetal }
-            if runtimeFeatures?.dxvk == true, api != .directX12 { return .dxvk }
-            if runtimeFeatures?.vkd3d == true, api == .directX12 { return .vkd3d }
-            if runtimeFeatures?.dxmt == true { return .dxmt }
-            return .wineD3D
+            return automaticGraphicsResolution?.stack.backend ?? .wineD3D
         default: return profile.graphicsBackend
+        }
+    }
+    @ViewBuilder
+    private var graphicsResolutionDetails: some View {
+    if let report = graphicsResolutionReport {
+        HStack {
+            Text(resolvedRendererSummary).font(.caption.weight(.semibold))
+            Spacer()
+        }
+        DisclosureGroup("Graphics resolution details") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("\(report.runtimeName) · \(report.runtimeVersion)")
+                Text("\(report.executableArchitecture.rawValue) · \(report.effectiveAPI.displayName)")
+                Text("\(String(localized: "Detection confidence")): \(report.detectedAPI.confidence.rawValue)")
+                Text(report.apiReason).foregroundStyle(.secondary)
+                ForEach(report.detectedAPI.evidence) { evidence in
+                    Text("• \(evidence.detail)").font(.caption)
+                }
+                Text(report.selected.reasons.joined(separator: "\n")).font(.caption)
+                Text("\(String(localized: "Fallback plan")): \(report.fallbackPlan.map { $0.stack.backend.displayName }.joined(separator: " → "))")
+                    .font(.caption)
+                ForEach(report.assessments) { assessment in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(graphicsBackendName(assessment.backend))\(assessment.componentVersion.map { " " + $0 } ?? "") · \(assessment.status.title)")
+                            .font(.caption.weight(.semibold))
+                        Text(assessment.reasons.joined(separator: "\n"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if !(currentApplication.graphicsCompatibilityResults ?? []).isEmpty {
+                    Text("Observed game processes are recorded separately from verified graphics rendering.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Clear learned graphics results") {
+                        store.clearLearnedGraphicsResults(for: application.id)
+                    }
+                    .disabled(currentApplication.status.isBusy || currentApplication.status == .running)
+                }
+            }.padding(.top, 8)
+        }
+    }
+    }
+
+    private var graphicsResolutionReport: GraphicsResolutionReport? {
+        if (currentApplication.status == .running || currentApplication.status.isBusy),
+           profile == store.compatibilityProfile(for: currentApplication),
+           let launched = currentApplication.lastGraphicsResolution {
+            return launched
+        }
+        guard let graphicsRuntimes else { return nil }
+        let runtimeID = profile.runtimeIDOverride ?? store.configuredGraphicsRuntimeID(for: currentApplication)
+        guard let runtime = graphicsRuntimes.first(where: { $0.id == runtimeID }) else { return nil }
+        let requestedArchitecture: WinePrefixArchitecture = WindowsExecutableArchitecture.inspect(
+            URL(fileURLWithPath: application.executablePath)
+        ) == .x86 ? .win32 : profile.architecture
+        let mode = WinePrefixMode.resolve(
+            requestedMode: profile.prefixMode, requestedArchitecture: requestedArchitecture.rawValue,
+            runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
+        )
+        return GraphicsResolutionReport.make(
+            executable: URL(fileURLWithPath: application.executablePath),
+            profile: profile, gameProfile: graphicsProfile, runtime: runtime,
+            architecture: mode == .legacyWin32 ? .win32 : .win64,
+            componentReferences: store.configuredGraphicsComponentReferences(for: currentApplication),
+            learnedResults: currentApplication.graphicsCompatibilityResults ?? [],
+            executableSHA256: graphicsExecutableDigest
+        )
+    }
+
+    private var automaticGraphicsResolution: GraphicsStackResolution? {
+        graphicsResolutionReport?.selected
+    }
+
+    private func graphicsBackendName(_ backend: GraphicsBackend) -> String {
+        effectiveGraphicsAPI == .openGL && backend == .wineD3D
+            ? "Wine OpenGL" : compatibilityLocalizedBackendName(backend)
+    }
+
+    private func graphicsResolutions(for backend: GraphicsBackend, gameProfile: GameGraphicsProfile? = nil) -> [GraphicsStackResolution] {
+        guard let graphicsRuntimes else { return [] }
+        let requestedArchitecture = WindowsExecutableArchitecture.inspect(URL(fileURLWithPath: application.executablePath)) == .x86
+            ? WinePrefixArchitecture.win32 : profile.architecture
+        return graphicsRuntimes.compactMap { runtime in
+            if let selectedID = profile.runtimeIDOverride, runtime.id != selectedID { return nil }
+            let requiredEngine = GameRuntimeProfiles.requiredEngine(for: application) ?? backend.requiredEngine
+            if let requiredEngine, runtime.resolvedEngine != requiredEngine { return nil }
+            let prefixMode = WinePrefixMode.resolve(
+                requestedMode: profile.prefixMode,
+                requestedArchitecture: requestedArchitecture.rawValue,
+                runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
+            )
+            let request = RuntimeSelectionRequest(
+                architectures: [requestedArchitecture == .win32 ? .x86 : .x86_64],
+                prefixMode: profile.prefixMode,
+                requestedBackend: backend,
+                directXAPI: effectiveGraphicsAPI,
+                gameProfile: gameProfile,
+                requiredEngine: requiredEngine
+            )
+            guard CompatibilityPreparationResolver.runtimeSatisfies(runtime, request: request) else { return nil }
+            return GraphicsBackendResolver.resolve(
+                api: effectiveGraphicsAPI,
+                requestedBackend: backend,
+                gameProfile: gameProfile,
+                runtime: runtime,
+                architecture: prefixMode == .legacyWin32 ? .win32 : .win64,
+                executableArchitecture: requestedArchitecture,
+                fallback: profile.graphicsFallback
+            )
         }
     }
     private var fullscreenFSRStackSupportLevel: FullscreenFSRSupportLevel {
@@ -1223,7 +1351,70 @@ struct WineCompatibilityConfigurator: View {
             && fullscreenFSRCapabilities.confidence == .verified
             && fullscreenFSRStackSupportLevel == .verified
     }
-    private func backendLabel(_ backend: WineGraphicsBackend) -> String { store.graphicsBackendIssue(backend, for: application) == nil ? compatibilityLocalizedBackendName(backend) : compatibilityLocalizedBackendName(backend) + " · " + String(localized: "Unavailable") }
+    private func backendLabel(_ backend: WineGraphicsBackend) -> String {
+        let name = graphicsBackendName(backend)
+        if let assessment = graphicsResolutionReport?.assessments.first(where: { $0.backend == backend }) {
+            return name + " · " + assessment.status.title
+        }
+        guard let reason = backendUnavailableReason(backend) else { return name }
+        return name + " · " + reason
+    }
+
+    private func backendUnavailableReason(_ backend: WineGraphicsBackend) -> String? {
+        guard backend != .automatic else { return nil }
+        let executableArchitecture = WindowsExecutableArchitecture.inspect(URL(fileURLWithPath: application.executablePath))
+        if backend == .d3dMetal, executableArchitecture == .x86 || profile.architecture == .win32 {
+            return String(localized: "Requires 64-bit")
+        }
+        if let stack = GraphicsStackCatalog.stack(for: backend),
+           effectiveGraphicsAPI != .automatic,
+           !stack.supportedAPIs.contains(effectiveGraphicsAPI) {
+            return String(localized: "Unavailable for this API")
+        }
+        if let runtimeID = profile.runtimeIDOverride,
+           let runtime = availableRuntimes.first(where: { $0.id == runtimeID }) {
+            if backend == .d3dMetal, runtime.engine != .gamePortingToolkit {
+                return String(localized: "Requires GPTK")
+            }
+            if let requiredEngine = backend.requiredEngine, runtime.engine != requiredEngine {
+                return String(localized: "Unavailable in this runtime")
+            }
+            switch backend {
+            case .d3dMetal where runtime.features?.hasVerifiedD3DMetal != true:
+                return String(localized: "Not verified in this runtime")
+            case .dxmt where runtime.features?.dxmt != true,
+                 .dxvk where runtime.features?.dxvk != true,
+                 .vkd3d where runtime.features?.vkd3d != true:
+                return String(localized: "Unavailable in this runtime")
+            case .dxmt where runtime.features?.d3d11Verified != true:
+                return String(localized: "Not verified in this runtime")
+            default: break
+            }
+            if store.runtimeSelectionIssue(runtimeID, profile: profileForBackend(backend), for: currentApplication) != nil {
+                return String(localized: "Unavailable in this runtime")
+            }
+        }
+        if store.graphicsBackendIssue(backend, for: currentApplication) != nil {
+            if backend == .d3dMetal, !store.hasInstalledRuntime(engine: .gamePortingToolkit) {
+                return String(localized: "Requires GPTK")
+            }
+            return String(localized: "Unavailable")
+        }
+        if graphicsRuntimes != nil,
+           !graphicsResolutions(for: backend).contains(where: \.isAvailable) {
+            return profile.runtimeIDOverride == nil
+                ? String(localized: "Unavailable")
+                : String(localized: "Unavailable in this runtime")
+        }
+        return nil
+    }
+
+    private func profileForBackend(_ backend: WineGraphicsBackend) -> WineCompatibilityProfile {
+        var candidate = profile
+        candidate.graphicsBackend = backend
+        return candidate
+    }
+
     private var selectableGraphicsAPIs: [GraphicsAPI] {
         return GraphicsAPI.allCases.filter { $0 != .automatic }
     }
@@ -1251,16 +1442,16 @@ struct WineCompatibilityConfigurator: View {
             return "Automatic uses the game profile's \(compatibilityLocalizedBackendName(preferredBackend)) preference. Choose another renderer to override it."
         }
         return switch profile.graphicsBackend {
-        case .automatic: String(localized: "Chooses an available renderer for this game.")
+        case .automatic: String(localized: "Chooses an available renderer for the game's API. DirectX 11 prefers DXMT, then DXVK, then D3DMetal. DirectX 12 prefers D3DMetal, then VKD3D-Proton. Known game compatibility rules take precedence.")
         case .d3dMetal: String(localized: "For DirectX 11 and 12. Requires Game Porting Toolkit.")
         case .dxmt: String(localized: "Runs DirectX 11 using Metal. Requires DXMT support.")
-        case .dxvk: String(localized: "Runs DirectX 9, 10, and 11 when the managed Vulkan component supplies the required DLLs.")
+        case .dxvk: String(localized: "Runs DirectX 8, 9, 10, and 11 when the managed Vulkan component supplies the required DLLs.")
         case .vkd3d: String(localized: "Runs DirectX 12 using Vulkan. Requires VKD3D-Proton.")
         case .wineD3D: String(localized: "A fallback to try if other renderers cause graphics problems.")
         }
     }
     private var graphicsAPIExplanation: String {
-        return String(localized: "Choose the DirectX version Boreal should prepare the renderer for. A game changes its own API only when a verified game-specific launch option exists; otherwise change it in the game itself.")
+        return String(localized: "Choose the graphics API Boreal should prepare for. Legacy wrappers use their output API to choose a renderer. A game changes its own API only when a verified game-specific launch option exists; otherwise change it in the game itself.")
     }
     private var effectiveRequestedBackend: WineGraphicsBackend {
         GameGraphicsProfiles.requestedBackend(profile.graphicsBackend, for: graphicsProfile)

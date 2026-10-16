@@ -1995,6 +1995,12 @@ struct StoreGameDetailView: View {
                 }
             } else if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
+            } else if game.provider == .steam, store.usesSteamOnM1Wine, linkedApplication?.status != .running {
+                GamePrimaryActionButton(
+                    title: store.isInstalled(currentGame) ? String(localized: .Library.play) : String(localized: .Library.install),
+                    symbol: store.isInstalled(currentGame) ? "play.fill" : "arrow.down.circle.fill",
+                    state: .ready, action: openSteam
+                )
             } else if store.installation(for: currentGame)?.state == .volumeUnavailable {
                 primaryStatusButton("Volume unavailable", symbol: "externaldrive.badge.xmark")
             } else if game.provider == .steam {
@@ -3674,8 +3680,8 @@ struct StoreGameDetailView: View {
     }
 
     private func openSteam() {
-        let action = store.isInstalled(currentGame) ? "rungameid" : (currentGame.supportsNativeMacOS == true ? "install" : "store")
-        if action == "rungameid", store.installedPlatform(for: currentGame) == .nativeMacOS, let path = store.installedLocation(for: currentGame)?.path {
+        let action = store.isInstalled(currentGame) ? "rungameid" : (store.usesSteamOnM1Wine || currentGame.supportsNativeMacOS == true ? "install" : "store")
+        if !store.usesSteamOnM1Wine, action == "rungameid", store.installedPlatform(for: currentGame) == .nativeMacOS, let path = store.installedLocation(for: currentGame)?.path {
             GameOverlayController.shared.expectNativeGame(
                 name: currentGame.name,
                 installationURL: URL(fileURLWithPath: path, isDirectory: true),
@@ -3683,7 +3689,9 @@ struct StoreGameDetailView: View {
                 storeURL: currentGame.discordStorePageURL
             )
         }
-        if let url = URL(string: "steam://\(action)/\(game.externalID)") { NSWorkspace.shared.open(url) }
+        if let url = URL(string: "steam://\(action)/\(game.externalID)") {
+            store.openSteam(url, launchArguments: linkedApplication?.resolvedCompatibilityProfile.parsedLaunchArguments ?? [])
+        }
     }
 
     private func openNativeInstallation() {
@@ -3789,7 +3797,7 @@ struct StoreGameDetailView: View {
         if let application = linkedApplication, application.usesStoreMetadataOnly {
             store.removeApplication(application.id)
         } else if game.provider == .steam {
-            if let url = URL(string: "steam://uninstall/\(game.externalID)") { NSWorkspace.shared.open(url) }
+            if let url = URL(string: "steam://uninstall/\(game.externalID)") { store.openSteam(url) }
         } else {
             store.uninstallStoreGame(currentGame)
         }

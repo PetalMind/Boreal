@@ -41,11 +41,16 @@ nonisolated struct GraphicsCompatibilityManager: Sendable {
             legacyWrapper: wrapper.wrapper,
             backend: backendManager.resolve(
                 configuration.graphicsBackend,
-                graphicsAPI: configuration.graphicsAPI ?? .automatic,
+                graphicsAPI: CompatibilityPreparationResolver.directXAPI(
+                    executable: executable,
+                    userProfile: configuration,
+                    gameProfile: GameGraphicsProfiles.profile(for: application)
+                ),
                 runtime: runtime,
                 architecture: environment.configuration.resolvedPrefixArchitecture(
                     runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
-                )
+                ),
+                executableArchitecture: WindowsExecutableArchitecture.inspect(executable) == .x86 ? .win32 : .win64
             ),
             dllOverrides: wrapper.dllOverrides,
             files: wrapper.files

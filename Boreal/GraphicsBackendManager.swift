@@ -80,7 +80,7 @@ nonisolated struct GraphicsBackendManager: Sendable {
     }
 
     private var fileManager: FileManager { .default }
-    private let supportedDLLs = Set(["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "winemetal.dll"])
+    private let supportedDLLs = Set(["d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll", "winemetal.dll"])
     private let componentStore: GraphicsComponentStore?
 
     init(componentsURL: URL? = nil) {
@@ -91,13 +91,15 @@ nonisolated struct GraphicsBackendManager: Sendable {
         _ requested: WineGraphicsBackend,
         graphicsAPI: GraphicsAPI = .automatic,
         runtime: InstalledRuntime,
-        architecture: WinePrefixArchitecture = .win64
+        architecture: WinePrefixArchitecture = .win64,
+        executableArchitecture: WinePrefixArchitecture? = nil
     ) -> WineGraphicsBackend {
         GraphicsBackendResolver.resolve(
             api: graphicsAPI,
             requestedBackend: requested,
             runtime: runtime,
-            architecture: architecture
+            architecture: architecture,
+            executableArchitecture: executableArchitecture
         ).stack.backend
     }
 
@@ -114,7 +116,8 @@ nonisolated struct GraphicsBackendManager: Sendable {
             api: configuration.api,
             requestedBackend: requested,
             runtime: runtime,
-            architecture: architecture
+            architecture: architecture,
+            executableArchitecture: WinePrefixArchitecture(rawValue: environment.configuration.architecture)
         )
         guard resolution.isAvailable else {
             throw GraphicsBackendManagerError.backendUnavailable(requested, configuration.api)
@@ -557,6 +560,8 @@ nonisolated struct GraphicsBackendManager: Sendable {
             ["d3d11", "dxgi"]
         case (.dxmt, .automatic):
             ["d3d10", "d3d10_1", "d3d10core", "d3d11", "dxgi"]
+        case (.dxvk, .directX8):
+            ["d3d8", "d3d9", "dxgi"]
         case (.dxvk, .directX9):
             ["d3d9", "dxgi"]
         case (.dxvk, .directX10):

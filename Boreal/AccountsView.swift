@@ -159,6 +159,10 @@ struct AccountsView: View {
     private var steamCard: some View {
         accountCard(provider: .steam, logo: "SteamLogo", title: "Steam",
                     subtitle: "Import your Steam library. Install and play through Steam.") {
+            if store.usesSteamOnM1Wine {
+                Label("Steam on M1 Wine", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
             Text(store.storeGames.contains(where: { $0.provider == .steam }) ? "Library imported · Sign-in managed by Steam" : "Sign in using the Steam app")
                 .foregroundStyle(.secondary)
         } actions: {
@@ -387,7 +391,7 @@ struct AccountsView: View {
 
     private func openSteamSignIn() {
         guard let url = URL(string: "steam://openmain") else { return }
-        NSWorkspace.shared.open(url)
+        store.openSteam(url)
     }
 }
 

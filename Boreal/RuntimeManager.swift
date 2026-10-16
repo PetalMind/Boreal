@@ -212,7 +212,10 @@ actor RuntimeManager: RuntimeManaging {
             // implementations into the same Wine process.
             try normalizeInstalledRuntimePayload(of: runtime)
             let refreshed = refreshingDetectedFeatures(of: runtime)
-            runtimes.append(await revalidateLegacyGPTKRuntime(refreshed))
+            var inspected = await revalidateLegacyGPTKRuntime(refreshed)
+            inspected.baseIdentity = RuntimeInventory.baseIdentity(for: inspected)
+            inspected.graphicsComponents = RuntimeInventory.graphicsComponents(for: inspected, store: componentStore)
+            runtimes.append(inspected)
         }
         return runtimes
     }
@@ -393,25 +396,38 @@ actor RuntimeManager: RuntimeManaging {
         for component in RuntimeComponent.allCases {
             releases[component] = try await latestRelease(for: component)
         }
-        return runtimes.flatMap { runtime in
-            RuntimeComponent.allCases.compactMap { component in
-                guard let release = releases[component] else { return nil }
-                let receipt = componentReceipt(component, in: runtime)
-                let state: RuntimeComponentUpdate.State
-                if let receipt {
-                    state = receipt.version == release.tagName ? .current : .available
-                } else {
-                    state = .notInstalled
-                }
-                return RuntimeComponentUpdate(
-                    runtimeID: runtime.id,
-                    runtimeName: runtime.displayName,
-                    component: component,
-                    installedVersion: receipt?.version,
-                    latestVersion: release.tagName,
-                    state: state
-                )
+        let hosts = runtimes.sorted {
+            if $0.wineVersion != $1.wineVersion {
+                return isRuntimeVersion($0.wineVersion, newerThan: $1.wineVersion)
             }
+            return $0.id < $1.id
+        }
+        // Downloads publish a shared component once. Legacy embedded copies
+        // remain intact, and games keep their pinned component references.
+        return RuntimeComponent.allCases.compactMap { component in
+            guard let release = releases[component], let runtime = hosts.first else { return nil }
+            let installedVersion = componentStore.reference(for: component)?.version
+                ?? hosts.compactMap { componentReceipt(component, in: $0)?.version }.first
+                ?? hosts.flatMap { $0.graphicsComponents ?? [] }.first {
+                    switch component {
+                    case .dxmt: $0.backend == .dxmt
+                    case .dxvk: $0.backend == .dxvk
+                    case .vkd3d: $0.backend == .vkd3d
+                    }
+                }?.version
+            let state: RuntimeComponentUpdate.State = if let installedVersion {
+                installedVersion == release.tagName ? .current : .available
+            } else {
+                .notInstalled
+            }
+            return RuntimeComponentUpdate(
+                runtimeID: runtime.id,
+                runtimeName: runtime.inventoryName,
+                component: component,
+                installedVersion: installedVersion,
+                latestVersion: release.tagName,
+                state: state
+            )
         }
     }
 
@@ -1213,7 +1229,7 @@ actor RuntimeManager: RuntimeManaging {
         try validateGPTK4Payload(in: payloadLibrary)
         try prepareDirectories()
 
-        let displayName = "Wine \(base.wineVersion) + D3DMetal \(d3dMetalVersion)"
+        let displayName = "\(base.isGPTKHost ? "GPTK" : "Wine") \(base.wineVersion) + D3DMetal \(d3dMetalVersion)"
         let composedID = localRuntimeID(
             name: "wine-\(base.wineVersion)-d3dmetal",
             version: d3dMetalVersion,
@@ -1265,7 +1281,8 @@ actor RuntimeManager: RuntimeManaging {
                     d3dmetalVerified: false,
                     dxmt: false
                 ),
-                layout: base.layout
+                layout: base.layout,
+                hostEngine: base.isGPTKHost ? .gamePortingToolkit : .wine
             )
             try validateGPTK4Candidate(candidate)
             guard !fileManager.fileExists(atPath: destination.path) else {
@@ -1772,7 +1789,8 @@ actor RuntimeManager: RuntimeManaging {
                 requirements: candidate.requirements,
                 origin: .localImport,
                 engine: candidate.engine,
-                features: detectedFeatures
+                features: detectedFeatures,
+                hostEngine: candidate.hostEngine ?? candidate.engine
             )
             try makeEncoder().encode(installed)
                 .write(to: staging.appending(path: "installed-runtime.json"), options: .atomic)
@@ -2680,20 +2698,9 @@ actor RuntimeManager: RuntimeManaging {
     }
 
     private func runtimeWithFeatures(_ runtime: InstalledRuntime, features: RuntimeFeatures) -> InstalledRuntime {
-        InstalledRuntime(
-            id: runtime.id,
-            displayName: runtime.displayName,
-            wineVersion: runtime.wineVersion,
-            rootURL: runtime.rootURL,
-            wineExecutable: runtime.wineExecutable,
-            wineServerExecutable: runtime.wineServerExecutable,
-            wineBootExecutable: runtime.wineBootExecutable,
-            architecture: runtime.architecture,
-            requirements: runtime.requirements,
-            origin: runtime.origin,
-            engine: runtime.engine,
-            features: features
-        )
+        var updated = runtime
+        updated.features = features
+        return updated
     }
 
     private func relocated(_ runtime: InstalledRuntime, from oldRoot: URL, to newRoot: URL) -> InstalledRuntime {
@@ -2701,7 +2708,7 @@ actor RuntimeManager: RuntimeManaging {
             let relative = (try? relativePath(of: url, inside: oldRoot)) ?? url.lastPathComponent
             return newRoot.appending(path: relative)
         }
-        return InstalledRuntime(id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion, rootURL: newRoot, wineExecutable: move(runtime.wineExecutable), wineServerExecutable: move(runtime.wineServerExecutable), wineBootExecutable: move(runtime.wineBootExecutable), architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin, engine: runtime.engine, features: runtime.features)
+        return InstalledRuntime(id: runtime.id, displayName: runtime.displayName, wineVersion: runtime.wineVersion, rootURL: newRoot, wineExecutable: move(runtime.wineExecutable), wineServerExecutable: move(runtime.wineServerExecutable), wineBootExecutable: move(runtime.wineBootExecutable), architecture: runtime.architecture, requirements: runtime.requirements, origin: runtime.origin, engine: runtime.engine, features: runtime.features, baseIdentity: runtime.baseIdentity, graphicsComponents: runtime.graphicsComponents, hostEngine: runtime.hostEngine)
     }
 
     private func firstExecutable(in app: URL, candidates: [String]) -> String? {
@@ -2868,7 +2875,7 @@ actor RuntimeManager: RuntimeManaging {
     ) throws -> [GraphicsLibrary] {
         let supported: Set<String> = backend == .dxmt
             ? ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll"]
-            : ["d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+            : ["d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
         return try discoverComponentLibraries(in: root, names: supported).sorted {
             if $0.architecture != $1.architecture { return String(describing: $0.architecture) < String(describing: $1.architecture) }
             return $0.url.lastPathComponent < $1.url.lastPathComponent
@@ -3068,6 +3075,7 @@ actor RuntimeManager: RuntimeManaging {
             features.supportsWin64Execution = capabilities.canRunX86_64
         }
         features.dxmt = hasGraphicsComponent("DXMT", requiredX64: ["dxgi.dll", "d3d11.dll", "winemetal.dll"], in: runtime)
+            || RuntimeInventory.hasBundledDXMT(in: runtime)
         if !features.dxmt, !features.d3dmetal {
             features.d3d11Verified = nil
             features.d3d11VerifiedArchitectures = nil
@@ -3117,7 +3125,8 @@ actor RuntimeManager: RuntimeManaging {
             requirements: runtime.requirements,
             origin: runtime.origin,
             engine: runtime.engine,
-            features: features
+            features: features,
+            hostEngine: runtime.hostEngine
         )
     }
 

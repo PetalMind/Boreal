@@ -137,6 +137,7 @@ final class BorealStore {
     private var requestedStops: Set<UUID> = []
     private var unexpectedLauncherFailures: Set<UUID> = []
     private var automaticRendererFallbacksPending: Set<UUID> = []
+    private var graphicsAttempts: [UUID: Set<GraphicsBackend>] = [:]
     private var automaticRendererFallbackLogURLs: Set<URL> = []
     private var environmentSessionStates: [UUID: EnvironmentSessionState] = [:]
     private var environmentMonitorIDs: [UUID: UUID] = [:]
@@ -1940,6 +1941,10 @@ final class BorealStore {
                    let processName = session.processExecutableName,
                    self.observedGameProcesses.insert(appID).inserted,
                    let index = self.applications.firstIndex(where: { $0.id == appID }) {
+                    if let report = self.applications[index].lastGraphicsResolution,
+                       let key = report.key(for: report.selected.stack.backend) {
+                        self.recordGraphicsResult(appID: appID, key: key, outcome: .processObserved, logURL: self.performanceLogURLs[appID])
+                    }
                     self.applications[index].lastResult = "Running \(processName)"
                     self.applications[index].lastErrorDetail = nil
                     self.save()
@@ -2992,7 +2997,18 @@ final class BorealStore {
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
 
     func installation(for game: StoreLibraryGame) -> GameInstallation? {
-        installations.first {
+        if game.provider == .steam, usesSteamOnM1Wine {
+            // This client owns its installations. Project its current manifest
+            // instead of a stale record from a previous managed Steam bottle.
+            guard let location = SteamOnM1Wine.installedGameDirectory(appID: game.externalID) else { return nil }
+            return GameInstallation(
+                id: game.id, gameID: game.id, storeReference: game.storeReference,
+                displayName: game.name,
+                location: StoragePathResolver.location(for: location, layout: storageLayout),
+                platform: .windows, preparationState: .ready
+            )
+        }
+        return installations.first {
             $0.gameID == game.id || $0.storeReference == game.storeReference
         }
     }
@@ -3695,6 +3711,11 @@ final class BorealStore {
             }
     }
 
+    func installedRuntimesForGraphicsConfiguration() async throws -> [InstalledRuntime] {
+        let readyIDs = Set(installedRuntimeStatusesForGameConfiguration().map(\.id))
+        return try await services.runtimeManager.installedRuntimes().filter { readyIDs.contains($0.id) }
+    }
+
     func runtimeSelectionIssue(
         _ runtimeID: String,
         profile: WineCompatibilityProfile,
@@ -3767,28 +3788,12 @@ final class BorealStore {
         profile.windowsVersion = WineWindowsVersion(rawValue: configuration.windowsVersion) ?? gameProfile.windowsVersion
         profile.architecture = WinePrefixArchitecture(rawValue: configuration.architecture) ?? .win64
         profile.prefixMode = configuration.prefixMode
-        profile.graphicsBackend = configuration.graphicsBackend
-        profile.graphicsAPI = configuration.graphicsAPI == .automatic ? nil : configuration.graphicsAPI
-        profile.graphicsFallback = configuration.graphicsFallback
+        profile.graphicsBackend = gameProfile.graphicsBackend
+        profile.graphicsAPI = gameProfile.graphicsAPI
+        profile.graphicsFallback = gameProfile.graphicsFallback
         profile.retinaModeEnabled = configuration.retinaModeEnabled
         profile.forceXInput = configuration.forceXInput
 
-        // Materialize automatic host selection once. This prevents the next
-        // Steam game from changing the shared prefix's renderer because its
-        // own DirectX API differs.
-        let architecture = configuration.resolvedPrefixArchitecture(
-            runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
-        )
-        let hostResolution = GraphicsBackendResolver.resolve(
-            api: configuration.graphicsAPI,
-            requestedBackend: configuration.graphicsBackend,
-            runtime: runtime,
-            architecture: architecture,
-            fallback: configuration.graphicsFallback
-        )
-        if hostResolution.isAvailable {
-            profile.graphicsBackend = hostResolution.stack.backend
-        }
         return profile
     }
 
@@ -4140,11 +4145,12 @@ final class BorealStore {
                 let gameProfile = GameGraphicsProfiles.profile(for: applicationSnapshot)
                 let analysisRoot = auxiliarySearchRoot(for: applicationSnapshot)
                 let analysis = await Task.detached(priority: .utility) {
-                    ExecutableCompatibilityAnalyzer.analyze(
+                    let discovered = ExecutableCompatibilityAnalyzer.analyze(
                         root: analysisRoot,
                         applicationName: applicationName,
                         knownPrimary: executable
                     )
+                    return CounterStrike16Compatibility.launchAnalysis(discovered, arguments: profile.parsedLaunchArguments)
                 }.value
                 guard let primary = analysis.gameExecutable else {
                     throw CompatibilityPreparationError.noGameExecutable(analysisRoot)
@@ -4776,6 +4782,35 @@ final class BorealStore {
             }
     }
 
+    var usesSteamOnM1Wine: Bool { SteamOnM1Wine.appURL != nil }
+
+    @discardableResult
+    func openSteam(_ url: URL, launchArguments: [String] = []) -> Bool {
+        guard usesSteamOnM1Wine else { return NSWorkspace.shared.open(url) }
+        Task {
+            do {
+                if SteamD3DMetalCompatibility.applies(to: url) {
+                    guard let runtime = SteamD3DMetalCompatibility.preferredRuntime(in: try await services.runtimeManager.installedRuntimes()) else {
+                        throw ProcessRunnerError.launchFailed("Sacred 2 Remaster requires a verified D3DMetal runtime. DXMT cannot supply this game's DirectX 12 device.")
+                    }
+                    let needsSignIn = try await SteamD3DMetalCompatibility.shared.open(
+                        installation: SteamOnM1Wine.installation(), runtime: runtime,
+                        root: storageLayout.rootURL.appending(path: "ExternalSteam/\(SteamD3DMetalCompatibility.sacred2AppID)"),
+                        launchArguments: launchArguments
+                    )
+                    if needsSignIn, let game = storeGames.first(where: { $0.provider == .steam && $0.externalID == SteamD3DMetalCompatibility.sacred2AppID }) {
+                        storeGameOperations[storeOperationKey(for: game)] = .awaitingProvider("Sign in to the separate Steam window for Sacred 2, then launch the game there. This client uses D3DMetal for DirectX 12.")
+                    }
+                } else {
+                    try await SteamOnM1Wine.open(url, launchArguments: launchArguments)
+                }
+            } catch {
+                present(error, title: "Steam on M1 Wine", stage: "Opening the default Windows Steam client")
+            }
+        }
+        return true
+    }
+
     func installSteamWindowsGame(_ game: StoreLibraryGame) {
         let key = storeOperationKey(for: game)
         guard game.provider == .steam,
@@ -4783,6 +4818,10 @@ final class BorealStore {
               game.resolvedEntitlementState.isUsable,
               linkedApplication(for: game) == nil,
               storeGameOperations[key] == nil else { return }
+        if usesSteamOnM1Wine, let url = URL(string: "steam://install/\(game.externalID)") {
+            openSteam(url)
+            return
+        }
         let poolKey = steamPoolKey(for: game)
         let token = UUID()
         storeOperationTokens[key] = token
@@ -4820,6 +4859,10 @@ final class BorealStore {
     }
 
     func refreshSteamWindowsGame(_ game: StoreLibraryGame) {
+        if usesSteamOnM1Wine {
+            syncSteamLibrary()
+            return
+        }
         let key = storeOperationKey(for: game)
         guard game.provider == .steam,
               let host = steamRuntimeHost(poolKey: steamPoolKey(for: game)),
@@ -5039,9 +5082,6 @@ final class BorealStore {
         }?.id
         let requestedBackend = profile?.graphicsBackend ?? .automatic
         let selectedAPI = directXAPIOverride ?? profile?.graphicsAPI ?? environment.configuration.graphicsAPI
-        let resolverAPI = directXAPIOverride == nil
-            ? selectedAPI
-            : (profile?.graphicsAPI ?? environment.configuration.graphicsAPI)
         let gameProfile = provider.flatMap { provider in
             externalID.flatMap { externalID in GameGraphicsProfiles.profile(provider: provider, externalID: externalID) }
         }
@@ -5057,7 +5097,7 @@ final class BorealStore {
             : selectedAPI
         let architecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         let graphicsResolution = CompatibilityPreparationResolver.graphicsResolution(
-            api: resolverAPI,
+            api: resolvedAPI,
             requestedBackend: requestedBackend,
             gameProfile: environment.purpose == .sharedStore ? nil : gameProfile,
             runtime: runtime,
@@ -5199,6 +5239,7 @@ final class BorealStore {
             }
         }
         temporalWindowsPlan.temporalUpscalingPlan = temporalPlan
+        temporalWindowsPlan = CounterStrike16Compatibility.applying(to: temporalWindowsPlan, runtime: runtime)
         temporalWindowsPlan.configurationFingerprint = ConfigurationFingerprint.make(
             runtimeFingerprint: "\(runtime.id):\(runtime.wineVersion)",
             graphicsStack: graphicsResolution.stack,
@@ -7917,6 +7958,43 @@ final class BorealStore {
     }
 
     private func toggleRunningAsync(_ id: UUID) async {
+        guard let application = application(id: id) else { return }
+        if usesSteamOnM1Wine, application.storeProvider == .steam,
+           !application.usesStoreMetadataOnly, !application.isSteamRuntimeHost,
+           application.status != .running, !application.status.isBusy,
+           let appID = application.storeExternalID,
+           let url = URL(string: "steam://rungameid/\(appID)") {
+            openSteam(url, launchArguments: application.resolvedCompatibilityProfile.parsedLaunchArguments)
+            return
+        }
+        if application.status == .running || application.status.isBusy {
+            await toggleRunningWithGraphicsReservation(id)
+            return
+        }
+        guard let record = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: record) else {
+            await toggleRunningWithGraphicsReservation(id)
+            return
+        }
+        let owner = UUID()
+        do {
+            try await PrefixUsageCoordinator.shared.reserveGraphicsPreparation(for: managed.prefixURL, owner: owner)
+        } catch {
+            presentedIssue = BorealIssue(
+                title: String(localized: "Graphics environment is in use"),
+                stage: String(localized: "Another game or operation is using this Windows environment."),
+                recovery: String(localized: "Close the other game before changing this environment's graphics configuration."),
+                technicalDetails: error.localizedDescription
+            )
+            return
+        }
+        await GraphicsPreparationContext.$owner.withValue(owner) {
+            await toggleRunningWithGraphicsReservation(id)
+        }
+        await PrefixUsageCoordinator.shared.releaseGraphicsPreparation(for: managed.prefixURL, owner: owner)
+    }
+
+    private func toggleRunningWithGraphicsReservation(_ id: UUID) async {
         guard let index = applications.firstIndex(where: { $0.id == id }) else { return }
         if applications[index].status == .running {
             requestedStops.insert(id)
@@ -8010,6 +8088,46 @@ final class BorealStore {
             }
         }
         advancedConfigurations[id] = await services.advancedConfigurationStore.configuration(for: id)
+        if !applications[index].usesSharedSteamEnvironment,
+           let environmentRecord = environment(id: applications[index].environmentID),
+           let installed = try? await services.runtimeManager.installedRuntimes(),
+           let currentRuntime = installed.first(where: { $0.id == environmentRecord.runtimeID }),
+           CounterStrike16Compatibility.needsLegacyHost(
+               executable: URL(fileURLWithPath: applications[index].executablePath),
+               arguments: applications[index].resolvedCompatibilityProfile.parsedLaunchArguments,
+               runtime: currentRuntime
+           ) {
+            guard let compatibleRuntime = CounterStrike16Compatibility.legacyRuntime(in: installed) else {
+                presentedIssue = BorealIssue(
+                    title: "Counter-Strike 1.6 needs a compatible Wine host",
+                    stage: "Loading the GoldSrc engine",
+                    recovery: "This patched hw.dll fails with Wine 11.16 and 11.17. A compatible GPTK 1.1 host is required for this installation.",
+                    technicalDetails: currentRuntime.runtimeDescription
+                )
+                return
+            }
+            let previousProfile = applications[index].compatibilityProfile
+            var profile = applications[index].resolvedCompatibilityProfile
+            profile.runtimeIDOverride = compatibleRuntime.id
+            profile.architecture = .win32
+            profile.prefixMode = .wow64
+            profile.graphicsBackend = .wineD3D
+            profile.graphicsAPI = .automatic
+            profile.graphicsFallback = .none
+            profile.overlayCompatibleFullscreen = false
+            applications[index].compatibilityProfile = profile
+            applications[index].lastResult = "Preparing Counter-Strike 1.6 compatibility (sound temporarily disabled)"
+            applications[index].lastErrorDetail = nil
+            save()
+            recreateStandaloneEnvironment(
+                id,
+                profile: profile,
+                previousProfile: previousProfile,
+                engine: compatibleRuntime.resolvedEngine,
+                launchWhenReady: true
+            )
+            return
+        }
         let effectiveApplicationProfile = GameGraphicsProfiles.effectiveCompatibilityProfile(
             applications[index].resolvedCompatibilityProfile,
             for: applications[index]
@@ -8090,7 +8208,7 @@ final class BorealStore {
                 // default profile and accidentally discarding the prepared
                 // backend/prefix decision.
                 profile.windowsVersion = WineWindowsVersion(rawValue: managed.configuration.windowsVersion) ?? profile.windowsVersion
-                profile.graphicsBackend = managed.configuration.graphicsBackend
+                profile.graphicsBackend = .automatic
                 profile.graphicsAPI = managed.configuration.graphicsAPI == .automatic ? nil : managed.configuration.graphicsAPI
                 profile.graphicsFallback = managed.configuration.graphicsFallback
                 profile.prefixMode = managed.configuration.prefixMode
@@ -8121,12 +8239,14 @@ final class BorealStore {
             }
             let applicationRoot = auxiliarySearchRoot(for: applications[index])
             let applicationName = applications[index].name
+            let launchArguments = profile.parsedLaunchArguments
             let automaticallyRequiredDependencies = await Task.detached(priority: .utility) {
-                let analysis = ExecutableCompatibilityAnalyzer.analyze(
+                let discovered = ExecutableCompatibilityAnalyzer.analyze(
                     root: applicationRoot,
                     applicationName: applicationName,
                     knownPrimary: executable
                 )
+                let analysis = CounterStrike16Compatibility.launchAnalysis(discovered, arguments: launchArguments)
                 return AutomaticRuntimeDependencyDetection.requiredDependencies(in: analysis)
             }.value
             let isUnityIL2CPP = UnityIL2CPPRuntimeCompatibility.requiresModernWine(at: executable)
@@ -8169,6 +8289,34 @@ final class BorealStore {
                 userProfile: profile,
                 gameProfile: graphicsProfile
             )
+            let prefixArchitecture = managed.configuration.resolvedPrefixArchitecture(
+                runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true
+            )
+            let digest = await Task.detached(priority: .utility) {
+                GraphicsResolutionReport.executableDigest(executable)
+            }.value
+            // Use persisted user intent for the report. Automatic game preferences
+            // influence ranking, but must not become a silent manual selection.
+            var graphicsIntent = profile
+            graphicsIntent.graphicsBackend = persistedCompatibilityIntent?.graphicsBackend ?? .automatic
+            if graphicsProfile?.enforcedBackend == nil,
+               persistedCompatibilityIntent?.graphicsBackend == .automatic || persistedCompatibilityIntent == nil {
+                graphicsIntent.graphicsFallback = .none
+            }
+            let report = GraphicsResolutionReport.make(
+                executable: executable, profile: graphicsIntent, gameProfile: graphicsProfile,
+                runtime: runtime, architecture: prefixArchitecture,
+                componentReferences: managed.configuration.graphicsComponentReferences,
+                learnedResults: applications[index].graphicsCompatibilityResults ?? [],
+                attemptedBackends: graphicsAttempts[id] ?? [], executableSHA256: digest
+            )
+            applications[index].lastGraphicsResolution = report
+            guard report.selected.isAvailable else {
+                throw GraphicsBackendManagerError.backendUnavailable(graphicsIntent.graphicsBackend, report.effectiveAPI)
+            }
+            profile.graphicsBackend = report.selected.stack.backend
+            profile.graphicsFallback = graphicsIntent.graphicsFallback
+            profile.graphicsAPI = report.effectiveAPI
             let graphicsLaunchOption = graphicsProfile?.selectableLaunchOptions.first {
                 $0.api == selectedGraphicsAPI
             }
@@ -8519,7 +8667,8 @@ final class BorealStore {
         Task { [weak self] in
             guard let self else { return }
             let result = try? await services.processRunner.waitForExit(session)
-            guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+            guard let index = applications.firstIndex(where: { $0.id == appID }),
+                  performanceLogURLs[appID] == session.stderrLog || activeSessions[appID]?.id == session.id else { return }
 
             // A store launcher can finish after handing the game process to
             // Wine. The launcher is not the user-visible session in that
@@ -8541,12 +8690,20 @@ final class BorealStore {
 
             let wasRequested = requestedStops.contains(appID)
             let fallbackWasAlreadyPrepared = automaticRendererFallbackLogURLs.remove(session.stderrLog) != nil
-            let shouldRetryWithWineD3D = !wasRequested
+            let shouldRetryWithGraphicsFallback = !wasRequested
                 && !fallbackWasAlreadyPrepared
                 && prepareAutomaticRendererFallback(appID: appID, logURL: session.stderrLog)
-            if shouldRetryWithWineD3D {
-                applications[index].lastResult = "Renderer initialization failed; switching to WineD3D/Vulkan"
+            if shouldRetryWithGraphicsFallback {
+                applications[index].lastResult = "Renderer initialization failed; preparing the next compatible backend"
                 applications[index].lastExitCode = result?.exitCode
+            } else if !wasRequested, !fallbackWasAlreadyPrepared,
+                      let backend = applications[index].lastGraphicsResolution?.selected.stack.backend,
+                      (graphicsAttempts[appID] ?? []).contains(backend) {
+                // Recovery classified this session and exhausted the ranking.
+                // Keep that actionable diagnosis even when the launcher exits 0.
+                unexpectedLauncherFailures.insert(appID)
+                applications[index].lastExitCode = result?.exitCode
+                applications[index].lastFailureStage = "Graphics initialization"
             } else if let result, result.exitCode != 0, !wasRequested, !fallbackWasAlreadyPrepared {
                 SoundService.shared.play(.error)
                 unexpectedLauncherFailures.insert(appID)
@@ -8815,15 +8972,15 @@ final class BorealStore {
         endPlaySession(appID: appID)
         let environmentID = applications[index].environmentID
         let wasRequested = requestedStops.remove(appID) != nil
-        let shouldRetryWithWineD3D = !wasRequested && (
+        let shouldRetryWithGraphicsFallback = !wasRequested && (
             automaticRendererFallbacksPending.remove(appID) != nil
             || prepareAutomaticRendererFallback(appID: appID, logURL: nil)
         )
-        if shouldRetryWithWineD3D {
+        if shouldRetryWithGraphicsFallback {
             automaticRendererFallbacksPending.remove(appID)
             unexpectedLauncherFailures.remove(appID)
             applications[index].status = .ready
-            applications[index].lastResult = "Retrying with WineD3D/Vulkan"
+            applications[index].lastResult = "Retrying with the next compatible graphics backend"
             applications[index].lastErrorDetail = nil
         } else if unexpectedLauncherFailures.remove(appID) != nil && !wasRequested {
             applications[index].status = .needsAttention
@@ -8846,8 +9003,9 @@ final class BorealStore {
         ControllerManager.shared.deactivate(for: appID)
         environmentMonitorIDs[appID] = nil
         save()
+        if !shouldRetryWithGraphicsFallback { graphicsAttempts[appID] = nil }
         if shouldUploadCloudSaves { scheduleCloudSaveUpload(appID: appID) }
-        if shouldRetryWithWineD3D {
+        if shouldRetryWithGraphicsFallback {
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(350))
                 guard let self,
@@ -8918,42 +9076,73 @@ final class BorealStore {
     private func prepareAutomaticRendererFallback(appID: UUID, logURL: URL?) -> Bool {
         guard let index = applications.firstIndex(where: { $0.id == appID }),
               !applications[index].isInstallerOnly,
-              let resolvedLogURL = logURL ?? performanceLogURLs[appID] else { return false }
-        let application = applications[index]
-        guard GameGraphicsProfiles.profile(for: application)?.enforcedBackend == nil else { return false }
-        let currentProfile = application.resolvedCompatibilityProfile
-        guard RendererLaunchFailureDetector.shouldUseWineD3DVulkanFallback(
-            logURL: resolvedLogURL,
-            profile: currentProfile
-        ) else { return false }
-        let failedBackend = lastLaunchPlans[appID]?.graphicsStack?.backend
-            ?? lastLaunchPlans[appID]?.graphicsBackend
-            ?? currentProfile.graphicsBackend
+              let report = applications[index].lastGraphicsResolution,
+              report.automaticFallbackAllowed,
+              (applications[index].compatibilityProfile?.graphicsBackend ?? .automatic) == .automatic,
+              GameGraphicsProfiles.profile(for: applications[index])?.enforcedBackend == nil,
+              let resolvedLogURL = logURL ?? performanceLogURLs[appID],
+              !automaticRendererFallbackLogURLs.contains(resolvedLogURL),
+              let logData = try? Data(contentsOf: resolvedLogURL),
+              let stderr = String(data: logData, encoding: .utf8) else { return false }
+        let failedBackend = lastLaunchPlans[appID]?.graphicsStack?.backend ?? report.selected.stack.backend
+        guard !(graphicsAttempts[appID] ?? []).contains(failedBackend),
+              RendererLaunchFailureDetector.isInitializationFailure(
+                stderr: stderr, resolvedBackend: failedBackend
+              ) else { return false }
         automaticRendererFallbackLogURLs.insert(resolvedLogURL)
+        graphicsAttempts[appID, default: []].insert(failedBackend)
+        if let key = report.key(for: failedBackend) {
+            recordGraphicsResult(appID: appID, key: key, outcome: .failedInitialization, logURL: resolvedLogURL)
+        }
+        guard let next = report.fallbackPlan.first(where: {
+            !(graphicsAttempts[appID] ?? []).contains($0.stack.backend)
+        }) else {
+            unexpectedLauncherFailures.insert(appID)
+            applications[index].lastResult = "No compatible graphics fallback remains"
+            applications[index].lastErrorDetail = "Every available graphics backend in the resolver's fallback plan failed initialization."
+            save()
+            return false
+        }
         automaticRendererFallbacksPending.insert(appID)
-        var fallbackProfile = currentProfile
-        fallbackProfile.graphicsBackend = .wineD3D
-        fallbackProfile.graphicsFallback = .wineD3DVulkan
-        // Automatic recovery owns the renderer choice for this retry. A
-        // persisted OpenGL preference must not override the fallback marker
-        // and make the launch plan claim Vulkan while still using OpenGL.
-        fallbackProfile.wineD3DRenderer = .automatic
-        applications[index].compatibilityProfile = fallbackProfile
-        applications[index].graphics = fallbackProfile.graphicsBackend.displayName
         var events = applications[index].compatibilityFallbackEvents ?? []
         events.append(CompatibilityFallbackEvent(
-            failedBackend: failedBackend,
-            fallbackBackend: .wineD3D,
-            reason: .graphicsDeviceInitialization,
-            logReference: resolvedLogURL,
-            environmentID: application.environmentID,
-            resolverRevision: 1
+            failedBackend: failedBackend, fallbackBackend: next.stack.backend,
+            reason: .graphicsDeviceInitialization, logReference: resolvedLogURL,
+            environmentID: applications[index].environmentID, resolverRevision: 2
         ))
-        applications[index].compatibilityFallbackEvents = events
-        applications[index].lastResult = "Renderer initialization failed; switching to WineD3D/Vulkan"
-        applications[index].lastErrorDetail = "Boreal detected a Direct3D device initialization failure in the renderer log and selected the built-in Wine fallback for the next launch."
+        applications[index].compatibilityFallbackEvents = Array(events.suffix(100))
+        applications[index].lastResult = "Renderer initialization failed; retrying with \(next.stack.backend.displayName)"
         save()
         return true
+    }
+
+    private func recordGraphicsResult(
+        appID: UUID, key: GraphicsCompatibilityKey,
+        outcome: GraphicsCompatibilityResult.Outcome, logURL: URL?
+    ) {
+        guard let index = applications.firstIndex(where: { $0.id == appID }) else { return }
+        var results = applications[index].graphicsCompatibilityResults ?? []
+        results.removeAll { $0.key == key }
+        results.append(GraphicsCompatibilityResult(key: key, outcome: outcome, date: .now, logReference: logURL))
+        applications[index].graphicsCompatibilityResults = Array(results.suffix(100))
+    }
+
+    func clearLearnedGraphicsResults(for applicationID: UUID) {
+        guard let index = applications.firstIndex(where: { $0.id == applicationID }),
+              !applications[index].status.isBusy, applications[index].status != .running else { return }
+        applications[index].graphicsCompatibilityResults = nil
+        graphicsAttempts[applicationID] = nil
+        save()
+    }
+
+    func configuredGraphicsRuntimeID(for application: WindowsApplication) -> String? {
+        environment(id: application.environmentID)?.runtimeID
+    }
+
+    func configuredGraphicsComponentReferences(for application: WindowsApplication) -> [GraphicsComponentReference] {
+        guard let record = environment(id: application.environmentID),
+              let managed = managedEnvironment(from: record) else { return [] }
+        return managed.configuration.graphicsComponentReferences
     }
 
     func beginPlaySession(appID: UUID, at date: Date = .now) {
@@ -9088,7 +9277,7 @@ final class BorealStore {
                 let validation = try await services.runtimeManager.validate(runtime)
                 values.append(RuntimeStatus(
                     id: runtime.id,
-                    name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.displayName,
+                    name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.inventoryName,
                     wineVersion: runtime.wineVersion,
                     architecture: runtime.architecture,
                     state: validation.isReady ? .installed : .needsAttention,
@@ -9099,7 +9288,9 @@ final class BorealStore {
                     source: .installed,
                     origin: runtime.origin,
                     engine: runtime.resolvedEngine,
-                    features: runtime.features
+                    features: runtime.features,
+                    baseIdentity: runtime.baseIdentity,
+                    graphicsComponents: runtime.graphicsComponents ?? []
                 ))
             }
             let installedIDs = Set(installed.map(\.id))
@@ -9142,7 +9333,7 @@ final class BorealStore {
 
     private func runtimeDescription(for runtime: InstalledRuntime) -> String {
         runtimeDescription(
-            name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.displayName,
+            name: runtimeDisplayNameOverrides[runtime.id] ?? runtime.inventoryName,
             engine: runtime.resolvedEngine,
             wineVersion: runtime.wineVersion
         )

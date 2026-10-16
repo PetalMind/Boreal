@@ -999,8 +999,33 @@ actor EnvironmentManager: EnvironmentManaging {
 /// allowing a second configuration request to alter DLLs and registry values
 /// mid-transaction. Runtime leases make mutations fail closed while Wine uses
 /// the prefix.
+nonisolated enum GraphicsPreparationContext {
+    @TaskLocal static var owner: UUID?
+}
+
 actor PrefixUsageCoordinator {
     static let shared = PrefixUsageCoordinator()
+
+    private var graphicsPreparations: [String: UUID] = [:]
+
+    func reserveGraphicsPreparation(for prefix: URL, owner: UUID) throws {
+        let key = prefix.standardizedFileURL.path
+        guard graphicsPreparations[key] == nil, runtimeLeases[key]?.isEmpty != false,
+              !lockedPrefixes.contains(key), waiters[key]?.isEmpty != false,
+              idleProbeIDs[key] == nil else { throw EnvironmentManagerError.prefixInUse }
+        graphicsPreparations[key] = owner
+    }
+
+    func releaseGraphicsPreparation(for prefix: URL, owner: UUID) {
+        let key = prefix.standardizedFileURL.path
+        if graphicsPreparations[key] == owner { graphicsPreparations[key] = nil }
+    }
+
+    private func validateGraphicsPreparation(_ key: String) throws {
+        if let owner = graphicsPreparations[key], owner != GraphicsPreparationContext.owner {
+            throw EnvironmentManagerError.prefixMutationInProgress
+        }
+    }
 
     private var runtimeLeases: [String: Set<UUID>] = [:]
     private var startingRuntimeLeases: [String: Set<UUID>] = [:]
@@ -1008,6 +1033,7 @@ actor PrefixUsageCoordinator {
 
     func acquireRuntimeLease(for prefix: URL, sessionID: UUID) throws {
         let key = prefix.standardizedFileURL.path
+        try validateGraphicsPreparation(key)
         guard !lockedPrefixes.contains(key), waiters[key]?.isEmpty != false else {
             throw EnvironmentManagerError.prefixMutationInProgress
         }
@@ -1040,6 +1066,7 @@ actor PrefixUsageCoordinator {
 
     func beginIdleProbe(for prefix: URL, probeID: UUID) throws -> Bool {
         let key = prefix.standardizedFileURL.path
+        try validateGraphicsPreparation(key)
         guard !lockedPrefixes.contains(key), waiters[key]?.isEmpty != false else {
             throw EnvironmentManagerError.prefixMutationInProgress
         }
@@ -1091,12 +1118,20 @@ actor PrefixUsageCoordinator {
     }
 
     private func acquire(_ key: String) async throws {
+        try validateGraphicsPreparation(key)
         guard runtimeLeases[key]?.isEmpty != false else {
             throw EnvironmentManagerError.prefixInUse
         }
         guard !lockedPrefixes.contains(key) else {
             await withCheckedContinuation { continuation in
                 waiters[key, default: []].append(continuation)
+            }
+            do {
+                try validateGraphicsPreparation(key)
+                guard runtimeLeases[key]?.isEmpty != false else { throw EnvironmentManagerError.prefixInUse }
+            } catch {
+                release(key)
+                throw error
             }
             return
         }

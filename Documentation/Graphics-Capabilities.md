@@ -1,5 +1,21 @@
 # Graphics capabilities and memory pressure
 
+Automatic renderer selection first checks the game's API, prefix architecture, runtime capabilities and required component files. Its default order is:
+
+| Input to the renderer | Automatic preference |
+| --- | --- |
+| DirectDraw / Direct3D 1–7 without a wrapper | Wine's built-in compatibility path |
+| DirectX 8 | DXVK when both `d3d8.dll` and `d3d9.dll` exist for the prefix architectures; otherwise WineD3D |
+| DirectX 9 | DXVK, then WineD3D |
+| DirectX 10 | DXVK, then DXMT, then WineD3D |
+| DirectX 11 | DXMT, then DXVK, then D3DMetal, then WineD3D |
+| DirectX 12 | D3DMetal, then VKD3D-Proton; no unsupported WineD3D fallback |
+| OpenGL | Wine's native OpenGL path |
+
+Selected legacy wrappers remain a separate layer. Dd7to9 supplies DirectX 9 to this resolver; dgVoodoo2 and Boreal Legacy Graphics supply DirectX 11. Wrapper activation still validates its actual package and supported input API. Boreal does not install an arbitrary wrapper automatically. Explicit backend choices and enforced game rules remain strict; available game-specific preferences override the default order.
+
+Regular PE imports take precedence over delay imports for automatic API detection when they identify a single API. Diagnostics retain all candidates, distinguish delay imports, and report conflicting regular imports as ambiguous. Dropdown options stay visible and report API, runtime, GPTK or verification constraints. The configuration summary and fullscreen FSR eligibility use the shared resolver with installed runtime payloads.
+
 `GraphicsBackend` identifies the renderer. `WineGraphicsBackend` remains a type alias so existing callers and persisted raw values remain compatible. `EnvironmentConfiguration.graphicsConfiguration` provides the backend, input API and fullscreen FSR configuration shared by prefix setup and process launch.
 
 Runtime features may include a `graphicsCapabilities` dictionary keyed by backend raw value (for example `d3dMetal`). Each entry accepts optional booleans: `metal4`, `hdr`, `upscaling`, `frameGeneration`, `performanceInsights`, `metalHUD`, `gpuCapture`, and `metalSystemTrace`, plus the optional `fullscreenFSRSupport` level (`unsupported`, `candidate`, or `verified`). Missing means unverified; false means unsupported. Metadata must describe the actual packaged backend. Do not derive GPTK capabilities from the Wine version or the runtime's display name.

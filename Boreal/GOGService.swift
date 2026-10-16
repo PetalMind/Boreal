@@ -333,6 +333,7 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
     case cloudMetadataCredentialsMissing
     case cloudTokenResponseInvalid
     case credentialPersistenceFailed
+    case credentialConfigurationInvalid
     case additionalContentRequestFailed(Int)
     case additionalContentResponseInvalid
     case additionalContentDownloadUnavailable
@@ -383,6 +384,8 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
             "GOG returned an unsupported Cloud Saves authorization response."
         case .credentialPersistenceFailed:
             "Boreal could not save the refreshed GOG credentials. Reconnect your GOG account and try again."
+        case .credentialConfigurationInvalid:
+            "The saved GOG account file is damaged and could not be recovered. Reconnect your GOG account in Settings."
         case .additionalContentRequestFailed(let status):
             "GOG could not load the additional content list (HTTP \(status))."
         case .additionalContentResponseInvalid:
@@ -423,7 +426,7 @@ enum GOGServiceError: LocalizedError, Sendable, Equatable {
 
     var requiresReauthentication: Bool {
         switch self {
-        case .notAuthenticated, .cloudRefreshTokenUnavailable, .cloudAuthorizationRejected, .credentialPersistenceFailed:
+        case .notAuthenticated, .cloudRefreshTokenUnavailable, .cloudAuthorizationRejected, .credentialPersistenceFailed, .credentialConfigurationInvalid:
             true
         default:
             false
@@ -490,6 +493,9 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
     private let configURL: URL
     private let gamesURL: URL
     private var cloudAuthorizationCache: [String: GOGCloudAuthorization] = [:]
+    private static let accountClientID = "46899977096215655"
+    private var isUsingCredentials = false
+    private var credentialWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(applicationSupportURL: URL, fileManager: FileManager = .default, session: URLSession = .shared) {
         self.fileManager = fileManager
@@ -603,7 +609,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         guard Self.isSafeAppID(appID) else { throw GOGServiceError.playtimeResponseInvalid }
         let credentials = try await credentials()
         guard Self.isSafeAppID(credentials.userID),
-              let baseURL = URL(string: "https://gameplay.gog.com/clients/\(appID)/users/\(credentials.userID)/sessions") else {
+              let baseURL = URL(string: "https://gameplay.gog.com/games/\(appID)/users/\(credentials.userID)/sessions") else {
             throw GOGServiceError.playtimeResponseInvalid
         }
 
@@ -624,6 +630,9 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
                 throw GOGServiceError.playtimeResponseInvalid
             }
             guard httpResponse.statusCode == 200 else {
+                if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                    throw GOGServiceError.notAuthenticated
+                }
                 throw GOGServiceError.playtimeRequestFailed(httpResponse.statusCode)
             }
             let page = try Self.playtimePage(from: data)
@@ -1361,6 +1370,9 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
     }
 
     func disconnect() async throws {
+        await acquireCredentialLock()
+        defer { releaseCredentialLock() }
+        try Task.checkCancellation()
         let helperAvailable = fileManager.isExecutableFile(atPath: helperURL.path)
         if fileManager.fileExists(atPath: authURL.path) { try fileManager.removeItem(at: authURL) }
         try? GOGCredentialKeychain.remove()
@@ -1452,7 +1464,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         if let refreshedToken = Self.stringValue(tokenRoot["refresh_token"]),
            !refreshedToken.isEmpty,
            refreshedToken != refreshToken {
-            try persistRefreshToken(refreshedToken)
+            try await persistRefreshToken(refreshedToken, replacing: refreshToken)
         }
         let userID = Self.stringValue(tokenRoot["user_id"]) ?? base.userID
         let expiresAt = (tokenRoot["expires_in"] as? NSNumber).map { Date().addingTimeInterval($0.doubleValue) }
@@ -1486,25 +1498,73 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
     private func persistedRefreshToken() -> String? {
         guard let data = try? Data(contentsOf: authURL),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let refreshToken = Self.stringValue(root["refresh_token"]),
+              let account = root[Self.accountClientID] as? [String: Any],
+              let refreshToken = Self.stringValue(account["refresh_token"]),
               !refreshToken.isEmpty else { return nil }
         return refreshToken
     }
 
-    private func persistRefreshToken(_ refreshToken: String) throws {
-        guard let data = try? Data(contentsOf: authURL),
-              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    private func persistRefreshToken(_ refreshToken: String, replacing previousToken: String) async throws {
+        await acquireCredentialLock()
+        defer { releaseCredentialLock() }
+        try Task.checkCancellation()
+        var root = try readCredentialConfiguration()
+        guard var account = root[Self.accountClientID] as? [String: Any] else {
             throw GOGServiceError.credentialPersistenceFailed
         }
-        root["refresh_token"] = refreshToken
+        // A helper may have refreshed the account while the cloud request was
+        // suspended. Never overwrite its newer session with an older response.
+        guard Self.stringValue(account["refresh_token"]) == previousToken else { return }
+        account["refresh_token"] = refreshToken
+        root[Self.accountClientID] = account
+        try writeCredentialConfiguration(root)
+        try? GOGCredentialKeychain.store(refreshToken: refreshToken)
+    }
+
+    private func readCredentialConfiguration() throws -> [String: Any] {
+        guard let data = try? Data(contentsOf: authURL) else { throw GOGServiceError.notAuthenticated }
+        if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return root }
+
+        // Overlapping non-atomic gogdl writes can leave one extra closing brace.
+        // Recover only this known corruption, with a complete account record.
+        guard var text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              text.last == "}" else { throw GOGServiceError.credentialConfigurationInvalid }
+        text.removeLast()
+        guard let root = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              let account = root[Self.accountClientID] as? [String: Any],
+              let accessToken = account["access_token"] as? String, !accessToken.isEmpty,
+              let refreshToken = account["refresh_token"] as? String, !refreshToken.isEmpty,
+              account["loginTime"] is NSNumber, account["expires_in"] is NSNumber else {
+            throw GOGServiceError.credentialConfigurationInvalid
+        }
+        try writeCredentialConfiguration(root)
+        return root
+    }
+
+    private func writeCredentialConfiguration(_ root: [String: Any]) throws {
+        var root = root
+        // gogdl stores credentials by OAuth client ID, never at the root.
+        root.removeValue(forKey: "refresh_token")
         do {
             let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
             try updatedData.write(to: authURL, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path)
-            try? GOGCredentialKeychain.store(refreshToken: refreshToken)
         } catch {
             throw GOGServiceError.credentialPersistenceFailed
         }
+    }
+
+    private func acquireCredentialLock() async {
+        if !isUsingCredentials {
+            isUsingCredentials = true
+            return
+        }
+        await withCheckedContinuation { credentialWaiters.append($0) }
+    }
+
+    private func releaseCredentialLock() {
+        if credentialWaiters.isEmpty { isUsingCredentials = false }
+        else { credentialWaiters.removeFirst().resume() }
     }
 
     private static func sizeValues(_ value: Any?) -> (downloadBytes: Int64?, installedBytes: Int64?)? {
@@ -1539,8 +1599,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             guard let buildID = Self.stringValue(item["build_id"]),
                   let linkValue = Self.stringValue(item["link"]),
                   let link = URL(string: linkValue),
-                  link.scheme?.lowercased() == "https",
-                  link.host?.lowercased() == "cdn.gog.com" else { return nil }
+                  Self.isContentSystemMetadataURL(link) else { return nil }
             return ContentSystemBuildRecord(
                 buildID: buildID,
                 versionName: Self.stringValue(item["version_name"]).flatMap { $0.isEmpty ? nil : $0 },
@@ -1555,8 +1614,7 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
     }
 
     private func contentSystemData(at url: URL, accessToken: String) async throws -> Data {
-        guard url.scheme?.lowercased() == "https",
-              url.host?.lowercased() == "cdn.gog.com" else {
+        guard Self.isContentSystemMetadataURL(url) else {
             throw GOGServiceError.contentSystemManifestInvalid
         }
         var request = URLRequest(url: url)
@@ -1570,6 +1628,17 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
             throw GOGServiceError.contentSystemRequestFailed(httpResponse.statusCode)
         }
         return data
+    }
+
+    private static func isContentSystemMetadataURL(_ url: URL) -> Bool {
+        // Public build links also use GOG's Fastly CDN. Rejecting that host
+        // silently discarded available builds before the UI could show them.
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              ["cdn.gog.com", "gog-cdn-fastly.gog.com"].contains(host),
+              url.user == nil, url.password == nil,
+              url.port == nil || url.port == 443 else { return false }
+        return url.path.hasPrefix("/content-system/")
     }
 
     private static func isNewerContentSystemBuild(_ lhs: ContentSystemBuildRecord, _ rhs: ContentSystemBuildRecord) -> Bool {
@@ -1856,9 +1925,20 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
         _ arguments: [String],
         progress: (@Sendable (StoreGameOperationProgress) async -> Void)? = nil
     ) async throws -> Data {
+        await acquireCredentialLock()
+        defer { releaseCredentialLock() }
+        try Task.checkCancellation()
         guard fileManager.isExecutableFile(atPath: helperURL.path) else { throw GOGServiceError.helperUnavailable }
         try fileManager.createDirectory(at: accountURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: configURL, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: authURL.path) {
+            do { _ = try readCredentialConfiguration() }
+            catch GOGServiceError.credentialConfigurationInvalid {
+                // Reconnecting must be able to replace an unrecoverable file.
+                guard arguments.first == "auth", arguments.contains("--code") else { throw GOGServiceError.credentialConfigurationInvalid }
+                try writeCredentialConfiguration([:])
+            }
+        }
         var helperArguments = arguments
         if let command = arguments.first,
            ["download", "update", "repair"].contains(command),
@@ -2003,6 +2083,14 @@ actor GOGService: GOGLibraryProviding, GOGCloudAuthorizing {
     private static func playtimePage(from data: Data) throws -> (minutes: Int, nextPageToken: String?) {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw GOGServiceError.playtimeResponseInvalid
+        }
+        // The games endpoint reports the account total in minutes, rather
+        // than returning the individual sessions documented for clients.
+        if root["time_sum"] != nil {
+            guard let totalMinutes = intValue(root["time_sum"]), totalMinutes >= 0 else {
+                throw GOGServiceError.playtimeResponseInvalid
+            }
+            return (totalMinutes, nil)
         }
         let nextPageToken = stringValue(root["next_page_token"]).flatMap { $0.isEmpty ? nil : $0 }
         let sessions = root["items"] as? [[String: Any]] ?? root["sessions"] as? [[String: Any]]

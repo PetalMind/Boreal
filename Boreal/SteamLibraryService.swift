@@ -87,7 +87,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         compatibilityLoader: (any ProtonCompatibilityLoading)? = nil
     ) {
         self.fileManager = fileManager
-        self.steamRoot = steamRoot ?? fileManager.homeDirectoryForCurrentUser
+        self.steamRoot = steamRoot ?? SteamOnM1Wine.steamRoot ?? fileManager.homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/Steam", directoryHint: .isDirectory)
         self.session = session
         self.compatibilityLoader = compatibilityLoader ?? ProtonCompatibilityService(session: session)
@@ -105,6 +105,7 @@ actor SteamLibraryService: SteamLibraryLoading {
         try mergeInstalledGames(into: &localGames)
         guard !localGames.isEmpty else { throw SteamLibraryError.libraryUnavailable }
 
+        let libraryPlatform: StoreGameInstallationPlatform = steamRoot.path.contains("/drive_c/") ? .windows : .nativeMacOS
         let sorted = localGames.values.sorted { numericAppID($0.appID) < numericAppID($1.appID) }
         var results: [StoreLibraryGame] = []
         results.reserveCapacity(sorted.count)
@@ -137,6 +138,7 @@ actor SteamLibraryService: SteamLibraryLoading {
                             lastPlayed: game.lastPlayed,
                             isInstalled: game.isInstalled,
                             installPath: game.installPath,
+                            installedPlatform: game.isInstalled ? libraryPlatform : nil,
                             storageBytes: game.storageBytes,
                             sizeEstimate: metadata?.sizeEstimate,
                             compatibility: compatibility
@@ -355,7 +357,8 @@ actor SteamLibraryService: SteamLibraryLoading {
            let folders = root.object("libraryfolders") {
             for value in folders.values {
                 guard let path = value.objectValue?.string("path"), !path.isEmpty else { continue }
-                let candidate = URL(fileURLWithPath: path).appending(path: "steamapps", directoryHint: .isDirectory)
+                guard let library = SteamOnM1Wine.libraryURL(path, steamRoot: steamRoot) else { continue }
+                let candidate = library.appending(path: "steamapps", directoryHint: .isDirectory)
                 if !steamAppsDirectories.contains(candidate) { steamAppsDirectories.append(candidate) }
             }
         }
@@ -368,13 +371,17 @@ actor SteamLibraryService: SteamLibraryLoading {
                       let appID = state.string("appid") else { continue }
                 var game = games[appID] ?? LocalGame(appID: appID)
                 game.name = state.string("name") ?? game.name
-                game.isInstalled = true
+                game.isInstalled = !steamRoot.path.contains("/drive_c/") || ((Int(state.string("StateFlags") ?? "0") ?? 0) & 4 != 0)
                 if let value = state.string("SizeOnDisk"), let bytes = Int64(value), bytes > 0 {
                     game.storageBytes = bytes
                 }
                 if let installDirectory = state.string("installdir") {
                     let installationURL = steamApps.appending(path: "common/\(installDirectory)", directoryHint: .isDirectory)
-                    game.installPath = installationURL.path
+                    let resolved = installationURL.resolvingSymlinksInPath().standardizedFileURL
+                    let common = steamApps.appending(path: "common").resolvingSymlinksInPath().standardizedFileURL
+                    guard resolved.path.hasPrefix(common.path + "/") else { continue }
+                    game.isInstalled = game.isInstalled && fileManager.fileExists(atPath: resolved.path)
+                    game.installPath = game.isInstalled ? resolved.path : nil
                     if game.storageBytes == nil {
                         game.storageBytes = GameStorage.allocatedSize(of: installationURL)
                     }

@@ -146,6 +146,60 @@ struct CompatibilityPreparationTests {
         #expect(resolved.graphicsStack.backend == .wineD3D)
     }
 
+    @Test func wow64PrefixDoesNotMakeD3DMetalAvailableForAnX86Game() throws {
+        let root = try makeTemporaryDirectory("x86-metal")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try makePE(at: root.appending(path: "Game.exe"), architecture: .x86, imports: ["d3d11.dll"])
+        let runtime = makeRuntime(root: root, features: RuntimeFeatures(
+            wow64: true, wineMono: false, wineGecko: false,
+            d3dmetal: true, d3dmetalVerified: true, dxmt: false
+        ))
+        let analysis = ExecutableCompatibilityAnalyzer.analyze(root: root, applicationName: "Game")
+        let resolved = try CompatibilityPreparationResolver.resolve(
+            analysis: analysis, userProfile: .default, gameProfile: nil, runtime: runtime
+        )
+        #expect(resolved.prefixMode == .wow64)
+        #expect(resolved.graphicsStack.backend == .wineD3D)
+        var manual = WineCompatibilityProfile.default
+        manual.graphicsBackend = .d3dMetal
+        #expect(throws: CompatibilityPreparationError.self) {
+            try CompatibilityPreparationResolver.resolve(analysis: analysis, userProfile: manual, gameProfile: nil, runtime: runtime)
+        }
+    }
+
+    @Test(arguments: [
+        (LegacyGraphicsWrapper.dd7to9, GraphicsAPI.directX9, GraphicsBackend.dxvk),
+        (.dgVoodoo2, .directX11, .dxmt), (.borealLegacyGraphics, .directX11, .dxmt)
+    ])
+    func legacyWrapperRoutesToItsOutputAPI(wrapper: LegacyGraphicsWrapper, outputAPI: GraphicsAPI, backend: GraphicsBackend) throws {
+        let root = try makeTemporaryDirectory("legacy-output")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appending(path: "Game.exe")
+        try makePE(at: executable, architecture: .x86, imports: ["ddraw.dll"])
+        for architecture in ["x32", "x64"] {
+            let folder = root.appending(path: "GraphicsComponents/DXVK/\(architecture)")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("dxvk".utf8).write(to: folder.appending(path: "d3d9.dll"))
+        }
+        let runtime = makeRuntime(root: root, features: RuntimeFeatures(
+            wow64: true, wineMono: false, wineGecko: false,
+            d3dmetal: false, dxmt: true, d3d11Verified: true, dxvk: true
+        ))
+        var userProfile = WineCompatibilityProfile.default
+        userProfile.legacyWrapper = wrapper
+        userProfile.graphicsAPI = .directDraw
+        let analysis = ExecutableCompatibilityAnalyzer.analyze(root: root, applicationName: "Game")
+        let resolved = try CompatibilityPreparationResolver.resolve(
+            analysis: analysis, userProfile: userProfile, gameProfile: nil, runtime: runtime
+        )
+        #expect(resolved.directXAPI == outputAPI)
+        #expect(resolved.environmentSpecification.graphicsAPI == outputAPI)
+        #expect(resolved.graphicsStack.backend == backend)
+
+        userProfile.graphicsAPI = .directX10
+        #expect(CompatibilityPreparationResolver.directXAPI(executable: executable, userProfile: userProfile, gameProfile: nil) == .directX10)
+    }
+
     private func makeTemporaryDirectory(_ name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appending(path: "boreal-\(name)-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

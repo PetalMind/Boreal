@@ -418,7 +418,7 @@ struct RuntimeSettingsView: View {
     private var installedRuntimesCard: some View {
         SettingsCard(
             "Installed runtimes",
-            subtitle: "Rename a runtime or remove an unused snapshot. Runtime files stay immutable.",
+            subtitle: "Wine and GPTK hosts with their installed graphics components. Expand variants to manage existing snapshots.",
             symbol: "shippingbox.fill"
         ) {
             let runtimes = store.runtimeStatuses.filter { $0.source == .installed }
@@ -441,9 +441,21 @@ struct RuntimeSettingsView: View {
                 }
                 .padding(.vertical, 8)
             } else {
-                ForEach(runtimes) { runtime in
-                    runtimeRow(runtime)
-                    if runtime.id != runtimes.last?.id { Divider() }
+                let families = RuntimeFamily.group(runtimes)
+                ForEach(families) { family in
+                    VStack(alignment: .leading, spacing: 8) {
+                        runtimeRow(family.primary, showsComponents: false)
+                        RuntimeGraphicsComponentsView(components: family.graphicsComponents)
+                        if family.deployments.count > 1 {
+                            DisclosureGroup("Other installed variants") {
+                                ForEach(family.deployments.dropFirst()) { runtime in
+                                    runtimeRow(runtime)
+                                }
+                            }
+                            .font(.callout)
+                        }
+                    }
+                    if family.id != families.last?.id { Divider() }
                 }
             }
         }
@@ -452,7 +464,7 @@ struct RuntimeSettingsView: View {
     private var runtimeImportCard: some View {
         SettingsCard(
             "Import runtimes",
-            subtitle: "Add an isolated Wine or GPTK graphics runtime. GPTK 4 requires a GPTK-capable Wine 11.17+ host, and original app bundles are never modified.",
+            subtitle: "Import a Wine or GPTK host, or add Apple's D3DMetal graphics component to a compatible host. Original app bundles are never modified.",
             symbol: "square.and.arrow.down"
         ) {
             VStack(alignment: .leading, spacing: 10) {
@@ -502,7 +514,7 @@ struct RuntimeSettingsView: View {
         }
     }
 
-    private func runtimeRow(_ runtime: RuntimeStatus) -> some View {
+    private func runtimeRow(_ runtime: RuntimeStatus, showsComponents: Bool = true) -> some View {
         let environmentCount = store.environments.filter { $0.runtimeID == runtime.id }.count
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: runtime.isVerified ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
@@ -514,6 +526,11 @@ struct RuntimeSettingsView: View {
                 Text("\(runtime.engine.displayName) · \(runtime.wineVersion) · \(runtime.architecture.rawValue)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                if showsComponents, !runtime.componentSummary.isEmpty {
+                    Text(runtime.componentSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if environmentCount > 0 {
                     Text("Used by \(environmentCount) \(environmentCount == 1 ? "environment" : "environments")")
                         .font(.caption)

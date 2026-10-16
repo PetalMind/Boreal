@@ -1250,11 +1250,18 @@ nonisolated struct InstalledRuntime: Codable, Identifiable, Sendable, Hashable {
     var engine: RuntimeEngine? = nil
     var features: RuntimeFeatures? = nil
 
+    var baseIdentity: RuntimeBaseIdentity? = nil
+    var graphicsComponents: [InstalledGraphicsComponent]? = nil
+    /// Host provenance is independent of the legacy engine field used by
+    /// compatibility profiles for D3DMetal qualification.
+    var hostEngine: RuntimeEngine? = nil
+
     var resolvedEngine: RuntimeEngine {
         engine ?? (features?.d3dmetal == true ? .gamePortingToolkit : .wine)
     }
 
-    var runtimeDescription: String { "\(displayName) · \(resolvedEngine.displayName) \(wineVersion)" }
+    var inventoryName: String { RuntimeInventory.displayName(displayName, engine: hostEngine ?? resolvedEngine, version: wineVersion) }
+    var runtimeDescription: String { "\(inventoryName) · \(resolvedEngine.displayName) \(wineVersion)" }
     var graphicsName: String { resolvedEngine.graphicsName }
 }
 
@@ -1270,6 +1277,7 @@ nonisolated struct LocalRuntimeCandidate: Identifiable, Sendable, Hashable {
     var engine: RuntimeEngine = .wine
     var features: RuntimeFeatures = RuntimeFeatures(wow64: false, wineMono: false, wineGecko: false, d3dmetal: false, dxmt: false)
     var layout: RuntimeLayout = .canonical
+    var hostEngine: RuntimeEngine? = nil
 }
 
 nonisolated struct RuntimeValidation: Sendable, Equatable {

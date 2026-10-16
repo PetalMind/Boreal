@@ -230,11 +230,13 @@ nonisolated enum DirectXDetector {
     ) -> DirectXDetectionResult {
         var evidence: [DetectionEvidence] = []
         var candidates = Set<GraphicsAPI>()
+        var primaryImports = Set<GraphicsAPI>()
 
         if let executable {
             for signal in detectAPIs(in: executable, fileManager: fileManager) {
                 let api = signal.api
                 candidates.insert(api)
+                if signal.source == "PE imports" { primaryImports.insert(api) }
                 evidence.append(DetectionEvidence(
                     source: signal.source,
                     value: api.displayName,
@@ -274,7 +276,13 @@ nonisolated enum DirectXDetector {
         let ordered = candidates.sorted { apiRank($0) < apiRank($1) }
         let selected: GraphicsAPI?
         let confidence: CompatibilityConfidence
-        if ordered.count == 1 {
+        if primaryImports.count == 1 {
+            // Delay-loaded APIs often represent an optional renderer. Keep
+            // all candidates in diagnostics, but prefer the regular import
+            // used by the primary executable for automatic preparation.
+            selected = primaryImports.first
+            confidence = .high
+        } else if ordered.count == 1 {
             selected = ordered.first
             confidence = evidence.contains(where: { $0.source == "PE imports" }) ? .high : .medium
         } else if ordered.isEmpty {
@@ -304,9 +312,13 @@ nonisolated enum DirectXDetector {
         guard fileManager.fileExists(atPath: file.path) else { return [] }
         let inspection = WindowsPEInspection.inspect(file, fileManager: fileManager)
         if inspection.isPE {
-            return inspection.imports.union(inspection.delayImports).compactMap { library in
+            let imports = inspection.imports.compactMap { library in
                 api(for: library).map { APISignal(api: $0, library: library, source: "PE imports") }
             }
+            let delayImports = inspection.delayImports.subtracting(inspection.imports).compactMap { library in
+                api(for: library).map { APISignal(api: $0, library: library, source: "PE delay imports") }
+            }
+            return imports + delayImports
         }
         guard let data = readData(file, fileManager: fileManager) else { return [] }
         let text = String(decoding: data, as: UTF8.self).lowercased()
@@ -318,7 +330,12 @@ nonisolated enum DirectXDetector {
             ("d3d10_1.dll", GraphicsAPI.directX10),
             ("d3d10core.dll", GraphicsAPI.directX10),
             ("d3d9.dll", GraphicsAPI.directX9),
-            ("d3dx9_", GraphicsAPI.directX9)
+            ("d3dx9_", GraphicsAPI.directX9),
+            ("d3d8.dll", GraphicsAPI.directX8),
+            ("ddraw.dll", GraphicsAPI.directDraw),
+            ("d3dim.dll", GraphicsAPI.directDraw),
+            ("d3dim700.dll", GraphicsAPI.directDraw),
+            ("opengl32.dll", GraphicsAPI.openGL)
         ].compactMap { marker, api in
             text.contains(marker) ? APISignal(api: api, library: marker, source: "bounded file strings") : nil
         }
@@ -330,6 +347,9 @@ nonisolated enum DirectXDetector {
         if name == "d3d11.dll" { return .directX11 }
         if name == "d3d10.dll" || name == "d3d10_1.dll" || name == "d3d10core.dll" { return .directX10 }
         if name == "d3d9.dll" || name.hasPrefix("d3dx9_") { return .directX9 }
+        if name == "d3d8.dll" { return .directX8 }
+        if ["ddraw.dll", "d3dim.dll", "d3dim700.dll"].contains(name) { return .directDraw }
+        if name == "opengl32.dll" { return .openGL }
         return nil
     }
 
@@ -346,7 +366,10 @@ nonisolated enum DirectXDetector {
         case .directX11: 1
         case .directX10: 2
         case .directX9: 3
-        case .automatic: 4
+        case .directX8: 4
+        case .directDraw: 5
+        case .openGL: 6
+        case .automatic: 7
         }
     }
 }

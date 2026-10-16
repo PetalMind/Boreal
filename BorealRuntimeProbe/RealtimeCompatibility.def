@@ -1,0 +1,6 @@
+LIBRARY api-ms-win-core-realtime-l1-1-1
+EXPORTS
+QueryUnbiasedInterruptTimePrecise=Boreal_QueryUnbiasedInterruptTimePrecise
+QueryUnbiasedInterruptTime=kernel32.QueryUnbiasedInterruptTime
+QueryThreadCycleTime=kernel32.QueryThreadCycleTime
+QueryProcessCycleTime=kernel32.QueryProcessCycleTime

@@ -355,19 +355,25 @@ nonisolated struct DLLOverride: Codable, Sendable, Hashable {
 
 nonisolated enum GraphicsAPI: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
     case automatic
+    case directDraw
+    case directX8
     case directX9
     case directX10
     case directX11
     case directX12
+    case openGL
 
     var id: String { rawValue }
     var displayName: String {
         switch self {
         case .automatic: "Automatic"
+        case .directDraw: "DirectDraw / Direct3D 1–7"
+        case .directX8: "DirectX 8"
         case .directX9: "DirectX 9"
         case .directX10: "DirectX 10"
         case .directX11: "DirectX 11"
         case .directX12: "DirectX 12"
+        case .openGL: "OpenGL"
         }
     }
 }
@@ -776,6 +782,8 @@ nonisolated struct WindowsApplication: Identifiable, Codable, Hashable, Sendable
     /// Renderer fallback history is optional so older library files remain
     /// decodable while Boreal can explain automatic compatibility changes.
     var compatibilityFallbackEvents: [CompatibilityFallbackEvent]? = nil
+    var graphicsCompatibilityResults: [GraphicsCompatibilityResult]? = nil
+    var lastGraphicsResolution: GraphicsResolutionReport? = nil
     var storeProvider: GameLibraryProvider?
     var storeExternalID: String?
     /// True when the linked store record supplies presentation metadata only.
@@ -1546,6 +1554,16 @@ struct RuntimeStatus: Identifiable, Sendable {
     var origin: RuntimeOrigin? = nil
     var engine: RuntimeEngine = .wine
     var features: RuntimeFeatures? = nil
+    var baseIdentity: RuntimeBaseIdentity? = nil
+    var graphicsComponents: [InstalledGraphicsComponent] = []
+
+    var componentSummary: String {
+        graphicsComponents.map(\.displayName).joined(separator: " · ")
+    }
+
+    var selectionName: String {
+        componentSummary.isEmpty ? name : "\(name) · \(componentSummary)"
+    }
 }
 
 enum RuntimeDiscoveryState: Equatable, Sendable {

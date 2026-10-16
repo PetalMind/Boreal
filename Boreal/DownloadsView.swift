@@ -360,7 +360,8 @@ struct DownloadsView: View {
                 alignment: .leading,
                 spacing: 12
             ) {
-                ForEach(store.runtimeStatuses) { runtime in
+                ForEach(RuntimeFamily.group(store.runtimeStatuses)) { family in
+                    let runtime = family.primary
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: runtime.isVerified ? "checkmark.seal.fill" : "shippingbox.fill")
@@ -368,7 +369,7 @@ struct DownloadsView: View {
                                 .foregroundStyle(runtime.isVerified ? Color.green : Color.accentColor)
                                 .frame(width: 36)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(runtime.name).font(.headline)
+                                Text(family.name).font(.headline)
                                 Text(runtimeDetail(runtime)).font(.callout).foregroundStyle(.secondary)
                                 if developerMode {
                                     Text("\(runtime.engine.displayName) \(runtime.wineVersion) · \(runtime.architecture.rawValue) · \(runtime.engine.graphicsName)")
@@ -385,23 +386,44 @@ struct DownloadsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        RuntimeGraphicsComponentsView(components: family.graphicsComponents)
+                        if family.deployments.count > 1 {
+                            DisclosureGroup("Installed variants") {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(family.deployments) { deployment in
+                                        HStack(alignment: .top, spacing: 12) {
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(deployment.selectionName)
+                                                    .font(.callout)
+                                                Text(runtimeDetail(deployment))
+                                                    .font(.caption).foregroundStyle(.secondary)
+                                            }
+                                            Spacer(minLength: 8)
+                                            runtimeAction(deployment)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 8)
+                            }
+                            .font(.callout)
+                        }
                         HStack(spacing: 12) {
                             runtimeAction(runtime)
                                 .fixedSize()
                             Spacer(minLength: 12)
-                            if runtime.source == .installed, runtime.engine == .wine {
+                            if let graphicsRuntime = family.deployments.first(where: { $0.source == .installed && $0.engine == .wine }) {
                                 Menu {
-                                    Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: runtime.id) }
-                                    Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: runtime.id) }
-                                    Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: runtime.id) }
-                                    Button("Install Dd7to9") { store.downloadLegacyWrapper(.dd7to9, into: runtime.id) }
-                                    Button("Install dgVoodoo2") { store.downloadLegacyWrapper(.dgVoodoo2, into: runtime.id) }
+                                    Button("Install DXVK") { store.downloadGraphicsComponent(.dxvk, into: graphicsRuntime.id) }
+                                    Button("Install VKD3D-Proton") { store.downloadGraphicsComponent(.vkd3d, into: graphicsRuntime.id) }
+                                    Button("Install DXMT") { store.downloadGraphicsComponent(.dxmt, into: graphicsRuntime.id) }
+                                    Button("Install Dd7to9") { store.downloadLegacyWrapper(.dd7to9, into: graphicsRuntime.id) }
+                                    Button("Install dgVoodoo2") { store.downloadLegacyWrapper(.dgVoodoo2, into: graphicsRuntime.id) }
                                     Divider()
                                     Menu("Advanced") {
-                                        Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: runtime) }
-                                        Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: runtime) }
-                                        Button("Import Dd7to9 Package…") { selectLegacyWrapperPackage(.dd7to9, for: runtime) }
-                                        Button("Import dgVoodoo2 Package…") { selectLegacyWrapperPackage(.dgVoodoo2, for: runtime) }
+                                        Button("Import DXMT Package…") { selectGraphicsPackage(.dxmt, for: graphicsRuntime) }
+                                        Button("Import DXVK Package…") { selectGraphicsPackage(.dxvk, for: graphicsRuntime) }
+                                        Button("Import Dd7to9 Package…") { selectLegacyWrapperPackage(.dd7to9, for: graphicsRuntime) }
+                                        Button("Import dgVoodoo2 Package…") { selectLegacyWrapperPackage(.dgVoodoo2, for: graphicsRuntime) }
                                     }
                                 } label: {
                                     Image(systemName: "ellipsis.circle")

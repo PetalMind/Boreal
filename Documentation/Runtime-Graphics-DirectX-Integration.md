@@ -54,6 +54,16 @@ Runtime jest zainstalowanym pakietem zawierającym wykonawcze Wine lub GPTK, met
 
 Starsze manifesty mogą nie mieć jawnego pola silnika. Wtedy GPTK jest wnioskowany tylko w ograniczonym przypadku, gdy manifest deklaruje D3DMetal. Nie należy utożsamiać samego braku pola `engine` z pełną diagnozą runtime.
 
+#### Inwentarz baz i komponentów
+
+`RuntimeBaseIdentity` opisuje bazę Wine/GPTK: rodzinę, wersję, architekturę i fingerprint plików hosta (`wine`, `wineserver`, obie biblioteki ntdll). `InstalledGraphicsComponent` opisuje osobno renderer, jego wersję, źródło i opcjonalną referencję do wspólnego magazynu komponentów. Wersja DXVK 1.x otrzymuje oznaczenie Legacy. D3DMetal ma własną wersję, niezależną od wersji hosta; WineD3D jest komponentem wbudowanym.
+
+Ekrany pobierania i ustawień grupują pakiety z tym samym fingerprintem pod jedną bazą. Starsze warianty pozostają dostępne po rozwinięciu grupy. Grupowanie nie zmienia `runtimeID`, przypisań środowisk ani wymagań konkretnego pakietu. Zgodność plików hosta nie jest dowodem wymienności całego payloadu, więc nie upoważnia do automatycznego przepięcia gry lub usunięcia starszego snapshotu. Niestandardowe pakiety bez pełnego fingerprintu pozostają osobnymi pozycjami.
+
+Instalacja DXMT, DXVK i VKD3D-Proton nadal publikuje jeden wersjonowany komponent we wspólnym magazynie, bez kopiowania Wine. Lista aktualizacji pokazuje każdy taki komponent raz. Starsze komponenty osadzone w pakietach są odczytywane bez modyfikacji. D3DMetal pozostaje częścią zgodnego deploymentu GPTK: jego import nadal komponuje i weryfikuje pakiet z właściwym loaderem. Ten inwentarz nie usuwa istniejących kopii Wine/GPTK z dysku.
+
+`hostEngine` zachowuje pochodzenie bazy nowych pakietów D3DMetal. Historyczne pole `engine` pozostaje używane przez kwalifikację profili kompatybilności, a opcjonalne nowe pola nie blokują odczytu starszych deskryptorów.
+
 ### 2.2. Prefix
 
 `WinePrefixMode` rozróżnia:
@@ -515,10 +525,17 @@ Poniższa macierz opisuje reguły wynikające z katalogu stacków, a nie gwaranc
 
 | API | D3DMetal | DXMT | DXVK | VKD3D | WineD3D |
 |---|---:|---:|---:|---:|---:|
+| DirectDraw / D3D1–7 bez wrappera | nie | nie | nie | nie | natywna ścieżka Wine |
+| DX8 | nie | nie | tylko z wymaganymi DLL | nie | tak |
 | DX9 | nie | nie jako ogólna reguła | tak | nie | tak |
 | DX10 | nie | tak | tak | nie | tak |
 | DX11 | tak | tak | tak | nie | tak |
 | DX12 | tak | nie | nie | tak | nie |
+| OpenGL | nie | nie | nie | nie | natywna ścieżka Wine |
+
+Domyślne priorytety automatyczne zależą od API: DX9 preferuje DXVK, DX10 wybiera DXVK przed DXMT, DX11 wybiera DXMT → DXVK → D3DMetal, a DX12 D3DMetal → VKD3D-Proton. Backend musi przejść kontrolę możliwości runtime, architektury EXE oraz wymaganych komponentów. Architektura 64-bitowego prefixu WoW64 nie daje D3DMetal obsługi 32-bitowej gry. Dostępna preferencja profilu konkretnej gry ma pierwszeństwo przed kolejnością ogólną; wybór ręczny i reguły wymuszające pozostają ścisłe.
+
+Wybrany wrapper legacy przekazuje do resolvera swoje API wyjściowe: Dd7to9 — DX9, dgVoodoo2 i Boreal Legacy Graphics — DX11. Dla DX8 przez DXVK wymagane są jednocześnie `d3d8.dll` i `d3d9.dll`; samo ogólne capability `dxvk` nie wystarcza. Zwykłe importy PE mają pierwszeństwo przed delay imports, jeżeli wskazują jedno API; diagnostyka zachowuje pełną listę kandydatów.
 
 Dodatkowe ograniczenia:
 
