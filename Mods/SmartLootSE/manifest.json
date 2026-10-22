@@ -1,0 +1,10 @@
+{
+  "name": "Smart Loot SE",
+  "version": "1.0.0",
+  "game": "The Elder Scrolls V: Skyrim Special Edition",
+  "plugin": "Data/SmartLoot.esp",
+  "requirements": {
+    "skse": true,
+    "papyrusExtender": true
+  }
+}
