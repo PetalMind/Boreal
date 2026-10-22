@@ -47,6 +47,7 @@ struct ModsView: View {
                 case .witcher3Mod: "shippingbox"
                 case .witcher3DLC: "folder.badge.plus"
                 case .witcher3GameFiles: "doc.badge.gearshape"
+                case .skyrimData: "square.stack.3d.up"
                 case .manual: "hand.raised"
                 case .unknown: "questionmark.square"
                 }

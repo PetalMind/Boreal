@@ -57,6 +57,7 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
     case witcher3Mod
     case witcher3DLC
     case witcher3GameFiles
+    case skyrimData
     case manual
     case unknown
 
@@ -76,6 +77,7 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .witcher3Mod: "The Witcher 3 Mod Folder"
         case .witcher3DLC: "The Witcher 3 DLC Folder"
         case .witcher3GameFiles: "The Witcher 3 Game Files"
+        case .skyrimData: "Skyrim Data Files"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
         }
@@ -106,6 +108,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
     case witcher2CookedPC
     case witcher2UserContent
     case witcher3GameRoot
+    case skyrimDataFolder
 
     var displayName: String {
         switch self {
@@ -120,6 +123,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
         case .witcher2CookedPC: "CookedPC"
         case .witcher2UserContent: "User Content"
         case .witcher3GameRoot: "The Witcher 3 Game Folder"
+        case .skyrimDataFolder: "Skyrim Data Folder"
         }
     }
 }
@@ -437,6 +441,7 @@ nonisolated enum ExternalModDiscovery {
         files: [URL],
         relativeTo root: URL,
         contentType: ModContentType,
+        deployStrategy: ModDeployStrategy = .manual,
         requirements: [String] = [],
         plugins: [BethesdaPlugin] = [],
         fileManager: FileManager = .default
@@ -462,7 +467,7 @@ nonisolated enum ExternalModDiscovery {
             files: records,
             plugins: plugins,
             contentType: contentType,
-            deployStrategy: .manual,
+            deployStrategy: deployStrategy,
             requirements: requirements,
             warnings: ["Detected in the installed game files. Boreal does not own or deploy these files."],
             installationSource: .external,
@@ -865,6 +870,7 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
     case profileAlreadyExists(String)
     case deploymentFailed(String)
     case pluginsFileUnavailable
+    case skyrimManualInstallationRequired([String])
 
     var errorDescription: String? {
         switch self {
@@ -932,6 +938,8 @@ nonisolated enum ModManagerError: LocalizedError, Sendable {
             "Boreal couldn’t deploy the selected mods: \(detail)"
         case .pluginsFileUnavailable:
             "Boreal couldn’t locate Skyrim’s plugins.txt inside the selected Wine environment."
+        case .skyrimManualInstallationRequired(let details):
+            "Boreal can’t install this Skyrim archive automatically. \(details.isEmpty ? "This archive needs an interactive or game-root installer." : details.joined(separator: " "))"
         }
     }
 }
@@ -989,7 +997,7 @@ nonisolated enum SkyrimModAdapter {
     }
 
     /// Skyrim keeps this file in `%LOCALAPPDATA%/Skyrim Special Edition`.
-    /// Existing user directories are preferred; a fresh managed prefix uses
+    /// An existing plugin list is preferred; a fresh or ambiguous prefix uses
     /// Wine's conventional `steamuser` account.
     static func pluginsFile(
         in prefix: URL,
@@ -1006,16 +1014,32 @@ nonisolated enum SkyrimModAdapter {
         if !userNames.contains(where: { $0.caseInsensitiveCompare("steamuser") == .orderedSame }) {
             userNames.append("steamuser")
         }
-        for user in userNames {
-            let url = users
+        let candidates = userNames.map { user in
+            (user: user, url: users
                 .appending(path: user, directoryHint: .isDirectory)
                 .appending(path: "AppData/Local/Skyrim Special Edition", directoryHint: .isDirectory)
-                .appending(path: "plugins.txt")
-            if fileManager.fileExists(atPath: url.path) || fileManager.fileExists(atPath: url.deletingLastPathComponent().path) {
-                return url
-            }
+                .appending(path: "plugins.txt"))
         }
-        return nil
+        if let existing = candidates.first(where: {
+            $0.user.caseInsensitiveCompare("steamuser") == .orderedSame
+                && fileManager.fileExists(atPath: $0.url.path)
+        }) ?? candidates.first(where: { fileManager.fileExists(atPath: $0.url.path) }) {
+            return existing.url
+        }
+
+        // Prefer an already-created game settings folder when no plugin list
+        // exists yet. A stale or empty folder for another Wine account must
+        // not shadow an existing plugins.txt in a later account.
+        let existingSettingsFolders = candidates.filter {
+            fileManager.fileExists(atPath: $0.url.deletingLastPathComponent().path)
+        }
+        if existingSettingsFolders.count == 1, let folder = existingSettingsFolders.first {
+            return folder.url
+        }
+        if let steamUser = candidates.first(where: { $0.user.caseInsensitiveCompare("steamuser") == .orderedSame }) {
+            return steamUser.url
+        }
+        return candidates.first?.url
     }
 
     static func pluginType(for filename: String) -> BethesdaPluginType? {
@@ -1195,6 +1219,9 @@ nonisolated struct ModManager: Sendable {
     }
 
     func inspect(archive: URL, gameID: UUID) throws -> ModInstallPreview {
+        let hasSecurityScope = archive.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { archive.stopAccessingSecurityScopedResource() } }
+
         let format = try archiveFormat(for: archive)
         let pendingRoot = gameURL(for: gameID).appending(path: "Archives/.pending", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: pendingRoot, withIntermediateDirectories: true)
@@ -1204,9 +1231,50 @@ nonisolated struct ModManager: Sendable {
         do {
             let extracted = try extract(pendingURL, format: format)
             defer { try? FileManager.default.removeItem(at: extracted) }
-            let dataRoot = try findDataRoot(in: extracted)
+            let archiveFiles = try contentFiles(in: extracted)
+            let hasFomod = containsFomodInstaller(in: archiveFiles, extractedRoot: extracted)
+            let dataRoot: URL
+            do {
+                dataRoot = try findDataRoot(in: extracted)
+            } catch {
+                let rootPayloads = archiveFiles.compactMap { file -> String? in
+                    guard let relative = try? relativePath(of: file, from: extracted),
+                          !isInstallerMetadata(relative),
+                          !isInformationalFile(relative) else { return nil }
+                    return relative
+                }
+                if hasFomod {
+                    throw ModManagerError.skyrimManualInstallationRequired([
+                        "This archive has a FOMOD installer. Boreal does not apply its choices or installer rules."
+                    ])
+                }
+                if !rootPayloads.isEmpty {
+                    let examples = rootPayloads.prefix(4).joined(separator: ", ")
+                    throw ModManagerError.skyrimManualInstallationRequired([
+                        "Boreal could not find a Skyrim Data folder and cannot install these files at the game root: \(examples)."
+                    ])
+                }
+                throw error
+            }
             let files = try contentFiles(in: dataRoot)
             let plugins = files.compactMap { SkyrimModAdapter.pluginType(for: $0.lastPathComponent) }
+            var warnings: [String] = []
+            if hasFomod {
+                warnings.append("This archive has a FOMOD installer. Boreal does not apply its choices or installer rules.")
+            }
+            let unhandledPaths = archiveFiles.compactMap { file -> String? in
+                let dataPath = dataRoot.standardizedFileURL.path
+                guard !file.standardizedFileURL.path.hasPrefix(dataPath + "/"),
+                      let relative = try? relativePath(of: file, from: extracted),
+                      !isInstallerMetadata(relative),
+                      !isInformationalFile(relative) else { return nil }
+                return relative
+            }.sorted()
+            if !unhandledPaths.isEmpty {
+                let examples = unhandledPaths.prefix(4).joined(separator: ", ")
+                let remainder = unhandledPaths.count > 4 ? " and \(unhandledPaths.count - 4) more" : ""
+                warnings.append("Files outside Skyrim’s Data folder would be skipped: \(examples)\(remainder).")
+            }
             let current = try load(gameID: gameID, gameRoot: nil, pluginsFile: nil, profileID: nil)
             return ModInstallPreview(
                 gameID: gameID,
@@ -1216,6 +1284,13 @@ nonisolated struct ModManager: Sendable {
                 detectedRoot: relativeDisplayPath(dataRoot, from: extracted),
                 fileCount: files.count,
                 pluginCount: plugins.count,
+                contentType: warnings.isEmpty ? .skyrimData : .manual,
+                deployStrategy: warnings.isEmpty ? .skyrimDataFolder : .manual,
+                warnings: warnings,
+                canInstallAutomatically: warnings.isEmpty,
+                totalSize: files.reduce(Int64.zero) { total, file in
+                    total + Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                },
                 existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current)
             )
         } catch {
@@ -1296,6 +1371,9 @@ nonisolated struct ModManager: Sendable {
         profileID: String = "default",
         auxiliaryRoot: URL? = nil
     ) throws -> ModGameState {
+        guard preview.canInstallAutomatically else {
+            throw ModManagerError.skyrimManualInstallationRequired(preview.warnings)
+        }
         let fileManager = FileManager.default
         let format = try archiveFormat(for: preview.archiveURL)
         let extracted = try extract(preview.archiveURL, format: format)
@@ -1367,7 +1445,9 @@ nonisolated struct ModManager: Sendable {
                 stagingRelativePath: "Staging/\(stagingID.uuidString)",
                 installedAt: .now,
                 files: files,
-                plugins: pluginRecords
+                plugins: pluginRecords,
+                contentType: .skyrimData,
+                deployStrategy: .skyrimDataFolder
             )
             var mods = current.mods
             if let index = replacement.flatMap({ replacement in mods.firstIndex { $0.id == replacement.id } }) {
@@ -1838,7 +1918,8 @@ nonisolated struct ModManager: Sendable {
                     detectionKey: "data/\(key)",
                     files: files,
                     relativeTo: dataRoot,
-                    contentType: .unknown
+                    contentType: .skyrimData,
+                    deployStrategy: .skyrimDataFolder
                 ) {
                     result.append(mod)
                 }
@@ -1863,7 +1944,8 @@ nonisolated struct ModManager: Sendable {
                 detectionKey: detectionKey,
                 files: files,
                 relativeTo: dataRoot,
-                contentType: .unknown,
+                contentType: .skyrimData,
+                deployStrategy: .skyrimDataFolder,
                 plugins: [plugin]
             ) else { continue }
             plugin.modID = mod.id
@@ -1983,6 +2065,30 @@ nonisolated struct ModManager: Sendable {
             }
         }
         return result.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private func containsFomodInstaller(in files: [URL], extractedRoot: URL) -> Bool {
+        files.contains { file in
+            guard file.lastPathComponent.caseInsensitiveCompare("ModuleConfig.xml") == .orderedSame,
+                  let relative = try? relativePath(of: file, from: extractedRoot) else { return false }
+            return relative.split(separator: "/").contains {
+                $0.caseInsensitiveCompare("fomod") == .orderedSame
+            }
+        }
+    }
+
+    private func isInstallerMetadata(_ relativePath: String) -> Bool {
+        relativePath.split(separator: "/").contains {
+            $0.caseInsensitiveCompare("fomod") == .orderedSame
+        }
+    }
+
+    private func isInformationalFile(_ relativePath: String) -> Bool {
+        let filename = URL(fileURLWithPath: relativePath).lastPathComponent.lowercased()
+        let informationalPrefixes = ["readme", "license", "licence", "changelog", "credits"]
+        if informationalPrefixes.contains(where: filename.hasPrefix) { return true }
+        return ["txt", "md", "rtf", "pdf", "html", "htm", "png", "jpg", "jpeg", "gif", "webp"]
+            .contains(URL(fileURLWithPath: filename).pathExtension.lowercased())
     }
 
     private func findDataRoot(in extracted: URL) throws -> URL {
