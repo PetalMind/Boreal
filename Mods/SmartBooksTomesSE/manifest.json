@@ -1,0 +1,11 @@
+{
+  "name": "Smart Books & Tomes SE",
+  "version": "0.1.0",
+  "game": "The Elder Scrolls V: Skyrim Special Edition",
+  "plugin": "Data/SmartBooksTomesSE.esp",
+  "requirements": {
+    "skse": true,
+    "papyrusExtender": true,
+    "skyui": true
+  }
+}
