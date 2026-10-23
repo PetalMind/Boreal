@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Ustawiono Pochłonięciu zasięg około 30 m, 8 obrażeń i 8 leczenia na sekundę oraz koszt 12 Magicki na sekundę.
+
 ## 1.0.0
 
 - Dodano Pochłonięcie Stwórcy, trzy rangi Bariery Stwórcy oraz Impuls Stwórcy.

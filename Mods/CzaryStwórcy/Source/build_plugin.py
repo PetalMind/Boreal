@@ -15,10 +15,11 @@ SPELLS = (
         "editor_id": "CreatorAbsorptionSpell",
         "name": "Pochłonięcie Stwórcy",
         "description": (
-            "Ciągły, celowany promień. Wysysa 8 punktów zdrowia na sekundę "
-            "i przekazuje je rzucającemu. Koszt bazowy 12 Magicki na sekundę."
+            "Ciągły promień 30 m: 8 obrażeń i 8 leczenia na sekundę; "
+            "koszt 12 Magicki/s."
         ),
         "cost": 12,
+        "range": 2100.0,
         "effects": ((0x000F5B57, 8.0, 0, 0),),
     },
     {
@@ -219,9 +220,13 @@ def build_spell(source: dict[int, Record], spec: dict, form_id: int) -> bytes:
             payload = spec["description"].encode("utf-8") + b"\0"
             found.add(tag)
         elif tag == b"SPIT":
-            if len(payload) < 4:
+            if len(payload) < 36:
                 raise ValueError("Malformed SPIT subrecord")
-            payload = struct.pack("<I", spec["cost"]) + payload[4:]
+            spell_data = bytearray(payload)
+            struct.pack_into("<I", spell_data, 0, spec["cost"])
+            if "range" in spec:
+                struct.pack_into("<f", spell_data, 28, spec["range"])
+            payload = bytes(spell_data)
             found.add(tag)
         leading.append((tag, payload))
 

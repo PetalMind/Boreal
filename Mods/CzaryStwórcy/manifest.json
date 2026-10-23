@@ -1,0 +1,11 @@
+{
+  "name": "Czary Stwórcy",
+  "version": "1.0.1",
+  "game": "The Elder Scrolls V: Skyrim Special Edition",
+  "plugin": "Data/CreatorSpells.esp",
+  "masters": ["Skyrim.esm"],
+  "requirements": {
+    "skse": false,
+    "papyrus": false
+  }
+}

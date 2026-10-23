@@ -4,7 +4,7 @@ Pierwsza paczka dodatkowych czarów dla **The Elder Scrolls V: Skyrim Special Ed
 
 ## Efekty
 
-- **Pochłonięcie Stwórcy** — ciągły promień wysysający 8 zdrowia na sekundę i przekazujący je rzucającemu; koszt bazowy 12 Magicki na sekundę.
+- **Pochłonięcie Stwórcy** — ciągły promień o zasięgu około 30 m; wysysa 8 zdrowia i leczy rzucającego o 8 punktów na sekundę; koszt 12 Magicki na sekundę.
 - **Bariera Stwórcy I** — 10 s, +167 pancerza i 20% odporności na magię.
 - **Bariera Stwórcy II** — 12 s, +250 pancerza i 30% odporności na magię.
 - **Bariera Stwórcy III** — 15 s, +333 pancerza i 40% odporności na magię.
