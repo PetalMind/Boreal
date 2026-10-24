@@ -801,6 +801,8 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
     let canInstallAutomatically: Bool
     let totalSize: Int64
     let existingModID: UUID?
+    let fomodPlan: FomodInstallPlan?
+    let fomodSelection: FomodSelectionState
 
     var isUpdate: Bool { existingModID != nil }
 
@@ -820,7 +822,9 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
         warnings: [String] = [],
         canInstallAutomatically: Bool = true,
         totalSize: Int64 = 0,
-        existingModID: UUID? = nil
+        existingModID: UUID? = nil,
+        fomodPlan: FomodInstallPlan? = nil,
+        fomodSelection: FomodSelectionState = FomodSelectionState()
     ) {
         self.id = id
         self.gameID = gameID
@@ -838,6 +842,31 @@ nonisolated struct ModInstallPreview: Identifiable, Sendable {
         self.canInstallAutomatically = canInstallAutomatically
         self.totalSize = totalSize
         self.existingModID = existingModID
+        self.fomodPlan = fomodPlan
+        self.fomodSelection = fomodSelection
+    }
+
+    func applyingFomodSelection(_ selection: FomodSelectionState) -> ModInstallPreview {
+        ModInstallPreview(
+            id: id,
+            gameID: gameID,
+            archiveURL: archiveURL,
+            archiveName: archiveName,
+            format: format,
+            detectedRoot: detectedRoot,
+            fileCount: fileCount,
+            pluginCount: pluginCount,
+            adapter: adapter,
+            contentType: contentType,
+            deployStrategy: deployStrategy,
+            requirements: requirements,
+            warnings: warnings,
+            canInstallAutomatically: canInstallAutomatically,
+            totalSize: totalSize,
+            existingModID: existingModID,
+            fomodPlan: fomodPlan,
+            fomodSelection: selection
+        )
     }
 }
 
@@ -1219,6 +1248,10 @@ nonisolated struct ModManager: Sendable {
     }
 
     func inspect(archive: URL, gameID: UUID) throws -> ModInstallPreview {
+        try inspect(archive: archive, gameID: gameID, gameRoot: nil, pluginsFile: nil)
+    }
+
+    func inspect(archive: URL, gameID: UUID, gameRoot: URL?, pluginsFile: URL?) throws -> ModInstallPreview {
         let hasSecurityScope = archive.startAccessingSecurityScopedResource()
         defer { if hasSecurityScope { archive.stopAccessingSecurityScopedResource() } }
 
@@ -1232,7 +1265,59 @@ nonisolated struct ModManager: Sendable {
             let extracted = try extract(pendingURL, format: format)
             defer { try? FileManager.default.removeItem(at: extracted) }
             let archiveFiles = try contentFiles(in: extracted)
-            let hasFomod = containsFomodInstaller(in: archiveFiles, extractedRoot: extracted)
+            let fomod = try FomodInstaller.findConfig(in: extracted)
+            if fomod.script != nil {
+                throw FomodInstallerError.unsupported(["C# FOMOD scripts are not supported. Use an XML-based installer."])
+            }
+
+            let current = try load(gameID: gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: nil)
+            if let configURL = fomod.config, let packageRoot = fomod.packageRoot {
+                let dataRoot = gameRoot.flatMap { SkyrimModAdapter.dataRoot(for: $0) }
+                let existingFiles: Set<String>
+                if let dataRoot, let files = try? contentFiles(in: dataRoot) {
+                    existingFiles = Set(files.compactMap { try? relativePath(of: $0, from: dataRoot).lowercased() })
+                } else {
+                    existingFiles = []
+                }
+                let environment = FomodEnvironment(
+                    existingFiles: existingFiles,
+                    activePlugins: Set(current.plugins.filter(\.enabled).map { $0.filename.lowercased() }),
+                    gameVersion: FomodInstaller.gameVersion(executableAt: gameRoot?.appending(path: "SkyrimSE.exe"))
+                )
+                let plan = try FomodInstaller.parse(
+                    configURL: configURL,
+                    packageRoot: packageRoot,
+                    extractedRoot: extracted,
+                    environment: environment
+                )
+                let selection = plan.initialSelection()
+                let warnings = plan.moduleDependencyIssues + plan.supportIssues
+                let resolved = plan.isInstallable && plan.selectionIssue(for: selection) == nil
+                    ? try plan.resolvedFiles(for: selection, packageRoot: packageRoot)
+                    : []
+                let pluginCount = resolved.filter { SkyrimModAdapter.pluginType(for: $0.destination) != nil }.count
+                let totalSize = resolved.reduce(Int64.zero) { total, file in
+                    total + Int64((try? file.sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                }
+                return ModInstallPreview(
+                    gameID: gameID,
+                    archiveURL: pendingURL,
+                    archiveName: archive.lastPathComponent,
+                    format: format,
+                    detectedRoot: relativeDisplayPath(packageRoot, from: extracted),
+                    fileCount: resolved.count,
+                    pluginCount: pluginCount,
+                    adapter: .skyrimSpecialEdition,
+                    contentType: plan.isInstallable ? .skyrimData : .manual,
+                    deployStrategy: plan.isInstallable ? .skyrimDataFolder : .manual,
+                    warnings: warnings,
+                    canInstallAutomatically: plan.isInstallable,
+                    totalSize: totalSize,
+                    existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current),
+                    fomodPlan: plan,
+                    fomodSelection: selection
+                )
+            }
             let dataRoot: URL
             do {
                 dataRoot = try findDataRoot(in: extracted)
@@ -1242,11 +1327,6 @@ nonisolated struct ModManager: Sendable {
                           !isInstallerMetadata(relative),
                           !isInformationalFile(relative) else { return nil }
                     return relative
-                }
-                if hasFomod {
-                    throw ModManagerError.skyrimManualInstallationRequired([
-                        "This archive has a FOMOD installer. Boreal does not apply its choices or installer rules."
-                    ])
                 }
                 if !rootPayloads.isEmpty {
                     let examples = rootPayloads.prefix(4).joined(separator: ", ")
@@ -1259,9 +1339,6 @@ nonisolated struct ModManager: Sendable {
             let files = try contentFiles(in: dataRoot)
             let plugins = files.compactMap { SkyrimModAdapter.pluginType(for: $0.lastPathComponent) }
             var warnings: [String] = []
-            if hasFomod {
-                warnings.append("This archive has a FOMOD installer. Boreal does not apply its choices or installer rules.")
-            }
             let unhandledPaths = archiveFiles.compactMap { file -> String? in
                 let dataPath = dataRoot.standardizedFileURL.path
                 guard !file.standardizedFileURL.path.hasPrefix(dataPath + "/"),
@@ -1275,7 +1352,6 @@ nonisolated struct ModManager: Sendable {
                 let remainder = unhandledPaths.count > 4 ? " and \(unhandledPaths.count - 4) more" : ""
                 warnings.append("Files outside Skyrim’s Data folder would be skipped: \(examples)\(remainder).")
             }
-            let current = try load(gameID: gameID, gameRoot: nil, pluginsFile: nil, profileID: nil)
             return ModInstallPreview(
                 gameID: gameID,
                 archiveURL: pendingURL,
@@ -1378,8 +1454,19 @@ nonisolated struct ModManager: Sendable {
         let format = try archiveFormat(for: preview.archiveURL)
         let extracted = try extract(preview.archiveURL, format: format)
         defer { try? fileManager.removeItem(at: extracted) }
-        let dataRoot = try findDataRoot(in: extracted)
-        let sourceFiles = try contentFiles(in: dataRoot)
+        let sourceFiles: [(source: URL, destination: String)]
+        if let plan = preview.fomodPlan {
+            let packageRoot = plan.packageRootRelativePath.split(separator: "/").reduce(extracted) {
+                $0.appending(path: String($1), directoryHint: .isDirectory)
+            }
+            let resolved = try plan.resolvedFiles(for: preview.fomodSelection, packageRoot: packageRoot)
+            sourceFiles = resolved.map { (source: $0.sourceURL, destination: $0.destination) }
+        } else {
+            let dataRoot = try findDataRoot(in: extracted)
+            sourceFiles = try contentFiles(in: dataRoot).map { source in
+                (source: source, destination: try relativePath(of: source, from: dataRoot))
+            }
+        }
         guard !sourceFiles.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
 
         let current = try load(gameID: preview.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: profileID)
@@ -1393,8 +1480,9 @@ nonisolated struct ModManager: Sendable {
         do {
             var files: [ModFile] = []
             var seen: Set<String> = []
-            for source in sourceFiles {
-                let relative = try relativePath(of: source, from: dataRoot)
+            for payload in sourceFiles {
+                let source = payload.source
+                let relative = payload.destination
                 let key = relative.lowercased()
                 guard seen.insert(key).inserted else { throw ModManagerError.duplicatePath(relative) }
                 let destination = append(relative, to: stagingDirectory)
@@ -2065,16 +2153,6 @@ nonisolated struct ModManager: Sendable {
             }
         }
         return result.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-    }
-
-    private func containsFomodInstaller(in files: [URL], extractedRoot: URL) -> Bool {
-        files.contains { file in
-            guard file.lastPathComponent.caseInsensitiveCompare("ModuleConfig.xml") == .orderedSame,
-                  let relative = try? relativePath(of: file, from: extractedRoot) else { return false }
-            return relative.split(separator: "/").contains {
-                $0.caseInsensitiveCompare("fomod") == .orderedSame
-            }
-        }
     }
 
     private func isInstallerMetadata(_ relativePath: String) -> Bool {

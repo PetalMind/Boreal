@@ -4,6 +4,7 @@ nonisolated protocol GameModManaging: Sendable {
     var adapter: ModGameAdapter { get }
 
     func inspect(archive: URL, gameID: UUID) throws -> ModInstallPreview
+    func inspect(archive: URL, gameID: UUID, gameRoot: URL?, pluginsFile: URL?) throws -> ModInstallPreview
     func discardPreview(_ preview: ModInstallPreview)
     func load(gameID: UUID, gameRoot: URL?, pluginsFile: URL?, profileID: String?, auxiliaryRoot: URL?) throws -> ModGameState
     func install(preview: ModInstallPreview, gameRoot: URL?, pluginsFile: URL?, profileID: String, auxiliaryRoot: URL?) throws -> ModGameState
@@ -17,6 +18,12 @@ nonisolated protocol GameModManaging: Sendable {
     func deploymentHealth(for state: ModGameState, gameRoot: URL?, pluginsFile: URL?, auxiliaryRoot: URL?) -> ModDeploymentHealth
     func repairRuntime(gameRoot: URL?) throws -> ModRuntimeState?
     func launchArguments(for gameRoot: URL?) -> [String]
+}
+
+nonisolated extension GameModManaging {
+    func inspect(archive: URL, gameID: UUID, gameRoot: URL?, pluginsFile: URL?) throws -> ModInstallPreview {
+        try inspect(archive: archive, gameID: gameID)
+    }
 }
 
 extension ModManager: GameModManaging {

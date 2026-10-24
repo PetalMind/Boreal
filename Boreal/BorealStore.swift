@@ -2588,9 +2588,15 @@ final class BorealStore {
             present(ModManagerError.unsupportedGame(game.name), title: "Mod manager unavailable", stage: "Checking the selected game")
             return nil
         }
+        let context = modGameContext(for: game)
         do {
             return try await Task.detached(priority: .userInitiated) {
-                try manager.inspect(archive: archive, gameID: game.id)
+                try manager.inspect(
+                    archive: archive,
+                    gameID: game.id,
+                    gameRoot: context?.gameRoot,
+                    pluginsFile: context?.pluginsFile
+                )
             }.value
         } catch {
             present(error, title: "Mod archive couldn’t be read", stage: "Inspecting the archive")

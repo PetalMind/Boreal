@@ -208,8 +208,8 @@ struct ModsView: View {
                     store.discardModInstallPreview(preview)
                     installPreview = nil
                 },
-                onInstall: {
-                    store.installMod(preview, for: game)
+                onInstall: { selection in
+                    store.installMod(preview.applyingFomodSelection(selection), for: game)
                     installPreview = nil
                 }
             )
@@ -1415,85 +1415,195 @@ private struct PluginRow: View {
 private struct ModInstallPreviewSheet: View {
     let preview: ModInstallPreview
     let onCancel: () -> Void
-    let onInstall: () -> Void
+    let onInstall: (FomodSelectionState) -> Void
+    @State private var selection: FomodSelectionState
+
+    init(preview: ModInstallPreview, onCancel: @escaping () -> Void, onInstall: @escaping (FomodSelectionState) -> Void) {
+        self.preview = preview
+        self.onCancel = onCancel
+        self.onInstall = onInstall
+        _selection = State(initialValue: preview.fomodSelection)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(preview.isUpdate ? "Update Mod" : "Install Mod")
-                    .font(.title2.weight(.semibold))
-                Text(preview.archiveName)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            GroupBox("Detected structure") {
-                VStack(alignment: .leading, spacing: 11) {
-                    Label("\(preview.adapter.displayName) · \(preview.contentType.displayName)", systemImage: preview.canInstallAutomatically ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(preview.canInstallAutomatically ? .green : .orange)
-                    previewRow("Files", value: "\(preview.fileCount)")
-                    previewRow("Plugins", value: "\(preview.pluginCount)")
-                    previewRow("Deployment", value: preview.deployStrategy.displayName)
-                    previewRow(
-                        "Archive",
-                        value: preview.adapter == .dragonAgeOrigins
-                            && preview.archiveName.lowercased().hasSuffix(".dazip")
-                            ? "DAZIP"
-                            : preview.format.rawValue.uppercased()
-                    )
-                    previewRow("Installation root", value: "/\(preview.detectedRoot)")
-                    if preview.totalSize > 0 {
-                        previewRow("Size", value: ByteCountFormatter.string(fromByteCount: preview.totalSize, countStyle: .file))
+        VStack(alignment: .leading, spacing: 16) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(preview.isUpdate ? "Update Mod" : "Install Mod")
+                            .font(.title2.weight(.semibold))
+                        Text(preview.archiveName)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-                }
-                .padding(.vertical, 5)
-            }
 
-            if !preview.requirements.isEmpty {
-                Label("Requires: \(preview.requirements.joined(separator: ", "))", systemImage: "link")
+                    GroupBox("Detected structure") {
+                        VStack(alignment: .leading, spacing: 11) {
+                            Label("\(preview.adapter.displayName) · \(preview.contentType.displayName)", systemImage: preview.canInstallAutomatically ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundStyle(preview.canInstallAutomatically ? .green : .orange)
+                            if preview.fomodPlan?.steps.isEmpty ?? true {
+                                previewRow("Files", value: "\(preview.fileCount)")
+                                previewRow("Plugins", value: "\(preview.pluginCount)")
+                            } else {
+                                previewRow("Installer", value: "FOMOD")
+                            }
+                            previewRow("Deployment", value: preview.deployStrategy.displayName)
+                            previewRow(
+                                "Archive",
+                                value: preview.adapter == .dragonAgeOrigins
+                                    && preview.archiveName.lowercased().hasSuffix(".dazip")
+                                    ? "DAZIP"
+                                    : preview.format.rawValue.uppercased()
+                            )
+                            previewRow("Installation root", value: "/\(preview.detectedRoot)")
+                            if preview.totalSize > 0 && (preview.fomodPlan?.steps.isEmpty ?? true) {
+                                previewRow("Selected files", value: ByteCountFormatter.string(fromByteCount: preview.totalSize, countStyle: .file))
+                            }
+                        }
+                        .padding(.vertical, 5)
+                    }
+
+                    if let plan = preview.fomodPlan { fomodInstaller(plan) }
+
+                    if !preview.requirements.isEmpty {
+                        Label("Requires: \(preview.requirements.joined(separator: ", "))", systemImage: "link")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(preview.warnings, id: \.self) { warning in
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                    }
+
+                    if preview.isUpdate {
+                        Label(
+                            "An installed mod with the same name will be replaced. Its UUID, load order and enabled state will be kept.",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.blue)
+                    }
+
+                    Group {
+                        if preview.adapter == .gtaSanAndreasDefinitiveEdition {
+                            Text(preview.format == .loosePak
+                                ? "Boreal will keep the .pak in its mod library, stage it safely and deploy it to the GTA SA:DE ~mods folder."
+                                : "Boreal will keep the archive in its mod library, stage its PAK files safely and deploy them to the GTA SA:DE ~mods folder.")
+                        } else if preview.isUpdate {
+                            Text("Boreal will replace the staged files and automatically deploy the updated mod to the game.")
+                        } else {
+                            Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")
+                        }
+                    }
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            }
-            ForEach(preview.warnings, id: \.self) { warning in
-                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-            }
-
-            if preview.isUpdate {
-                Label(
-                    "An installed mod with the same name will be replaced. Its UUID, load order and enabled state will be kept.",
-                    systemImage: "arrow.triangle.2.circlepath"
-                )
-                .font(.callout)
-                .foregroundStyle(.blue)
-            }
-
-            Group {
-                if preview.adapter == .gtaSanAndreasDefinitiveEdition {
-                    Text(preview.format == .loosePak
-                        ? "Boreal will keep the .pak in its mod library, stage it safely and deploy it to the GTA SA:DE ~mods folder."
-                        : "Boreal will keep the archive in its mod library, stage its PAK files safely and deploy them to the GTA SA:DE ~mods folder.")
-                } else if preview.isUpdate {
-                    Text("Boreal will replace the staged files and automatically deploy the updated mod to the game.")
-                } else {
-                    Text("Boreal will keep the archive in its mod library and stage the files separately. Nothing is copied into the game until you choose Deploy Changes.")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-                .font(.callout)
-                .foregroundStyle(.secondary)
 
-            Spacer()
             HStack {
                 Button("Cancel", role: .cancel, action: onCancel)
                 Spacer()
-                Button(preview.isUpdate ? "Update" : "Install", action: onInstall)
+                Button(preview.isUpdate ? "Update" : "Install") { onInstall(selection) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!preview.canInstallAutomatically)
+                    .disabled(!canInstall)
             }
         }
         .padding(24)
+        .frame(minHeight: 390)
+    }
+
+    private var canInstall: Bool {
+        preview.canInstallAutomatically && preview.fomodPlan?.selectionIssue(for: selection) == nil
+    }
+
+    @ViewBuilder
+    private func fomodInstaller(_ plan: FomodInstallPlan) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(plan.moduleName, systemImage: "slider.horizontal.3")
+                    .font(.headline)
+                Text(plan.steps.isEmpty ? "This installer has no optional choices." : "Choose the options to install.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(plan.presentedSteps(for: selection)) { step in
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(step.step.name)
+                        .font(.title3.weight(.semibold))
+                    if !step.step.description.isEmpty {
+                        Text(step.step.description)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(step.groups) { group in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(group.group.name)
+                                .font(.subheadline.weight(.semibold))
+                            ForEach(group.options) { option in
+                                fomodOption(option, group: group.group, plan: plan)
+                            }
+                        }
+                        .padding(12)
+                        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+                .padding(.top, 4)
+            }
+
+            if let issue = plan.selectionIssue(for: selection) {
+                Label(issue, systemImage: "exclamationmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func fomodOption(_ resolved: FomodResolvedOption, group: FomodGroup, plan: FomodInstallPlan) -> some View {
+        let isRadio = group.type == .selectExactlyOne || group.type == .selectAtMostOne
+        let symbol: String
+        if !resolved.type.isUsable {
+            symbol = "xmark.circle"
+        } else if isRadio {
+            symbol = resolved.isSelected ? "largecircle.fill.circle" : "circle"
+        } else {
+            symbol = resolved.isSelected ? "checkmark.circle.fill" : "circle"
+        }
+        return Button {
+            selection = plan.toggled(optionID: resolved.id, in: selection)
+        } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: symbol)
+                    .foregroundStyle(resolved.type.isUsable && resolved.isSelected ? Color.accentColor : Color.secondary)
+                    .frame(width: 18)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text(resolved.option.name)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: 8)
+                        Text(resolved.type.displayName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !resolved.option.description.isEmpty {
+                        Text(resolved.option.description)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!resolved.type.isUsable || resolved.type.isRequired || group.type == .selectAll)
+        .accessibilityLabel("\(resolved.option.name), \(resolved.type.displayName), \(resolved.isSelected ? "selected" : "not selected")")
     }
 
     private func previewRow(_ title: String, value: String) -> some View {
