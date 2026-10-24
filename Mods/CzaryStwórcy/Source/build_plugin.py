@@ -23,6 +23,7 @@ SPELLS = (
         "cost": 12,
         "range": 2100.0,
         "effects": ((0x000F5B57, 8.0, 0, 0),),
+        "sound_profiles": ("absorption",),
     },
     {
         "source": 0x0005AD5E,
@@ -35,6 +36,7 @@ SPELLS = (
         ),
         "cost": 35,
         "effects": ((0x00059B7C, 167.0, 0, 10), (0x00039E51, 20.0, 0, 10)),
+        "sound_profiles": ("alteration", "silent"),
     },
     {
         "source": 0x0005AD5E,
@@ -47,6 +49,7 @@ SPELLS = (
         ),
         "cost": 50,
         "effects": ((0x00059B7C, 250.0, 0, 12), (0x00039E51, 30.0, 0, 12)),
+        "sound_profiles": ("alteration", "silent"),
     },
     {
         "source": 0x0005AD5E,
@@ -59,6 +62,7 @@ SPELLS = (
         ),
         "cost": 65,
         "effects": ((0x00059B7C, 333.0, 0, 15), (0x00039E51, 40.0, 0, 15)),
+        "sound_profiles": ("alteration", "silent"),
     },
     {
         "source": 0x0002B96C,
@@ -71,6 +75,7 @@ SPELLS = (
         ),
         "cost": 45,
         "effects": ((0x00013E08, 0.75, 16, 0), (0x000EA075, 15.0, 16, 0)),
+        "sound_profiles": ("impulse", "silent"),
     },
     {
         "source": 0x0004DEEE,
@@ -88,6 +93,7 @@ SPELLS = (
             (0x0009E0BF, 50.0, 0, 20),
             (0x00026D7C, 50.0, 0, 20),
         ),
+        "sound_profiles": ("alteration_hit", "silent", "silent"),
     },
     {
         "source": 0x0002B96C,
@@ -100,6 +106,7 @@ SPELLS = (
         ),
         "cost": 40,
         "effects": ((0x000B729F, 75.0, 0, 10),),
+        "sound_profiles": ("alteration_hit",),
     },
     {
         "source": 0x0002B96C,
@@ -112,6 +119,7 @@ SPELLS = (
         ),
         "cost": 40,
         "effects": ((0x000EA075, 6.0, 0, 5),),
+        "sound_profiles": ("alteration_hit",),
     },
     {
         "source": 0x0005AD5E,
@@ -125,8 +133,31 @@ SPELLS = (
         ),
         "cost": 40,
         "effects": ((0x00108A41, 20.0, 0, 6), (0x00039E51, 20.0, 0, 6)),
+        "sound_profiles": ("alteration", "silent"),
     },
 )
+
+
+# Sound descriptors are existing Skyrim.esm records. SNDD sound types are
+# draw/sheath, charge, ready, release, concentration loop, and effect hit.
+SOUND_PROFILES = {
+    "absorption": ((0, 0x0003F208), (3, 0x0003F206), (4, 0x0003F205)),
+    "alteration": (
+        (0, 0x0003F37A),
+        (1, 0x000FDA53),
+        (2, 0x000FDA52),
+        (3, 0x0007D014),
+    ),
+    "alteration_hit": (
+        (0, 0x0003F37A),
+        (1, 0x000FDA53),
+        (2, 0x000FDA52),
+        (3, 0x0007D014),
+        (5, 0x0008196E),
+    ),
+    "impulse": ((3, 0x000A0F52), (5, 0x0003F320)),
+    "silent": (),
+}
 
 
 Record = tuple[bytes, int, list[tuple[bytes, bytes]]]
@@ -200,7 +231,12 @@ def make_subrecord(tag: bytes, payload: bytes) -> bytes:
     return tag + struct.pack("<H", len(payload)) + payload
 
 
-def build_spell(source: dict[int, Record], spec: dict, form_id: int) -> bytes:
+def build_spell(
+    source: dict[int, Record],
+    spec: dict,
+    form_id: int,
+    local_effect_ids: tuple[int, ...],
+) -> bytes:
     record = source.get(spec["source"])
     if record is None or record[0] != b"SPEL":
         raise ValueError(f"Missing source spell {spec['source']:08X}")
@@ -247,7 +283,9 @@ def build_spell(source: dict[int, Record], spec: dict, form_id: int) -> bytes:
         )
 
     subrecords = list(leading)
-    for effect_id, magnitude, area, duration in spec["effects"]:
+    for effect_id, (_, magnitude, area, duration) in zip(
+        local_effect_ids, spec["effects"]
+    ):
         subrecords.append((b"EFID", struct.pack("<I", effect_id)))
         subrecords.append(
             (b"EFIT", struct.pack("<fII", magnitude, area, duration))
@@ -262,6 +300,54 @@ def build_spell(source: dict[int, Record], spec: dict, form_id: int) -> bytes:
     return header + payload
 
 
+def build_magic_effect(
+    source: dict[int, Record],
+    source_id: int,
+    form_id: int,
+    editor_id: str,
+    sound_profile: str,
+) -> bytes:
+    record = source.get(source_id)
+    if record is None or record[0] != b"MGEF":
+        raise ValueError(f"Missing source magic effect {source_id:08X}")
+
+    sounds = SOUND_PROFILES[sound_profile]
+    sound_data = b"".join(
+        struct.pack("<II", sound_type, sound_id)
+        for sound_type, sound_id in sounds
+    )
+    subrecords = []
+    found_edid = False
+    found_sounds = False
+    for tag, payload in record[2]:
+        if tag == b"EDID":
+            payload = editor_id.encode("ascii") + b"\0"
+            found_edid = True
+        elif tag == b"SNDD":
+            payload = sound_data
+            found_sounds = True
+        subrecords.append((tag, payload))
+
+    if not found_edid:
+        raise ValueError(f"Source magic effect {source_id:08X} has no EDID")
+    if not found_sounds:
+        subrecords.append((b"SNDD", sound_data))
+
+    payload = b"".join(make_subrecord(tag, value) for tag, value in subrecords)
+    signature, flags, _ = record
+    header = struct.pack(
+        "<4sIIIIHH", signature, len(payload), flags, form_id, 0, 44, 0
+    )
+    return header + payload
+
+
+def build_group(signature: bytes, records: list[bytes]) -> bytes:
+    payload = b"".join(records)
+    return struct.pack(
+        "<4sI4sIHHHH", b"GRUP", 24 + len(payload), signature, 0, 0, 0, 0, 0
+    ) + payload
+
+
 def build_plugin(master: Path, output: Path) -> None:
     source_records = read_plugin(master)
     for spec in SPELLS:
@@ -271,10 +357,44 @@ def build_plugin(master: Path, output: Path) -> None:
                 raise ValueError(
                     f"Missing source magic effect {effect_id:08X}"
                 )
-    built_records = [
-        build_spell(source_records, spec, 0x01000800 + index)
-        for index, spec in enumerate(SPELLS)
-    ]
+        for sound_profile in spec["sound_profiles"]:
+            for _, sound_id in SOUND_PROFILES[sound_profile]:
+                sound = source_records.get(sound_id)
+                if sound is None or sound[0] != b"SNDR":
+                    raise ValueError(f"Missing source sound {sound_id:08X}")
+    spell_records = []
+    effect_records = []
+    next_local_id = 0x01000800 + len(SPELLS)
+    for index, spec in enumerate(SPELLS):
+        local_effect_ids = []
+        sound_profiles = spec["sound_profiles"]
+        if len(sound_profiles) != len(spec["effects"]):
+            raise ValueError(
+                f"Sound profile count does not match {spec['editor_id']}"
+            )
+        for effect_index, ((source_id, _, _, _), sound_profile) in enumerate(
+            zip(spec["effects"], sound_profiles), start=1
+        ):
+            local_effect_ids.append(next_local_id)
+            effect_records.append(
+                build_magic_effect(
+                    source_records,
+                    source_id,
+                    next_local_id,
+                    f"{spec['editor_id']}Effect{effect_index:02d}",
+                    sound_profile,
+                )
+            )
+            next_local_id += 1
+        spell_records.append(
+            build_spell(
+                source_records,
+                spec,
+                0x01000800 + index,
+                tuple(local_effect_ids),
+            )
+        )
+    record_count = len(spell_records) + len(effect_records)
 
     header_subrecords = [
         make_subrecord(
@@ -282,8 +402,8 @@ def build_plugin(master: Path, output: Path) -> None:
             struct.pack(
                 "<fII",
                 1.71,
-                len(built_records),
-                0x00000800 + len(built_records),
+                record_count,
+                0x00000800 + record_count,
             ),
         ),
         make_subrecord(b"CNAM", b"Codex\0"),
@@ -295,12 +415,11 @@ def build_plugin(master: Path, output: Path) -> None:
     header = struct.pack(
         "<4sIIIIHH", b"TES4", len(header_payload), 0, 0, 0, 44, 0
     ) + header_payload
-    group_payload = b"".join(built_records)
-    group = struct.pack(
-        "<4sI4sIHHHH", b"GRUP", 24 + len(group_payload), b"SPEL", 0, 0, 0, 0, 0
+    groups = build_group(b"MGEF", effect_records) + build_group(
+        b"SPEL", spell_records
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(header + group + group_payload)
+    output.write_bytes(header + groups)
 
 
 def main() -> None:
@@ -323,7 +442,10 @@ def main() -> None:
     if not master.is_file():
         raise SystemExit(f"Skyrim.esm not found in {args.skyrim_data}")
     build_plugin(master, args.output)
-    print(f"Created {args.output} with {len(SPELLS)} spells")
+    print(
+        f"Created {args.output} with {len(SPELLS)} spells and "
+        f"{sum(len(spec['effects']) for spec in SPELLS)} local magic effects"
+    )
 
 
 if __name__ == "__main__":

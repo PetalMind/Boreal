@@ -1,6 +1,6 @@
 {
   "name": "Czary Stwórcy",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "game": "The Elder Scrolls V: Skyrim Special Edition",
   "plugin": "Data/CreatorSpells.esp",
   "masters": ["Skyrim.esm"],

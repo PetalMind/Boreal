@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- Dodano dźwięki rzucania oraz uderzenia pocisku z nieżywiołowych zasobów Skyrim.esm.
+
 ## 1.1.0
 
 - Dodano fabularny opis zaklęcia, zachowując jego dotychczasowe parametry.

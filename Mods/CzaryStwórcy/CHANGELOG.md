@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+
+- Dodano profile dźwięków rzucania, kanałowania i trafienia tam, gdzie pasuje to do działania czaru.
+- Sklonowano używane efekty magiczne, aby dźwięki czarów nie zmieniały zaklęć vanilla.
+
 ## 1.1.0
 
 - Dodano fabularne opisy do wszystkich dziewięciu zaklęć, zachowując ich parametry.

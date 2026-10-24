@@ -16,7 +16,7 @@ Pierwsza paczka dodatkowych czarów dla **The Elder Scrolls V: Skyrim Special Ed
 
 Pancerz jest w Skyrimie dodawany jako wartość, więc procent redukcji fizycznej Bariery jest przybliżeniem zależnym od pozostałego pancerza i limitu redukcji. Osłabienie obniża ruch, ale w tej wersji nie spowalnia szybkości ataku i używa wbudowanego efektu spowolnienia mrozem. Odbicie korzysta z wbudowanej mechaniki Skyrima: odbija ciosy fizyczne, nie obrażenia magiczne. Pełne zwracanie czarów wymagałoby skryptu.
 
-Wtyczka używa istniejących efektów Skyrim. Bariera daje aurę flesh zamiast kulistej bańki, Impuls korzysta z efektu fali Unrelenting Force, a Pochłonięcie z czerwonego promienia wampirycznego. Nie dodaje własnych siatek ani tekstur, dlatego część kolorów i wyglądu odbiega od docelowych fioletowych, czarno-czerwonych efektów. Zaklęcia nie wymagają Dawnguard, SKSE ani Papyrusa.
+Wtyczka używa istniejących efektów Skyrim. Każdy czar ma własne kopie efektów magicznych z profilem dźwięku; dźwięki trafienia są przypisane efektom, które nakładają się na cel. Pozostałe zaklęcia gry zachowują oryginalne brzmienie. Dźwięki pochodzą z `Skyrim.esm`; paczka nie dodaje plików audio, siatek ani tekstur. Bariera daje aurę flesh zamiast kulistej bańki, Impuls korzysta z efektu fali Unrelenting Force, a Pochłonięcie z czerwonego promienia wampirycznego. Część kolorów i wyglądu odbiega więc od docelowych fioletowych, czarno-czerwonych efektów. Zaklęcia nie wymagają Dawnguard, SKSE ani Papyrusa.
 
 ESP został zbudowany z rekordów `Skyrim.esm` i sprawdzony strukturalnym parserem. Nie udało się uruchomić walidacji xEdit ani testu w grze w tym środowisku, więc zachowanie efektów po czasie trwania wymaga potwierdzenia w grze.
 
