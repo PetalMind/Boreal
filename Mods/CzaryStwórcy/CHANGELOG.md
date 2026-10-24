@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+- Dodano fabularne opisy do wszystkich dziewięciu zaklęć, zachowując ich parametry.
+
 ## 1.0.1
 
 - Ustawiono Pochłonięciu zasięg około 30 m, 8 obrażeń i 8 leczenia na sekundę oraz koszt 12 Magicki na sekundę.

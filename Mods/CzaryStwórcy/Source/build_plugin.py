@@ -15,8 +15,10 @@ SPELLS = (
         "editor_id": "CreatorAbsorptionSpell",
         "name": "Pochłonięcie Stwórcy",
         "description": (
-            "Ciągły promień 30 m: 8 obrażeń i 8 leczenia na sekundę; "
-            "koszt 12 Magicki/s."
+            "Czarno-czerwony promień oplata ofiarę i wyciąga z niej życiową "
+            "esencję, którą Stwórca przywraca własnemu ciału. Wysysa i "
+            "przywraca po 8 punktów zdrowia na sekundę; kosztuje 12 Magicki "
+            "na sekundę. Zasięg około 30 m."
         ),
         "cost": 12,
         "range": 2100.0,
@@ -27,8 +29,9 @@ SPELLS = (
         "editor_id": "CreatorBarrier01Spell",
         "name": "Bariera Stwórcy I",
         "description": (
-            "10 sekund. Zwiększa pancerz o 167 punktów (około 20% redukcji "
-            "obrażeń fizycznych) i odporność na magię o 20%."
+            "Pierwszy splot mocy Stwórcy przyjmuje część siły ciosów i "
+            "zakłóca wrogą magię. Przez 10 sekund dodaje 167 punktów "
+            "pancerza i 20% odporności na magię."
         ),
         "cost": 35,
         "effects": ((0x00059B7C, 167.0, 0, 10), (0x00039E51, 20.0, 0, 10)),
@@ -38,8 +41,9 @@ SPELLS = (
         "editor_id": "CreatorBarrier02Spell",
         "name": "Bariera Stwórcy II",
         "description": (
-            "12 sekund. Zwiększa pancerz o 250 punktów (około 30% redukcji "
-            "obrażeń fizycznych) i odporność na magię o 30%."
+            "Wzmocniony splot Stwórcy osłania ciało i tłumi napływającą "
+            "magię. Przez 12 sekund dodaje 250 punktów pancerza i 30% "
+            "odporności na magię."
         ),
         "cost": 50,
         "effects": ((0x00059B7C, 250.0, 0, 12), (0x00039E51, 30.0, 0, 12)),
@@ -49,8 +53,9 @@ SPELLS = (
         "editor_id": "CreatorBarrier03Spell",
         "name": "Bariera Stwórcy III",
         "description": (
-            "15 sekund. Zwiększa pancerz o 333 punkty (około 40% redukcji "
-            "obrażeń fizycznych) i odporność na magię o 40%."
+            "Wielowarstwowa pieczęć Stwórcy otacza ciało i rozprasza "
+            "uderzenia oraz wrogą magię. Przez 15 sekund dodaje 333 punkty "
+            "pancerza i 40% odporności na magię."
         ),
         "cost": 65,
         "effects": ((0x00059B7C, 333.0, 0, 15), (0x00039E51, 40.0, 0, 15)),
@@ -60,8 +65,9 @@ SPELLS = (
         "editor_id": "CreatorImpulseSpell",
         "name": "Impuls Stwórcy",
         "description": (
-            "Fala energii skierowana przed siebie. Zadaje 15 obrażeń i "
-            "wywołuje niewielki odrzut oraz stagger w promieniu około 5 m."
+            "Stwórca uwalnia nagromadzoną energię jako falę, która rozrywa "
+            "rytm walki i odrzuca napastników. Zadaje 15 obrażeń oraz "
+            "zachwiewa celami w promieniu około 5 m."
         ),
         "cost": 45,
         "effects": ((0x00013E08, 0.75, 16, 0), (0x000EA075, 15.0, 16, 0)),
@@ -71,8 +77,10 @@ SPELLS = (
         "editor_id": "CreatorMindTakeoverSpell",
         "name": "Przejęcie Jaźni",
         "description": (
-            "Przez 20 sekund pojedynczy trafiony przeciwnik uznaje otoczenie "
-            "za wrogie i atakuje inne istoty. Zaklęcie nie zadaje obrażeń."
+            "Stwórca przepisuje obraz rzeczywistości w umyśle ofiary, "
+            "sprawiając, że pobliskie istoty jawią się jej jako wrogowie. "
+            "Trafiony przeciwnik walczy z otoczeniem przez 20 sekund. Czar "
+            "nie zadaje obrażeń."
         ),
         "cost": 45,
         "effects": (
@@ -86,8 +94,9 @@ SPELLS = (
         "editor_id": "CreatorRealityWeakeningSpell",
         "name": "Osłabienie Rzeczywistości",
         "description": (
-            "Spowalnia ruch celu o około 75% na 10 sekund. W pierwszej wersji "
-            "wykorzystuje wbudowany efekt spowolnienia Skyrima."
+            "Stwórca rozstraja rytm celu względem świata, przez co każdy "
+            "ruch staje się ciężki i opóźniony. Spowalnia ruch o około 75% "
+            "na 10 sekund."
         ),
         "cost": 40,
         "effects": ((0x000B729F, 75.0, 0, 10),),
@@ -97,8 +106,9 @@ SPELLS = (
         "editor_id": "CreatorDecaySpell",
         "name": "Zanik",
         "description": (
-            "Czyste obrażenia magiczne w czasie: 6 punktów zdrowia na sekundę "
-            "przez 5 sekund. Łącznie do 30 obrażeń."
+            "Dotknięta mocą Stwórcy istota zaczyna rozpadać się od wewnątrz, "
+            "jakby pękał splot podtrzymujący jej istnienie. Zadaje 6 "
+            "obrażeń zdrowia na sekundę przez 5 sekund."
         ),
         "cost": 40,
         "effects": ((0x000EA075, 6.0, 0, 5),),
@@ -108,9 +118,10 @@ SPELLS = (
         "editor_id": "CreatorWillReflectionSpell",
         "name": "Odbicie Woli",
         "description": (
-            "Przez 6 sekund zapewnia 20% odporności na magię i 20% odbicia "
-            "obrażeń. Wbudowany efekt Skyrima odbija ciosy fizyczne; nie "
-            "zwraca obrażeń magicznych."
+            "Stwórca oplata się splotem, który odsyła siłę fizycznych ciosów "
+            "ku napastnikom i tłumi część obcej magii. Przez 6 sekund "
+            "zapewnia 20% odporności na magię i 20% odbicia obrażeń "
+            "fizycznych."
         ),
         "cost": 40,
         "effects": ((0x00108A41, 20.0, 0, 6), (0x00039E51, 20.0, 0, 6)),

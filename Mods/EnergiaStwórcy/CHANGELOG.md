@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+- Dodano fabularny opis zaklęcia, zachowując jego dotychczasowe parametry.
+
 ## 1.0.0
 
 - Dodano jednoręczny czar Energia Stwórcy.
