@@ -1,0 +1,8 @@
+{
+  "id": "nordic-minimal-ui-se",
+  "name": "Nordic Minimal UI SE",
+  "version": "1.0.0",
+  "game": "Skyrim Special Edition",
+  "requirements": ["SKSE64", "SkyUI"],
+  "archive": "NordicMinimalUISE.zip"
+}
