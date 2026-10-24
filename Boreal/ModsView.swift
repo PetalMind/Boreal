@@ -99,6 +99,24 @@ struct ModsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if !isGTAIVGame,
+               state != nil,
+               let operationMessage = store.modOperationMessage(for: game) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(operationMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .accessibilityLabel(operationMessage)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    .white.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+            }
             if isGTAIVGame {
                 gtaIVXLiveLessSection
             } else if isUnsupportedDefinitiveEdition {
@@ -147,7 +165,7 @@ struct ModsView: View {
                     }
                 }
             } else if store.isModOperationActive(for: game) {
-                ProgressView("Preparing mod library…")
+                ProgressView(store.modOperationMessage(for: game) ?? "Preparing mod library…")
                     .frame(maxWidth: .infinity, minHeight: 240)
             } else {
                 ContentUnavailableView(

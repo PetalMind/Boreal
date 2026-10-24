@@ -109,6 +109,8 @@ final class BorealStore {
     private(set) var modStates: [UUID: ModGameState] = [:]
     private(set) var modHealth: [UUID: ModDeploymentHealth] = [:]
     private(set) var modOperationGameIDs: Set<UUID> = []
+    private(set) var modOperationMessages: [UUID: String] = [:]
+    private(set) var modLibraryLoadingGameIDs: Set<UUID> = []
     private(set) var gtaIVXLiveLessStatuses: [UUID: GTAIVXLiveLessStatus] = [:]
     private let storageURL: URL
     private let storageLayout: BorealStorageLayout
@@ -2468,7 +2470,20 @@ final class BorealStore {
     }
 
     func isModOperationActive(for game: StoreLibraryGame) -> Bool {
-        modOperationGameIDs.contains(game.id)
+        modOperationGameIDs.contains(game.id) || modLibraryLoadingGameIDs.contains(game.id)
+    }
+
+    func modOperationMessage(for game: StoreLibraryGame) -> String? {
+        if let message = modOperationMessages[game.id] {
+            return message
+        }
+        if modLibraryLoadingGameIDs.contains(game.id) {
+            return "Loading mods…"
+        }
+        if modOperationGameIDs.contains(game.id) {
+            return "Updating mods…"
+        }
+        return nil
     }
 
     func refreshMods(for game: StoreLibraryGame) {
@@ -2479,7 +2494,9 @@ final class BorealStore {
         }
         let gameID = game.id
         let manager = modManager(for: game)
+        guard modLibraryLoadingGameIDs.insert(gameID).inserted else { return }
         Task { @MainActor [weak self] in
+            defer { self?.modLibraryLoadingGameIDs.remove(gameID) }
             do {
                 let state = try await Task.detached(priority: .utility) {
                     try manager.load(
@@ -2588,6 +2605,12 @@ final class BorealStore {
             present(ModManagerError.unsupportedGame(game.name), title: "Mod manager unavailable", stage: "Checking the selected game")
             return nil
         }
+        guard modOperationGameIDs.insert(game.id).inserted else { return nil }
+        modOperationMessages[game.id] = "Inspecting \(archive.lastPathComponent)…"
+        defer {
+            modOperationMessages.removeValue(forKey: game.id)
+            modOperationGameIDs.remove(game.id)
+        }
         let context = modGameContext(for: game)
         do {
             return try await Task.detached(priority: .userInitiated) {
@@ -2614,9 +2637,13 @@ final class BorealStore {
               let profileID = modStates[game.id]?.profileID,
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
+        modOperationMessages[gameID] = "Adding \(preview.archiveName)…"
         let manager = modManager(for: game)
         Task { @MainActor [weak self] in
-            defer { self?.modOperationGameIDs.remove(gameID) }
+            defer {
+                self?.modOperationMessages.removeValue(forKey: gameID)
+                self?.modOperationGameIDs.remove(gameID)
+            }
             do {
                 let state = try await Task.detached(priority: .userInitiated) {
                     var installed = try manager.install(
