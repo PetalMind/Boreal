@@ -40,7 +40,11 @@ def main() -> None:
         win_bsa = subprocess.check_output(["winepath", "-w", str(DATA / "Skyrim - Interface.bsa")], text=True).strip()
         win_out = subprocess.check_output(["winepath", "-w", str(extracted)], text=True).strip()
         run(["wine", str(BSARCH), "unpack", win_bsa, win_out, "-q", "-mt"])
-        swfs = {"hudmenu.swf": "hud", "dialoguemenu.swf": "dialogue"}
+        swfs = {
+            "hudmenu.swf": "hud",
+            "dialoguemenu.swf": "dialogue",
+            "sleepwaitmenu.swf": "sleepwait",
+        }
         exports: dict[str, Path] = {}
         for filename, key in swfs.items():
             source = next(extracted.rglob(filename), None)
@@ -63,9 +67,158 @@ def main() -> None:
         old = "         aEntryClip.textField.textColor = !(aEntryObject.topicIsNew == undefined || aEntryObject.topicIsNew) ? 6316128 : 16777215;"
         new = "         aEntryClip.textField.textColor = aEntryObject == this.selectedEntry ? 14209701 : (!(aEntryObject.topicIsNew == undefined || aEntryObject.topicIsNew) ? 7829367 : 13421772);"
         replace_once(dialogue, old, new)
+        sleepwait = exports["sleepwait"] / "__Packages/SleepWaitMenu.as"
+        replace_once(
+            sleepwait,
+            "   var bDisableControls;",
+            """   var bDisableControls;
+   var NordicWaitDial;
+   var NordicDialCenterX;
+   var NordicDialCenterY;
+   var NordicDialRadius = 58;
+   var NordicDialDragging = false;""",
+        )
+        replace_once(
+            sleepwait,
+            '      this.HoursSlider.addEventListener("change",this,"sliderChange");',
+            '      this.HoursSlider.addEventListener("change",this,"sliderChange");\n      this.CreateNordicWaitDial();',
+        )
+        replace_once(
+            sleepwait,
+            "   function handleInput(details, pathToFocus)",
+            r'''   function CreateNordicWaitDial()
+   {
+      this.HoursSlider.track._visible = false;
+      this.HoursSlider.thumb._visible = false;
+      this.NordicDialCenterX = this.HoursSlider._x + this.HoursSlider._width / 2;
+      this.NordicDialCenterY = this.HoursSlider._y + this.HoursSlider._height / 2;
+      this.NordicWaitDial = this.createEmptyMovieClip("NordicWaitDial",10000);
+      this.NordicWaitDial._x = this.NordicDialCenterX;
+      this.NordicWaitDial._y = this.NordicDialCenterY;
+      var hoursFormat = this.HoursText.getTextFormat();
+      hoursFormat.align = "center";
+      hoursFormat.size = 24;
+      this.HoursText.setNewTextFormat(hoursFormat);
+      this.HoursText.setTextFormat(hoursFormat);
+      this.HoursText._width = 72;
+      this.HoursText._height = 36;
+      this.HoursText._x = this.NordicDialCenterX - 36;
+      this.HoursText._y = this.NordicDialCenterY - 18;
+      this.HoursText.text = Math.floor(this.HoursSlider.value).toString();
+      this.DrawNordicWaitDial();
+   }
+   function DrawNordicWaitDial()
+   {
+      if(this.NordicWaitDial == undefined)
+      {
+         return;
+      }
+      var radius = this.NordicDialRadius;
+      var hours = Math.max(this.HoursSlider.minimum,Math.floor(this.HoursSlider.value));
+      var maximum = Math.max(1,this.HoursSlider.maximum);
+      var progress = Math.min(1,Math.max(0,hours / maximum));
+      var i = 0;
+      var angle = -Math.PI / 2;
+      this.NordicWaitDial.clear();
+      this.NordicWaitDial.lineStyle(4,0xD8CDA5,22);
+      this.NordicWaitDial.moveTo(0,-radius);
+      i = 1;
+      while(i <= 96)
+      {
+         angle = -Math.PI / 2 + Math.PI * 2 * i / 96;
+         this.NordicWaitDial.lineTo(Math.cos(angle) * radius,Math.sin(angle) * radius);
+         i++;
+      }
+      i = 0;
+      while(i < 24)
+      {
+         angle = -Math.PI / 2 + Math.PI * 2 * i / 24;
+         var tickInner = radius + (i % 6 == 0 ? 7 : 9);
+         var tickOuter = radius + (i % 6 == 0 ? 15 : 12);
+         this.NordicWaitDial.lineStyle(i % 6 == 0 ? 2 : 1,0xD8CDA5,i % 6 == 0 ? 88 : 52);
+         this.NordicWaitDial.moveTo(Math.cos(angle) * tickInner,Math.sin(angle) * tickInner);
+         this.NordicWaitDial.lineTo(Math.cos(angle) * tickOuter,Math.sin(angle) * tickOuter);
+         i++;
+      }
+      this.NordicWaitDial.lineStyle(4,0xE4D7B1,100);
+      this.NordicWaitDial.moveTo(0,-radius);
+      var arcSegments = Math.max(1,Math.ceil(progress * 96));
+      i = 1;
+      while(i <= arcSegments)
+      {
+         angle = -Math.PI / 2 + Math.PI * 2 * progress * i / arcSegments;
+         this.NordicWaitDial.lineTo(Math.cos(angle) * radius,Math.sin(angle) * radius);
+         i++;
+      }
+      var markerX = Math.cos(angle) * radius;
+      var markerY = Math.sin(angle) * radius;
+      this.NordicWaitDial.lineStyle(1,0x26231D,100);
+      this.NordicWaitDial.beginFill(0xE4D7B1,100);
+      this.NordicWaitDial.moveTo(markerX + 4,markerY);
+      i = 1;
+      while(i <= 16)
+      {
+         this.NordicWaitDial.lineTo(markerX + Math.cos(i * Math.PI / 8) * 4,markerY + Math.sin(i * Math.PI / 8) * 4);
+         i++;
+      }
+      this.NordicWaitDial.endFill();
+   }
+   function IsNordicDialPoint()
+   {
+      var dx = this._xmouse - this.NordicDialCenterX;
+      var dy = this._ymouse - this.NordicDialCenterY;
+      var distance = Math.sqrt(dx * dx + dy * dy);
+      return distance >= this.NordicDialRadius - 20 && distance <= this.NordicDialRadius + 18;
+   }
+   function UpdateNordicDialValue()
+   {
+      if(this.disableControls)
+      {
+         return;
+      }
+      var dx = this._xmouse - this.NordicDialCenterX;
+      var dy = this._ymouse - this.NordicDialCenterY;
+      var angle = Math.atan2(dy,dx) + Math.PI / 2;
+      if(angle < 0)
+      {
+         angle += Math.PI * 2;
+      }
+      var minimum = this.HoursSlider.minimum;
+      var maximum = this.HoursSlider.maximum;
+      var count = maximum - minimum + 1;
+      var value = minimum + Math.floor(angle / (Math.PI * 2) * count);
+      this.HoursSlider.value = Math.min(maximum,Math.max(minimum,value));
+      this.sliderChange();
+   }
+   function onMouseDown()
+   {
+      if(!this.disableControls && this.IsNordicDialPoint())
+      {
+         this.NordicDialDragging = true;
+         this.UpdateNordicDialValue();
+      }
+   }
+   function onMouseMove()
+   {
+      if(this.NordicDialDragging)
+      {
+         this.UpdateNordicDialValue();
+      }
+   }
+   function onMouseUp()
+   {
+      this.NordicDialDragging = false;
+   }
+   function handleInput(details, pathToFocus)''',
+        )
+        replace_once(
+            sleepwait,
+            "      this.HoursText.text = Math.floor(this.HoursSlider.value).toString();\n      if(_loc2_ != Math.floor(this.HoursSlider.value))",
+            "      this.HoursText.text = Math.floor(this.HoursSlider.value).toString();\n      this.DrawNordicWaitDial();\n      if(_loc2_ != Math.floor(this.HoursSlider.value))",
+        )
         outputs = work / "compiled"
         outputs.mkdir()
-        for key, filename in (("hud", "hudmenu.swf"), ("dialogue", "dialoguemenu.swf")):
+        for key, filename in (("hud", "hudmenu.swf"), ("dialogue", "dialoguemenu.swf"), ("sleepwait", "sleepwaitmenu.swf")):
             source = next(extracted.rglob(filename))
             result = outputs / filename
             run(["java", "-jar", str(FFDEC), "-importScript", str(source), str(result), str(exports[key])])
@@ -73,6 +226,7 @@ def main() -> None:
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
             package.write(outputs / "hudmenu.swf", "Data/Interface/hudmenu.swf")
             package.write(outputs / "dialoguemenu.swf", "Data/Interface/dialoguemenu.swf")
+            package.write(outputs / "sleepwaitmenu.swf", "Data/Interface/sleepwaitmenu.swf")
     print(f"Built {archive}")
 
 

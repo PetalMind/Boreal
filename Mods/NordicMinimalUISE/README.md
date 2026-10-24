@@ -6,6 +6,12 @@ pozostają widoczne. MCM pozwala zmienić czas zanikania, wyłączyć automatycz
 paski lub kompas. Kompas i znaczniki zadań są domyślnie zachowane, a celownik
 ma postać małej, nordyckiej kropki z delikatnym pulsem i szybszą animacją alarmową.
 
+Wybór czasu oczekiwania używa okrągłej tarczy zamiast poziomego suwaka.
+Pierścień pokazuje wybraną liczbę godzin w zakresie 1–24; można ustawić ją
+kliknięciem lub przeciągnięciem po tarczy, kółkiem myszy, strzałkami, Page Up /
+Page Down albo bumperami kontrolera. Potwierdzanie i anulowanie pozostają
+oryginalne.
+
 Lista tematów dialogowych używa spokojniejszej, nordyckiej palety: jasny,
 przygaszony tekst dla nieaktywnych tematów oraz ciepły, stonowany akcent dla
 zaznaczenia. Układ, kamera i sterowanie dialogiem pozostają oryginalne.
@@ -20,8 +26,9 @@ zaznaczenia. Układ, kamera i sterowanie dialogiem pozostają oryginalne.
 
 Zaimportuj `NordicMinimalUISE.zip` w Boreal, włącz `NordicMinimalUISE.esp` i
 uruchom grę przez SKSE. W MCM wybierz „Nordic Minimal UI”. Konflikty z innymi
-modyfikacjami nadpisującymi `Interface/hudmenu.swf` lub
-`Interface/dialoguemenu.swf` rozstrzygnij kolejnością ładowania.
+modyfikacjami nadpisującymi `Interface/hudmenu.swf`,
+`Interface/dialoguemenu.swf` lub `Interface/sleepwaitmenu.swf` rozstrzygnij
+kolejnością ładowania.
 
 ## Budowanie
 
