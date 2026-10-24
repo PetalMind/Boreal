@@ -24,6 +24,11 @@ def zstring(value: str) -> bytes:
     return value.encode("utf-8") + b"\0"
 
 
+def length_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return struct.pack("<H", len(encoded)) + encoded
+
+
 def record(signature: bytes, form_id: int, payload: bytes, flags: int = 0) -> bytes:
     return signature + struct.pack("<IIIIHH", len(payload), flags, form_id, 0, 44, 0) + payload
 
@@ -38,10 +43,10 @@ def group(label: bytes, group_type: int, contents: bytes) -> bytes:
 def build_vmad() -> bytes:
     scripts = struct.pack("<HHH", 5, 2, 2)
     for name in ("HorseWhistleQuest", "HorseWhistleMCM"):
-        scripts += zstring(name) + struct.pack("<BH", 0, 0)
-    # QUST fragments always include the format byte, fragment count, empty
-    # source-name string, and empty alias-script array.
-    quest_fragments = struct.pack("<BHHH", 2, 0, 0, 0)
+        scripts += length_string(name) + struct.pack("<BH", 0, 0)
+    # QUST VMAD stores a signed extra-bind-data version, fragment count,
+    # length-prefixed filename, then alias count.
+    quest_fragments = struct.pack("<bH", 2, 0) + length_string("") + struct.pack("<H", 0)
     return scripts + quest_fragments
 
 

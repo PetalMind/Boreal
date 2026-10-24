@@ -18,6 +18,11 @@ def zstring(value: str) -> bytes:
     return value.encode("utf-8") + b"\0"
 
 
+def length_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return struct.pack("<H", len(encoded)) + encoded
+
+
 def record(signature: bytes, form_id: int, payload: bytes) -> bytes:
     return signature + struct.pack("<IIIIHH", len(payload), 0, form_id, 0, 0, 0) + payload
 
@@ -25,8 +30,10 @@ def record(signature: bytes, form_id: int, payload: bytes) -> bytes:
 def build_vmad() -> bytes:
     scripts = struct.pack("<HHH", 5, 2, 2)
     for name in ("NearbyHarvestLootQuest", "NearbyHarvestLootMCM"):
-        scripts += zstring(name) + struct.pack("<BH", 0, 0)
-    fragments = struct.pack("<HH", 2, 0) + zstring("") + struct.pack("<H", 0)
+        scripts += length_string(name) + struct.pack("<BH", 0, 0)
+    # QUST VMAD stores a signed extra-bind-data version, fragment count,
+    # length-prefixed filename, then alias count.
+    fragments = struct.pack("<bH", 2, 0) + length_string("") + struct.pack("<H", 0)
     return scripts + fragments
 
 
