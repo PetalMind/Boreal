@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Zastąpiono krzyżyk celownika małą, nordycką kropką.
+
 ## 1.0.0
 
 - Dodano minimalistyczne zanikanie pasków zdrowia, magicki i kondycji.
