@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Zastąpiono własną ikonę wbudowanym znacznikiem stajni Skyrim.
+- Usunięto wymaganie CoMAP.
+
 ## 1.0.0
 
 - Dodano przywoływanie ostatnio dosiadanego konia edytowalnym klawiszem MCM.

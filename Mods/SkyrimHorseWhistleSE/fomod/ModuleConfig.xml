@@ -3,7 +3,6 @@
         xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
   <moduleName>Horse Whistle SE</moduleName>
   <moduleDependencies operator="And">
-    <fileDependency file="SKSE\Plugins\MapMarkerFramework.dll" state="Active" />
     <fileDependency file="SkyUI_SE.esp" state="Active" />
   </moduleDependencies>
   <requiredInstallFiles>

@@ -8,9 +8,8 @@ Lekki mod do Skyrim Special Edition. Pokazuje na mapie i kompasie znacznik ostat
 - SKSE64
 - Address Library for SKSE Plugins
 - SkyUI
-- CoMAP z `Data/SKSE/Plugins/MapMarkerFramework.dll`
 
-Instalator FOMOD sprawdza obecność aktywnego Map Marker Framework i SkyUI. Bez CoMAP niestandardowa ikona konia nie zostanie wczytana.
+Marker konia używa wbudowanej w Skyrim ikony stajni (podkowy), więc CoMAP nie jest wymagany.
 
 ## Używanie
 
@@ -22,4 +21,4 @@ Instalator FOMOD sprawdza obecność aktywnego Map Marker Framework i SkyUI. Bez
 
 ## Budowanie
 
-Wymagane są Caprica Papyrus Compiler, Wine, Python 3 i Pillow (`python3 -m pip install -r requirements-build.txt`). Uruchom `./build.sh`. Gotowe archiwum pojawi się jako `SkyrimHorseWhistleSE.zip`.
+Wymagane są Caprica Papyrus Compiler, Wine i Python 3. Uruchom `./build.sh`. Gotowe archiwum pojawi się jako `SkyrimHorseWhistleSE.zip`.

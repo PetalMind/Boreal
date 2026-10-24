@@ -81,7 +81,8 @@ def build_marker() -> bytes:
         + subrecord(b"XMRK", b"")
         + subrecord(b"FNAM", b"\x00")
         + subrecord(b"FULL", zstring("Koń gracza"))
-        + subrecord(b"TNAM", struct.pack("<H", 0))
+        # Reuse Skyrim's built-in Stable marker icon (the horseshoe).
+        + subrecord(b"TNAM", struct.pack("<H", 21))
         + subrecord(b"DATA", data)
     )
     return record(b"REFR", MARKER_ID, payload, flags=0x00000400)
