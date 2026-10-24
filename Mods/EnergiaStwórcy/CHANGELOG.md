@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0
+
+- Dodano dźwięk uderzenia do eksplozji pocisku, zachowując dźwięki kastowania i trafienia.
+
 ## 1.2.0
 
 - Dodano dźwięki rzucania oraz uderzenia pocisku z nieżywiołowych zasobów Skyrim.esm.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Attach existing Skyrim sound descriptors to Energia Stwórcy's magic effect."""
+"""Attach Skyrim sounds to Energia Stwórcy's spell effect and explosion."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ SOUNDS = (
 )
 COMPRESSED_FLAG = 0x00040000
 TARGET_FORM_ID = 0x01000800
+EXPLOSION_FORM_ID = 0x01000802
+EXPLOSION_SOUND_ID = 0x0003F320
 
 
 def read_plugin(path: Path) -> dict[int, bytes]:
@@ -110,23 +112,83 @@ def patch_magic_effect(record: bytes) -> bytes:
         subrecords.append(make_subrecord(b"SNDD", sound_data))
     new_payload = b"".join(subrecords)
     if flags & COMPRESSED_FLAG:
-        new_payload = struct.pack("<I", len(new_payload)) + zlib.compress(new_payload)
+        new_payload = (
+            struct.pack("<I", len(new_payload)) + zlib.compress(new_payload)
+        )
     header = bytearray(record[:24])
     struct.pack_into("<I", header, 4, len(new_payload))
     return bytes(header) + new_payload
 
 
-def update_plugin(plugin_path: Path, master_path: Path) -> None:
-    master_records = read_plugin(master_path)
-    for _, sound_id in SOUNDS:
-        record = master_records.get(sound_id)
-        if record is None or record[:4] != b"SNDR":
-            raise ValueError(f"Missing Skyrim sound descriptor {sound_id:08X}")
+def patch_explosion(record: bytes) -> bytes:
+    signature, payload_size, flags = struct.unpack_from("<4sII", record)
+    if signature != b"EXPL":
+        raise ValueError("CreatorEnergyExplosion is not an EXPL record")
+    payload = record[24:24 + payload_size]
+    if flags & COMPRESSED_FLAG:
+        if len(payload) < 4:
+            raise ValueError("Compressed EXPL has no expanded size")
+        expected_size = struct.unpack_from("<I", payload)[0]
+        payload = zlib.decompress(payload[4:])
+        if len(payload) != expected_size:
+            raise ValueError("Compressed EXPL size does not match")
 
-    plugin_data = plugin_path.read_bytes()
+    subrecords = []
+    offset = 0
+    found_editor_id = False
+    found_data = False
+    while offset < len(payload):
+        if offset + 6 > len(payload):
+            raise ValueError("Truncated EXPL subrecord")
+        tag = payload[offset:offset + 4]
+        size = struct.unpack_from("<H", payload, offset + 4)[0]
+        offset += 6
+        if tag == b"XXXX":
+            if offset + 4 > len(payload):
+                raise ValueError("Malformed XXXX subrecord")
+            size = struct.unpack_from("<I", payload, offset)[0]
+            offset += 4
+            if offset + 6 > len(payload):
+                raise ValueError("Malformed extended subrecord")
+            tag = payload[offset:offset + 4]
+            offset += 6
+        if offset + size > len(payload):
+            raise ValueError(f"Malformed {tag!r} subrecord")
+        value = payload[offset:offset + size]
+        offset += size
+        if tag == b"EDID":
+            found_editor_id = value.rstrip(b"\0") == b"CreatorEnergyExplosion"
+        elif tag == b"DATA":
+            if len(value) < 12:
+                raise ValueError(
+                    "CreatorEnergyExplosion DATA is too short for sound fields"
+                )
+            value = bytearray(value)
+            # EXPL DATA starts with the Light, Sound 1, and Sound 2 FormIDs.
+            struct.pack_into("<I", value, 4, EXPLOSION_SOUND_ID)
+            value = bytes(value)
+            found_data = True
+        subrecords.append(make_subrecord(tag, value))
+
+    if not found_editor_id:
+        raise ValueError("EXPL is not CreatorEnergyExplosion")
+    if not found_data:
+        raise ValueError("CreatorEnergyExplosion DATA was not found")
+    new_payload = b"".join(subrecords)
+    if flags & COMPRESSED_FLAG:
+        new_payload = (
+            struct.pack("<I", len(new_payload)) + zlib.compress(new_payload)
+        )
+    header = bytearray(record[:24])
+    struct.pack_into("<I", header, 4, len(new_payload))
+    return bytes(header) + new_payload
+
+
+def patch_plugin_data(plugin_data: bytes) -> bytes:
     rebuilt = bytearray()
     position = 0
-    changed = False
+    found_magic_effect = False
+    found_explosion = False
     while position < len(plugin_data):
         signature = plugin_data[position:position + 4]
         if signature == b"GRUP":
@@ -138,7 +200,9 @@ def update_plugin(plugin_path: Path, master_path: Path) -> None:
             children = bytearray()
             child_position = position + 24
             while child_position < group_end:
-                child_signature = plugin_data[child_position:child_position + 4]
+                child_signature = plugin_data[
+                    child_position:child_position + 4
+                ]
                 if child_signature == b"GRUP":
                     raise ValueError(
                         "Nested GRUPs are not expected in CreatorEnergy.esp"
@@ -150,11 +214,16 @@ def update_plugin(plugin_path: Path, master_path: Path) -> None:
                 if child_end > group_end:
                     raise ValueError("Truncated record inside GRUP")
                 record = plugin_data[child_position:child_end]
-                if child_signature == b"MGEF":
-                    record_id = struct.unpack_from("<I", record, 12)[0]
-                    if record_id == TARGET_FORM_ID:
-                        record = patch_magic_effect(record)
-                        changed = True
+                record_id = struct.unpack_from("<I", record, 12)[0]
+                if child_signature == b"MGEF" and record_id == TARGET_FORM_ID:
+                    record = patch_magic_effect(record)
+                    found_magic_effect = True
+                elif (
+                    child_signature == b"EXPL"
+                    and record_id == EXPLOSION_FORM_ID
+                ):
+                    record = patch_explosion(record)
+                    found_explosion = True
                 children.extend(record)
                 child_position = child_end
             struct.pack_into("<I", group_header, 4, 24 + len(children))
@@ -164,16 +233,32 @@ def update_plugin(plugin_path: Path, master_path: Path) -> None:
         else:
             if position + 24 > len(plugin_data):
                 raise ValueError("Truncated top-level record")
-            payload_size = struct.unpack_from("<I", plugin_data, position + 4)[0]
+            payload_size = struct.unpack_from(
+                "<I", plugin_data, position + 4
+            )[0]
             record_end = position + 24 + payload_size
             if record_end > len(plugin_data):
                 raise ValueError("Truncated top-level record payload")
             rebuilt.extend(plugin_data[position:record_end])
             position = record_end
 
-    if not changed:
+    if not found_magic_effect:
         raise ValueError("CreatorEnergyDamage MGEF was not found")
-    plugin_path.write_bytes(rebuilt)
+    if not found_explosion:
+        raise ValueError("CreatorEnergyExplosion EXPL was not found")
+    return bytes(rebuilt)
+
+
+def update_plugin(plugin_path: Path, master_path: Path) -> None:
+    master_records = read_plugin(master_path)
+    sound_ids = [sound_id for _, sound_id in SOUNDS]
+    sound_ids.append(EXPLOSION_SOUND_ID)
+    for sound_id in sound_ids:
+        record = master_records.get(sound_id)
+        if record is None or record[:4] != b"SNDR":
+            raise ValueError(f"Missing Skyrim sound descriptor {sound_id:08X}")
+
+    plugin_path.write_bytes(patch_plugin_data(plugin_path.read_bytes()))
 
 
 def main() -> None:
@@ -192,7 +277,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     update_plugin(args.plugin, args.skyrim_data / "Skyrim.esm")
-    print(f"Added non-elemental spell sounds to {args.plugin}")
+    print(f"Updated cast, hit, and explosion sounds in {args.plugin}")
 
 
 if __name__ == "__main__":

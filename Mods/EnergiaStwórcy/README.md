@@ -11,14 +11,15 @@ Pierwsza wersja prostego czaru do **The Elder Scrolls V: Skyrim Special Edition*
 - czas przygotowania 0,3 s;
 - lekki efekt trafienia i mały rozbłysk energii;
 - brak obrażeń od ognia i innych żywiołów.
-- dźwięki rzucania i trafienia oparte na neutralnych efektach magii z Skyrim.
+- dźwięki rzucania, trafienia oraz uderzenia pocisku oparte na zasobach magii z Skyrim.
 
 Efekty wizualne korzystają z fioletowo-niebieskiego pocisku Turn Undead oraz
 artów i shaderów Pułapki Dusz obecnych w Skyrim. Paczka nie dodaje własnych
 modeli ani tekstur.
 
-Paczka używa dźwięków zapisanych w `Skyrim.esm`; nie dodaje plików audio. Profil
-dźwiękowy znajduje się wyłącznie na efekcie `CreatorEnergyDamage`.
+Paczka używa dźwięków zapisanych w `Skyrim.esm`; nie dodaje plików audio.
+Dźwięki kastowania i trafienia są przypisane do `CreatorEnergyDamage`, a dźwięk
+uderzenia pocisku do `CreatorEnergyExplosion`.
 
 ## Instalacja
 
