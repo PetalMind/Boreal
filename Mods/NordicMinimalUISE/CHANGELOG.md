@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Kropka śledzi aktywny celownik także podczas animacji zbierania przedmiotów.
+- Dodano spokojne pulsowanie kropki oraz szybszy, większy puls dla stanu alarmowego.
+
 ## 1.0.1
 
 - Zastąpiono krzyżyk celownika małą, nordycką kropką.

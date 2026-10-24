@@ -4,7 +4,7 @@ Lekka modyfikacja interfejsu Skyrim SE/AE: paski zdrowia, magicki i kondycji
 pojawiają się po zmianie wartości i zanikają po ustawionym czasie. Podczas walki
 pozostają widoczne. MCM pozwala zmienić czas zanikania, wyłączyć automatyczne
 paski lub kompas. Kompas i znaczniki zadań są domyślnie zachowane, a celownik
-ma postać małej, nordyckiej kropki.
+ma postać małej, nordyckiej kropki z delikatnym pulsem i szybszą animacją alarmową.
 
 Lista tematów dialogowych używa spokojniejszej, nordyckiej palety: jasny,
 przygaszony tekst dla nieaktywnych tematów oraz ciepły, stonowany akcent dla
