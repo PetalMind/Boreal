@@ -8,9 +8,14 @@ GlobalVariable SearchRadiusSetting
 Bool isProcessing
 
 Event OnInit()
+    Maintenance()
+EndEvent
+
+Function Maintenance()
+    isProcessing = False
     LoadSettings()
     RegisterForControl("Activate")
-EndEvent
+EndFunction
 
 Event OnControlDown(String control)
     If control != "Activate" || isProcessing || Utility.IsInMenuMode()
@@ -58,7 +63,7 @@ Function HarvestNearbyPlants(Actor player, ObjectReference selectedPlant, Float 
     Int index = 0
     While index < nearbyPlants.Length
         ObjectReference plant = nearbyPlants[index]
-        If plant != None && plant != selectedPlant && !plant.IsDisabled() && plant.Is3DLoaded() && !plant.IsHarvested() && player.HasLOS(plant)
+        If plant != None && plant != selectedPlant && !plant.IsDisabled() && plant.Is3DLoaded() && !plant.IsHarvested()
             plant.Activate(player)
         EndIf
         index += 1

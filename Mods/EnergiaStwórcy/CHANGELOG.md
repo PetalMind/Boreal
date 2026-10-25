@@ -1,5 +1,18 @@
 # Changelog
 
+# Changelog
+
+## 1.5.0
+
+- Wszystkie trzy rangi przechwytują dusze przeciwników zabitych przez gracza do 5 sekund od trafienia.
+- Wykorzystywany jest odpowiedni wolny klejnot z ekwipunku; gdy go brakuje, dodawany jest darmowy czarny klejnot duszy.
+- Dodano skrypt Papyrus bez zależności od SKSE; nieprzechwytywalne dusze nie dają darmowych klejnotów.
+
+## 1.4.0
+
+- Dodano osobne rangi I, II i III o obrażeniach 25, 40 i 60 pkt.
+- Uproszczono opisy do wartości obrażeń, obszaru działania i kosztu.
+
 ## 1.3.0
 
 - Dodano dźwięk uderzenia do eksplozji pocisku, zachowując dźwięki kastowania i trafienia.

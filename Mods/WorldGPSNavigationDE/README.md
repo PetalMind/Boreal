@@ -1,14 +1,14 @@
 # World GPS Navigation DE
 
-Nawigacja świata dla **GTA San Andreas: The Definitive Edition** działająca jako skrypt CLEO Redux x64. Zamiast prowadzić wzrok po minimapie, pokazuje krótką ścieżkę markerów 3D na drodze przed pojazdem.
+Proste prowadzenie do waypointu na mapie w **GTA San Andreas: The Definitive Edition**, działające jako skrypt CLEO Redux x64. Pokazuje linię markerów 3D bezpośrednio w kierunku celu, dystans oraz żółty marker celu, gdy ten znajdzie się w zasięgu. To wskazówka kierunku do punktu, nie solver dróg ani instrukcje skrętów.
 
 ## Co zawiera
 
-- odczyt zwykłego waypointu przez opcjonalny adapter `IS_WAYPOINT_ACTIVE` / `GET_WAYPOINT_COORDS`;
+- odczyt waypointu z tablicy blipów SA:DE dla rozpoznanego buildu gry;
 - dynamiczny zasięg prowadzenia: około 62 m przy małej prędkości i do około 128 m przy szybkiej jeździe;
-- lokalną ścieżkę z najbliższych węzłów samochodowych GTA (`GET_NTH_CLOSEST_CAR_NODE`), odświeżaną podczas jazdy;
+- bezpośrednią linię markerów do waypointu, odświeżaną podczas jazdy;
 - niebieskie markery trasy oraz żółty marker celu, gdy cel znajduje się w aktywnym zasięgu;
-- tekst `GPS`, dystans do celu i najbliższy wykryty zakręt;
+- tekst `GPS` z dystansem do celu;
 - wygaszanie prowadzenia poza pojazdem, przeładowanie ustawień przez F11 i opcjonalny tryb ręcznego celu do diagnostyki.
 
 ## Instalacja
@@ -25,7 +25,7 @@ Uruchom:
 ./install.sh "/ścieżka/do/GTA San Andreas - The Definitive Edition"
 ```
 
-Skrypt zostanie skopiowany do `Gameface/Binaries/Win64/CLEO/WorldGPSNavigation[fs].js`, a konfiguracja do tego samego katalogu jako `WorldGPSNavigationDE.ini`.
+Skrypt zostanie skopiowany do `Gameface/Binaries/Win64/CLEO/WorldGPSNavigation[fs][mem].js`, a konfiguracja do tego samego katalogu jako `WorldGPSNavigationDE.ini`.
 
 ## Sterowanie
 
@@ -34,11 +34,11 @@ Skrypt zostanie skopiowany do `Gameface/Binaries/Win64/CLEO/WorldGPSNavigation[f
 - **F11** przeładowuje plik INI;
 - **F7** ma znaczenie tylko po włączeniu `[manual_target] enabled=1`: zapisuje punkt 60 m przed pojazdem jako cel w pamięci skryptu.
 
-## Ważne ograniczenie SA:DE
+## Obsługa waypointu i zgodność buildu
 
-Publiczna definicja `sa_unreal` CLEO Redux udostępnia markery 3D, węzły dróg i poziom gruntu, ale nie dokumentuje natywu odczytującego waypoint z minimapy. Dlatego skrypt nie czyta pamięci UE4 i nie wpisuje wersjozależnych adresów. Jeżeli zainstalowany runtime nie udostępnia `IS_WAYPOINT_ACTIVE` i `GET_WAYPOINT_COORDS` (albo kompatybilnego bridge'a blipów), w `cleo_redux.log` pojawi się komunikat o braku gettera, a trasa pozostanie ukryta.
+SA:DE nie udostępnia waypointu przez publiczne natywy CLEO. Skrypt odczytuje go z tablicy blipów pamięci gry i włącza ten odczyt wyłącznie dla buildu `1.0.113.21181` oraz po sprawdzeniu sygnatury skryptu gry. Do dostępu do pamięci wymaga CLEO Redux z uprawnieniem `mem`; nazwa instalowanego pliku zawiera `[mem]`. Na innych buildach lub przy niezgodnej sygnaturze odczyt zostaje wyłączony, a markery nie są wyświetlane. CLEO Redux opisuje API pamięci dla hostów x64, w tym gier z trylogii DE, a wersja hosta jest dostępna do sprawdzania w skryptach.
 
-W takim środowisku można chwilowo użyć ręcznego celu w INI:
+W trybie diagnostycznym można zamiast waypointu użyć ręcznego celu w INI:
 
 ```ini
 [manual_target]
@@ -48,10 +48,12 @@ y=-567
 z=20
 ```
 
-To tryb diagnostyczny, nie zamiennik normalnego waypointu. Sama ścieżka nie jest pełnym solverem grafu GPS: jest krótkim prowadzeniem z lokalnych węzłów drogowych, więc nie obiecuje poprawnej trasy przez każde skrzyżowanie. Dzięki temu mod nie udaje możliwości, których publiczne API SA:DE nie gwarantuje.
+F7 zapisuje punkt 60 m przed pojazdem tylko do bieżącego uruchomienia skryptu. Ten tryb nie zastępuje waypointu mapy.
 
 ## Źródła techniczne
 
-- CLEO Redux obsługuje JavaScript i udostępnia natywy aktualnego hosta: <https://re.cleo.li/docs/en/api.html>
+- CLEO Redux obsługuje JavaScript, sprawdzanie wersji hosta i dostęp do pamięci x64: <https://re.cleo.li/docs/en/api.html> oraz <https://re.cleo.li/docs/en/using-memory-64.html>
+- Uprawnienie `mem` można zadeklarować w nazwie skryptu: <https://re.cleo.li/docs/en/permissions.html>
 - Definicja SA:DE to `sa_unreal`, a CLEO generuje plik `sa.d.ts` w katalogu `.config`: <https://re.cleo.li/docs/en/the-definitive-edition-faq.html>
-- Wykorzystane natywy w publicznej definicji: `CREATE_USER_3D_MARKER`, `REMOVE_USER_3D_MARKER`, `GET_NTH_CLOSEST_CAR_NODE`, `GET_GROUND_Z_FOR_3D_COORD`.
+- Układ tablicy blipów i kontrola buildu bazują na opisanym odczycie waypointu dla SA DE Steam `1.0.113.21181`: <https://www.nexusmods.com/grandtheftautothetrilogy/mods/817?tab=logs>
+- Pozostałe natywy używane przez skrypt obejmują `CREATE_USER_3D_MARKER`, `REMOVE_USER_3D_MARKER` i `GET_GROUND_Z_FOR_3D_COORD`.

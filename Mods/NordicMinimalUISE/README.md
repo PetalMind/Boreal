@@ -6,15 +6,25 @@ pozostają widoczne. MCM pozwala zmienić czas zanikania, wyłączyć automatycz
 paski lub kompas. Kompas i znaczniki zadań są domyślnie zachowane, a celownik
 ma postać małej, nordyckiej kropki z delikatnym pulsem i szybszą animacją alarmową.
 
+Podczas jazdy pojawia się osobny panel wierzchowca z jego nazwą oraz paskami
+zdrowia i wytrzymałości. Wartości i procenty odświeżają się na bieżąco, a panel
+znika po zejściu z konia.
+
 Wybór czasu oczekiwania używa okrągłej tarczy zamiast poziomego suwaka.
 Pierścień pokazuje wybraną liczbę godzin w zakresie 1–24; można ustawić ją
 kliknięciem lub przeciągnięciem po tarczy, kółkiem myszy, strzałkami, Page Up /
 Page Down albo bumperami kontrolera. Potwierdzanie i anulowanie pozostają
 oryginalne.
 
-Lista tematów dialogowych używa spokojniejszej, nordyckiej palety: jasny,
-przygaszony tekst dla nieaktywnych tematów oraz ciepły, stonowany akcent dla
-zaznaczenia. Układ, kamera i sterowanie dialogiem pozostają oryginalne.
+Klawisz Jasnowidzenia można przypisać w MCM. Po postawieniu własnego znacznika
+na mapie użyj tego klawisza, aby wywołać wbudowany czar i zobaczyć trasę do celu.
+
+Lista tematów dialogowych używa spokojniejszej, nordyckiej palety: nieomówione
+tematy są złote, a wcześniej użyte przygaszone. Przy przycisku wyjścia z rozmowy
+pojawia się złota ikona drzwi ze strzałką. Gra nie przekazuje interfejsowi
+informacji, czy temat rozpoczyna lub kończy zadanie, więc złoto oznacza nowy
+temat, a nie gwarantowany związek z zadaniem. Układ, kamera i sterowanie
+dialogiem pozostają oryginalne.
 
 ## Wymagania
 

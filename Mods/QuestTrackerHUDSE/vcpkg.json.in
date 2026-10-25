@@ -1,0 +1,6 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "quest-tracker-hud-se",
+  "version-string": "@VERSION@",
+  "dependencies": [ "commonlibsse-ng-flatrim" ]
+}

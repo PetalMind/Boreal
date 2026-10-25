@@ -8,10 +8,14 @@ GlobalVariable WhistleKeyCode
 ObjectReference HorseMarker
 
 Event OnInit()
+    Maintenance()
+EndEvent
+
+Function Maintenance()
     LoadSettings()
     ApplyWhistleKey(GetWhistleKey())
     RegisterForSingleUpdate(MarkerUpdateInterval)
-EndEvent
+EndFunction
 
 Event OnKeyDown(Int keyCode)
     If keyCode == GetWhistleKey() && !Utility.IsInMenuMode()

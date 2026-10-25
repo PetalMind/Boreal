@@ -1,44 +1,49 @@
 # Energia Stwórcy
 
-Pierwsza wersja prostego czaru do **The Elder Scrolls V: Skyrim Special Edition**.
+Trzy osobne rangi celowanego czaru do **The Elder Scrolls V: Skyrim Special Edition**. Obrażenia nie rosną automatycznie wraz z umiejętnością.
 
-## Działanie
+## Efekty
 
-- szybki, celowany pocisk do rzucania jedną ręką;
-- 25 punktów obrażeń zdrowia, odporność na magię;
-- niewielki obszar działania: 10 stóp (około 3 m);
-- koszt bazowy 25 Magicki, bez automatycznego przeliczania kosztu;
-- czas przygotowania 0,3 s;
-- lekki efekt trafienia i mały rozbłysk energii;
-- brak obrażeń od ognia i innych żywiołów.
-- dźwięki rzucania, trafienia oraz uderzenia pocisku oparte na zasobach magii z Skyrim.
+- **Energia Stwórcy I** — zadaje 25 pkt obrażeń magicznych w promieniu 10 stóp; koszt bazowy 25 Magicki.
+- **Energia Stwórcy II** — zadaje 40 pkt obrażeń magicznych w promieniu 10 stóp; koszt bazowy 45 Magicki.
+- **Energia Stwórcy III** — zadaje 60 pkt obrażeń magicznych w promieniu 10 stóp; koszt bazowy 70 Magicki.
 
-Efekty wizualne korzystają z fioletowo-niebieskiego pocisku Turn Undead oraz
-artów i shaderów Pułapki Dusz obecnych w Skyrim. Paczka nie dodaje własnych
-modeli ani tekstur.
+Każda ranga przechwytuje duszę przeciwnika, jeśli gracz zabije go w ciągu **5 sekund od trafienia**. Najpierw używa odpowiedniego wolnego klejnotu z ekwipunku. Gdy go brakuje, gracz otrzymuje za darmo czarny klejnot, który zostaje napełniony duszą. Dotyczy to białych i czarnych dusz; istoty bez możliwej do przechwycenia duszy nie dają klejnotów.
 
-Paczka używa dźwięków zapisanych w `Skyrim.esm`; nie dodaje plików audio.
-Dźwięki kastowania i trafienia są przypisane do `CreatorEnergyDamage`, a dźwięk
-uderzenia pocisku do `CreatorEnergyExplosion`.
+Każda ranga to szybki, jednoręczny pocisk z czasem przygotowania 0,3 s. Obrażenia podlegają odporności na magię; czar nie zadaje obrażeń od ognia ani innych żywiołów. Koszt bazowy może zostać obniżony przez poziom szkoły magii i odpowiednie atuty.
+
+Pocisk korzysta z fioletowo-niebieskiego efektu Turn Undead oraz artów i shaderów Pułapki Dusz obecnych w Skyrim. Paczka nie dodaje własnych modeli ani tekstur. Dźwięki kastowania, trafienia i uderzenia pocisku pochodzą z `Skyrim.esm`; nie dodano plików audio.
 
 ## Instalacja
 
-Zaimportuj `EnergiaStwórcy.zip` w Boreal i włącz `CreatorEnergy.esp`, albo
-skopiuj `Data/CreatorEnergy.esp` do katalogu `Data` gry i aktywuj plugin w
-menedżerze modów.
+Zaimportuj `EnergiaStwórcy.zip` w Boreal i włącz `CreatorEnergy.esp`, albo skopiuj całą zawartość `Data/` do katalogu `Data` gry i aktywuj plugin w menedżerze modów.
 
-Wymagane jest tylko `Skyrim.esm`. Mod nie wymaga SKSE ani skryptów Papyrus.
+Wymagane jest tylko `Skyrim.esm`. Mod nie wymaga SKSE. Dołączony skrypt Papyrus `Scripts/CreatorEnergySoulCapture.pex` jest wymagany i znajduje się w paczce.
 
 ## Dodanie czaru
 
-Czar nie jest umieszczony u handlarzy ani w świecie. W konsoli gry wpisz:
+Czary nie są umieszczone u handlarzy ani w świecie. W konsoli wyszukaj wybraną rangę:
 
 ```text
 help CreatorEnergySpell 4
 ```
 
-Następnie użyj FormID wyświetlonego dla `CreatorEnergySpell`:
+Użyj FormID wyświetlonego dla wybranego EditorID:
 
 ```text
 player.addspell <FormID>
 ```
+
+EditorID-y:
+
+```text
+CreatorEnergySpell
+CreatorEnergySpell02
+CreatorEnergySpell03
+```
+
+Do dodawania rang służy `Source/add_spell_ranks.py`; skrypt aktualizuje istniejący ESP bez potrzeby odtwarzania efektów z mastera. `Source/add_spell_sounds.py` osobno przypisuje dźwięki do efektu i eksplozji.
+
+## Budowanie
+
+Wersja moda ma jedno źródło prawdy w `manifest.json`. Uruchom `./build.sh` z kompilatorem Caprica (domyślnie `.local-tools/caprica/Caprica.exe`). Domyślne deklaracje API są w `Source/CompilerImports`; opcjonalnie wskaż pełne źródła Papyrus przez `PAPYRUS_IMPORTS`. Skrypt buduje PEX, aktualizuje ESP i pakuje ZIP. `Source/add_soul_capture.py` dodaje przechwytywanie dusz do istniejących rang.

@@ -652,8 +652,18 @@ struct ModsView: View {
             Text("Changes are staged and have not been copied into the game yet.")
                 .font(.callout)
             Spacer()
-            Button("Deploy Changes", systemImage: "arrow.down.app") {
+            Button {
                 store.deployMods(for: game)
+            } label: {
+                if store.isModOperationActive(for: game) {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Deploying Changes…")
+                    }
+                } else {
+                    Label("Deploy Changes", systemImage: "arrow.down.app")
+                }
             }
             .buttonStyle(.borderedProminent)
             .disabled(store.isModOperationActive(for: game))

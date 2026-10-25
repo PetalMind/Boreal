@@ -20,7 +20,7 @@ case "$COMPILER" in
         if command -v wine >/dev/null 2>&1; then
             (
                 cd "$ROOT_DIR/Source/Scripts"
-                wine "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" NearbyHarvestLootQuest.psc NearbyHarvestLootMCM.psc
+                wine "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" NearbyHarvestLootQuest.psc NearbyHarvestLootMCM.psc NearbyHarvestLootPlayerAlias.psc
             )
         else
             echo "Caprica.exe requires Wine on this platform." >&2
@@ -30,7 +30,7 @@ case "$COMPILER" in
     *)
         (
             cd "$ROOT_DIR/Source/Scripts"
-            "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" NearbyHarvestLootQuest.psc NearbyHarvestLootMCM.psc
+            "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" NearbyHarvestLootQuest.psc NearbyHarvestLootMCM.psc NearbyHarvestLootPlayerAlias.psc
         )
         ;;
 esac
@@ -41,18 +41,22 @@ from pathlib import Path
 import shutil
 import sys
 import zipfile
+import struct
 
 build_dir = Path(sys.argv[1])
 root_dir = Path(sys.argv[2])
 archive_path = root_dir / "NearbyHarvestLootSE.zip"
+seq = build_dir / "Data/SEQ/NearbyHarvestLootSE.seq"
+seq.parent.mkdir(parents=True, exist_ok=True)
+seq.write_bytes(struct.pack("<I", 0x01000800))
 for path in sorted((build_dir / "Data").rglob("*")):
-    if path.is_file():
+    if path.is_file() and not any(part.startswith(".") for part in path.relative_to(build_dir).parts):
         destination = root_dir / path.relative_to(build_dir)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
 with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
     for path in sorted((root_dir / "Data").rglob("*")):
-        if path.is_file():
+        if path.is_file() and not any(part.startswith(".") for part in path.relative_to(root_dir).parts):
             archive.write(path, path.relative_to(root_dir).as_posix())
 print(archive_path)
 PY

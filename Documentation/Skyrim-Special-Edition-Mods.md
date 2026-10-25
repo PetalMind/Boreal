@@ -20,7 +20,10 @@ For supported archives, Boreal:
   before deployment;
 - copies files to `Data` with backups and a deployment manifest, and checks
   managed files for unexpected edits before replacing them;
-- writes the selected plugin list to `plugins.txt` in the linked Wine prefix.
+- writes the selected user-mod plugin list to `plugins.txt` in the linked Wine
+  prefix. Skyrim's master plugins and the Creation Club plugins listed in
+  `Skyrim.ccc` remain in the Boreal profile but are omitted from this generated
+  file; duplicate plugin filenames are collapsed before saving or deployment.
 
 The Mods view now labels this path as **Skyrim Data Files / Skyrim Data
 Folder**. It blocks automatic installation when an archive contains a FOMOD

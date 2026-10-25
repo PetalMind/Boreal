@@ -1,6 +1,6 @@
 Scriptname SKI_ConfigBase Extends Quest Native
 
-Int Property TOP_TO_BOTTOM = 1 AutoReadOnly
+Int Property TOP_TO_BOTTOM = 2 AutoReadOnly
 String Property ModName Auto
 String[] Property Pages Auto
 
@@ -20,3 +20,6 @@ Function SetSliderDialogStartValue(Float value) Native
 Function SetSliderDialogDefaultValue(Float value) Native
 Function SetSliderDialogRange(Float minValue, Float maxValue) Native
 Function SetSliderDialogInterval(Float value) Native
+
+Event OnConfigOpen() Native
+Event OnGameReload() Native

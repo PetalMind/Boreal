@@ -1083,6 +1083,40 @@ nonisolated enum SkyrimModAdapter {
         return baseNames.contains(lowercased) || lowercased.hasPrefix("cc")
     }
 
+    static func gameProvidedPluginNames(in gameRoot: URL?) -> Set<String> {
+        var names: Set<String> = [
+            "skyrim.esm", "update.esm", "dawnguard.esm", "hearthfires.esm", "dragonborn.esm"
+        ]
+        guard let gameRoot else { return names }
+        let ccc = gameRoot.appending(path: "Skyrim.ccc")
+        guard let contents = try? String(contentsOf: ccc, encoding: .utf8) else { return names }
+        for line in contents.split(whereSeparator: \.isNewline) {
+            let filename = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !filename.isEmpty { names.insert(filename) }
+        }
+        return names
+    }
+
+    static func pluginsFileData(
+        plugins: [BethesdaPlugin],
+        mods: [InstalledMod],
+        gameRoot: URL?
+    ) -> Data {
+        let gameProvidedNames = gameProvidedPluginNames(in: gameRoot)
+        let enabledModIDs = Set(mods.filter(\.enabled).map(\.id))
+        var seenFilenames: Set<String> = []
+        let effective = plugins.sorted { $0.loadOrder < $1.loadOrder }.compactMap { plugin -> String? in
+            let key = plugin.filename.lowercased()
+            guard !gameProvidedNames.contains(key), !isBasePlugin(plugin.filename) else { return nil }
+            if let modID = plugin.modID, !enabledModIDs.contains(modID) { return nil }
+            guard seenFilenames.insert(key).inserted else { return nil }
+            return "\(plugin.enabled ? "*" : "")\(plugin.filename)"
+        }
+        let text = effective.joined(separator: "\n")
+        let header = "# This file is used by Skyrim to keep track of your downloaded content.\n# Please do not modify this file.\n"
+        return Data((header + text + (text.isEmpty ? "" : "\n")).utf8)
+    }
+
     static func isBaseArchive(_ filename: String) -> Bool {
         let lowercased = filename.lowercased()
         return lowercased.hasPrefix("skyrim")
@@ -1598,8 +1632,9 @@ nonisolated struct ModManager: Sendable {
         let gameDirectory = gameURL(for: state.gameID)
         try fileManager.createDirectory(at: dataRoot, withIntermediateDirectories: true)
         let old = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json"))) ?? .empty(gameID: state.gameID)
+        let plugins = reconcilePlugins(state.plugins, with: state.mods)
 
-        let validation = state.validation
+        let validation = ModValidationReport.make(mods: state.mods, plugins: plugins)
         if !validation.missingMasters.isEmpty {
             throw ModManagerError.missingPluginMasters(validation.missingMasters)
         }
@@ -1613,15 +1648,6 @@ nonisolated struct ModManager: Sendable {
         let resolved = try resolvedFiles(for: state.mods, gameDirectory: gameDirectory)
         try validateManagedFiles(old.files, dataRoot: dataRoot)
         try preflightExternalChanges(old.files, dataRoot: dataRoot)
-        if let oldPluginPath = old.pluginFilePath,
-           let oldPluginHash = old.pluginFileHash,
-           let currentPluginURL = pluginsFile,
-           oldPluginPath == currentPluginURL.standardizedFileURL.path,
-           fileManager.fileExists(atPath: currentPluginURL.path),
-           try RuntimeSecurity.sha256(of: currentPluginURL) != oldPluginHash {
-            throw ModManagerError.externalFileChanged(currentPluginURL.path)
-        }
-
         let transactionURL = gameDirectory.appending(path: ".transactions/\(UUID().uuidString)", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: transactionURL, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: transactionURL) }
@@ -1693,7 +1719,7 @@ nonisolated struct ModManager: Sendable {
             var next = ModDeploymentManifest(
                 gameID: state.gameID,
                 deployedAt: .now,
-                profileFingerprint: ModProfileFingerprint.make(mods: state.mods, plugins: state.plugins),
+                profileFingerprint: ModProfileFingerprint.make(mods: state.mods, plugins: plugins),
                 files: nextFiles,
                 pluginFilePath: old.pluginFilePath,
                 pluginFileHash: old.pluginFileHash,
@@ -1708,8 +1734,9 @@ nonisolated struct ModManager: Sendable {
                 transactionPluginWasMissing = true
             }
             try synchronizePlugins(
-                state.plugins,
+                plugins,
                 mods: state.mods,
+                gameRoot: gameRoot,
                 at: pluginsFile,
                 gameDirectory: gameDirectory,
                 old: old,
@@ -1722,10 +1749,25 @@ nonisolated struct ModManager: Sendable {
                 profileID: state.profileID,
                 profileName: state.profileName,
                 mods: state.mods,
-                plugins: state.plugins,
+                plugins: plugins,
                 gameDirectory: gameDirectory
             )
-            return try load(gameID: state.gameID, gameRoot: gameRoot, pluginsFile: pluginsFile, profileID: state.profileID)
+            var deployedState = try load(
+                gameID: state.gameID,
+                gameRoot: gameRoot,
+                pluginsFile: pluginsFile,
+                profileID: state.profileID
+            )
+            let deployedFingerprint = ModProfileFingerprint.make(
+                mods: deployedState.mods,
+                plugins: deployedState.plugins
+            )
+            if next.profileFingerprint != deployedFingerprint {
+                next.profileFingerprint = deployedFingerprint
+                try saveJSON(next, at: gameDirectory.appending(path: "deployment.json"))
+                deployedState.deployment = next
+            }
+            return deployedState
         } catch {
             for (path, original) in transactionOriginals {
                 let destination = append(path, to: dataRoot)
@@ -1869,7 +1911,13 @@ nonisolated struct ModManager: Sendable {
            let pluginsFile,
            path == pluginsFile.standardizedFileURL.path,
            fileManager.fileExists(atPath: pluginsFile.path) {
-            pluginsSynchronized = (try? RuntimeSecurity.sha256(of: pluginsFile)) == hash
+            let expected = SkyrimModAdapter.pluginsFileData(
+                plugins: state.plugins,
+                mods: state.mods,
+                gameRoot: gameRoot
+            )
+            pluginsSynchronized = (try? Data(contentsOf: pluginsFile)) == expected
+                && (try? RuntimeSecurity.sha256(of: pluginsFile)) == hash
         } else if activePluginCount > 0, state.deployment.deployedAt != nil {
             pluginsSynchronized = false
         }
@@ -1942,14 +1990,20 @@ nonisolated struct ModManager: Sendable {
             value.priority = index
             return value
         }
-        let normalizedPlugins = plugins.enumerated().map { index, plugin -> BethesdaPlugin in
+        let canonicalPlugins = reconcilePlugins(plugins, with: normalizedMods)
+        let normalizedPlugins = canonicalPlugins.enumerated().map { index, plugin -> BethesdaPlugin in
             var value = plugin
             value.loadOrder = index
             return value
         }
-        let profile = ModProfile(gameID: gameID, name: profileName, mods: normalizedMods, plugins: normalizedPlugins, updatedAt: .now)
+        let normalizedModsWithPlugins = normalizedMods.map { mod -> InstalledMod in
+            var value = mod
+            value.plugins = normalizedPlugins.filter { $0.modID == mod.id }
+            return value
+        }
+        let profile = ModProfile(gameID: gameID, name: profileName, mods: normalizedModsWithPlugins, plugins: normalizedPlugins, updatedAt: .now)
         try saveJSON(profile, at: profileURL(for: gameID, profileID: profileID))
-        for mod in normalizedMods where !mod.isExternallyDetected {
+        for mod in normalizedModsWithPlugins where !mod.isExternallyDetected {
             let manifestURL = append("\(mod.stagingRelativePath)/manifest.json", to: gameDirectory)
             try saveJSON(mod, at: manifestURL)
         }
@@ -2287,28 +2341,60 @@ nonisolated struct ModManager: Sendable {
 
     private func reconcilePlugins(_ plugins: [BethesdaPlugin], with mods: [InstalledMod]) -> [BethesdaPlugin] {
         let validModIDs = Set(mods.map(\.id))
-        var result = plugins.filter { $0.modID == nil || validModIDs.contains($0.modID!) }
-        var existingKeys = Set(result.map { "\($0.modID?.uuidString ?? "base"):\($0.filename.lowercased())" })
+        let orderedPlugins = plugins.enumerated()
+            .filter { $0.element.modID == nil || validModIDs.contains($0.element.modID!) }
+            .sorted {
+                if $0.element.loadOrder != $1.element.loadOrder {
+                    return $0.element.loadOrder < $1.element.loadOrder
+                }
+                return $0.offset < $1.offset
+            }
+            .map(\.element)
+        var result: [BethesdaPlugin] = []
+        var indicesByFilename: [String: Int] = [:]
+
+        func insertOrReconcile(_ plugin: BethesdaPlugin) {
+            let key = plugin.filename.lowercased()
+            guard let existingIndex = indicesByFilename[key] else {
+                indicesByFilename[key] = result.count
+                result.append(plugin)
+                return
+            }
+            guard shouldPreferPluginOwner(plugin, over: result[existingIndex], mods: mods) else { return }
+            var replacement = plugin
+            replacement.enabled = result[existingIndex].enabled
+            replacement.loadOrder = result[existingIndex].loadOrder
+            result[existingIndex] = replacement
+        }
+
+        for plugin in orderedPlugins { insertOrReconcile(plugin) }
         for mod in mods {
             for plugin in mod.plugins {
-                if let baseIndex = result.firstIndex(where: {
-                    $0.modID == nil && $0.filename.caseInsensitiveCompare(plugin.filename) == .orderedSame
-                }) {
-                    var attached = plugin
-                    attached.enabled = result[baseIndex].enabled
-                    attached.loadOrder = result[baseIndex].loadOrder
-                    result[baseIndex] = attached
-                    existingKeys.insert("\(attached.modID?.uuidString ?? "base"):\(attached.filename.lowercased())")
-                    continue
-                }
-                let key = "\(mod.id.uuidString):\(plugin.filename.lowercased())"
-                guard !existingKeys.contains(key) else { continue }
-                result.append(plugin)
-                existingKeys.insert(key)
+                insertOrReconcile(plugin)
             }
         }
         for index in result.indices { result[index].loadOrder = index }
         return result
+    }
+
+    private func shouldPreferPluginOwner(
+        _ candidate: BethesdaPlugin,
+        over current: BethesdaPlugin,
+        mods: [InstalledMod]
+    ) -> Bool {
+        guard candidate.modID != current.modID else { return false }
+
+        func rank(_ plugin: BethesdaPlugin) -> (kind: Int, priority: Int) {
+            guard let modID = plugin.modID,
+                  let mod = mods.first(where: { $0.id == modID }) else { return (1, Int.min) }
+            if mod.isExternallyDetected { return (2, mod.priority) }
+            return (mod.enabled ? 3 : 0, mod.priority)
+        }
+
+        let candidateRank = rank(candidate)
+        let currentRank = rank(current)
+        if candidateRank.kind != currentRank.kind { return candidateRank.kind > currentRank.kind }
+        return candidateRank.priority > currentRank.priority
     }
 
     private func readPluginsFile(_ url: URL?) -> [BethesdaPlugin] {
@@ -2435,6 +2521,7 @@ nonisolated struct ModManager: Sendable {
     private func synchronizePlugins(
         _ plugins: [BethesdaPlugin],
         mods: [InstalledMod],
+        gameRoot: URL,
         at url: URL?,
         gameDirectory: URL,
         old: ModDeploymentManifest,
@@ -2446,18 +2533,10 @@ nonisolated struct ModManager: Sendable {
             return
         }
         let fileManager = FileManager.default
-        let effective = plugins.sorted { $0.loadOrder < $1.loadOrder }.filter { plugin in
-            guard let modID = plugin.modID else { return true }
-            return mods.first(where: { $0.id == modID })?.enabled == true
-        }
-        let text = effective.map { "\($0.enabled ? "*" : "")\($0.filename)" }.joined(separator: "\n") + (effective.isEmpty ? "" : "\n")
-        let data = Data(text.utf8)
-        if fileManager.fileExists(atPath: url.path),
-           old.pluginFilePath == url.standardizedFileURL.path,
-           let oldHash = old.pluginFileHash {
-            let currentHash = try RuntimeSecurity.sha256(of: url)
-            guard currentHash == oldHash else { throw ModManagerError.externalFileChanged(url.path) }
-        }
+        let data = SkyrimModAdapter.pluginsFileData(plugins: plugins, mods: mods, gameRoot: gameRoot)
+        // plugins.txt is a generated output. The active profile is the source
+        // of truth, so restore its plugin list during deployment even if a
+        // launcher or another tool changed the output file.
         if next.pluginFileBackup == nil, fileManager.fileExists(atPath: url.path) {
             let originalHash = try RuntimeSecurity.sha256(of: url)
             let backupRelative = "Backups/\(UUID().uuidString)-plugins.txt"

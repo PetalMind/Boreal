@@ -1995,6 +1995,9 @@ struct StoreGameDetailView: View {
                 }
             } else if let operation = storeOperation {
                 storeOperationPrimaryButton(operation)
+            } else if game.provider == .steam,
+                      let app = linkedApplication {
+                runtimeLaunchControl(for: app, playTitle: .Library.play)
             } else if game.provider == .steam, store.usesSteamOnM1Wine, linkedApplication?.status != .running {
                 GamePrimaryActionButton(
                     title: store.isInstalled(currentGame) ? String(localized: .Library.play) : String(localized: .Library.install),
@@ -2006,8 +2009,6 @@ struct StoreGameDetailView: View {
             } else if game.provider == .steam {
                 if store.isInstalled(currentGame), store.installedPlatform(for: currentGame) == .nativeMacOS, store.installedLocation(for: currentGame) != nil {
                     GamePrimaryActionButton(title: String(localized: .Library.play), symbol: "play.fill", state: .ready, action: openNativeInstallation)
-                } else if let app = linkedApplication {
-                    runtimeLaunchControl(for: app, playTitle: .Library.play)
                 } else if currentGame.supportsNativeMacOS == true {
                     let title = store.isInstalled(currentGame) ? String(localized: .Library.play) : String(localized: .Library.install)
                     let symbol = store.isInstalled(currentGame) ? "play.fill" : "arrow.down.circle.fill"

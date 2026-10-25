@@ -14,6 +14,13 @@ Event OnConfigInit()
     LoadSettings()
 EndEvent
 
+Event OnConfigOpen()
+    NearbyHarvestLootQuest controller = Game.GetFormFromFile(0x800, "NearbyHarvestLootSE.esp") as NearbyHarvestLootQuest
+    If controller != None
+        controller.Maintenance()
+    EndIf
+EndEvent
+
 Event OnPageReset(String page)
     If page != "Ustawienia"
         Return

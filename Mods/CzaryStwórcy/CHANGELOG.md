@@ -1,5 +1,13 @@
 # Changelog
 
+# Changelog
+
+## 1.3.0
+
+- Dodano rangi II i III dla Pochłonięcia, Impulsu, Przejęcia Jaźni, Osłabienia Rzeczywistości, Zaniku i Odbicia Woli.
+- Zachowano istniejące FormID-y i dodano osobne, stałe parametry każdej rangi.
+- Skrócono opisy czarów do efektu, wartości oraz czasu lub zasięgu.
+
 ## 1.2.0
 
 - Dodano profile dźwięków rzucania, kanałowania i trafienia tam, gdzie pasuje to do działania czaru.

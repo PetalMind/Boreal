@@ -397,11 +397,20 @@ actor SteamD3DMetalCompatibility {
             && url.path == "/\(sacred2AppID)"
     }
 
-    nonisolated static func preferredRuntime(in runtimes: [InstalledRuntime]) -> InstalledRuntime? {
-        runtimes.filter {
+    nonisolated static func preferredRuntime(in runtimes: [InstalledRuntime], prefixRoot: URL? = nil) -> InstalledRuntime? {
+        let candidates = runtimes.filter {
             $0.architecture == .x86_64 && $0.features?.d3dmetal == true
                 && $0.features?.d3dmetalVerified == true
-        }.sorted {
+        }
+        // A private prefix is tied to the Wine/D3DMetal host that initialized it.
+        // Reuse that verified host when available; silently selecting a newer host
+        // makes the later ownership check reject an otherwise usable prefix.
+        if let prefixRoot,
+           let pinnedID = try? String(contentsOf: prefixRoot.appending(path: "runtime-id.txt"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let pinned = candidates.first(where: { $0.id == pinnedID }) {
+            return pinned
+        }
+        return candidates.sorted {
             let graphicsOrder = ($0.features?.d3dmetalVersion ?? "0").compare(
                 $1.features?.d3dmetalVersion ?? "0", options: .numeric
             )

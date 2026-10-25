@@ -11,6 +11,13 @@ Event OnConfigInit()
     LoadSettings()
 EndEvent
 
+Event OnConfigOpen()
+    HorseWhistleQuest controller = Game.GetFormFromFile(0x800, "SkyrimHorseWhistleSE.esp") as HorseWhistleQuest
+    If controller != None
+        controller.Maintenance()
+    EndIf
+EndEvent
+
 Event OnPageReset(String page)
     If page != "Ustawienia"
         Return

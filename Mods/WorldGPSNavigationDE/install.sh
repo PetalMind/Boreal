@@ -10,7 +10,7 @@ fi
 game_root="${1:A}"
 win64_root="$game_root/Gameface/Binaries/Win64"
 cleo_root="$win64_root/CLEO"
-script_source="${0:A:h}/WorldGPSNavigation.js"
+script_source="${0:A:h}/WorldGPSNavigation[fs][mem].js"
 config_source="${0:A:h}/WorldGPSNavigationDE.ini"
 
 if [[ ! -f "$win64_root/SanAndreas.exe" ]]; then
@@ -34,7 +34,15 @@ if [[ ! -f "$cleo_root/CLEO_PLUGINS/IniFiles64.cleo" ]]; then
 fi
 
 mkdir -p "$cleo_root"
-destination="$cleo_root/WorldGPSNavigation[fs].js"
+destination="$cleo_root/WorldGPSNavigation[fs][mem].js"
+legacy_destination="$cleo_root/WorldGPSNavigation[fs].js"
+
+if [[ -e "$legacy_destination" ]]; then
+  backup="$legacy_destination.backup-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$legacy_destination" "$backup"
+  rm "$legacy_destination"
+  print "Previous World GPS Navigation backed up to $backup"
+fi
 
 if [[ -e "$destination" ]] && ! cmp -s "$script_source" "$destination"; then
   backup="$destination.backup-$(date +%Y%m%d-%H%M%S)"

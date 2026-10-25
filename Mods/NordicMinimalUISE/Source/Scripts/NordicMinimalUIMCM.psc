@@ -3,9 +3,12 @@ Scriptname NordicMinimalUIMCM extends SKI_ConfigBase
 GlobalVariable FadeSeconds
 GlobalVariable BarsEnabled
 GlobalVariable CompassEnabled
+GlobalVariable RouteKeyCode
 Int optionFade
 Int optionBars
 Int optionCompass
+Int optionRouteKey
+Int DefaultRouteKey = 35
 
 Event OnConfigInit()
     ModName = "Nordic Minimal UI"
@@ -24,6 +27,8 @@ Event OnPageReset(String page)
     optionFade = AddSliderOption("Czas zanikania pasków", GetValue(FadeSeconds, 5.0), "{0} s")
     optionBars = AddToggleOption("Paski widoczne po zmianie", IsEnabled(BarsEnabled))
     optionCompass = AddToggleOption("Kompas zawsze widoczny", IsEnabled(CompassEnabled))
+    AddHeaderOption("Nawigacja")
+    optionRouteKey = AddKeyMapOption("Klawisz Jasnowidzenia", GetRouteKey())
 EndEvent
 
 Event OnOptionSelect(Int option)
@@ -35,6 +40,24 @@ Event OnOptionSelect(Int option)
         ToggleSetting(CompassEnabled)
         UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicCompassEnabled", IsEnabled(CompassEnabled))
         SetToggleOptionValue(option, IsEnabled(CompassEnabled))
+    EndIf
+EndEvent
+
+Event OnOptionKeyMapChange(Int option, Int keyCode, String conflictControl, String conflictName)
+    If option != optionRouteKey || keyCode < 0 || keyCode > 255
+        Return
+    EndIf
+
+    SetValue(RouteKeyCode, keyCode as Float)
+    SetKeyMapOptionValue(option, keyCode)
+
+    NordicMinimalUIQuest routeQuest = Game.GetFormFromFile(0x800, "NordicMinimalUISE.esp") as NordicMinimalUIQuest
+    If routeQuest != None
+        routeQuest.SetRouteKey(keyCode)
+    EndIf
+
+    If conflictControl != ""
+        Debug.Notification("Klawisz Jasnowidzenia współdzieli sterowanie: " + conflictName)
     EndIf
 EndEvent
 
@@ -59,6 +82,19 @@ Function LoadSettings()
     FadeSeconds = Game.GetFormFromFile(0x801, "NordicMinimalUISE.esp") as GlobalVariable
     BarsEnabled = Game.GetFormFromFile(0x802, "NordicMinimalUISE.esp") as GlobalVariable
     CompassEnabled = Game.GetFormFromFile(0x803, "NordicMinimalUISE.esp") as GlobalVariable
+    RouteKeyCode = Game.GetFormFromFile(0x804, "NordicMinimalUISE.esp") as GlobalVariable
+EndFunction
+
+Int Function GetRouteKey()
+    If RouteKeyCode == None
+        Return DefaultRouteKey
+    EndIf
+
+    Int keyCode = RouteKeyCode.GetValue() as Int
+    If keyCode < 0 || keyCode > 255
+        Return DefaultRouteKey
+    EndIf
+    Return keyCode
 EndFunction
 
 Float Function GetValue(GlobalVariable setting, Float fallback)

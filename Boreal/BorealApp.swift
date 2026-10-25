@@ -29,10 +29,31 @@ struct BorealApp: App {
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .critical
             alert.addButton(withTitle: String(localized: "Quit"))
+            alert.addButton(withTitle: String(localized: "Choose a New Data Location…"))
             if UserDefaults.standard.string(forKey: ApplicationDataLocation.pendingPathKey) != nil {
                 alert.addButton(withTitle: String(localized: "Cancel Location Change"))
             }
-            if alert.runModal() == .alertSecondButtonReturn {
+
+            switch alert.runModal() {
+            case .alertSecondButtonReturn:
+                let panel = NSOpenPanel()
+                panel.title = String(localized: "Choose a New Data Location…")
+                panel.message = String(localized: "Choose a folder where Boreal can store its data.")
+                panel.prompt = String(localized: "Use This Folder")
+                panel.canChooseFiles = false
+                panel.canChooseDirectories = true
+                panel.canCreateDirectories = true
+                panel.allowsMultipleSelection = false
+                guard panel.runModal() == .OK, let parent = panel.url else { exit(EXIT_FAILURE) }
+                do {
+                    try ApplicationDataLocation.schedule(parent: parent)
+                    try ApplicationDataLocation.prepare()
+                } catch {
+                    alert.informativeText = error.localizedDescription
+                    _ = alert.runModal()
+                    exit(EXIT_FAILURE)
+                }
+            case .alertThirdButtonReturn where UserDefaults.standard.string(forKey: ApplicationDataLocation.pendingPathKey) != nil:
                 ApplicationDataLocation.cancel()
                 do { try ApplicationDataLocation.prepare() }
                 catch {
@@ -40,7 +61,7 @@ struct BorealApp: App {
                     _ = alert.runModal()
                     exit(EXIT_FAILURE)
                 }
-            } else {
+            default:
                 exit(EXIT_FAILURE)
             }
         }

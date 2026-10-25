@@ -13,12 +13,10 @@ SPELLS = (
     {
         "source": 0x0008D5BF,
         "editor_id": "CreatorAbsorptionSpell",
-        "name": "Pochłonięcie Stwórcy",
+        "name": "Pochłonięcie Stwórcy I",
         "description": (
-            "Czarno-czerwony promień oplata ofiarę i wyciąga z niej życiową "
-            "esencję, którą Stwórca przywraca własnemu ciału. Wysysa i "
-            "przywraca po 8 punktów zdrowia na sekundę; kosztuje 12 Magicki "
-            "na sekundę. Zasięg około 30 m."
+            "Wysysa 8 pkt zdrowia na sekundę i przywraca je rzucającemu. "
+            "Zasięg 30 m."
         ),
         "cost": 12,
         "range": 2100.0,
@@ -30,9 +28,7 @@ SPELLS = (
         "editor_id": "CreatorBarrier01Spell",
         "name": "Bariera Stwórcy I",
         "description": (
-            "Pierwszy splot mocy Stwórcy przyjmuje część siły ciosów i "
-            "zakłóca wrogą magię. Przez 10 sekund dodaje 167 punktów "
-            "pancerza i 20% odporności na magię."
+            "Dodaje 167 pkt pancerza i 20% odporności na magię przez 10 s."
         ),
         "cost": 35,
         "effects": ((0x00059B7C, 167.0, 0, 10), (0x00039E51, 20.0, 0, 10)),
@@ -43,9 +39,7 @@ SPELLS = (
         "editor_id": "CreatorBarrier02Spell",
         "name": "Bariera Stwórcy II",
         "description": (
-            "Wzmocniony splot Stwórcy osłania ciało i tłumi napływającą "
-            "magię. Przez 12 sekund dodaje 250 punktów pancerza i 30% "
-            "odporności na magię."
+            "Dodaje 250 pkt pancerza i 30% odporności na magię przez 12 s."
         ),
         "cost": 50,
         "effects": ((0x00059B7C, 250.0, 0, 12), (0x00039E51, 30.0, 0, 12)),
@@ -56,9 +50,7 @@ SPELLS = (
         "editor_id": "CreatorBarrier03Spell",
         "name": "Bariera Stwórcy III",
         "description": (
-            "Wielowarstwowa pieczęć Stwórcy otacza ciało i rozprasza "
-            "uderzenia oraz wrogą magię. Przez 15 sekund dodaje 333 punkty "
-            "pancerza i 40% odporności na magię."
+            "Dodaje 333 pkt pancerza i 40% odporności na magię przez 15 s."
         ),
         "cost": 65,
         "effects": ((0x00059B7C, 333.0, 0, 15), (0x00039E51, 40.0, 0, 15)),
@@ -67,12 +59,8 @@ SPELLS = (
     {
         "source": 0x0002B96C,
         "editor_id": "CreatorImpulseSpell",
-        "name": "Impuls Stwórcy",
-        "description": (
-            "Stwórca uwalnia nagromadzoną energię jako falę, która rozrywa "
-            "rytm walki i odrzuca napastników. Zadaje 15 obrażeń oraz "
-            "zachwiewa celami w promieniu około 5 m."
-        ),
+        "name": "Impuls Stwórcy I",
+        "description": "Zadaje 15 pkt obrażeń i zachwiewa cele w promieniu 16 stóp.",
         "cost": 45,
         "effects": ((0x00013E08, 0.75, 16, 0), (0x000EA075, 15.0, 16, 0)),
         "sound_profiles": ("impulse", "silent"),
@@ -80,13 +68,8 @@ SPELLS = (
     {
         "source": 0x0004DEEE,
         "editor_id": "CreatorMindTakeoverSpell",
-        "name": "Przejęcie Jaźni",
-        "description": (
-            "Stwórca przepisuje obraz rzeczywistości w umyśle ofiary, "
-            "sprawiając, że pobliskie istoty jawią się jej jako wrogowie. "
-            "Trafiony przeciwnik walczy z otoczeniem przez 20 sekund. Czar "
-            "nie zadaje obrażeń."
-        ),
+        "name": "Przejęcie Jaźni I",
+        "description": "Istota do poziomu 50 atakuje pobliskie cele przez 20 s.",
         "cost": 45,
         "effects": (
             (0x0001EA78, 50.0, 0, 20),
@@ -98,12 +81,8 @@ SPELLS = (
     {
         "source": 0x0002B96C,
         "editor_id": "CreatorRealityWeakeningSpell",
-        "name": "Osłabienie Rzeczywistości",
-        "description": (
-            "Stwórca rozstraja rytm celu względem świata, przez co każdy "
-            "ruch staje się ciężki i opóźniony. Spowalnia ruch o około 75% "
-            "na 10 sekund."
-        ),
+        "name": "Osłabienie Rzeczywistości I",
+        "description": "Spowalnia ruch celu o 75% przez 10 s.",
         "cost": 40,
         "effects": ((0x000B729F, 75.0, 0, 10),),
         "sound_profiles": ("alteration_hit",),
@@ -112,11 +91,8 @@ SPELLS = (
         "source": 0x0002B96C,
         "editor_id": "CreatorDecaySpell",
         "name": "Zanik",
-        "description": (
-            "Dotknięta mocą Stwórcy istota zaczyna rozpadać się od wewnątrz, "
-            "jakby pękał splot podtrzymujący jej istnienie. Zadaje 6 "
-            "obrażeń zdrowia na sekundę przez 5 sekund."
-        ),
+        "name": "Zanik I",
+        "description": "Zadaje 6 pkt obrażeń zdrowia na sekundę przez 5 s.",
         "cost": 40,
         "effects": ((0x000EA075, 6.0, 0, 5),),
         "sound_profiles": ("alteration_hit",),
@@ -124,16 +100,128 @@ SPELLS = (
     {
         "source": 0x0005AD5E,
         "editor_id": "CreatorWillReflectionSpell",
-        "name": "Odbicie Woli",
+        "name": "Odbicie Woli I",
         "description": (
-            "Stwórca oplata się splotem, który odsyła siłę fizycznych ciosów "
-            "ku napastnikom i tłumi część obcej magii. Przez 6 sekund "
-            "zapewnia 20% odporności na magię i 20% odbicia obrażeń "
-            "fizycznych."
+            "Odbija 20% obrażeń fizycznych i dodaje 20% odporności "
+            "na magię przez 6 s."
         ),
         "cost": 40,
         "effects": ((0x00108A41, 20.0, 0, 6), (0x00039E51, 20.0, 0, 6)),
         "sound_profiles": ("alteration", "silent"),
+    },
+)
+
+
+# Higher ranks are separate spells. They reuse each rank-I spell's custom
+# magic effects so the existing effect FormIDs remain stable across rebuilds.
+RANK_VARIANTS = (
+    {
+        "base": "CreatorAbsorptionSpell",
+        "editor_id": "CreatorAbsorption02Spell",
+        "name": "Pochłonięcie Stwórcy II",
+        "description": (
+            "Wysysa 12 pkt zdrowia na sekundę i przywraca je rzucającemu. "
+            "Zasięg 30 m."
+        ),
+        "cost": 18,
+        "effects": ((12.0, 0, 0),),
+    },
+    {
+        "base": "CreatorAbsorptionSpell",
+        "editor_id": "CreatorAbsorption03Spell",
+        "name": "Pochłonięcie Stwórcy III",
+        "description": (
+            "Wysysa 16 pkt zdrowia na sekundę i przywraca je rzucającemu. "
+            "Zasięg 30 m."
+        ),
+        "cost": 24,
+        "effects": ((16.0, 0, 0),),
+    },
+    {
+        "base": "CreatorImpulseSpell",
+        "editor_id": "CreatorImpulse02Spell",
+        "name": "Impuls Stwórcy II",
+        "description": "Zadaje 25 pkt obrażeń i zachwiewa cele w promieniu 16 stóp.",
+        "cost": 75,
+        "effects": ((0.75, 16, 0), (25.0, 16, 0)),
+    },
+    {
+        "base": "CreatorImpulseSpell",
+        "editor_id": "CreatorImpulse03Spell",
+        "name": "Impuls Stwórcy III",
+        "description": "Zadaje 40 pkt obrażeń i zachwiewa cele w promieniu 16 stóp.",
+        "cost": 120,
+        "effects": ((0.75, 16, 0), (40.0, 16, 0)),
+    },
+    {
+        "base": "CreatorMindTakeoverSpell",
+        "editor_id": "CreatorMindTakeover02Spell",
+        "name": "Przejęcie Jaźni II",
+        "description": "Istota do poziomu 75 atakuje pobliskie cele przez 25 s.",
+        "cost": 80,
+        "effects": ((75.0, 0, 25), (75.0, 0, 25), (75.0, 0, 25)),
+    },
+    {
+        "base": "CreatorMindTakeoverSpell",
+        "editor_id": "CreatorMindTakeover03Spell",
+        "name": "Przejęcie Jaźni III",
+        "description": "Istota do poziomu 100 atakuje pobliskie cele przez 30 s.",
+        "cost": 120,
+        "effects": ((100.0, 0, 30), (100.0, 0, 30), (100.0, 0, 30)),
+    },
+    {
+        "base": "CreatorRealityWeakeningSpell",
+        "editor_id": "CreatorRealityWeakening02Spell",
+        "name": "Osłabienie Rzeczywistości II",
+        "description": "Spowalnia ruch celu o 75% przez 15 s.",
+        "cost": 65,
+        "effects": ((75.0, 0, 15),),
+    },
+    {
+        "base": "CreatorRealityWeakeningSpell",
+        "editor_id": "CreatorRealityWeakening03Spell",
+        "name": "Osłabienie Rzeczywistości III",
+        "description": "Spowalnia ruch celu o 75% przez 20 s.",
+        "cost": 90,
+        "effects": ((75.0, 0, 20),),
+    },
+    {
+        "base": "CreatorDecaySpell",
+        "editor_id": "CreatorDecay02Spell",
+        "name": "Zanik II",
+        "description": "Zadaje 8 pkt obrażeń zdrowia na sekundę przez 6 s.",
+        "cost": 65,
+        "effects": ((8.0, 0, 6),),
+    },
+    {
+        "base": "CreatorDecaySpell",
+        "editor_id": "CreatorDecay03Spell",
+        "name": "Zanik III",
+        "description": "Zadaje 10 pkt obrażeń zdrowia na sekundę przez 8 s.",
+        "cost": 100,
+        "effects": ((10.0, 0, 8),),
+    },
+    {
+        "base": "CreatorWillReflectionSpell",
+        "editor_id": "CreatorWillReflection02Spell",
+        "name": "Odbicie Woli II",
+        "description": (
+            "Odbija 30% obrażeń fizycznych i dodaje 30% odporności "
+            "na magię przez 8 s."
+        ),
+        "cost": 70,
+        "effects": ((30.0, 0, 8), (30.0, 0, 8)),
+    },
+    {
+        "base": "CreatorWillReflectionSpell",
+        "editor_id": "CreatorWillReflection03Spell",
+        "name": "Odbicie Woli III",
+        "description": (
+            "Odbija 40% obrażeń fizycznych i dodaje 40% odporności "
+            "na magię przez 10 s."
+        ),
+        "cost": 100,
+        "effects": ((40.0, 0, 10), (40.0, 0, 10)),
     },
 )
 
@@ -229,6 +317,278 @@ def make_subrecord(tag: bytes, payload: bytes) -> bytes:
     if len(payload) > 0xFFFF:
         raise ValueError(f"{tag!r} subrecord exceeds standard size")
     return tag + struct.pack("<H", len(payload)) + payload
+
+
+def parse_subrecords(payload: bytes) -> list[tuple[bytes, bytes]]:
+    subrecords = []
+    offset = 0
+    while offset < len(payload):
+        if offset + 6 > len(payload):
+            raise ValueError("Truncated subrecord header")
+        tag = payload[offset:offset + 4]
+        size = struct.unpack_from("<H", payload, offset + 4)[0]
+        offset += 6
+        if tag == b"XXXX":
+            if offset + 10 > len(payload):
+                raise ValueError("Malformed XXXX subrecord")
+            size = struct.unpack_from("<I", payload, offset)[0]
+            offset += 4
+            tag = payload[offset:offset + 4]
+            offset += 6
+        if offset + size > len(payload):
+            raise ValueError(f"Malformed {tag!r} subrecord")
+        subrecords.append((tag, payload[offset:offset + size]))
+        offset += size
+    return subrecords
+
+
+def unpack_record(record: bytes) -> tuple[bytes, int, int, list[tuple[bytes, bytes]]]:
+    if len(record) < 24:
+        raise ValueError("Truncated record")
+    signature, payload_size, flags, form_id = struct.unpack_from(
+        "<4sIII", record
+    )
+    payload = record[24:24 + payload_size]
+    if len(payload) != payload_size:
+        raise ValueError("Truncated record payload")
+    if flags & 0x00040000:
+        if len(payload) < 4:
+            raise ValueError("Compressed record has no expanded size")
+        expected_size = struct.unpack_from("<I", payload)[0]
+        payload = zlib.decompress(payload[4:])
+        if len(payload) != expected_size:
+            raise ValueError("Compressed record size does not match")
+    return signature, flags, form_id, parse_subrecords(payload)
+
+
+def pack_record(
+    template: bytes,
+    form_id: int,
+    subrecords: list[tuple[bytes, bytes]],
+) -> bytes:
+    flags = struct.unpack_from("<I", template, 8)[0]
+    payload = b"".join(make_subrecord(tag, value) for tag, value in subrecords)
+    if flags & 0x00040000:
+        payload = struct.pack("<I", len(payload)) + zlib.compress(payload)
+    header = bytearray(template[:24])
+    struct.pack_into("<I", header, 4, len(payload))
+    struct.pack_into("<I", header, 12, form_id)
+    return bytes(header) + payload
+
+
+def patch_spell_record(
+    record: bytes,
+    spec: dict,
+    form_id: int,
+) -> bytes:
+    signature, _, _, subrecords = unpack_record(record)
+    if signature != b"SPEL":
+        raise ValueError(f"{spec['editor_id']} is not a SPEL record")
+
+    found = set()
+    effect_index = 0
+    patched = []
+    for tag, payload in subrecords:
+        if tag == b"EDID":
+            payload = spec["editor_id"].encode("ascii") + b"\0"
+            found.add(tag)
+        elif tag == b"FULL":
+            payload = spec["name"].encode("utf-8") + b"\0"
+            found.add(tag)
+        elif tag == b"DESC":
+            payload = spec["description"].encode("utf-8") + b"\0"
+            found.add(tag)
+        elif tag == b"SPIT":
+            if len(payload) < 36:
+                raise ValueError("Malformed SPIT subrecord")
+            spell_data = bytearray(payload)
+            struct.pack_into("<I", spell_data, 0, spec["cost"])
+            if "range" in spec:
+                struct.pack_into("<f", spell_data, 28, spec["range"])
+            payload = bytes(spell_data)
+            found.add(tag)
+        elif tag == b"EFIT":
+            if effect_index >= len(spec["effects"]):
+                raise ValueError(
+                    f"Unexpected effect data in {spec['editor_id']}"
+                )
+            payload = struct.pack("<fII", *spec["effects"][effect_index])
+            effect_index += 1
+        patched.append((tag, payload))
+
+    if not {b"EDID", b"FULL", b"DESC", b"SPIT"}.issubset(found):
+        raise ValueError(f"Required SPEL fields missing for {spec['editor_id']}")
+    if effect_index != len(spec["effects"]):
+        raise ValueError(
+            f"Effect count mismatch for {spec['editor_id']}: "
+            f"expected {len(spec['effects'])}, found {effect_index}"
+        )
+    return pack_record(record, form_id, patched)
+
+
+def spell_editor_id(record: bytes) -> str:
+    signature, _, _, subrecords = unpack_record(record)
+    if signature != b"SPEL":
+        raise ValueError("Expected a SPEL record")
+    for tag, payload in subrecords:
+        if tag == b"EDID":
+            return payload.rstrip(b"\0").decode("ascii")
+    raise ValueError("SPEL record has no EDID")
+
+
+def patch_header_count(header: bytes, added_records: int, next_object_id: int) -> bytes:
+    signature, _, _, subrecords = unpack_record(header)
+    if signature != b"TES4":
+        raise ValueError("Expected TES4 header record")
+    patched = []
+    found_hedr = False
+    for tag, payload in subrecords:
+        if tag == b"HEDR":
+            if len(payload) < 12:
+                raise ValueError("Malformed HEDR subrecord")
+            value = bytearray(payload)
+            record_count = struct.unpack_from("<I", value, 4)[0]
+            current_next_id = struct.unpack_from("<I", value, 8)[0]
+            struct.pack_into("<I", value, 4, record_count + added_records)
+            struct.pack_into(
+                "<I", value, 8, max(current_next_id, next_object_id)
+            )
+            payload = bytes(value)
+            found_hedr = True
+        patched.append((tag, payload))
+    if not found_hedr:
+        raise ValueError("TES4 header has no HEDR subrecord")
+    return pack_record(header, 0, patched)
+
+
+def add_spell_ranks(plugin_path: Path) -> None:
+    """Update rank-I text and append or refresh separate higher-rank spells."""
+    plugin_data = plugin_path.read_bytes()
+    position = 0
+    rebuilt = bytearray()
+    header_record = None
+    spell_records: dict[int, bytes] = {}
+    spell_group_header = None
+    spell_group_data = None
+    spell_group_insert_at = None
+
+    while position < len(plugin_data):
+        signature = plugin_data[position:position + 4]
+        if signature == b"GRUP":
+            group_size = struct.unpack_from("<I", plugin_data, position + 4)[0]
+            group_end = position + group_size
+            if group_size < 24 or group_end > len(plugin_data):
+                raise ValueError("Malformed GRUP in CreatorSpells.esp")
+            label = plugin_data[position + 8:position + 12]
+            if label == b"SPEL":
+                if spell_group_data is not None:
+                    raise ValueError("Duplicate SPEL groups")
+                spell_group_header = bytearray(
+                    plugin_data[position:position + 24]
+                )
+                spell_group_insert_at = len(rebuilt)
+                child_position = position + 24
+                while child_position < group_end:
+                    if plugin_data[child_position:child_position + 4] == b"GRUP":
+                        raise ValueError("Nested SPEL groups are not expected")
+                    payload_size = struct.unpack_from(
+                        "<I", plugin_data, child_position + 4
+                    )[0]
+                    record_end = child_position + 24 + payload_size
+                    if record_end > group_end:
+                        raise ValueError("Truncated SPEL record")
+                    record = plugin_data[child_position:record_end]
+                    form_id = struct.unpack_from("<I", record, 12)[0]
+                    if form_id in spell_records:
+                        raise ValueError(f"Duplicate SPEL FormID {form_id:08X}")
+                    spell_records[form_id] = record
+                    child_position = record_end
+                spell_group_data = True
+            else:
+                rebuilt.extend(plugin_data[position:group_end])
+            position = group_end
+            continue
+
+        if position + 24 > len(plugin_data):
+            raise ValueError("Truncated top-level record")
+        payload_size = struct.unpack_from("<I", plugin_data, position + 4)[0]
+        record_end = position + 24 + payload_size
+        if record_end > len(plugin_data):
+            raise ValueError("Truncated top-level record payload")
+        record = plugin_data[position:record_end]
+        if signature == b"TES4":
+            header_record = record
+        else:
+            rebuilt.extend(record)
+        position = record_end
+
+    if header_record is None or spell_group_header is None:
+        raise ValueError("TES4 header or SPEL group was not found")
+
+    id_to_record = {
+        spell_editor_id(record): form_id
+        for form_id, record in spell_records.items()
+    }
+    base_specs = {spec["editor_id"]: spec for spec in SPELLS}
+    for editor_id, spec in base_specs.items():
+        form_id = id_to_record.get(editor_id)
+        if form_id is None:
+            raise ValueError(f"Base spell {editor_id} was not found")
+        rank_one_spec = dict(spec)
+        rank_one_spec["effects"] = tuple(
+            (magnitude, area, duration)
+            for _, magnitude, area, duration in spec["effects"]
+        )
+        spell_records[form_id] = patch_spell_record(
+            spell_records[form_id], rank_one_spec, form_id
+        )
+
+    id_to_record = {
+        spell_editor_id(record): form_id
+        for form_id, record in spell_records.items()
+    }
+    variant_count_added = 0
+    rank_start = 0x01000819
+    for index, variant in enumerate(RANK_VARIANTS):
+        form_id = rank_start + index
+        existing_id = id_to_record.get(variant["editor_id"])
+        if existing_id is not None and existing_id != form_id:
+            raise ValueError(
+                f"{variant['editor_id']} has unexpected FormID {existing_id:08X}"
+            )
+        if form_id in spell_records and existing_id is None:
+            raise ValueError(f"SPEL FormID {form_id:08X} is already in use")
+        base_id = id_to_record.get(variant["base"])
+        if base_id is None:
+            raise ValueError(f"Base spell {variant['base']} was not found")
+        variant_record = patch_spell_record(
+            spell_records[base_id], variant, form_id
+        )
+        if existing_id is None:
+            variant_count_added += 1
+        spell_records[form_id] = variant_record
+        id_to_record[variant["editor_id"]] = form_id
+
+    group_children = b"".join(
+        record for _, record in sorted(spell_records.items())
+    )
+    struct.pack_into("<I", spell_group_header, 4, 24 + len(group_children))
+    spell_group = bytes(spell_group_header) + group_children
+
+    next_object_id = 0x00000819 + len(RANK_VARIANTS)
+    header_record = patch_header_count(
+        header_record, variant_count_added, next_object_id
+    )
+    if spell_group_insert_at is None:
+        raise ValueError("SPEL group insertion point was not found")
+    non_header_data = bytes(rebuilt)
+    final_data = (
+        header_record
+        + non_header_data[:spell_group_insert_at]
+        + spell_group
+        + non_header_data[spell_group_insert_at:]
+    )
+    plugin_path.write_bytes(final_data)
 
 
 def build_spell(
@@ -420,6 +780,7 @@ def build_plugin(master: Path, output: Path) -> None:
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(header + groups)
+    add_spell_ranks(output)
 
 
 def main() -> None:
@@ -427,8 +788,12 @@ def main() -> None:
     parser.add_argument(
         "--skyrim-data",
         type=Path,
-        required=True,
         help="Skyrim SE Data folder containing Skyrim.esm",
+    )
+    parser.add_argument(
+        "--plugin-only",
+        action="store_true",
+        help="Refresh rank descriptions and append ranks to the existing ESP",
     )
     parser.add_argument(
         "--output",
@@ -438,12 +803,22 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.plugin_only:
+        add_spell_ranks(args.output)
+        print(
+            f"Updated {len(SPELLS) + len(RANK_VARIANTS)} Creator spells "
+            f"in {args.output}"
+        )
+        return
+    if args.skyrim_data is None:
+        parser.error("--skyrim-data is required unless --plugin-only is used")
     master = args.skyrim_data / "Skyrim.esm"
     if not master.is_file():
         raise SystemExit(f"Skyrim.esm not found in {args.skyrim_data}")
     build_plugin(master, args.output)
     print(
-        f"Created {args.output} with {len(SPELLS)} spells and "
+        f"Created {args.output} with "
+        f"{len(SPELLS) + len(RANK_VARIANTS)} spells and "
         f"{sum(len(spec['effects']) for spec in SPELLS)} local magic effects"
     )
 

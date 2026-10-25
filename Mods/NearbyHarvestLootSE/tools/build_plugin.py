@@ -33,8 +33,10 @@ def build_vmad() -> bytes:
         scripts += length_string(name) + struct.pack("<BH", 0, 0)
     # QUST VMAD stores a signed extra-bind-data version, fragment count,
     # length-prefixed filename, then alias count.
-    fragments = struct.pack("<bH", 2, 0) + length_string("") + struct.pack("<H", 0)
-    return scripts + fragments
+    fragments = struct.pack("<bH", 2, 0) + length_string("")
+    alias = struct.pack("<HhIHHH", 0, 0, 0x01000800, 5, 2, 1)
+    alias += length_string("NearbyHarvestLootPlayerAlias") + struct.pack("<BH", 0, 0)
+    return scripts + fragments + struct.pack("<H", 1) + alias
 
 
 def build_global(editor_id: str, form_id: int, value: float) -> bytes:
@@ -64,9 +66,16 @@ def build_plugin() -> bytes:
     quest_data = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
     quest_payload = (
         subrecord(b"EDID", zstring("NearbyHarvestLootStartQuest"))
+        + subrecord(b"VMAD", build_vmad())
         + subrecord(b"FULL", zstring("Nearby Harvest & Loot SE"))
         + subrecord(b"DNAM", quest_data)
-        + subrecord(b"VMAD", build_vmad())
+        + subrecord(b"NEXT", b"")
+        + subrecord(b"ANAM", struct.pack("<I", 1))
+        + subrecord(b"ALST", struct.pack("<I", 0))
+        + subrecord(b"ALID", zstring("Player"))
+        + subrecord(b"FNAM", struct.pack("<I", 0))
+        + subrecord(b"ALFR", struct.pack("<I", 0x14))
+        + subrecord(b"ALED", b"")
     )
     quest_record = record(b"QUST", 0x01000800, quest_payload)
     quest_group = (

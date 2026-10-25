@@ -2654,13 +2654,13 @@ final class BorealStore {
                         auxiliaryRoot: context.auxiliaryRoot
                     )
                     installed.auxiliaryRoot = context.auxiliaryRoot
-                    // GTA SA:DE archives are immediately deployed after every
-                    // install, including a first install. This prevents a
-                    // freshly imported JS archive from remaining only in
-                    // Boreal staging while the game keeps running the old
-                    // CLEO file. Other adapters retain their existing
-                    // update-only behavior until their deployment UX changes.
-                    if preview.adapter == .gtaSanAndreasDefinitiveEdition || preview.isUpdate {
+                    // GTA SA:DE and Skyrim archives are immediately deployed
+                    // after every install, including a first install. Skyrim
+                    // must publish its enabled plugin list to plugins.txt as
+                    // soon as the profile receives a new plugin.
+                    if preview.adapter == .gtaSanAndreasDefinitiveEdition
+                        || preview.adapter == .skyrimSpecialEdition
+                        || preview.isUpdate {
                         return try manager.deploy(
                             state: installed,
                             gameRoot: context.gameRoot,
@@ -2677,7 +2677,9 @@ final class BorealStore {
                 self?.present(
                     error,
                     title: preview.isUpdate ? "Mod couldn’t be updated" : "Mod couldn’t be installed",
-                    stage: preview.adapter == .gtaSanAndreasDefinitiveEdition || preview.isUpdate
+                    stage: preview.adapter == .gtaSanAndreasDefinitiveEdition
+                        || preview.adapter == .skyrimSpecialEdition
+                        || preview.isUpdate
                         ? "Installing and verifying the deployed mod archive"
                         : "Staging the mod archive"
                 )
@@ -2765,9 +2767,25 @@ final class BorealStore {
     }
 
     func deployMods(for game: StoreLibraryGame) {
-        guard let state = modStates[game.id],
-              let context = modGameContext(for: game),
-              modOperationGameIDs.insert(game.id).inserted else { return }
+        guard !modOperationGameIDs.contains(game.id) else { return }
+        guard let state = modStates[game.id] else {
+            present(
+                ModManagerError.deploymentFailed("The active mod profile is not loaded yet. Refresh the mod list and try again."),
+                title: "Mods couldn’t be deployed",
+                stage: "Loading the active mod profile"
+            )
+            refreshMods(for: game)
+            return
+        }
+        guard let context = modGameContext(for: game) else {
+            present(
+                ModManagerError.gameRootUnavailable,
+                title: "Mods couldn’t be deployed",
+                stage: "Locating the game installation"
+            )
+            return
+        }
+        guard modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         let manager = modManager(for: game)
         Task { @MainActor [weak self] in
@@ -3030,9 +3048,12 @@ final class BorealStore {
     func environment(id: UUID) -> WindowsEnvironment? { environments.first { $0.id == id } }
 
     func installation(for game: StoreLibraryGame) -> GameInstallation? {
-        if game.provider == .steam, usesSteamOnM1Wine {
+        let usesImportedExecutable = linkedApplication(for: game)?.installerPath == "existing-installation"
+        if game.provider == .steam, usesSteamOnM1Wine, !usesImportedExecutable {
             // This client owns its installations. Project its current manifest
             // instead of a stale record from a previous managed Steam bottle.
+            // An explicitly imported executable is its own installation and
+            // must use the path recorded when it was linked to this game.
             guard let location = SteamOnM1Wine.installedGameDirectory(appID: game.externalID) else { return nil }
             return GameInstallation(
                 id: game.id, gameID: game.id, storeReference: game.storeReference,
@@ -4823,12 +4844,15 @@ final class BorealStore {
         Task {
             do {
                 if SteamD3DMetalCompatibility.applies(to: url) {
-                    guard let runtime = SteamD3DMetalCompatibility.preferredRuntime(in: try await services.runtimeManager.installedRuntimes()) else {
+                    let sacred2Root = storageLayout.rootURL.appending(path: "ExternalSteam/\(SteamD3DMetalCompatibility.sacred2AppID)")
+                    guard let runtime = SteamD3DMetalCompatibility.preferredRuntime(
+                        in: try await services.runtimeManager.installedRuntimes(), prefixRoot: sacred2Root
+                    ) else {
                         throw ProcessRunnerError.launchFailed("Sacred 2 Remaster requires a verified D3DMetal runtime. DXMT cannot supply this game's DirectX 12 device.")
                     }
                     let needsSignIn = try await SteamD3DMetalCompatibility.shared.open(
                         installation: SteamOnM1Wine.installation(), runtime: runtime,
-                        root: storageLayout.rootURL.appending(path: "ExternalSteam/\(SteamD3DMetalCompatibility.sacred2AppID)"),
+                        root: sacred2Root,
                         launchArguments: launchArguments
                     )
                     if needsSignIn, let game = storeGames.first(where: { $0.provider == .steam && $0.externalID == SteamD3DMetalCompatibility.sacred2AppID }) {
@@ -7992,7 +8016,10 @@ final class BorealStore {
 
     private func toggleRunningAsync(_ id: UUID) async {
         guard let application = application(id: id) else { return }
+        let usesSelectedExistingExecutable = application.installerPath == "existing-installation"
+            || application.hasCustomLaunchExecutable
         if usesSteamOnM1Wine, application.storeProvider == .steam,
+           !usesSelectedExistingExecutable,
            !application.usesStoreMetadataOnly, !application.isSteamRuntimeHost,
            application.status != .running, !application.status.isBusy,
            let appID = application.storeExternalID,

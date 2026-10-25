@@ -28,6 +28,17 @@ const ROUTE_REBUILD_MIN_MS = 450;
 const VEHICLE_STABILITY_DELAY_MS = 500;
 const VEHICLE_CONTEXT_MAX_DISTANCE_M = 30;
 const MAX_MARKERS = 14;
+const WAYPOINT_POLL_INTERVAL_MS = 250;
+const SUPPORTED_HOST_VERSION = "1.0.113.21181";
+const SADE_MAIN_SCRIPT_SIGNATURE_OFFSET = 0x51BEAE0 + 0xF1A8;
+const SADE_RADAR_TRACE_OFFSET = 0x542A7B0;
+const SADE_RADAR_TRACE_COUNT = 250;
+const SADE_RADAR_TRACE_STRIDE = 0x30;
+const SADE_RADAR_TRACE_POSITION_OFFSET = 0x08;
+const SADE_RADAR_TRACE_SPRITE_OFFSET = 0x28;
+const SADE_RADAR_TRACE_FLAGS_OFFSET = 0x29;
+const SADE_WAYPOINT_SPRITE = 0x40;
+const SADE_RADAR_TRACE_IN_USE_FLAG = 0x02;
 
 const DEFAULTS = {
   enabled: true,
@@ -38,10 +49,7 @@ const DEFAULTS = {
   markerSpacingM: 9,
   routeRebuildIntervalMs: 700,
   rebuildDistanceM: 8,
-  maxNodeSearchDistanceM: 32,
-  nodeSearchCount: 5,
   showDestinationMarker: true,
-  showTurnText: true,
   showDistanceText: true,
   useManualTarget: false,
   manualTargetX: 0,
@@ -55,6 +63,11 @@ const config = { ...DEFAULTS };
 const player = new Player(PLAYER_ID);
 const nativeFailureCounts = new Map();
 const optionalNativeState = new Map();
+let waypointMemorySupported = false;
+let waypointMemoryUnavailableLogged = false;
+let waypointMemoryFailureLogged = false;
+let cachedWaypoint = null;
+let lastWaypointPollAt = 0;
 
 let lastReloadDown = false;
 let lastManualTargetDown = false;
@@ -64,12 +77,12 @@ let lastRoutePosition = null;
 let lastWaypointKey = null;
 let route = null;
 let worldMarkers = [];
-let waypointCapabilityWarningLogged = false;
 let lastFrameFailureAt = 0;
 let vehicleStableSince = 0;
 
 loadConfig();
-log("World GPS Navigation DE loaded. F7 captures the current vehicle position as a manual target; F11 reloads the INI.");
+waypointMemorySupported = detectWaypointMemorySupport();
+log("World GPS Navigation DE loaded. F7 captures a manual target when enabled; F11 reloads the INI.");
 
 while (true) {
   wait(0);
@@ -128,7 +141,7 @@ while (true) {
       continue;
     }
 
-    const target = readWaypoint();
+    const target = readWaypoint(now);
     if (!target) {
       clearRoute();
       continue;
@@ -217,7 +230,7 @@ function readVehicleContext(actor, now) {
   };
 }
 
-function readWaypoint() {
+function readWaypoint(now) {
   if (config.useManualTarget) {
     const manual = {
       x: Number(config.manualTargetX),
@@ -230,40 +243,78 @@ function readWaypoint() {
     return null;
   }
 
-  let activeResult = optionalNative("IS_WAYPOINT_ACTIVE");
-  if (!activeResult.ok) activeResult = optionalNative("IS_WAYPOINT_ACTIVE_FOR_PLAYER", PLAYER_ID);
-  if (activeResult.ok && !truthyNativeValue(activeResult.value)) return null;
-
-  const coordinateNames = ["GET_WAYPOINT_COORDS", "_GET_WAYPOINT_COORDS"];
-  for (const name of coordinateNames) {
-    const result = optionalNative(name);
-    const coordinates = normalizeVector(result.value);
-    if (result.ok && coordinates && hasWorldCoordinate(coordinates)) {
-      return { ...coordinates, source: name };
-    }
+  if (!waypointMemorySupported) return null;
+  if (now - lastWaypointPollAt >= WAYPOINT_POLL_INTERVAL_MS) {
+    lastWaypointPollAt = now;
+    cachedWaypoint = readWaypointFromMemory();
   }
-
-  // Some hosts expose the selected map point as a regular coordinate blip.
-  // These calls are optional because the current public SA:DE definition file
-  // does not list the GTA V-style blip enumeration natives.
-  const blip = readWaypointBlip();
-  if (blip) return { ...blip, source: "blip" };
-
-  if (!waypointCapabilityWarningLogged) {
-    waypointCapabilityWarningLogged = true;
-    log("World GPS Navigation: no public SA:DE waypoint getter is available in this CLEO runtime; route markers remain hidden until the waypoint bridge is exposed.");
-  }
-  return null;
+  return cachedWaypoint ? { ...cachedWaypoint } : null;
 }
 
-function readWaypointBlip() {
-  const spriteCandidates = [8, 0];
-  for (const sprite of spriteCandidates) {
-    const first = optionalNative("GET_FIRST_BLIP_INFO_ID", sprite);
-    if (!first.ok || !first.value) continue;
+function detectWaypointMemorySupport() {
+  if (typeof Memory === "undefined" || typeof Memory.ReadU8 !== "function" || typeof Memory.ReadFloat !== "function") {
+    logWaypointMemoryUnavailable("CLEO memory access is unavailable; the map waypoint cannot be read.");
+    return false;
+  }
 
-    const coordinates = normalizeVector(optionalNative("GET_BLIP_INFO_ID_COORD", first.value).value);
-    if (coordinates && hasWorldCoordinate(coordinates)) return coordinates;
+  const hostVersion = typeof CLEO !== "undefined" ? String(CLEO.hostVersion || "") : "";
+  if (hostVersion !== SUPPORTED_HOST_VERSION) {
+    logWaypointMemoryUnavailable("map waypoint reading is enabled only for SA:DE " + SUPPORTED_HOST_VERSION + " (current build: " + (hostVersion || "unknown") + ").");
+    return false;
+  }
+
+  try {
+    const expected = [0xA4, 0x03, 0x09, 0x4D, 0x41, 0x49, 0x4E];
+    for (let index = 0; index < expected.length; index += 1) {
+      const actual = Memory.ReadU8(SADE_MAIN_SCRIPT_SIGNATURE_OFFSET + index, false, true);
+      if (actual !== expected[index]) {
+        logWaypointMemoryUnavailable("the game memory signature does not match the supported SA:DE build.");
+        return false;
+      }
+    }
+    log("World GPS Navigation: SA:DE waypoint memory layout verified for " + SUPPORTED_HOST_VERSION + ".");
+    return true;
+  } catch (error) {
+    logWaypointMemoryUnavailable("the game memory signature could not be checked: " + error);
+    return false;
+  }
+}
+
+function logWaypointMemoryUnavailable(reason) {
+  if (waypointMemoryUnavailableLogged) return;
+  waypointMemoryUnavailableLogged = true;
+  log("World GPS Navigation: " + reason + " Route markers remain hidden for safety.");
+}
+
+function readWaypointFromMemory() {
+  try {
+    for (let index = 0; index < SADE_RADAR_TRACE_COUNT; index += 1) {
+      const trace = SADE_RADAR_TRACE_OFFSET + index * SADE_RADAR_TRACE_STRIDE;
+      const sprite = Memory.ReadU8(trace + SADE_RADAR_TRACE_SPRITE_OFFSET, false, true);
+      if (sprite !== SADE_WAYPOINT_SPRITE) continue;
+
+      const flags = Memory.ReadU8(trace + SADE_RADAR_TRACE_FLAGS_OFFSET, false, true);
+      if ((flags & SADE_RADAR_TRACE_IN_USE_FLAG) === 0) continue;
+
+      const target = {
+        x: Memory.ReadFloat(trace + SADE_RADAR_TRACE_POSITION_OFFSET, false, true),
+        y: Memory.ReadFloat(trace + SADE_RADAR_TRACE_POSITION_OFFSET + 4, false, true),
+        // SA:DE keeps a placeholder height for a player waypoint. Resolve the
+        // destination to the ground below instead of drawing it at that height.
+        z: 0,
+        source: "SA:DE map waypoint",
+      };
+      if (!hasWorldCoordinate(target)) continue;
+      target.z = resolveGroundZ(target);
+      return target;
+    }
+  } catch (error) {
+    waypointMemorySupported = false;
+    cachedWaypoint = null;
+    if (!waypointMemoryFailureLogged) {
+      waypointMemoryFailureLogged = true;
+      log("World GPS Navigation: waypoint memory read failed; memory-based guidance disabled for safety: " + error);
+    }
   }
   return null;
 }
@@ -285,24 +336,19 @@ function buildRoute(context, target) {
   const span = Math.max(12, distance2D(start, routeEnd));
   const sampleCount = clamp(Math.ceil(span / config.markerSpacingM), 4, MAX_MARKERS - 1);
   const points = [{ ...context.position, kind: "origin" }];
-  let previous = start;
-  let usedRoadNodes = 0;
 
   for (let index = 1; index <= sampleCount; index += 1) {
     const ratio = index / sampleCount;
     const sample = lerp(start, routeEnd, ratio);
-    const roadNode = findRoadNode(sample, previous, context.forward);
-    const candidate = roadNode || sample;
     const point = {
-      ...candidate,
-      z: resolveGroundZ(candidate),
-      kind: roadNode ? "road" : "direct",
+      ...sample,
+      z: resolveGroundZ(sample),
+      kind: "direct",
     };
 
-    if (roadNode) usedRoadNodes += 1;
+    const previous = points[points.length - 1];
     if (distance2D(point, previous) >= Math.max(3, config.markerSpacingM * 0.45)) {
       points.push(point);
-      previous = point;
     }
   }
 
@@ -318,63 +364,7 @@ function buildRoute(context, target) {
     target,
     targetDistanceM: distanceToTarget,
     visibleDistanceM: activeDistance,
-    usedRoadNodes,
-    nextTurn: findNextTurn(points),
   };
-}
-
-function findRoadNode(sample, previous, forward) {
-  let best = null;
-  let bestScore = Number.POSITIVE_INFINITY;
-  const searchCount = clamp(Math.round(config.nodeSearchCount), 1, 8);
-
-  for (let index = 0; index < searchCount; index += 1) {
-    const value = safeNative("GET_NTH_CLOSEST_CAR_NODE", sample.x, sample.y, sample.z, index);
-    const candidate = normalizeVector(value);
-    if (!candidate || !hasWorldCoordinate(candidate)) continue;
-
-    const fromPrevious = distance2D(candidate, previous);
-    if (fromPrevious > config.maxNodeSearchDistanceM * 2.2) continue;
-
-    const progress = dot2D(subtract(candidate, previous), forward);
-    const sampleDistance = distance2D(candidate, sample);
-    const backwardsPenalty = progress < -2 ? 18 : 0;
-    const score = sampleDistance + fromPrevious * 0.08 + backwardsPenalty;
-    if (score < bestScore) {
-      bestScore = score;
-      best = candidate;
-    }
-  }
-
-  if (!best || distance2D(best, sample) > config.maxNodeSearchDistanceM) return null;
-  return best;
-}
-
-function findNextTurn(points) {
-  let travelled = 0;
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const incoming = subtract(points[index], points[index - 1]);
-    const outgoing = subtract(points[index + 1], points[index]);
-    const incomingLength = length2D(incoming);
-    const outgoingLength = length2D(outgoing);
-    if (incomingLength < 3 || outgoingLength < 3) {
-      travelled += incomingLength;
-      continue;
-    }
-
-    const cosine = clamp(dot2D(incoming, outgoing) / (incomingLength * outgoingLength), -1, 1);
-    const angle = Math.acos(cosine) * 180 / Math.PI;
-    const cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
-    if (angle >= 28) {
-      return {
-        direction: cross >= 0 ? "RIGHT" : "LEFT",
-        distanceM: Math.max(0, travelled),
-        angle,
-      };
-    }
-    travelled += incomingLength;
-  }
-  return null;
 }
 
 function replaceRoute(nextRoute) {
@@ -392,21 +382,17 @@ function replaceRoute(nextRoute) {
   }
 
   if (config.debug) {
-    log("World GPS Navigation route rebuilt: points=" + route.points.length + " roadNodes=" + route.usedRoadNodes + " targetDistanceM=" + Math.round(route.targetDistanceM));
+    log("World GPS Navigation guidance rebuilt: points=" + route.points.length + " source=" + route.target.source + " targetDistanceM=" + Math.round(route.targetDistanceM));
   }
 }
 
 function drawRouteText(currentRoute) {
-  if (!config.showTurnText && !config.showDistanceText) return;
+  if (!config.showDistanceText) return;
   if (typeof FxtStore === "undefined" || typeof FxtStore.insert !== "function") return;
 
   try {
     let text = "";
     if (config.showDistanceText) text += "GPS " + formatDistance(currentRoute.targetDistanceM);
-    if (config.showTurnText && currentRoute.nextTurn) {
-      if (text) text += "  ";
-      text += currentRoute.nextTurn.direction + " " + formatDistance(currentRoute.nextTurn.distanceM);
-    }
     if (!text) return;
 
     FxtStore.insert("WGPSINF", text);
@@ -505,10 +491,7 @@ function loadConfig() {
     config.markerSpacingM = clamp(readConfigInt("route", "marker_spacing_m", DEFAULTS.markerSpacingM), 5, 18);
     config.routeRebuildIntervalMs = clamp(readConfigInt("route", "rebuild_interval_ms", DEFAULTS.routeRebuildIntervalMs), 300, 3000);
     config.rebuildDistanceM = clamp(readConfigInt("route", "rebuild_distance_m", DEFAULTS.rebuildDistanceM), 3, 30);
-    config.maxNodeSearchDistanceM = clamp(readConfigInt("route", "max_node_search_distance_m", DEFAULTS.maxNodeSearchDistanceM), 12, 70);
-    config.nodeSearchCount = clamp(readConfigInt("route", "node_search_count", DEFAULTS.nodeSearchCount), 1, 8);
     config.showDestinationMarker = readConfigBool("visual", "show_destination_marker", DEFAULTS.showDestinationMarker);
-    config.showTurnText = readConfigBool("visual", "show_turn_text", DEFAULTS.showTurnText);
     config.showDistanceText = readConfigBool("visual", "show_distance_text", DEFAULTS.showDistanceText);
     config.useManualTarget = readConfigBool("manual_target", "enabled", DEFAULTS.useManualTarget);
     config.manualTargetX = readConfigInt("manual_target", "x", DEFAULTS.manualTargetX);
@@ -549,9 +532,10 @@ function readCoordinates(entity, vehicle) {
 }
 
 function resolveGroundZ(point) {
-  if (Number.isFinite(Number(point.z)) && Math.abs(Number(point.z)) > 0.05) return Number(point.z);
   const result = safeNative("GET_GROUND_Z_FOR_3D_COORD", point.x, point.y, 1000);
-  if (Number.isFinite(Number(result))) return Number(result);
+  if (result !== null && result !== undefined && typeof result !== "boolean" && Number.isFinite(Number(result))) {
+    return Number(result);
+  }
   if (result && Number.isFinite(Number(result.groundZ))) return Number(result.groundZ);
   return Number(point.z) || 0;
 }
@@ -602,10 +586,6 @@ function hasWorldCoordinate(value) {
   return isVector(value) && Math.abs(value.x) + Math.abs(value.y) > 0.01 && Math.abs(value.x) < 100000 && Math.abs(value.y) < 100000;
 }
 
-function truthyNativeValue(value) {
-  return value === true || value === 1 || value === "1" || value === "true";
-}
-
 function waypointKey(target) {
   return [target.x, target.y, target.z].map((value) => Math.round(Number(value) * 2) / 2).join(":");
 }
@@ -648,10 +628,6 @@ function normalize2D(value) {
   const length = length2D(value);
   if (length < 0.001) return { x: 0, y: 0, z: 0 };
   return { x: value.x / length, y: value.y / length, z: 0 };
-}
-
-function dot2D(left, right) {
-  return left.x * right.x + left.y * right.y;
 }
 
 function length2D(value) {

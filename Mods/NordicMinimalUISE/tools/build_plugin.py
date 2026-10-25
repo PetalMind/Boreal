@@ -35,8 +35,8 @@ def group(signature: bytes, payload: bytes) -> bytes:
 
 
 def build() -> bytes:
-    settings = (("NMUI_FadeSeconds", 5.0), ("NMUI_BarsEnabled", 1.0), ("NMUI_CompassEnabled", 1.0))
-    header_payload = subrecord(b"HEDR", struct.pack("<fII", 1.7, 4, 0x804)) + subrecord(b"CNAM", zstring("Nordic Minimal UI SE")) + subrecord(b"MAST", zstring("Skyrim.esm")) + subrecord(b"DATA", bytes(8)) + subrecord(b"MAST", zstring("SkyUI_SE.esp")) + subrecord(b"DATA", bytes(8))
+    settings = (("NMUI_FadeSeconds", 5.0), ("NMUI_BarsEnabled", 1.0), ("NMUI_CompassEnabled", 1.0), ("NMUI_RouteKeyCode", 35.0))
+    header_payload = subrecord(b"HEDR", struct.pack("<fII", 1.7, 5, 0x805)) + subrecord(b"CNAM", zstring("Nordic Minimal UI SE")) + subrecord(b"MAST", zstring("Skyrim.esm")) + subrecord(b"DATA", bytes(8)) + subrecord(b"MAST", zstring("SkyUI_SE.esp")) + subrecord(b"DATA", bytes(8))
     header = record(b"TES4", 0, header_payload)
     quest_data = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
     quest = record(b"QUST", 0x01000800, subrecord(b"EDID", zstring("NordicMinimalUIStartQuest")) + subrecord(b"FULL", zstring("Nordic Minimal UI SE")) + subrecord(b"DNAM", quest_data) + subrecord(b"VMAD", vmad()))

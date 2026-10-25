@@ -46,14 +46,16 @@ def build_vmad() -> bytes:
         scripts += length_string(name) + struct.pack("<BH", 0, 0)
     # QUST VMAD stores a signed extra-bind-data version, fragment count,
     # length-prefixed filename, then alias count.
-    quest_fragments = struct.pack("<bH", 2, 0) + length_string("") + struct.pack("<H", 0)
-    return scripts + quest_fragments
+    quest_fragments = struct.pack("<bH", 2, 0) + length_string("")
+    alias = struct.pack("<HhIHHH", 0, 0, QUEST_ID, 5, 2, 1)
+    alias += length_string("HorseWhistlePlayerAlias") + struct.pack("<BH", 0, 0)
+    return scripts + quest_fragments + struct.pack("<H", 1) + alias
 
 
 def build_global() -> bytes:
     payload = (
         subrecord(b"EDID", zstring("HorseWhistle_KeyCode"))
-        + subrecord(b"FNAM", b"i")
+        + subrecord(b"FNAM", b"s")
         + subrecord(b"FLTV", struct.pack("<f", 34.0))
     )
     return record(b"GLOB", KEY_ID, payload)
@@ -64,9 +66,16 @@ def build_quest() -> bytes:
     dnam = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
     payload = (
         subrecord(b"EDID", zstring("HorseWhistle_StartQuest"))
+        + subrecord(b"VMAD", build_vmad())
         + subrecord(b"FULL", zstring("Horse Whistle SE"))
         + subrecord(b"DNAM", dnam)
-        + subrecord(b"VMAD", build_vmad())
+        + subrecord(b"NEXT", b"")
+        + subrecord(b"ANAM", struct.pack("<I", 1))
+        + subrecord(b"ALST", struct.pack("<I", 0))
+        + subrecord(b"ALID", zstring("Player"))
+        + subrecord(b"FNAM", struct.pack("<I", 0))
+        + subrecord(b"ALFR", struct.pack("<I", 0x14))
+        + subrecord(b"ALED", b"")
     )
     return record(b"QUST", QUEST_ID, payload)
 
@@ -101,10 +110,12 @@ def build_cell_group() -> bytes:
         subrecord(b"EDID", zstring("HorseWhistle_MarkerAnchorCell"))
         + subrecord(b"FULL", zstring("Horse Whistle Marker Anchor"))
         + subrecord(b"DATA", struct.pack("<H", 0x0001))
-        + subrecord(b"XCLL", default_interior_lighting),
+        + subrecord(b"XCLL", default_interior_lighting)
+        + subrecord(b"LTMP", struct.pack("<I", 0)),
     )
     marker_group = group(struct.pack("<I", CELL_ID), 8, build_marker())
-    sub_block = group(struct.pack("<I", 0), 3, cell + marker_group)
+    cell_children = group(struct.pack("<I", CELL_ID), 6, marker_group)
+    sub_block = group(struct.pack("<I", 0), 3, cell + cell_children)
     block = group(struct.pack("<I", 0), 2, sub_block)
     return group(b"CELL", 0, block)
 

@@ -54,19 +54,170 @@ def main() -> None:
             run(["java", "-jar", str(FFDEC), "-format", "script:as", "-export", "script", str(folder), str(source)])
             exports[key] = folder / "scripts"
         hud = exports["hud"] / "__Packages/HUDMenu.as"
-        replace_once(hud, "   var METER_PAUSE_FRAME = 40;", "   var METER_PAUSE_FRAME = 40;\n   var NordicFadeDelay = 5;\n   var NordicBarsEnabled = true;\n   var NordicCompassEnabled = true;\n   var NordicCombatActive = false;\n   var NordicFadeTimerID;")
+        replace_once(hud, "   var METER_PAUSE_FRAME = 40;", "   var METER_PAUSE_FRAME = 40;\n   var NordicFadeDelay = 5;\n   var NordicBarsEnabled = true;\n   var NordicCompassEnabled = true;\n   var NordicCombatActive = false;\n   var NordicFadeTimerID;\n   var NordicHorsePanel;\n   var NordicHorseNameField;\n   var NordicHorseHealthLabel;\n   var NordicHorseHealthValue;\n   var NordicHorseStaminaLabel;\n   var NordicHorseStaminaValue;\n   var NordicHorseHealthBar;\n   var NordicHorseStaminaBar;")
+        replace_once(hud, '      this.StaminaMeterAnim.Lock("BR");', '      this.StaminaMeterAnim.Lock("BR");\n      this.CreateNordicHorsePanel();')
         replace_once(hud, "   function RunMeterAnim(aMeter)\n   {", '''   function CreateNordicDot()\n   {\n      this.NordicDot = this.createEmptyMovieClip("NordicMinimalUIDot",10000);\n      this.NordicDot._visible = false;\n      this.NordicDot.lineStyle(1,0x20201D,90);\n      this.NordicDot.beginFill(0xD8CDA5,100);\n      this.NordicDot.moveTo(2.25,0);\n      var i = 1;\n      while(i <= 16)\n      {\n         this.NordicDot.lineTo(Math.cos(i * 0.3926990817) * 2.25,Math.sin(i * 0.3926990817) * 2.25);\n         i++;\n      }\n      this.NordicDot.endFill();\n   }\n   function UpdateNordicCrosshair()\n   {\n      if(this.NordicDot == undefined) this.CreateNordicDot();\n      // HUD frames also change during pickup animations; select the active reticle clip by visibility.\n      var nativeCrosshair = this.CrosshairAlert._visible ? this.CrosshairAlert : this.CrosshairInstance;\n      var center = {x:0,y:0};\n      nativeCrosshair.localToGlobal(center);\n      this.globalToLocal(center);\n      this.NordicDot._x = center.x;\n      this.NordicDot._y = center.y;\n      var alertState = this.CrosshairAlert._visible;\n      var phase = getTimer() / (alertState ? 70 : 360);\n      var pulse = (Math.sin(phase) + 1) / 2;\n      var scale = alertState ? 125 + pulse * 45 : 94 + pulse * 12;\n      this.NordicDot._xscale = scale;\n      this.NordicDot._yscale = scale;\n      this.NordicDot._alpha = alertState ? 78 + pulse * 22 : 84 + pulse * 16;\n      this.NordicDot._visible = this.bCrosshairEnabled && (this.CrosshairAlert._visible || this.CrosshairInstance._visible);\n      this.CrosshairInstance._alpha = 0;\n      this.CrosshairAlert._alpha = 0;\n   }\n   function RunMeterAnim(aMeter)\n   {''')
         replace_once(hud, "   function onEnterFrame()\n   {", "   function onEnterFrame()\n   {\n      this.UpdateNordicCrosshair();")
         marker = "   function RunMeterAnim(aMeter)\n   {"
-        methods = '''   function SetNordicFadeDelay(seconds)\n   {\n      this.NordicFadeDelay = Math.max(1,Math.min(10,seconds));\n   }\n   function SetNordicBarsEnabled(enabled)\n   {\n      this.NordicBarsEnabled = enabled;\n      this.HealthMeterAnim._visible = enabled;\n      this.MagickaMeterAnim._visible = enabled;\n      this.StaminaMeterAnim._visible = enabled;\n      if(enabled) this.ScheduleNordicFade();\n   }\n   function SetNordicCompassEnabled(enabled)\n   {\n      this.NordicCompassEnabled = enabled;\n      this.CompassShoutMeterHolder._visible = enabled;\n   }\n   function SetNordicCombatActive(active)\n   {\n      this.NordicCombatActive = active;\n      if(active)\n      {\n         clearInterval(this.NordicFadeTimerID);\n         if(this.NordicBarsEnabled)\n         {\n            this.HealthMeterAnim._visible = true;\n            this.MagickaMeterAnim._visible = true;\n            this.StaminaMeterAnim._visible = true;\n         }\n      }\n      else this.ScheduleNordicFade();\n   }\n   function ScheduleNordicFade()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n         this.NordicFadeTimerID = setInterval(this,\"NordicFadeMeters\",this.NordicFadeDelay * 1000);\n   }\n   function NordicFadeMeters()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n      {\n         this.FadeOutMeter(this.HealthMeterAnim);\n         this.FadeOutMeter(this.MagickaMeterAnim);\n         this.FadeOutMeter(this.StaminaMeterAnim);\n      }\n   }\n'''
+        methods = '''   function SetNordicFadeDelay(seconds)\n   {\n      this.NordicFadeDelay = Math.max(1,Math.min(10,seconds));\n   }\n   function SetNordicBarsEnabled(enabled)\n   {\n      this.NordicBarsEnabled = enabled;\n      this.HealthMeterAnim._visible = enabled;\n      this.MagickaMeterAnim._visible = enabled;\n      this.StaminaMeterAnim._visible = enabled;\n      if(enabled) this.ScheduleNordicFade();\n   }\n   function SetNordicCompassEnabled(enabled)\n   {\n      this.NordicCompassEnabled = enabled;\n      this.CompassShoutMeterHolder._visible = enabled;\n   }\n   function SetNordicCombatActive(active)\n   {\n      this.NordicCombatActive = active;\n      if(active)\n      {\n         clearInterval(this.NordicFadeTimerID);\n         if(this.NordicBarsEnabled)\n         {\n            this.HealthMeterAnim._visible = true;\n            this.MagickaMeterAnim._visible = true;\n            this.StaminaMeterAnim._visible = true;\n         }\n      }\n      else this.ScheduleNordicFade();\n   }\n   function ScheduleNordicFade()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n         this.NordicFadeTimerID = setInterval(this,\"NordicFadeMeters\",this.NordicFadeDelay * 1000);\n   }\n   function NordicFadeMeters()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n      {\n         this.FadeOutMeter(this.HealthMeterAnim);\n         this.FadeOutMeter(this.MagickaMeterAnim);\n         this.FadeOutMeter(this.StaminaMeterAnim);\n      }\n   }\n   function CreateNordicHorsePanel()
+   {
+      if(this.NordicHorsePanel != undefined) return;
+      this.NordicHorsePanel = this.createEmptyMovieClip("NordicHorseStatusPanel",10001);
+      var panel = this.NordicHorsePanel;
+      panel.lineStyle(1,0xD8CDA5,42);
+      panel.beginFill(0x11130F,82);
+      panel.moveTo(0,0);
+      panel.lineTo(264,0);
+      panel.lineTo(264,96);
+      panel.lineTo(0,96);
+      panel.lineTo(0,0);
+      panel.endFill();
+      panel.lineStyle(1,0xD8CDA5,72);
+      panel.moveTo(13,1);
+      panel.lineTo(251,1);
+      panel.createTextField("HorseNameField",1,13,9,238,23);
+      panel.createTextField("HorseHealthLabel",2,13,34,150,14);
+      panel.createTextField("HorseHealthValue",3,211,34,40,14);
+      panel.createTextField("HorseStaminaLabel",4,13,62,150,14);
+      panel.createTextField("HorseStaminaValue",5,211,62,40,14);
+      this.NordicHorseNameField = panel.HorseNameField;
+      this.NordicHorseHealthLabel = panel.HorseHealthLabel;
+      this.NordicHorseHealthValue = panel.HorseHealthValue;
+      this.NordicHorseStaminaLabel = panel.HorseStaminaLabel;
+      this.NordicHorseStaminaValue = panel.HorseStaminaValue;
+      var titleFormat = new TextFormat("$EverywhereFont",18,0xF0EBDD,false,false,false,false,"","left",0,0,0,0);
+      var labelFormat = new TextFormat("$EverywhereFont",11,0xD8CDA5,false,false,false,false,"","left",0,0,0,0);
+      var valueFormat = new TextFormat("$EverywhereFont",11,0xF0EBDD,false,false,false,false,"","right",0,0,0,0);
+      this.NordicHorseNameField.setNewTextFormat(titleFormat);
+      this.NordicHorseNameField.setTextFormat(titleFormat);
+      this.NordicHorseNameField.textAutoSize = "shrink";
+      this.NordicHorseNameField.selectable = false;
+      this.NordicHorseHealthLabel.setNewTextFormat(labelFormat);
+      this.NordicHorseHealthLabel.setTextFormat(labelFormat);
+      this.NordicHorseHealthLabel.selectable = false;
+      this.NordicHorseHealthLabel.text = "ZDROWIE";
+      this.NordicHorseHealthValue.setNewTextFormat(valueFormat);
+      this.NordicHorseHealthValue.setTextFormat(valueFormat);
+      this.NordicHorseHealthValue.selectable = false;
+      this.NordicHorseStaminaLabel.setNewTextFormat(labelFormat);
+      this.NordicHorseStaminaLabel.setTextFormat(labelFormat);
+      this.NordicHorseStaminaLabel.selectable = false;
+      this.NordicHorseStaminaLabel.text = "WYTRZYMAŁOŚĆ";
+      this.NordicHorseStaminaValue.setNewTextFormat(valueFormat);
+      this.NordicHorseStaminaValue.setTextFormat(valueFormat);
+      this.NordicHorseStaminaValue.selectable = false;
+      this.NordicHorseHealthBar = panel.createEmptyMovieClip("HorseHealthBar",6);
+      this.NordicHorseHealthBar._x = 13;
+      this.NordicHorseHealthBar._y = 51;
+      this.NordicHorseStaminaBar = panel.createEmptyMovieClip("HorseStaminaBar",7);
+      this.NordicHorseStaminaBar._x = 13;
+      this.NordicHorseStaminaBar._y = 79;
+      this.DrawNordicHorseBar(this.NordicHorseHealthBar,1,0xB66D61);
+      this.DrawNordicHorseBar(this.NordicHorseStaminaBar,1,0xD8CDA5);
+      panel._visible = false;
+      panel.Lock("BR");
+      panel._x -= 316;
+      panel._y -= 154;
+   }
+   function DrawNordicHorseBar(barClip,percent,color)
+   {
+      percent = Math.max(0,Math.min(1,percent));
+      barClip.clear();
+      barClip.beginFill(0x2B2B25,100);
+      barClip.moveTo(0,0);
+      barClip.lineTo(238,0);
+      barClip.lineTo(238,5);
+      barClip.lineTo(0,5);
+      barClip.lineTo(0,0);
+      barClip.endFill();
+      if(percent > 0)
+      {
+         barClip.beginFill(color,100);
+         barClip.moveTo(0,0);
+         barClip.lineTo(238 * percent,0);
+         barClip.lineTo(238 * percent,5);
+         barClip.lineTo(0,5);
+         barClip.lineTo(0,0);
+         barClip.endFill();
+      }
+   }
+   function SetNordicHorseName(name)
+   {
+      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
+      this.NordicHorseNameField.text = name;
+   }
+   function SetNordicHorseHealth(percent)
+   {
+      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
+      percent = Math.max(0,Math.min(1,percent));
+      this.NordicHorseHealthValue.text = Math.round(percent * 100) + "%";
+      this.DrawNordicHorseBar(this.NordicHorseHealthBar,percent,0xB66D61);
+   }
+   function SetNordicHorseStamina(percent)
+   {
+      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
+      percent = Math.max(0,Math.min(1,percent));
+      this.NordicHorseStaminaValue.text = Math.round(percent * 100) + "%";
+      this.DrawNordicHorseBar(this.NordicHorseStaminaBar,percent,0xD8CDA5);
+   }
+   function SetNordicHorseVisible(visible)
+   {
+      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
+      this.NordicHorsePanel._visible = visible;
+   }'''
         replace_once(hud, marker, methods + marker)
         for meter in ("Health", "Magicka", "Stamina"):
             sig = f"   function Set{meter}MeterPercent(aPercent, abForce)\n   {{"
             replace_once(hud, sig, sig + f"\n      if(this.NordicBarsEnabled)\n      {{\n         this.{meter}MeterAnim._visible = true;\n         this.ScheduleNordicFade();\n      }}")
         dialogue = exports["dialogue"] / "__Packages/DialogueCenteredList.as"
         old = "         aEntryClip.textField.textColor = !(aEntryObject.topicIsNew == undefined || aEntryObject.topicIsNew) ? 6316128 : 16777215;"
-        new = "         aEntryClip.textField.textColor = aEntryObject == this.selectedEntry ? 14209701 : (!(aEntryObject.topicIsNew == undefined || aEntryObject.topicIsNew) ? 7829367 : 13421772);"
+        new = "         aEntryClip.textField.textColor = aEntryObject == this.selectedEntry || aEntryObject.topicIsNew == undefined || aEntryObject.topicIsNew ? 14209701 : 7829367;"
         replace_once(dialogue, old, new)
+        dialogue_menu = exports["dialogue"] / "__Packages/DialogueMenu.as"
+        replace_once(
+            dialogue_menu,
+            'this.ExitButton.addEventListener("click",this,"onCancelPress");',
+            'this.ExitButton.addEventListener("click",this,"onCancelPress");\n      this.CreateNordicExitIcon();',
+        )
+        replace_once(
+            dialogue_menu,
+            "this.ExitButton._visible = !abHideExitButton;",
+            "this.ExitButton._visible = !abHideExitButton;\n      this.SetNordicExitIconVisible(!abHideExitButton);",
+        )
+        replace_once(
+            dialogue_menu,
+            "this.ExitButton._visible = false;",
+            "this.ExitButton._visible = false;\n      this.SetNordicExitIconVisible(false);",
+        )
+        replace_once(
+            dialogue_menu,
+            "function SetPlatform(",
+            '''   function CreateNordicExitIcon()
+   {
+      if(this.NordicExitIcon != undefined) return;
+      this.NordicExitIcon = this.createEmptyMovieClip("NordicDialogueExitIcon",10000);
+      this.NordicExitIcon._x = this.ExitButton._x - 22;
+      this.NordicExitIcon._y = this.ExitButton._y + 8;
+      this.NordicExitIcon.lineStyle(2,0xD8CDA5,92);
+      this.NordicExitIcon.moveTo(-5,-7);
+      this.NordicExitIcon.lineTo(1,-7);
+      this.NordicExitIcon.lineTo(1,7);
+      this.NordicExitIcon.lineTo(-5,7);
+      this.NordicExitIcon.lineTo(-5,-7);
+      this.NordicExitIcon.moveTo(-2,0);
+      this.NordicExitIcon.lineTo(8,0);
+      this.NordicExitIcon.lineTo(4,-4);
+      this.NordicExitIcon.moveTo(8,0);
+      this.NordicExitIcon.lineTo(4,4);
+      this.NordicExitIcon._visible = false;
+   }
+   function SetNordicExitIconVisible(visible)
+   {
+      if(this.NordicExitIcon == undefined) this.CreateNordicExitIcon();
+      this.NordicExitIcon._visible = visible;
+   }
+   function SetPlatform(''',
+        )
         sleepwait = exports["sleepwait"] / "__Packages/SleepWaitMenu.as"
         replace_once(
             sleepwait,
@@ -75,13 +226,25 @@ def main() -> None:
    var NordicWaitDial;
    var NordicDialCenterX;
    var NordicDialCenterY;
-   var NordicDialRadius = 58;
+   var NordicQuestionBaseY;
+   var NordicCurrentTimeBaseY;
+   var NordicDialRadius = 26;
    var NordicDialDragging = false;""",
         )
         replace_once(
             sleepwait,
             '      this.HoursSlider.addEventListener("change",this,"sliderChange");',
             '      this.HoursSlider.addEventListener("change",this,"sliderChange");\n      this.CreateNordicWaitDial();',
+        )
+        replace_once(
+            sleepwait,
+            "      this.CurrentTime.SetText(aTime);",
+            "      this.CurrentTime.SetText(aTime);\n      this.ApplyNordicWaitLayout();",
+        )
+        replace_once(
+            sleepwait,
+            "      this.QuestionInstance.SetText(_loc2_);",
+            "      this.QuestionInstance.SetText(_loc2_);\n      this.ApplyNordicWaitLayout();",
         )
         replace_once(
             sleepwait,
@@ -92,6 +255,8 @@ def main() -> None:
       this.HoursSlider.thumb._visible = false;
       this.NordicDialCenterX = this.HoursSlider._x + this.HoursSlider._width / 2;
       this.NordicDialCenterY = this.HoursSlider._y + this.HoursSlider._height / 2;
+      this.NordicQuestionBaseY = this.QuestionInstance._y;
+      this.NordicCurrentTimeBaseY = this.CurrentTime._y;
       this.NordicWaitDial = this.createEmptyMovieClip("NordicWaitDial",10000);
       this.NordicWaitDial._x = this.NordicDialCenterX;
       this.NordicWaitDial._y = this.NordicDialCenterY;
@@ -104,8 +269,26 @@ def main() -> None:
       this.HoursText._height = 36;
       this.HoursText._x = this.NordicDialCenterX - 36;
       this.HoursText._y = this.NordicDialCenterY - 18;
+      this.ApplyNordicWaitLayout();
       this.HoursText.text = Math.floor(this.HoursSlider.value).toString();
       this.DrawNordicWaitDial();
+   }
+   function ApplyNordicWaitLayout()
+   {
+      if(this.QuestionInstance != undefined && this.NordicQuestionBaseY != undefined)
+      {
+         this.QuestionInstance._y = this.NordicQuestionBaseY - 22;
+      }
+      if(this.CurrentTime != undefined && this.NordicCurrentTimeBaseY != undefined)
+      {
+         this.CurrentTime._y = this.NordicCurrentTimeBaseY + 10;
+         var timeFormat = this.CurrentTime.getTextFormat();
+         timeFormat.align = "center";
+         timeFormat.size = 22;
+         timeFormat.color = 0xD8CDA5;
+         this.CurrentTime.setNewTextFormat(timeFormat);
+         this.CurrentTime.setTextFormat(timeFormat);
+      }
    }
    function DrawNordicWaitDial()
    {
@@ -120,7 +303,7 @@ def main() -> None:
       var i = 0;
       var angle = -Math.PI / 2;
       this.NordicWaitDial.clear();
-      this.NordicWaitDial.lineStyle(4,0xD8CDA5,22);
+      this.NordicWaitDial.lineStyle(3,0xD8CDA5,22);
       this.NordicWaitDial.moveTo(0,-radius);
       i = 1;
       while(i <= 96)
@@ -133,14 +316,14 @@ def main() -> None:
       while(i < 24)
       {
          angle = -Math.PI / 2 + Math.PI * 2 * i / 24;
-         var tickInner = radius + (i % 6 == 0 ? 7 : 9);
-         var tickOuter = radius + (i % 6 == 0 ? 15 : 12);
+         var tickInner = radius + (i % 6 == 0 ? 3 : 4);
+         var tickOuter = radius + (i % 6 == 0 ? 8 : 6);
          this.NordicWaitDial.lineStyle(i % 6 == 0 ? 2 : 1,0xD8CDA5,i % 6 == 0 ? 88 : 52);
          this.NordicWaitDial.moveTo(Math.cos(angle) * tickInner,Math.sin(angle) * tickInner);
          this.NordicWaitDial.lineTo(Math.cos(angle) * tickOuter,Math.sin(angle) * tickOuter);
          i++;
       }
-      this.NordicWaitDial.lineStyle(4,0xE4D7B1,100);
+      this.NordicWaitDial.lineStyle(3,0xE4D7B1,100);
       this.NordicWaitDial.moveTo(0,-radius);
       var arcSegments = Math.max(1,Math.ceil(progress * 96));
       i = 1;
@@ -154,11 +337,11 @@ def main() -> None:
       var markerY = Math.sin(angle) * radius;
       this.NordicWaitDial.lineStyle(1,0x26231D,100);
       this.NordicWaitDial.beginFill(0xE4D7B1,100);
-      this.NordicWaitDial.moveTo(markerX + 4,markerY);
+      this.NordicWaitDial.moveTo(markerX + 3,markerY);
       i = 1;
       while(i <= 16)
       {
-         this.NordicWaitDial.lineTo(markerX + Math.cos(i * Math.PI / 8) * 4,markerY + Math.sin(i * Math.PI / 8) * 4);
+         this.NordicWaitDial.lineTo(markerX + Math.cos(i * Math.PI / 8) * 3,markerY + Math.sin(i * Math.PI / 8) * 3);
          i++;
       }
       this.NordicWaitDial.endFill();
