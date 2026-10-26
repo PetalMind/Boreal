@@ -336,7 +336,7 @@ nonisolated enum SteamOnM1Wine {
         return script
     }
 
-    static func open(_ url: URL, launchArguments: [String] = []) async throws {
+    static func open(_ url: URL, launchArguments: [String] = [], wineAppURL: URL? = nil) async throws {
         guard url.scheme == "steam", let action = url.host,
               ["openmain", "rungameid", "install", "uninstall", "store"].contains(action) else {
             throw ProcessRunnerError.launchFailed("Unsupported Steam action.")
@@ -366,6 +366,10 @@ nonisolated enum SteamOnM1Wine {
             // Use this installation's defaults, never an inherited Boreal bottle.
             for key in ["WINEARCH", "WINE_BIN", "WINE_APP", "WINESERVER_BIN", "WINEDLLOVERRIDES", "DYLD_LIBRARY_PATH"] {
                 environment.removeValue(forKey: key)
+            }
+            if let wineAppURL {
+                environment["WINE_APP"] = wineAppURL.path
+                environment["WINE_VIRTUAL_DESKTOP"] = ""
             }
             environment["WINEPREFIX"] = installation.prefixURL.path
             environment["BOREAL_STEAM_COMMON"] = installation.repositoryURL.appending(path: "scripts/lib/common.sh").path

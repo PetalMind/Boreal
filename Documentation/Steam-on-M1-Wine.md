@@ -10,6 +10,44 @@ Play invokes `steam.exe -applaunch <AppID>` through that launcher. Installation 
 
 Logs: `~/Library/Logs/Boreal/steam-on-m1-wine-launcher.log` and `steam-on-m1-wine.log`.
 
+## Drakensang Online (Steam 2067850)
+
+Starting with Boreal 1.0.18, Play for this game uses the bundled native
+`BorealDrakensangLauncher` controller. It connects to the existing Steam client
+using that client's Wine host, obtains a confirmed application ticket through
+the game's shipped 32-bit Steam API, and signs in only over HTTPS to
+`drakensang.com` or its subdomains. The portal's server selection and game
+arguments are used without executing shell code. No tickets, portal cookies or
+session arguments are stored in logs or configuration files.
+
+The actual `dro_client64.exe` runs using the installed GPTK 3.0-2 runtime and a
+private environment at `<Boreal support>/ExternalSteam/2067850/prefix`. This host
+retains the game's working CoreAudio path; macOS continues to select the audio
+output, including Bluetooth speakers. The 32-bit Qt launcher is bypassed. The
+runtime is pinned on first successful environment creation rather than silently
+migrating the prefix to another Wine version. Missing components, unfinished
+Steam sign-in and rejected portal authentication produce an error in Boreal.
+
+The bundled `BorealDrakensangCursor.dll` is deployed as `d3d9.dll` beside the
+64-bit client and enabled only for this game's process. It delegates DirectX 9
+to the selected Wine host and synchronizes its cursor before Present. Existing
+unrelated DLLs are preserved; only matching files, files recorded by Boreal, or
+the previously approved cursor fix can be replaced. Cursor settings are applied
+in this private prefix. Game files remain in the existing Steam library.
+
+The controller holds a per-game lock, so another Play click cannot start a
+second copy. It owns both the game and its authentication helper independently
+of Boreal's window. Closing the game releases the ticket helper. Like other
+external Steam launches, this path does not claim a managed Boreal Stop control
+or overlay. The native controller requires no Python, Homebrew or files from
+`/tmp` at runtime. The existing Steam on M1 Wine installation retains its own
+upstream setup dependencies and CEF-wrapper repair.
+
+Rebuild the Windows components with `bash BorealRuntimeProbe/build-drakensang.sh`.
+Xcode builds and signs the native Swift controller and copies the Windows
+components into the app. The application version is configured in
+`Boreal.xcodeproj/project.pbxproj` for both build configurations.
+
 Validation: macOS Debug build; integration verification of the installed v0.6 script with a substituted Wine command, covering open, play, install, uninstall, virtual desktop and literal argument forwarding. No live game session was started during verification.
 
 ## Sacred 2 Remaster (Steam 3906660)

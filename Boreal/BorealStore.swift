@@ -4843,7 +4843,27 @@ final class BorealStore {
         guard usesSteamOnM1Wine else { return NSWorkspace.shared.open(url) }
         Task {
             do {
-                if SteamD3DMetalCompatibility.applies(to: url) {
+                if DrakensangSteamLauncher.applies(to: url) {
+                    let operationKey = storeGames.first(where: {
+                        $0.provider == .steam && $0.externalID == DrakensangSteamLauncher.appID
+                    }).map { storeOperationKey(for: $0) }
+                    let preparationMessage = "Starting Drakensang through Steam…"
+                    if let operationKey { storeGameOperations[operationKey] = .awaitingProvider(preparationMessage) }
+                    defer {
+                        if let operationKey, storeGameOperations[operationKey] == .awaitingProvider(preparationMessage) {
+                            storeGameOperations.removeValue(forKey: operationKey)
+                        }
+                    }
+                    guard let runtime = DrakensangSteamLauncher.preferredRuntime(
+                        in: try await services.runtimeManager.installedRuntimes()
+                    ) else {
+                        throw DrakensangLaunchError.unavailable("Drakensang requires the installed Game Porting Toolkit 3.0-2 runtime for its sound and DirectX 9 compatibility.")
+                    }
+                    try await DrakensangSteamLauncher.shared.open(
+                        installation: SteamOnM1Wine.installation(), runtime: runtime,
+                        root: storageLayout.rootURL.appending(path: "ExternalSteam/\(DrakensangSteamLauncher.appID)")
+                    )
+                } else if SteamD3DMetalCompatibility.applies(to: url) {
                     let sacred2Root = storageLayout.rootURL.appending(path: "ExternalSteam/\(SteamD3DMetalCompatibility.sacred2AppID)")
                     guard let runtime = SteamD3DMetalCompatibility.preferredRuntime(
                         in: try await services.runtimeManager.installedRuntimes(), prefixRoot: sacred2Root
