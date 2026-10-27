@@ -59,15 +59,34 @@ def patch_journal(root: Path, work: Path, source: Path, ffdec: Path, output: Pat
                  '      this.TitleList.numTopHalfEntries = 3;\n'
                  '      _root.QDJPage = this;\n'
                  '      _root.QDJRequests = new Object();\n'
-                 '      _root.QDJCount = 0;')
+                 '      _root.QDJCount = 0;\n'
+                 '      _root.QDJBridgeVersion = 130;\n'
+                 '      _root.QDJRequestRevision = 0;\n'
+                 '      _root.QDJConnected = false;')
     replace_once(page, '   function QuestsPage()\n   {',
-                 (root / 'Source/JournalBridge.as').read_text() + '\n   function QuestsPage()\n   {')
-    replace_once(page, '      this.TitleList.InvalidateData();',
-                 '      this.QDJQueueEntries();\n      this.TitleList.InvalidateData();')
+                 (root / 'Source/JournalBridge.as').read_text()
+                 + (root / 'Source/JournalSorting.as').read_text()
+                 + '\n   function QuestsPage()\n   {')
+    replace_once(page, '   function startPage()\n   {',
+                 '   function startPage()\n   {\n      this.QDJStart();')
+    replace_once(page, '   function endPage()\n   {',
+                 '   function endPage()\n   {\n'
+                 '      if(this.qdjTimer != undefined) clearInterval(this.qdjTimer);')
+    replace_once(page, '      this.TitleList.InvalidateData();\n      this.TitleList.RestoreScrollPosition',
+                 '      this.QDJQueueEntries();\n      this.TitleList.InvalidateData();\n      this.TitleList.RestoreScrollPosition')
     replace_once(page, '      this.UpdateButtonsVisibility();\n      this.ObjectiveList.InvalidateData();',
                  '      this.QDJQueueEntries();\n      this.UpdateButtonsVisibility();\n      this.ObjectiveList.InvalidateData();')
     replace_once(page, '   function onObjectiveListHighlight(event)\n   {',
                  '   function onObjectiveListHighlight(event)\n   {\n      this.QDJQueueEntries();')
+    replace_once(page, '      this.DescriptionText.SetText(this.TitleList.selectedEntry.description);',
+                 '      this.DescriptionText.SetText(this.QDJDescription());')
+    replace_once(page, '      this.ObjectivesHeader._y = this.DescriptionText._y + _loc6_.bottom + _loc2_;',
+                 '      this.ObjectivesHeader._y = this.DescriptionText._y + '
+                 '(_loc6_ == undefined ? this.DescriptionText.textHeight : _loc6_.bottom) + _loc2_;')
+    replace_once(page, '      if(Shared.GlobalFunc.IsKeyPressed(details))\n      {',
+                 '      if(Shared.GlobalFunc.IsKeyPressed(details))\n      {\n'
+                 '         if(details.code == 83 && this.iPlatform == 0)\n'
+                 '         {\n            this.QDJCycleSort();\n            return true;\n         }')
     base = scripts / '__Packages/Shared/BSScrollingList.as'
     marker = '   function SetPlatform(aiPlatform, abPS3Switch)'
     source_text = base.read_text()

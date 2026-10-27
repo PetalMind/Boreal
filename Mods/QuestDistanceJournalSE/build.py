@@ -15,6 +15,7 @@ from pathlib import Path
 from tools.interface import extract_journal, patch_journal
 from tools.plugin import build_plugin
 from tools.records import collect_targets, generate_index, load_order
+from tools.world import collect_world, generate_lookup
 
 ROOT = Path(__file__).resolve().parent
 
@@ -37,6 +38,10 @@ def main() -> None:
     version = json.loads((ROOT / 'manifest.json').read_text())['version']
     order = load_order(args.data, args.plugins)
     database, stats = collect_targets(args.data, order)
+    locations, entrances, world_stats = collect_world(args.data, order)
+    stats.update(world_stats)
+    print(f'Indexed {stats["quests"]} quests, {stats["location_parent_links"]} location parents '
+          f'and {stats["areas_with_exterior_entrances"]} entrance mappings', flush=True)
     with tempfile.TemporaryDirectory(prefix='quest-distance-journal-') as temp:
         work = Path(temp)
         data = work / 'Data'
@@ -52,17 +57,24 @@ def main() -> None:
         script_sources = work / 'sources'
         shutil.copytree(ROOT / 'Source/Scripts', script_sources)
         (script_sources / 'QDJTargetIndex.psc').write_text(generate_index(database), encoding='utf-8')
+        (script_sources / 'QDJLocationIndex.psc').write_text(
+            generate_lookup('QDJLocationIndex', locations), encoding='utf-8')
+        (script_sources / 'QDJEntranceIndex.psc').write_text(
+            generate_lookup('QDJEntranceIndex', entrances), encoding='utf-8')
         command = [str(args.compiler)]
         if args.compiler.suffix.lower() == '.exe':
             command.insert(0, 'wine')
-        command += ['--game=skyrim', '--strict', '--ignorecwd', '-f',
+        command += ['--game=skyrim', '--strict',
+                    '--all-warnings-as-errors', '--ignorecwd', '-f',
                     str(ROOT / 'Source/CompilerImports/TESV_Papyrus_Flags.flg'),
                     '-i', str(ROOT / 'Source/CompilerImports'), '-o', str(output),
                     'QDJController.psc', 'QDJPlayerAlias.psc', 'QDJMCM.psc', 'QDJTargetResolver.psc', 'QDJTargetIndex.psc',
-                    'QDJCache.psc', 'QDJCompass.psc']
+                    'QDJCache.psc', 'QDJCompass.psc', 'QDJSettings.psc',
+                    'QDJFormKey.psc', 'QDJNavigation.psc', 'QDJLocationIndex.psc', 'QDJEntranceIndex.psc']
         subprocess.run(command, cwd=script_sources, check=True)
         expected = {'QDJController.pex', 'QDJPlayerAlias.pex', 'QDJMCM.pex', 'QDJTargetResolver.pex', 'QDJTargetIndex.pex',
-                    'QDJCache.pex', 'QDJCompass.pex'}
+                    'QDJCache.pex', 'QDJCompass.pex', 'QDJSettings.pex',
+                    'QDJFormKey.pex', 'QDJNavigation.pex', 'QDJLocationIndex.pex', 'QDJEntranceIndex.pex'}
         actual = {p.name for p in output.glob('*.pex')}
         if actual != expected:
             raise ValueError(f'Unexpected compiler output: {actual}')
@@ -88,7 +100,9 @@ def main() -> None:
                 raise ValueError('Corrupt output archive')
         shutil.copy2(temporary_archive, archive)
         (ROOT / 'build-report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')
-        print(f'Built {archive} v{version}: {stats["quests"]} indexed quests')
+        print(f'Built {archive} v{version}: {stats["quests"]} quests, '
+              f'{stats["location_parent_links"]} location links, '
+              f'{stats["areas_with_exterior_entrances"]} entrance mappings')
 
 
 if __name__ == '__main__':

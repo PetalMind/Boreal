@@ -22,7 +22,8 @@ ObjectReference Function FindTarget(Quest targetQuest) Global
                     If firstTarget == None
                         firstTarget = target
                     EndIf
-                    Float distance = ComparableDistance(Game.GetPlayer(), target)
+                    ObjectReference[] endpoints = QDJNavigation.Resolve(Game.GetPlayer(), target)
+                    Float distance = ComparableDistance(endpoints[0], endpoints[1])
                     If distance >= 0.0 && (nearestDistance < 0.0 || distance < nearestDistance)
                         nearest = target
                         nearestDistance = distance
@@ -68,7 +69,7 @@ String Function Signature(Quest targetQuest) Global
     Return result
 EndFunction
 
-Float Function ComparableDistance(Actor player, ObjectReference target) Global
+Float Function ComparableDistance(ObjectReference player, ObjectReference target) Global
     If player == None || target == None
         Return -1.0
     EndIf
@@ -98,6 +99,9 @@ String Function PlaceName(ObjectReference target) Global
     EndIf
     Location current = place
     String fallback = "Nieznane miejsce"
+    If target.GetParentCell() != None && target.GetParentCell().GetName() != ""
+        fallback = target.GetParentCell().GetName()
+    EndIf
     If place != None && place.GetName() != ""
         fallback = place.GetName()
     EndIf
@@ -114,18 +118,8 @@ String Function PlaceName(ObjectReference target) Global
         If hold != None && current.HasKeyword(hold) && current.GetName() != ""
             Return fallback + " / " + current.GetName()
         EndIf
-        current = PO3_SKSEFunctions.GetParentLocation(current)
+        current = QDJFormKey.ToForm(QDJLocationIndex.Lookup(QDJFormKey.FromForm(current))) as Location
         depth += 1
     EndWhile
     Return fallback
-EndFunction
-
-String Function FormatDistance(Float meters) Global
-    If meters < 1000.0
-        Return ((meters + 0.5) as Int) + " m w linii prostej"
-    EndIf
-    Int tenths = ((meters / 100.0) + 0.5) as Int
-    Int whole = tenths / 10
-    Int fraction = tenths - whole * 10
-    Return whole + "," + fraction + " km w linii prostej"
 EndFunction

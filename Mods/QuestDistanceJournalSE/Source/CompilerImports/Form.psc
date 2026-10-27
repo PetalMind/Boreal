@@ -6,6 +6,7 @@ Bool Function HasKeyword(Keyword akKeyword) Native
 Function RegisterForMenu(String menuName) Native
 Function UnregisterForAllMenus() Native
 Function RegisterForSingleUpdate(Float interval) Native
+Function RegisterForModEvent(String eventName, String callbackName) Native
 Event OnInit()
 EndEvent
 Event OnMenuOpen(String menuName)

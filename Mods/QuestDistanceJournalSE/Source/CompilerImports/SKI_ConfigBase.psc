@@ -23,3 +23,14 @@ Function SetSliderDialogInterval(Float value) Native
 
 Event OnConfigOpen() Native
 Event OnGameReload() Native
+Event OnVersionUpdate(Int version) Native
+Event OnOptionMenuOpen(Int option) Native
+Event OnOptionMenuAccept(Int option, Int index) Native
+Int Function GetVersion() Native
+Int Function AddMenuOption(String name, String value, Int flags = 0) Native
+Int Function AddTextOption(String name, String value, Int flags = 0) Native
+Function SetMenuDialogOptions(String[] values) Native
+Function SetMenuDialogStartIndex(Int index) Native
+Function SetMenuDialogDefaultIndex(Int index) Native
+Function SetMenuOptionValue(Int option, String value, Bool noUpdate = False) Native
+Bool Function ShowMessage(String message, Bool withCancel = True, String acceptLabel = "$Accept", String cancelLabel = "$Cancel") Native

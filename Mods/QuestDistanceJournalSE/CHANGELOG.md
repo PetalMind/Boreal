@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+- Naprawiono odczyt po pierwszej inicjalizacji i powrocie do dziennika; dodano handshake SKSE, odświeżanie i migrację pamięci istniejących zapisów.
+- Szczegóły korzystają z natywnego pola wiersza i są również w opisie zadania.
+- Metry do celów we wnętrzach mogą korzystać z rzeczywistych wejść oraz bram miast, z opisem rodzaju pomiaru.
+- Dodano sortowanie po miejscowości, odległości, nazwie lub kolejności gry oraz pierwszeństwo śledzonych. Przełączanie w MCM, przyciskiem i klawiszem S.
+- Rozbudowano MCM o widoczność szczegółów, odświeżanie i licznik zapisanych zadań.
+- Hierarchia lokalizacji nie wymaga już Papyrus Extender; indeks obejmuje także połączenia drzwi i działa przy zmianie indeksów pluginów.
+- Nieznane lub warunkowe cele mają jawny brak danych zamiast pustego wiersza.
+
 ## 1.2.0
 
 - Dodano MCM do włączania i ukrywania wiersza odległości pod kompasem.

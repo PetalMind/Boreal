@@ -1,96 +1,77 @@
 # Quest Distance Journal SE
 
-Przy niezakończonych zadaniach w liście dziennika SkyUI dodaje drugą linię:
-miasto lub lokalizacja oraz odległość od postaci, np.
-`Biała Grań | 420 m w linii prostej`. Nazwy miejsc pochodzą z gry, więc
-zachowują język jej tłumaczenia. Lista nadal obsługuje zaznaczanie zadań,
-klawiaturę, kontroler i pokazywanie celów na mapie.
+Dziennik SkyUI pokazuje przy niezakończonych zadaniach drugi wiersz z miastem
+lub lokalizacją bieżącego celu i liczbą metrów. Pełne informacje są także w opisie
+wybranego zadania. Nazwy miejsc pochodzą z gry i zachowują jej język.
+
+## Używanie
+
+- Domyślnie śledzone zadania są na początku, a pozostałe układane według
+  miejscowości i odległości. Zadania ukończone zachowują osobną część listy.
+- Klawisz S na stronie zadań lub przycisk Sortowanie zmienia kolejno:
+  miejscowość, najbliższe cele, nazwę i kolejność gry.
+- W MCM: Ustawienia modów → Quest Distance Journal SE → Dziennik i kompas
+  wybierzesz sortowanie, pierwszeństwo śledzonych, widoczność szczegółów
+  oraz wiersza pod kompasem. Ustawienia zapisują się w zapisie gry.
+- Lista Różnych sortuje konkretne pozycje po jej otwarciu. Kolejność celów
+  fabularnych wewnątrz zwykłego zadania pozostaje kolejnością gry.
+- MCM zawiera odświeżanie celów i ponowną rejestrację skryptu. Aktualizacja
+  moda automatycznie unieważnia starszą pamięć lokalizacji.
+
+## Co oznaczają metry
+
+Wszystkie wartości pozostają w metrach, także powyżej 1000 m.
+
+- W linii prostej: pomiar do rzeczywistej referencji celu w tym samym świecie
+  zewnętrznym albo tym samym wnętrzu.
+- Do wejścia: pomiar z pozycji gracza do zewnętrznych drzwi prowadzących do
+  wnętrza celu; uwzględnione są też bramy oddzielnych światów miast.
+- Od wyjścia: pomiar od wyjścia z wnętrza gracza do celu na zewnątrz.
+- Między wejściami: pomiar pomiędzy zewnętrznymi drzwiami obu wnętrz.
+
+To odległości w linii prostej, bez długości przejścia po wnętrzach, obchodzenia
+przeszkód ani czasu podróży. Wejścia pochodzą z rzeczywistych połączeń drzwi
+XTEL aktywnych pluginów. Mod nie przypisuje współrzędnych wnętrza do mapy świata.
+
+Przy kilku celach wybierany jest najbliższy dostępny aktywny cel. Jeśli nie ma
+bezpiecznego powiązania aliasu, występują nierozstrzygalne warunki widoczności
+albo brakuje wspólnego świata/znanego wejścia, widoczny jest jawny brak danych.
+Mod nie zgaduje miasta z tytułu zadania.
 
 ## Instalacja
 
-1. Zaimportuj `QuestDistanceJournalSE.zip` w Boreal, MO2 lub Vortex.
-2. Włącz `QuestDistanceJournalSE.esp`. W konflikcie plików ten mod musi wygrywać
-   dla `Interface/quest_journal.swf`.
-3. Uruchom grę przez SKSE i otwórz dziennik. Dane pojawiają się stopniowo,
-   w miarę pierwszego odczytywania celów. Kolejne otwarcia przywracają zapisane
-informacje bez ponownego rozwiązywania celów.
+1. Zaimportuj QuestDistanceJournalSE.zip w Boreal, MO2 lub Vortex.
+2. Włącz QuestDistanceJournalSE.esp. Ten mod musi wygrywać konflikt dla
+   Interface/quest_journal.swf.
+3. Uruchom grę przez SKSE. Pierwsze odczyty pojawiają się stopniowo;
+   ponowne otwarcia korzystają z pamięci do 128 pozycji zapisanej z grą.
 
-W `Ustawienia modów → Quest Distance Journal SE` możesz ukryć lub ponownie
-włączyć wiersz odległości pod kompasem. Informacje o celach w dzienniku nadal
-pozostają dostępne.
-
-Wymagania: SkyUI, SKSE zgodne z grą i powerofthree's Papyrus Extender.
-Mod nie dodaje własnej DLL, więc nie używa adresów pamięci zależnych od wersji
-gry. Przy budowaniu skryptów potrzebne są źródła SKSE zgodne z używaną wersją.
-Istniejący Nordic Minimal UI SE zmienia HUD/dialogi/sen, a ten mod wyłącznie
-moduł dziennika SkyUI. Inny zamiennik dziennika wymaga osobnego dopasowania.
-
-## Jak interpretować dane
-
-- Odległość jest liczona do bieżącej referencji aliasu celu, nie do dowolnej
-  postaci lub miasta wybranego na podstawie tytułu zadania.
-- Przy kilku celach zapamiętuje cel najbliższy w momencie odczytu, dla którego
-  można policzyć odległość. Inne cele mogą znajdować się we wnętrzach lub innych światach.
-- To odległość w linii prostej: nie długość drogi, czas podróży ani trasa
-  uwzględniająca góry i drzwi.
-- Odległość ma sens w tym samym świecie zewnętrznym albo tym samym wnętrzu.
-  Dla oddzielnych wnętrz/światów widnieje `odległość niedostępna`.
-- Nazwa miasta pochodzi z hierarchii lokalizacji celu. Dla miejsc poza miastem
-  pokazuje lokalizację i region, jeśli gra udostępnia te dane.
-- Cele z warunkami widoczności nie są zgadywane: bez możliwości rozstrzygnięcia
-  warunków widnieje komunikat o braku pewnej lokalizacji. Cele bez aliasu lub
-  jeszcze niewypełnione również mają jawny stan braku danych.
-- Zadania różne dostają szczegóły po otwarciu ich listy celów.
-- Powiązania celów i aliasów są indeksowane podczas budowania na podstawie
-  wygrywających rekordów aktywnych pluginów. Stan celów i pozycje są odczytywane
-  podczas gry. Po dodaniu lub aktualizacji moda zmieniającego zadania należy
-  ponownie zbudować pakiet. Samo przesunięcie indeksów pluginów nie zmienia
-  powiązań, ponieważ baza używa identyfikatorów edytora zadań.
+Wymagania: SkyUI oraz SKSE zgodne z wersją gry. Wersja 1.3.0 odczytuje
+hierarchię lokalizacji z wygenerowanego indeksu i nie wymaga Papyrus Extender.
+Nie dodaje DLL. Nordic Minimal UI SE nie zmienia tego pliku dziennika;
+inny zamiennik dziennika wymaga osobnego dopasowania.
 
 ## Budowanie
 
-Wersja ma jedno źródło prawdy: `manifest.json`. Skrypt odczytuje grę, ale
-zapisuje wyłącznie pakiet w katalogu moda; nie instaluje go automatycznie.
-Wymaga Python 3.9+, Java, JPEXS FFDec oraz Caprica; Windowsowa Caprica na macOS
-wymaga Wine. `WINEPREFIX` można ustawić na osobny katalog roboczy.
+Jedynym źródłem wersji jest manifest.json. Wymagane: Python 3.9+, Java,
+JPEXS FFDec oraz Caprica (wersja Windows na macOS wymaga Wine).
 
-```sh
-python3 build.py \
-  --data "/ścieżka/do/Skyrim/Data" \
-  --plugins "/ścieżka/do/Plugins.txt" \
-  --ffdec "/ścieżka/do/ffdec.jar" \
-  --compiler "/ścieżka/do/Caprica.exe"
-```
+    python3 build.py --data "/ścieżka/Skyrim/Data" --plugins "/ścieżka/Plugins.txt" --ffdec "/ścieżka/ffdec.jar" --compiler "/ścieżka/Caprica.exe"
 
-Istniejący luźny plik dziennika wymaga jawnego `--journal-swf`. Nieznany układ
-kodu SkyUI przerywa budowanie zamiast nakładać niepewną poprawkę.
-`build-report.json` zapisuje listę wejściowych pluginów i indeks celów.
-Deklaracje `Source/CompilerImports` służą wyłącznie kompilacji; paczka zawiera
-własne skrypty PEX, w tym menu MCM. Mod nie nadpisuje questów gry ani ich skryptów.
+Budowanie odczytuje grę i zapisuje wyłącznie paczkę w katalogu moda. Indeksuje
+wygrywające rekordy zadań, rodziców lokalizacji, komórki i teleportujące drzwi.
+Identyfikatory formularzy są rozwiązywane z nazw pluginów przy uruchomieniu,
+więc samo przesunięcie kolejności ładowania nie zmienia powiązań. Po dodaniu
+lub aktualizacji moda zmieniającego zadania, lokalizacje albo drzwi trzeba
+przebudować paczkę. Raport wejściowych pluginów i liczebności indeksów jest
+w build-report.json.
+
+Istniejący luźny dziennik wymaga jawnego --journal-swf wskazującego zgodny
+oryginalny plik SkyUI. Nie nakładaj poprawki ponownie na już zmieniony SWF.
+Kompilator sprawdza Papyrusa w trybie ścisłym z ostrzeżeniami jako błędami.
+Paczka zawiera tylko własne PEX, nie deklaracje z CompilerImports.
 
 ## Granice weryfikacji
 
-Kompilacja Papyrusa i ActionScriptu oraz kontrola struktury paczki potwierdzają
-zbudowanie artefaktów. Poprawnego wyglądu i zachowania w uruchomionej grze
-nie potwierdza sama kompilacja.
-
-## Pamięć celów i kompas
-
-Mod przechowuje 128 ostatnio odwiedzonych pozycji dziennika w zmiennych questu;
-zapis Skyrim zachowuje je razem z postępem gry. Otwarcie dziennika odtwarza
-przechowane informacje. Zmiana etapu lub stanu celu aktualizuje powiązanie
-w tle podczas rozgrywki. Odległość aktualizuje się z pozycji gracza do
-przechowanej referencji, bez ponownego przeszukiwania aliasów przy otwarciu.
-
-Pod kompasem pojawia się nazwa i liczba metrów do ostatnio wybranego
-w dzienniku zadania, które jest zaznaczone do śledzenia. Dla „Różnych” wybierz
-konkretną pozycję na liście celów. Jeśli poprzedni wybór przestaje być
-śledzony, mod wybiera inne zapisane, śledzone zadanie i pokazuje jego nazwę.
-Przy pierwszym użyciu otwórz dziennik, aby mod zapamiętał listę zadań.
-Nie zmienia zaznaczenia questów i nie pokazuje odległości do nieśledzonych
-zadań. Przy oddzielnych wnętrzach nadal widnieje brak dostępnej odległości.
-Widoczność tego wiersza zmienisz w MCM.
-
-Licznik jest tworzony wewnątrz natywnego kompasu, respektuje jego widoczność
-i nie wymaga zastępowania pliku HUD. Dystans dotyczy zapamiętanego celu
-wybranego zadania, a nie znacznika własnego ustawionego na mapie.
+Kompilacja Papyrusa i ActionScriptu, ponowny odczyt SWF oraz kontrola paczki
+potwierdzają artefakty. Nie zastępują obserwacji interfejsu w działającej grze.

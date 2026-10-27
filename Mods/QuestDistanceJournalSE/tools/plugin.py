@@ -18,7 +18,7 @@ def record(tag: bytes, form_id: int, payload: bytes) -> bytes:
 def build_plugin() -> bytes:
     quest_id = 0x01000800
     header = record(b'TES4', 0,
-                    subrecord(b'HEDR', struct.pack('<fII', 1.7, 1, 0x801))
+                    subrecord(b'HEDR', struct.pack('<fII', 1.7, 4, 0x804))
                     + subrecord(b'CNAM', b'Quest Distance Journal SE\0')
                     + subrecord(b'MAST', b'Skyrim.esm\0') + subrecord(b'DATA', bytes(8)))
     vmad = struct.pack('<HHH', 5, 2, 4)
@@ -37,4 +37,14 @@ def build_plugin() -> bytes:
                    + subrecord(b'FNAM', bytes(4)) + subrecord(b'ALFR', struct.pack('<I', 0x14))
                    + subrecord(b'ALED', b''))
     group = b'GRUP' + struct.pack('<I', len(quest) + 24) + b'QUST' + struct.pack('<iHHHH', 0, 0, 0, 0, 0)
-    return header + group + quest
+    globals_payload = b''
+    for local_id, editor_id, value in (
+            (0x801, 'QDJSortMode', 0.0),
+            (0x802, 'QDJTrackedFirst', 1.0),
+            (0x803, 'QDJShowDetails', 1.0)):
+        globals_payload += record(b'GLOB', 0x01000000 + local_id,
+                                  subrecord(b'EDID', editor_id.encode() + b'\0')
+                                  + subrecord(b'FNAM', b's')
+                                  + subrecord(b'FLTV', struct.pack('<f', value)))
+    globals_group = b'GRUP' + struct.pack('<I', len(globals_payload) + 24) + b'GLOB' + struct.pack('<iHHHH', 0, 0, 0, 0, 0)
+    return header + globals_group + globals_payload + group + quest

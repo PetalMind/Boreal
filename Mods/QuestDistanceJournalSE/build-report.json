@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "quests": 622,
   "unconditional_targets": 2027,
   "conditional_targets": 1249,
@@ -102,6 +102,9 @@
     "SmartLoot.esp",
     "QuestDistanceJournalSE.esp"
   ],
+  "location_parent_links": 774,
+  "teleport_doors": 2294,
+  "areas_with_exterior_entrances": 722,
   "skyui_journal_sha256": "0f5a76185c3db9701645dd46f8295d77e19bedee4593e4c641a20c103fb04b01",
   "targets": {
     "JailQuest": "10:5",
