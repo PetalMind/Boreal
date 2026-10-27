@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 MIND_TAKEOVER_DURATION = 0x7FFFFFFF
+MIND_TAKEOVER_MANUAL_COST_FLAG = 0x00000001
 MIND_TAKEOVER_GUARD_KEYWORD = 0x0007EAF3
 MIND_TAKEOVER_HAS_KEYWORD_FUNCTION = 560
 MGEF_CONDITION_OR_FLAG = 0x01
@@ -81,6 +82,7 @@ SPELLS = (
         "source": 0x0004DEEE,
         "editor_id": "CreatorMindTakeoverSpell",
         "name": "Przejęcie Jaźni I",
+        "manual_cost": True,
         "description": (
             "Istota do poziomu 50 atakuje pobliskie cele aż do śmierci."
         ),
@@ -171,6 +173,7 @@ RANK_VARIANTS = (
         "base": "CreatorMindTakeoverSpell",
         "editor_id": "CreatorMindTakeover02Spell",
         "name": "Przejęcie Jaźni II",
+        "manual_cost": True,
         "description": (
             "Istota do poziomu 75 atakuje pobliskie cele aż do śmierci."
         ),
@@ -185,6 +188,7 @@ RANK_VARIANTS = (
         "base": "CreatorMindTakeoverSpell",
         "editor_id": "CreatorMindTakeover03Spell",
         "name": "Przejęcie Jaźni III",
+        "manual_cost": True,
         "description": (
             "Istota do poziomu 100 atakuje pobliskie cele aż do śmierci."
         ),
@@ -503,6 +507,14 @@ def patch_spell_record(
                 raise ValueError("Malformed SPIT subrecord")
             spell_data = bytearray(payload)
             struct.pack_into("<I", spell_data, 0, spec["cost"])
+            if spec.get("manual_cost", False):
+                flags = struct.unpack_from("<I", spell_data, 4)[0]
+                struct.pack_into(
+                    "<I",
+                    spell_data,
+                    4,
+                    flags | MIND_TAKEOVER_MANUAL_COST_FLAG,
+                )
             if "range" in spec:
                 struct.pack_into("<f", spell_data, 28, spec["range"])
             payload = bytes(spell_data)
@@ -776,6 +788,14 @@ def build_spell(
                 raise ValueError("Malformed SPIT subrecord")
             spell_data = bytearray(payload)
             struct.pack_into("<I", spell_data, 0, spec["cost"])
+            if spec.get("manual_cost", False):
+                flags = struct.unpack_from("<I", spell_data, 4)[0]
+                struct.pack_into(
+                    "<I",
+                    spell_data,
+                    4,
+                    flags | MIND_TAKEOVER_MANUAL_COST_FLAG,
+                )
             if "range" in spec:
                 struct.pack_into("<f", spell_data, 28, spec["range"])
             payload = bytes(spell_data)

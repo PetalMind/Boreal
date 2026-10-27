@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 1.3.2
+
+- Ustawiono ręczne koszty Przejęcia Jaźni, aby długi czas efektu nie powodował ujemnego kosztu w menu.
+
 ## 1.3.1
 
 - Wydłużono Przejęcie Jaźni we wszystkich rangach do śmierci celu.
