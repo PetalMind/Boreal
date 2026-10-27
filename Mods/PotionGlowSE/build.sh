@@ -35,7 +35,7 @@ with zipfile.ZipFile(build / 'mod.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
         if path.is_file():
             archive.write(path, path.relative_to(build).as_posix())
     for name in ('README.md', 'CHANGELOG.md', 'VERSION'):
-        archive.write(root / name, name)
+        archive.write(root / name, name + ".txt" if name == "VERSION" else name)
 shutil.copytree(build / 'Data', root / 'Data', dirs_exist_ok=True)
 shutil.copyfile(build / 'mod.zip', root / 'PotionGlowSE.zip')
 print('Built Potion Glow SE ' + version)
