@@ -49,7 +49,7 @@ with zipfile.ZipFile(build / 'mod.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in sorted((build / 'Data').rglob('*')):
         if path.is_file():
             archive.write(path, path.relative_to(build).as_posix())
-    for name in ('README.md', 'CHANGELOG.md', 'manifest.json'):
+    for name in ('README.md', 'CHANGELOG.md'):
         archive.write(root / name, name)
 shutil.copytree(build / 'Data', root / 'Data', dirs_exist_ok=True)
 shutil.copyfile(build / 'mod.zip', root / 'EnergiaStwórcy.zip')

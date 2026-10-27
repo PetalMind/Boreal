@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 1.6.1
+
+- Wyłączono `manifest.json` z archiwum instalacyjnego, żeby Boreal mógł wdrażać zawartość folderu `Data` automatycznie.
+
 ## 1.6.0
 
 - Dodano MCM do włączania przechwytywania dusz i darmowego czarnego klejnotu.
