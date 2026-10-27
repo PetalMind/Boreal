@@ -15,6 +15,8 @@ Event OnInit()
 EndEvent
 
 Function Maintenance()
+    hudConfigured = False
+    horsePanelVisible = False
     FadeSeconds = Game.GetFormFromFile(0x801, "NordicMinimalUISE.esp") as GlobalVariable
     BarsEnabled = Game.GetFormFromFile(0x802, "NordicMinimalUISE.esp") as GlobalVariable
     CompassEnabled = Game.GetFormFromFile(0x803, "NordicMinimalUISE.esp") as GlobalVariable
@@ -102,13 +104,8 @@ Event OnUpdate()
 EndEvent
 
 Function UpdateHorsePanel(Actor player)
-    Actor horse = Game.GetPlayersLastRiddenHorse()
-    If horse == None || horse.IsDead()
-        HideHorsePanel()
-        Return
-    EndIf
-
-    If !player.IsOnMount() && !horse.IsBeingRidden()
+    Actor horse = NordicHorseState.CurrentMount(player)
+    If horse == None
         HideHorsePanel()
         Return
     EndIf

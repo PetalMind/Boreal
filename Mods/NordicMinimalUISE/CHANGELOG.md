@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.4
+
+- Panel konia korzysta z aktualnego wierzchowca gracza przez GetMount, zamiast wyłącznie z ostatnio dosiadanego konia.
+- Przy ponownej inicjalizacji HUD odnawiane jest ustawienie paneli.
+
 ## 1.0.3
 
 - Usunięto kolizję FormID z menedżerem MCM SkyUI; własne rekordy należą do Nordic Minimal UI.

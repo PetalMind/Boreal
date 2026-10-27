@@ -9,9 +9,9 @@ python3 "$ROOT_DIR/tools/patch_swf.py"
 mkdir -p "$BUILD_DIR/Data/Scripts"
 case "$COMPILER" in
     *.exe)
-        (cd "$ROOT_DIR/Source/Scripts" && wine "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc NordicMinimalUIPlayerAlias.psc)
+        (cd "$ROOT_DIR/Source/Scripts" && wine "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc NordicMinimalUIPlayerAlias.psc NordicHorseState.psc)
         ;;
-    *) (cd "$ROOT_DIR/Source/Scripts" && "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc NordicMinimalUIPlayerAlias.psc) ;;
+    *) (cd "$ROOT_DIR/Source/Scripts" && "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc NordicMinimalUIPlayerAlias.psc NordicHorseState.psc) ;;
 esac
 python3 "$ROOT_DIR/tools/build_plugin.py" "$BUILD_DIR/Data/NordicMinimalUISE.esp"
 python3 - "$BUILD_DIR" "$ROOT_DIR/NordicMinimalUISE.zip" <<'PY'

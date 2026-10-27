@@ -53,3 +53,7 @@ Podmień poprzednią paczkę tego moda w menedżerze, zachowując jedną aktywn�
 kopię, i włącz jego ESP. Archiwum zawiera plik SEQ uruchamiający quest
 konfiguracji oraz alias gracza odnawiający rejestrację MCM po wczytaniu zapisu.
 Poprawiona wersja nie nadpisuje identyfikatorów rekordów SkyUI.
+
+Panel konia wymaga powerofthree's Papyrus Extender. Podczas jazdy odczytuje
+aktualnego wierzchowca przez `GetMount`. Ostatnio dosiadany koń jest używany
+wyłącznie jako wariant zapasowy, jeśli jego jeźdźcem nadal jest gracz.
