@@ -1,6 +1,6 @@
 {
   "name": "Horse Whistle SE",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "game": "Skyrim Special Edition",
   "requirements": ["SKSE64", "SkyUI"],
   "archive": "SkyrimHorseWhistleSE.zip"

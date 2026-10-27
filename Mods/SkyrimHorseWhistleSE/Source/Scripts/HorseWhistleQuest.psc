@@ -56,7 +56,7 @@ Function SummonHorse()
         Return
     EndIf
     Float now = Utility.GetCurrentRealTime()
-    If now - lastWhistleTime < 1.5
+    If now >= lastWhistleTime && now - lastWhistleTime < 1.5
         Return
     EndIf
     lastWhistleTime = now

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Zapisana blokada powtarzania gwizdu nie blokuje przywołania po ponownym uruchomieniu gry.
+
 ## 1.2.0
 
 - Rozbudowano MCM: zmiana i wyłączenie przypisania, mysz/pad, przywracanie G i potwierdzanie konfliktu klawiszy.
