@@ -20,3 +20,5 @@ Function SetSliderDialogStartValue(Float value) Native
 Function SetSliderDialogDefaultValue(Float value) Native
 Function SetSliderDialogRange(Float minValue, Float maxValue) Native
 Function SetSliderDialogInterval(Float value) Native
+
+Event OnGameReload() Native

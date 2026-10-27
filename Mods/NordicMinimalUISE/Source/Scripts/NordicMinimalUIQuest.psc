@@ -11,6 +11,10 @@ GlobalVariable CompassEnabled
 GlobalVariable RouteKeyCode
 
 Event OnInit()
+    Maintenance()
+EndEvent
+
+Function Maintenance()
     FadeSeconds = Game.GetFormFromFile(0x801, "NordicMinimalUISE.esp") as GlobalVariable
     BarsEnabled = Game.GetFormFromFile(0x802, "NordicMinimalUISE.esp") as GlobalVariable
     CompassEnabled = Game.GetFormFromFile(0x803, "NordicMinimalUISE.esp") as GlobalVariable
@@ -20,7 +24,7 @@ Event OnInit()
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicBarsEnabled", IsEnabled(BarsEnabled))
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicCompassEnabled", IsEnabled(CompassEnabled))
     RegisterForSingleUpdate(PollSeconds)
-EndEvent
+EndFunction
 
 Event OnKeyDown(Int keyCode)
     If keyCode == GetRouteKey() && keyCode > 0 && !Utility.IsInMenuMode() && !UI.IsTextInputEnabled()

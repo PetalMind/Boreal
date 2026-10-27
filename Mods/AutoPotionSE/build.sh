@@ -23,7 +23,7 @@ case "$COMPILER" in
         if command -v wine >/dev/null 2>&1; then
             (
                 cd "$ROOT_DIR/Source/Scripts"
-                wine "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -i "$IMPORT_DIR" -o "$SCRIPT_OUTPUT" AutoPotionQuest.psc AutoPotionMCM.psc
+                wine "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -i "$IMPORT_DIR" -o "$SCRIPT_OUTPUT" AutoPotionQuest.psc AutoPotionMCM.psc AutoPotionPlayerAlias.psc
             )
         else
             echo "Caprica.exe requires Wine on this platform." >&2
@@ -33,7 +33,7 @@ case "$COMPILER" in
     *)
         (
             cd "$ROOT_DIR/Source/Scripts"
-            "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -i "$IMPORT_DIR" -o "$SCRIPT_OUTPUT" AutoPotionQuest.psc AutoPotionMCM.psc
+            "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -i "$IMPORT_DIR" -o "$SCRIPT_OUTPUT" AutoPotionQuest.psc AutoPotionMCM.psc AutoPotionPlayerAlias.psc
         )
         ;;
 esac
@@ -43,9 +43,13 @@ python3 - "$BUILD_DIR" "$ROOT_DIR/AutoPotionSE.zip" <<'PY'
 from pathlib import Path
 import sys
 import zipfile
+import struct
 
 build_dir = Path(sys.argv[1])
 archive_path = Path(sys.argv[2])
+seq = build_dir / "Data/SEQ/AutoPotionSE.seq"
+seq.parent.mkdir(parents=True, exist_ok=True)
+seq.write_bytes(struct.pack("<I", 0x01000800))
 with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
     for path in sorted((build_dir / "Data").rglob("*")):
         if path.is_file():

@@ -1,6 +1,6 @@
 {
   "name": "Smart Books & Tomes SE",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "game": "The Elder Scrolls V: Skyrim Special Edition",
   "plugin": "Data/SmartBooksTomesSE.esp",
   "requirements": {

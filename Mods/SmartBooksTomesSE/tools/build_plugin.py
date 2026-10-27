@@ -18,15 +18,22 @@ def zstring(value: str) -> bytes:
     return value.encode("utf-8") + b"\0"
 
 
+def length_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return struct.pack("<H", len(encoded)) + encoded
+
+
 def record(signature: bytes, form_id: int, payload: bytes) -> bytes:
     return signature + struct.pack("<IIIIHH", len(payload), 0, form_id, 0, 0, 0) + payload
 
 
 def build_vmad() -> bytes:
     scripts = struct.pack("<HHH", 5, 2, 1)
-    scripts += zstring("SmartBooksTomesMCM") + struct.pack("<BH", 0, 0)
-    fragments = struct.pack("<HH", 2, 0) + zstring("") + struct.pack("<H", 0)
-    return scripts + fragments
+    scripts += length_string("SmartBooksTomesMCM") + struct.pack("<BH", 0, 0)
+    fragments = struct.pack("<bH", 2, 0) + length_string("")
+    alias = struct.pack("<HhIHHH", 0, 0, 0x01000800, 5, 2, 1)
+    alias += length_string("SmartBooksTomesPlayerAlias") + struct.pack("<BH", 0, 0)
+    return scripts + fragments + struct.pack("<H", 1) + alias
 
 
 def build_plugin() -> bytes:
@@ -42,9 +49,16 @@ def build_plugin() -> bytes:
     quest_data = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
     quest_payload = (
         subrecord(b"EDID", zstring("SmartBooksTomesMCMQuest"))
+        + subrecord(b"VMAD", build_vmad())
         + subrecord(b"FULL", zstring("Smart Books & Tomes SE"))
         + subrecord(b"DNAM", quest_data)
-        + subrecord(b"VMAD", build_vmad())
+        + subrecord(b"NEXT", b"")
+        + subrecord(b"ANAM", struct.pack("<I", 1))
+        + subrecord(b"ALST", struct.pack("<I", 0))
+        + subrecord(b"ALID", zstring("Player"))
+        + subrecord(b"FNAM", struct.pack("<I", 0))
+        + subrecord(b"ALFR", struct.pack("<I", 0x14))
+        + subrecord(b"ALED", b"")
     )
     quest_record = record(b"QUST", 0x01000800, quest_payload)
     quest_group = (

@@ -18,3 +18,5 @@ Function SetMenuDialogStartIndex(Int value) Native
 Function SetMenuDialogDefaultIndex(Int value) Native
 Function SetMenuDialogOptions(String[] options) Native
 Function ForcePageReset() Native
+
+Event OnGameReload() Native

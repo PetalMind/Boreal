@@ -33,3 +33,9 @@ przez SKSE. Ustawienia MCM są przechowywane w zapisie gry.
 
 build.sh kompiluje skrypty kompilatorem Caprica i buduje paczkę instalacyjną.
 Można ustawić CAPRICA_EXE przed uruchomieniem skryptu.
+
+## Aktualizacja menu MCM
+
+Podmień poprzednią paczkę tego moda w menedżerze, zachowując jedną aktywną
+kopię, i włącz jego ESP. Archiwum zawiera plik SEQ uruchamiający quest
+konfiguracji oraz alias gracza odnawiający rejestrację MCM po wczytaniu zapisu.

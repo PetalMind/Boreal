@@ -46,3 +46,10 @@ kolejnością ładowania.
 JPEXS FFDec do patchowania oraz Caprica do kompilacji Papyrusa. Gra i jej pliki
 nie są modyfikowane. Ustaw `SKYRIM_DATA`, `BSARCH_EXE`, `FFDEC_JAR` lub
 `CAPRICA_EXE`, jeśli narzędzia znajdują się w innych lokalizacjach.
+
+## Aktualizacja menu MCM
+
+Podmień poprzednią paczkę tego moda w menedżerze, zachowując jedną aktywną
+kopię, i włącz jego ESP. Archiwum zawiera plik SEQ uruchamiający quest
+konfiguracji oraz alias gracza odnawiający rejestrację MCM po wczytaniu zapisu.
+Poprawiona wersja nie nadpisuje identyfikatorów rekordów SkyUI.

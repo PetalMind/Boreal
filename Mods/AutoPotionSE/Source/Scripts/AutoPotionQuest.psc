@@ -18,9 +18,13 @@ MagicEffect RestoreMagicka
 MagicEffect RestoreStamina
 
 Event OnInit()
+    Maintenance()
+EndEvent
+
+Function Maintenance()
     LoadSettings()
     RegisterForSingleUpdate(IdleCheckInterval)
-EndEvent
+EndFunction
 
 Event OnUpdate()
     Actor player = Game.GetPlayer()

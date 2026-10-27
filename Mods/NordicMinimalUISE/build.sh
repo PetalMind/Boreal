@@ -9,16 +9,19 @@ python3 "$ROOT_DIR/tools/patch_swf.py"
 mkdir -p "$BUILD_DIR/Data/Scripts"
 case "$COMPILER" in
     *.exe)
-        (cd "$ROOT_DIR/Source/Scripts" && wine "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc)
+        (cd "$ROOT_DIR/Source/Scripts" && wine "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc NordicMinimalUIPlayerAlias.psc)
         ;;
-    *) (cd "$ROOT_DIR/Source/Scripts" && "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc) ;;
+    *) (cd "$ROOT_DIR/Source/Scripts" && "$COMPILER" --game=skyrim --strict --ignorecwd --flags "$ROOT_DIR/Source/CompilerImports/TESV_Papyrus_Flags.flg" -i "$ROOT_DIR/Source/CompilerImports" -o "$BUILD_DIR/Data/Scripts" NordicMinimalUIQuest.psc NordicMinimalUIMCM.psc NordicMinimalUIPlayerAlias.psc) ;;
 esac
 python3 "$ROOT_DIR/tools/build_plugin.py" "$BUILD_DIR/Data/NordicMinimalUISE.esp"
 python3 - "$BUILD_DIR" "$ROOT_DIR/NordicMinimalUISE.zip" <<'PY'
 from pathlib import Path
-import sys, zipfile
+import sys, zipfile, struct
 root = Path(sys.argv[1])
 data = root / "Data"
+seq = data / "SEQ/NordicMinimalUISE.seq"
+seq.parent.mkdir(parents=True, exist_ok=True)
+seq.write_bytes(struct.pack("<I", 0x01000800))
 with zipfile.ZipFile(root / "swf.zip") as source:
     for member in source.infolist():
         (data / member.filename.removeprefix("Data/")).parent.mkdir(parents=True, exist_ok=True)

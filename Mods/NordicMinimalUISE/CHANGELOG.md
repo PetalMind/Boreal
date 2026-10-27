@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3
+
+- Usunięto kolizję FormID z menedżerem MCM SkyUI; własne rekordy należą do Nordic Minimal UI.
+- Poprawiono zapis VMAD i powiązania skryptów menu MCM.
+- Dodano plik startowy SEQ oraz ponowną rejestrację MCM po wczytaniu zapisu.
+
 ## 1.0.2
 
 - Kropka śledzi aktywny celownik także podczas animacji zbierania przedmiotów.
