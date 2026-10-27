@@ -12,7 +12,8 @@ klawiaturę, kontroler i pokazywanie celów na mapie.
 2. Włącz `QuestDistanceJournalSE.esp`. W konflikcie plików ten mod musi wygrywać
    dla `Interface/quest_journal.swf`.
 3. Uruchom grę przez SKSE i otwórz dziennik. Dane pojawiają się stopniowo,
-   w miarę odczytywania celów. Zamknięcie dziennika zatrzymuje obliczenia.
+   w miarę pierwszego odczytywania celów. Kolejne otwarcia przywracają zapisane
+informacje bez ponownego rozwiązywania celów.
 
 Wymagania: SkyUI, SKSE zgodne z grą i powerofthree's Papyrus Extender.
 Pakiet zbudowano dla lokalnej instalacji Skyrim SE 1.7.99.0 / SKSE 2.3.0.
@@ -24,8 +25,8 @@ moduł dziennika SkyUI. Inny zamiennik dziennika wymaga osobnego dopasowania.
 
 - Odległość jest liczona do bieżącej referencji aliasu celu, nie do dowolnej
   postaci lub miasta wybranego na podstawie tytułu zadania.
-- Przy kilku celach pokazuje najbliższy cel, dla którego można policzyć
-  odległość. Inne cele mogą znajdować się we wnętrzach lub innych światach.
+- Przy kilku celach zapamiętuje cel najbliższy w momencie odczytu, dla którego
+  można policzyć odległość. Inne cele mogą znajdować się we wnętrzach lub innych światach.
 - To odległość w linii prostej: nie długość drogi, czas podróży ani trasa
   uwzględniająca góry i drzwi.
 - Odległość ma sens w tym samym świecie zewnętrznym albo tym samym wnętrzu.
@@ -61,10 +62,30 @@ Istniejący luźny plik dziennika wymaga jawnego `--journal-swf`. Nieznany ukła
 kodu SkyUI przerywa budowanie zamiast nakładać niepewną poprawkę.
 `build-report.json` zapisuje listę wejściowych pluginów i indeks celów.
 Deklaracje `Source/CompilerImports` służą wyłącznie kompilacji; paczka zawiera
-tylko cztery własne skrypty PEX. Mod nie nadpisuje questów gry ani ich skryptów.
+tylko sześć własnych skryptów PEX. Mod nie nadpisuje questów gry ani ich skryptów.
 
 ## Granice weryfikacji
 
 Kompilacja Papyrusa i ActionScriptu oraz kontrola struktury paczki potwierdzają
 zbudowanie artefaktów. Poprawnego wyglądu i zachowania w uruchomionej grze
 nie potwierdza sama kompilacja.
+
+## Pamięć celów i kompas
+
+Mod przechowuje 128 ostatnio odwiedzonych pozycji dziennika w zmiennych questu;
+zapis Skyrim zachowuje je razem z postępem gry. Otwarcie dziennika odtwarza
+przechowane informacje. Zmiana etapu lub stanu celu aktualizuje powiązanie
+w tle podczas rozgrywki. Odległość aktualizuje się z pozycji gracza do
+przechowanej referencji, bez ponownego przeszukiwania aliasów przy otwarciu.
+
+Pod kompasem pojawia się nazwa i liczba metrów do ostatnio wybranego
+w dzienniku zadania, które jest zaznaczone do śledzenia. Dla „Różnych” wybierz
+konkretną pozycję na liście celów. Jeśli poprzedni wybór przestaje być
+śledzony, mod wybiera inne zapisane, śledzone zadanie i pokazuje jego nazwę.
+Przy pierwszym użyciu otwórz dziennik, aby mod zapamiętał listę zadań.
+Nie zmienia zaznaczenia questów i nie pokazuje odległości do nieśledzonych
+zadań. Przy oddzielnych wnętrzach nadal widnieje brak dostępnej odległości.
+
+Licznik jest tworzony wewnątrz natywnego kompasu, respektuje jego widoczność
+i nie wymaga zastępowania pliku HUD. Dystans dotyczy zapamiętanego celu
+wybranego zadania, a nie znacznika własnego ustawionego na mapie.

@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "quests": 622,
   "unconditional_targets": 2027,
   "conditional_targets": 1249,
@@ -99,7 +99,8 @@
     "AutoPotionSE.esp",
     "Immersive Citizens - AI Overhaul.esp",
     "Immersive Citizens - OCS patch.esp",
-    "SmartLoot.esp"
+    "SmartLoot.esp",
+    "QuestDistanceJournalSE.esp"
   ],
   "skyui_journal_sha256": "0f5a76185c3db9701645dd46f8295d77e19bedee4593e4c641a20c103fb04b01",
   "targets": {

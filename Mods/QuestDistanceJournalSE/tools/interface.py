@@ -66,6 +66,8 @@ def patch_journal(root: Path, work: Path, source: Path, ffdec: Path, output: Pat
                  '      this.QDJQueueEntries();\n      this.TitleList.InvalidateData();')
     replace_once(page, '      this.UpdateButtonsVisibility();\n      this.ObjectiveList.InvalidateData();',
                  '      this.QDJQueueEntries();\n      this.UpdateButtonsVisibility();\n      this.ObjectiveList.InvalidateData();')
+    replace_once(page, '   function onObjectiveListHighlight(event)\n   {',
+                 '   function onObjectiveListHighlight(event)\n   {\n      this.QDJQueueEntries();')
     base = scripts / '__Packages/Shared/BSScrollingList.as'
     marker = '   function SetPlatform(aiPlatform, abPS3Switch)'
     source_text = base.read_text()

@@ -1,42 +1,31 @@
 Scriptname QDJTargetResolver Hidden
 
-String Function Describe(Quest targetQuest) Global
-    String editorID = targetQuest.GetID()
-    String encoded = QDJTargetIndex.GetTargets(editorID)
+ObjectReference Function FindTarget(Quest targetQuest) Global
+    String encoded = QDJTargetIndex.GetTargets(targetQuest.GetID())
     If encoded == ""
-        Return "Cel bez danych lokalizacji"
+        Return None
     EndIf
     String[] links = StringUtil.Split(encoded, ";")
-    Actor player = Game.GetPlayer()
     ObjectReference nearest
     ObjectReference firstTarget
     Float nearestDistance = -1.0
-    Int targetCount = 0
-    Int conditionalCount = 0
     Int i = 0
     While i < links.Length
         String[] pair = StringUtil.Split(links[i], ":")
-        If pair.Length == 2
-            Int objective = pair[0] as Int
-            If targetQuest.IsObjectiveDisplayed(objective) && !targetQuest.IsObjectiveCompleted(objective) && !targetQuest.IsObjectiveFailed(objective)
-                Int aliasID = pair[1] as Int
-                If aliasID < 0
-                    conditionalCount += 1
-                Else
-                    ReferenceAlias targetAlias = targetQuest.GetAlias(aliasID) as ReferenceAlias
-                    If targetAlias != None
-                        ObjectReference target = targetAlias.GetReference()
-                        If target != None
-                            targetCount += 1
-                            If firstTarget == None
-                                firstTarget = target
-                            EndIf
-                            Float distance = ComparableDistance(player, target)
-                            If distance >= 0.0 && (nearestDistance < 0.0 || distance < nearestDistance)
-                                nearest = target
-                                nearestDistance = distance
-                            EndIf
-                        EndIf
+        Int objective = pair[0] as Int
+        Int aliasID = pair[1] as Int
+        If aliasID >= 0 && targetQuest.IsObjectiveDisplayed(objective) && !targetQuest.IsObjectiveCompleted(objective) && !targetQuest.IsObjectiveFailed(objective)
+            ReferenceAlias targetAlias = targetQuest.GetAlias(aliasID) as ReferenceAlias
+            If targetAlias != None
+                ObjectReference target = targetAlias.GetReference()
+                If target != None
+                    If firstTarget == None
+                        firstTarget = target
+                    EndIf
+                    Float distance = ComparableDistance(Game.GetPlayer(), target)
+                    If distance >= 0.0 && (nearestDistance < 0.0 || distance < nearestDistance)
+                        nearest = target
+                        nearestDistance = distance
                     EndIf
                 EndIf
             EndIf
@@ -44,17 +33,39 @@ String Function Describe(Quest targetQuest) Global
         i += 1
     EndWhile
     If nearest != None
-        String result = PlaceName(nearest) + " | " + FormatDistance(nearestDistance)
-        If targetCount > 1 || conditionalCount > 0
-            result += " | najbliższy dostępny cel"
-        EndIf
-        Return result
-    ElseIf firstTarget != None
-        Return PlaceName(firstTarget) + " | odległość niedostępna"
-    ElseIf conditionalCount > 0
-        Return "Cel warunkowy | brak pewnej lokalizacji"
+        Return nearest
     EndIf
-    Return "Cel bez znacznika lub jeszcze nieustalony"
+    Return firstTarget
+EndFunction
+
+String Function Signature(Quest targetQuest) Global
+    String result = targetQuest.GetCurrentStageID() + ":" + targetQuest.IsCompleted()
+    String encoded = QDJTargetIndex.GetTargets(targetQuest.GetID())
+    If encoded == ""
+        Return result
+    EndIf
+    result += ":" + encoded
+    String[] links = StringUtil.Split(encoded, ";")
+    Int i = 0
+    While i < links.Length
+        String[] pair = StringUtil.Split(links[i], ":")
+        Int objective = pair[0] as Int
+        result += ":" + targetQuest.IsObjectiveDisplayed(objective) + targetQuest.IsObjectiveCompleted(objective) + targetQuest.IsObjectiveFailed(objective)
+        Int aliasID = pair[1] as Int
+        If aliasID >= 0 && targetQuest.IsObjectiveDisplayed(objective) && !targetQuest.IsObjectiveCompleted(objective) && !targetQuest.IsObjectiveFailed(objective)
+            ReferenceAlias targetAlias = targetQuest.GetAlias(aliasID) as ReferenceAlias
+            If targetAlias != None
+                ObjectReference target = targetAlias.GetReference()
+                If target != None
+                    result += ":" + target.GetFormID()
+                Else
+                    result += ":0"
+                EndIf
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    Return result
 EndFunction
 
 Float Function ComparableDistance(Actor player, ObjectReference target) Global

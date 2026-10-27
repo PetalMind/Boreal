@@ -21,7 +21,9 @@ def build_plugin() -> bytes:
                     subrecord(b'HEDR', struct.pack('<fII', 1.7, 1, 0x801))
                     + subrecord(b'CNAM', b'Quest Distance Journal SE\0')
                     + subrecord(b'MAST', b'Skyrim.esm\0') + subrecord(b'DATA', bytes(8)))
-    vmad = struct.pack('<HHH', 5, 2, 1) + text('QDJController') + struct.pack('<BH', 0, 0)
+    vmad = struct.pack('<HHH', 5, 2, 3)
+    for script in ('QDJController', 'QDJCache', 'QDJCompass'):
+        vmad += text(script) + struct.pack('<BH', 0, 0)
     vmad += struct.pack('<bH', 2, 0) + text('') + struct.pack('<H', 1)
     vmad += struct.pack('<HhIHHH', 0, 0, quest_id, 5, 2, 1)
     vmad += text('QDJPlayerAlias') + struct.pack('<BH', 0, 0)
