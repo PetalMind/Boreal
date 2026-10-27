@@ -13,9 +13,9 @@ Paczka 21 zaklęć do **The Elder Scrolls V: Skyrim Special Edition**: po trzy o
 - **Impuls Stwórcy I** — zadaje 15 pkt obrażeń i zachwiewa cele w promieniu 16 stóp; koszt bazowy 45 Magicki.
 - **Impuls Stwórcy II** — zadaje 25 pkt obrażeń i zachwiewa cele w promieniu 16 stóp; koszt bazowy 75 Magicki.
 - **Impuls Stwórcy III** — zadaje 40 pkt obrażeń i zachwiewa cele w promieniu 16 stóp; koszt bazowy 120 Magicki.
-- **Przejęcie Jaźni I** — istota do poziomu 50 atakuje pobliskie cele przez 20 s; koszt bazowy 45 Magicki.
-- **Przejęcie Jaźni II** — istota do poziomu 75 atakuje pobliskie cele przez 25 s; koszt bazowy 80 Magicki.
-- **Przejęcie Jaźni III** — istota do poziomu 100 atakuje pobliskie cele przez 30 s; koszt bazowy 120 Magicki.
+- **Przejęcie Jaźni I** — istota do poziomu 50 atakuje pobliskie cele aż do śmierci; koszt bazowy 45 Magicki.
+- **Przejęcie Jaźni II** — istota do poziomu 75 atakuje pobliskie cele aż do śmierci; koszt bazowy 80 Magicki.
+- **Przejęcie Jaźni III** — istota do poziomu 100 atakuje pobliskie cele aż do śmierci; koszt bazowy 120 Magicki.
 - **Osłabienie Rzeczywistości I** — spowalnia ruch celu o 75% przez 10 s; koszt bazowy 40 Magicki.
 - **Osłabienie Rzeczywistości II** — spowalnia ruch celu o 75% przez 15 s; koszt bazowy 65 Magicki.
 - **Osłabienie Rzeczywistości III** — spowalnia ruch celu o 75% przez 20 s; koszt bazowy 90 Magicki.
@@ -27,6 +27,8 @@ Paczka 21 zaklęć do **The Elder Scrolls V: Skyrim Special Edition**: po trzy o
 - **Odbicie Woli III** — przez 10 s odbija 40% obrażeń fizycznych i dodaje 40% odporności na magię; koszt bazowy 100 Magicki.
 
 Koszt bazowy może zostać obniżony przez poziom szkoły magii i odpowiednie atuty. Pancerz jest w Skyrimie dodawany jako wartość, więc jego wpływ na redukcję obrażeń zależy od pozostałego pancerza i limitu redukcji. Osłabienie obniża ruch, ale nie szybkość ataku, i używa wbudowanego efektu spowolnienia mrozem. Odbicie działa na ciosy fizyczne, nie na obrażenia magiczne. Impuls zachwiewa celami; nie odrzuca ich.
+
+Przejęcie Jaźni nie obejmuje straży, a jego efekty nie są oznaczone jako wrogi atak. Szał utrzymuje się do śmierci celu.
 
 Wtyczka używa istniejących efektów Skyrim. Rangi danego czaru korzystają z tych samych efektów magicznych, a każda ranga ma osobny koszt i parametry. Pozostałe zaklęcia gry zachowują oryginalne brzmienie. Dźwięki pochodzą z `Skyrim.esm`; paczka nie dodaje plików audio, siatek ani tekstur. Bariera daje aurę flesh zamiast kulistej bańki, Impuls korzysta z efektu fali Unrelenting Force, a Pochłonięcie z czerwonego promienia wampirycznego. Część kolorów i wyglądu odbiega więc od docelowych fioletowych, czarno-czerwonych efektów. Zaklęcia nie wymagają Dawnguard, SKSE ani Papyrusa.
 

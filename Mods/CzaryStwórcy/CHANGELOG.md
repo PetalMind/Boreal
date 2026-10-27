@@ -2,6 +2,11 @@
 
 # Changelog
 
+## 1.3.1
+
+- Wydłużono Przejęcie Jaźni we wszystkich rangach do śmierci celu.
+- Wyłączono straże z efektu i usunięto oznaczenie czaru jako wrogiego ataku.
+
 ## 1.3.0
 
 - Dodano rangi II i III dla Pochłonięcia, Impulsu, Przejęcia Jaźni, Osłabienia Rzeczywistości, Zaniku i Odbicia Woli.

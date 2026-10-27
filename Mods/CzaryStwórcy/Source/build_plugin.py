@@ -9,6 +9,18 @@ import zlib
 from pathlib import Path
 
 
+MIND_TAKEOVER_DURATION = 0x7FFFFFFF
+MIND_TAKEOVER_GUARD_KEYWORD = 0x0007EAF3
+MIND_TAKEOVER_HAS_KEYWORD_FUNCTION = 560
+MGEF_CONDITION_OR_FLAG = 0x01
+MIND_TAKEOVER_EFFECT_EDITOR_IDS = {
+    "CreatorMindTakeoverSpellEffect01",
+    "CreatorMindTakeoverSpellEffect02",
+    "CreatorMindTakeoverSpellEffect03",
+}
+MGEF_HOSTILE_FLAG = 0x00000001
+
+
 SPELLS = (
     {
         "source": 0x0008D5BF,
@@ -69,12 +81,14 @@ SPELLS = (
         "source": 0x0004DEEE,
         "editor_id": "CreatorMindTakeoverSpell",
         "name": "Przejęcie Jaźni I",
-        "description": "Istota do poziomu 50 atakuje pobliskie cele przez 20 s.",
+        "description": (
+            "Istota do poziomu 50 atakuje pobliskie cele aż do śmierci."
+        ),
         "cost": 45,
         "effects": (
-            (0x0001EA78, 50.0, 0, 20),
-            (0x0009E0BF, 50.0, 0, 20),
-            (0x00026D7C, 50.0, 0, 20),
+            (0x0001EA78, 50.0, 0, MIND_TAKEOVER_DURATION),
+            (0x0009E0BF, 50.0, 0, MIND_TAKEOVER_DURATION),
+            (0x00026D7C, 50.0, 0, MIND_TAKEOVER_DURATION),
         ),
         "sound_profiles": ("alteration_hit", "silent", "silent"),
     },
@@ -157,17 +171,29 @@ RANK_VARIANTS = (
         "base": "CreatorMindTakeoverSpell",
         "editor_id": "CreatorMindTakeover02Spell",
         "name": "Przejęcie Jaźni II",
-        "description": "Istota do poziomu 75 atakuje pobliskie cele przez 25 s.",
+        "description": (
+            "Istota do poziomu 75 atakuje pobliskie cele aż do śmierci."
+        ),
         "cost": 80,
-        "effects": ((75.0, 0, 25), (75.0, 0, 25), (75.0, 0, 25)),
+        "effects": (
+            (75.0, 0, MIND_TAKEOVER_DURATION),
+            (75.0, 0, MIND_TAKEOVER_DURATION),
+            (75.0, 0, MIND_TAKEOVER_DURATION),
+        ),
     },
     {
         "base": "CreatorMindTakeoverSpell",
         "editor_id": "CreatorMindTakeover03Spell",
         "name": "Przejęcie Jaźni III",
-        "description": "Istota do poziomu 100 atakuje pobliskie cele przez 30 s.",
+        "description": (
+            "Istota do poziomu 100 atakuje pobliskie cele aż do śmierci."
+        ),
         "cost": 120,
-        "effects": ((100.0, 0, 30), (100.0, 0, 30), (100.0, 0, 30)),
+        "effects": (
+            (100.0, 0, MIND_TAKEOVER_DURATION),
+            (100.0, 0, MIND_TAKEOVER_DURATION),
+            (100.0, 0, MIND_TAKEOVER_DURATION),
+        ),
     },
     {
         "base": "CreatorRealityWeakeningSpell",
@@ -376,6 +402,80 @@ def pack_record(
     return bytes(header) + payload
 
 
+def mind_takeover_guard_condition() -> bytes:
+    """Apply the effect only when its target is not a guard."""
+    return struct.pack(
+        "<B3sfH2sIIIIi",
+        0x20,  # HasKeyword != 1.0
+        b"\0" * 3,
+        1.0,
+        MIND_TAKEOVER_HAS_KEYWORD_FUNCTION,
+        b"\0" * 2,
+        MIND_TAKEOVER_GUARD_KEYWORD,
+        0,
+        0,  # Run on the effect target (Subject).
+        0,
+        -1,
+    )
+
+
+def patch_mind_takeover_magic_effect(record: bytes, editor_id: str) -> bytes:
+    """Keep the frenzy effect non-hostile and exclude guards as targets."""
+    signature, _, form_id, subrecords = unpack_record(record)
+    is_mind_takeover_effect = editor_id in MIND_TAKEOVER_EFFECT_EDITOR_IDS
+    if signature != b"MGEF" or not is_mind_takeover_effect:
+        raise ValueError(f"Unexpected Mind Takeover magic effect: {editor_id}")
+
+    guard_condition = mind_takeover_guard_condition()
+    patched = []
+    has_data = False
+    condition_indexes = []
+    guard_condition_index = None
+    for tag, payload in subrecords:
+        if tag == b"DATA":
+            if len(payload) < 4:
+                raise ValueError(f"Malformed DATA subrecord in {editor_id}")
+            magic_effect_data = bytearray(payload)
+            flags = struct.unpack_from("<I", magic_effect_data)[0]
+            struct.pack_into(
+                "<I", magic_effect_data, 0, flags & ~MGEF_HOSTILE_FLAG
+            )
+            payload = bytes(magic_effect_data)
+            has_data = True
+        patched.append((tag, payload))
+        if tag == b"CTDA":
+            condition_indexes.append(len(patched) - 1)
+            if payload == guard_condition:
+                guard_condition_index = len(patched) - 1
+
+    if not has_data:
+        raise ValueError(f"MGEF {editor_id} has no DATA subrecord")
+    if (
+        guard_condition_index is not None
+        and guard_condition_index != condition_indexes[-1]
+    ):
+        raise ValueError(f"Guard condition is not last in {editor_id}")
+    if guard_condition_index is None:
+        if condition_indexes:
+            last_condition_index = condition_indexes[-1]
+            previous_condition = bytearray(patched[last_condition_index][1])
+            previous_condition[0] &= ~MGEF_CONDITION_OR_FLAG
+            patched[last_condition_index] = (
+                b"CTDA",
+                bytes(previous_condition),
+            )
+        patched.append((b"CTDA", guard_condition))
+    elif len(condition_indexes) > 1:
+        previous_condition_index = condition_indexes[-2]
+        previous_condition = bytearray(patched[previous_condition_index][1])
+        previous_condition[0] &= ~MGEF_CONDITION_OR_FLAG
+        patched[previous_condition_index] = (
+            b"CTDA",
+            bytes(previous_condition),
+        )
+    return pack_record(record, form_id, patched)
+
+
 def patch_spell_record(
     record: bytes,
     spec: dict,
@@ -471,6 +571,7 @@ def add_spell_ranks(plugin_path: Path) -> None:
     spell_group_header = None
     spell_group_data = None
     spell_group_insert_at = None
+    magic_effect_group_found = False
 
     while position < len(plugin_data):
         signature = plugin_data[position:position + 4]
@@ -480,7 +581,49 @@ def add_spell_ranks(plugin_path: Path) -> None:
             if group_size < 24 or group_end > len(plugin_data):
                 raise ValueError("Malformed GRUP in CreatorSpells.esp")
             label = plugin_data[position + 8:position + 12]
-            if label == b"SPEL":
+            if label == b"MGEF":
+                if magic_effect_group_found:
+                    raise ValueError("Duplicate MGEF groups")
+                magic_effect_group_found = True
+                group_header = bytearray(plugin_data[position:position + 24])
+                group_records = []
+                child_position = position + 24
+                while child_position < group_end:
+                    child_signature = plugin_data[
+                        child_position:child_position + 4
+                    ]
+                    if child_signature == b"GRUP":
+                        raise ValueError("Nested MGEF groups are not expected")
+                    payload_size = struct.unpack_from(
+                        "<I", plugin_data, child_position + 4
+                    )[0]
+                    record_end = child_position + 24 + payload_size
+                    if record_end > group_end:
+                        raise ValueError("Truncated MGEF record")
+                    record = plugin_data[child_position:record_end]
+                    signature, _, _, subrecords = unpack_record(record)
+                    if signature != b"MGEF":
+                        raise ValueError("Non-MGEF record in MGEF group")
+                    editor_id = next(
+                        (
+                            payload.rstrip(b"\0").decode("ascii")
+                            for tag, payload in subrecords
+                            if tag == b"EDID"
+                        ),
+                        "",
+                    )
+                    if editor_id in MIND_TAKEOVER_EFFECT_EDITOR_IDS:
+                        record = patch_mind_takeover_magic_effect(
+                            record, editor_id
+                        )
+                    group_records.append(record)
+                    child_position = record_end
+                group_children = b"".join(group_records)
+                struct.pack_into(
+                    "<I", group_header, 4, 24 + len(group_children)
+                )
+                rebuilt.extend(bytes(group_header) + group_children)
+            elif label == b"SPEL":
                 if spell_group_data is not None:
                     raise ValueError("Duplicate SPEL groups")
                 spell_group_header = bytearray(
@@ -524,6 +667,8 @@ def add_spell_ranks(plugin_path: Path) -> None:
 
     if header_record is None or spell_group_header is None:
         raise ValueError("TES4 header or SPEL group was not found")
+    if not magic_effect_group_found:
+        raise ValueError("MGEF group was not found")
 
     id_to_record = {
         spell_editor_id(record): form_id
@@ -793,7 +938,9 @@ def main() -> None:
     parser.add_argument(
         "--plugin-only",
         action="store_true",
-        help="Refresh rank descriptions and append ranks to the existing ESP",
+        help=(
+            "Patch effects and ranks in an existing ESP without Skyrim.esm"
+        ),
     )
     parser.add_argument(
         "--output",
