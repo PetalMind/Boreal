@@ -21,7 +21,7 @@ root = Path(sys.argv[1])
 data = root / "Data"
 seq = data / "SEQ/NordicMinimalUISE.seq"
 seq.parent.mkdir(parents=True, exist_ok=True)
-seq.write_bytes(struct.pack("<I", 0x01000800))
+seq.write_bytes(struct.pack("<I", 0x01000805))
 with zipfile.ZipFile(root / "swf.zip") as source:
     for member in source.infolist():
         (data / member.filename.removeprefix("Data/")).parent.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,7 @@ Int detailsOption
 Int refreshOption
 
 Int Function GetVersion()
-    Return 130
+    Return 131
 EndFunction
 
 Event OnConfigInit()

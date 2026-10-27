@@ -15,6 +15,6 @@ Event OnUpdate()
     EndIf
     HorseWhistleMCM configuration = GetOwningQuest() as HorseWhistleMCM
     If configuration != None
-        configuration.OnGameReload()
+        configuration.RestoreMenu()
     EndIf
 EndEvent

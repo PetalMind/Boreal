@@ -8,10 +8,45 @@ Int optionWhistleKey
 Int optionSound
 Int optionVolume
 Int optionPreview
+Bool registrationRepaired
 
 Int Function GetVersion()
-    Return 120
+    Return 122
 EndFunction
+
+Bool Function NeedsRegistrationRepair()
+    Return !registrationRepaired
+EndFunction
+
+Function RestoreMenu()
+    Bool repairName = !registrationRepaired
+    ConfigurePages()
+    ; Restore SkyUI's inherited initialization and event subscriptions explicitly.
+    OnGameReload()
+    If repairName
+        SKI_ConfigManager manager = Game.GetFormFromFile(0x802, "SkyUI_SE.esp") as SKI_ConfigManager
+        If manager != None
+            ; RegisterMod preserves existing names, so remove only our blank entry.
+            If manager.UnregisterMod(Self) < -1
+                Return
+            EndIf
+            OnConfigManagerReset("", "", 0.0, manager)
+            OnConfigManagerReady("", "", 0.0, manager)
+        EndIf
+    EndIf
+EndFunction
+
+Event OnConfigManagerReady(String eventName, String text, Float number, Form sender)
+    If ModName == ""
+        ConfigurePages()
+    EndIf
+    Parent.OnConfigManagerReady(eventName, text, number, sender)
+EndEvent
+
+Event OnConfigRegister()
+    registrationRepaired = True
+    Debug.Trace("[HorseWhistle] MCM registered: " + ModName + "; version=122")
+EndEvent
 
 Event OnConfigInit()
     ConfigurePages()

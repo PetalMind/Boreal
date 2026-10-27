@@ -26,6 +26,7 @@ Function Maintenance()
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicBarsEnabled", IsEnabled(BarsEnabled))
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicCompassEnabled", IsEnabled(CompassEnabled))
     RegisterForSingleUpdate(PollSeconds)
+    Debug.Trace("[NordicMinimalUI] HUD controller initialized; version=105")
 EndFunction
 
 Event OnKeyDown(Int keyCode)

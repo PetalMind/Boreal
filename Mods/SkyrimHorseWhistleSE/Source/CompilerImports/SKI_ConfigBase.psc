@@ -31,3 +31,8 @@ Function SetSliderDialogDefaultValue(Float value) Native
 Function SetSliderDialogRange(Float minimum, Float maximum) Native
 Function SetSliderDialogInterval(Float value) Native
 Bool Function ShowMessage(String message, Bool withCancel = True, String acceptLabel = "$Accept", String cancelLabel = "$Cancel") Native
+
+Event OnConfigManagerReady(String eventName, String text, Float number, Form sender) Native
+Event OnConfigManagerReset(String eventName, String text, Float number, Form sender) Native
+
+Event OnConfigRegister() Native

@@ -10,7 +10,9 @@ EndEvent
 
 Function Initialise()
     generation += 1
-    ((Self as Quest) as QDJCache).Initialise()
+    QDJCache cache = (Self as Quest) as QDJCache
+    cache.Initialise()
+    Debug.Trace("[QDJ] Controller initialized; cache ready=" + cache.IsReady() + "; version=131")
     UnregisterForAllMenus()
     RegisterForMenu("Journal Menu")
     RegisterForModEvent("QDJ_Ready", "OnJournalReady")
@@ -77,6 +79,10 @@ Function PumpJournal()
     processingGeneration = session
     QDJCache cache = (Self as Quest) as QDJCache
     cache.Initialise()
+    If !cache.IsReady()
+        processingGeneration = -1
+        Return
+    EndIf
     Utility.WaitMenuMode(0.1)
     Int cursor = 0
     Int revision = -1

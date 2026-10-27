@@ -18,27 +18,98 @@ Int focusSlot = -1
 Int cacheVersion
 
 Function Initialise()
+    ; Saves can retain a partially allocated cache after interrupted upgrades.
+    ; Repair each array independently before allowing any indexed access.
     If savedQuests == None
         savedQuests = new Quest[128]
+    EndIf
+    If savedInstances == None
         savedInstances = new Int[128]
+    EndIf
+    If savedSignatures == None
         savedSignatures = new String[128]
+    EndIf
+    If savedPlaces == None
         savedPlaces = new String[128]
+    EndIf
+    If savedLabels == None
         savedLabels = new String[128]
+    EndIf
+    If savedTitles == None
+        savedTitles = new String[128]
+    EndIf
+    If savedTargets == None
         savedTargets = new ObjectReference[128]
+    EndIf
+    If savedLocations == None
         savedLocations = new Location[128]
     EndIf
     If savedOrigins == None
         savedOrigins = new ObjectReference[128]
+    EndIf
+    If savedEndpoints == None
         savedEndpoints = new ObjectReference[128]
+    EndIf
+    If savedPlayerCells == None
         savedPlayerCells = new Cell[128]
+    EndIf
+    If savedTargetCells == None
         savedTargetCells = new Cell[128]
+    EndIf
+    If savedDistanceKinds == None
         savedDistanceKinds = new Int[128]
-        savedTitles = new String[128]
     EndIf
-    If cacheVersion < 130
+    If !IsReady()
+        Debug.Trace("[QDJ] Cache allocation incomplete; retrying on next update.", 2)
+        Return
+    EndIf
+    If cacheVersion < 131
         Invalidate()
-        cacheVersion = 130
+        cacheVersion = 131
     EndIf
+EndFunction
+
+Bool Function IsReady()
+    If savedQuests == None
+        Return False
+    EndIf
+    If savedInstances == None
+        Return False
+    EndIf
+    If savedSignatures == None
+        Return False
+    EndIf
+    If savedPlaces == None
+        Return False
+    EndIf
+    If savedLabels == None
+        Return False
+    EndIf
+    If savedTitles == None
+        Return False
+    EndIf
+    If savedTargets == None
+        Return False
+    EndIf
+    If savedLocations == None
+        Return False
+    EndIf
+    If savedOrigins == None
+        Return False
+    EndIf
+    If savedEndpoints == None
+        Return False
+    EndIf
+    If savedPlayerCells == None
+        Return False
+    EndIf
+    If savedTargetCells == None
+        Return False
+    EndIf
+    If savedDistanceKinds == None
+        Return False
+    EndIf
+    Return True
 EndFunction
 
 Function Invalidate()
@@ -56,6 +127,9 @@ EndFunction
 
 Int Function Count()
     Initialise()
+    If !IsReady()
+        Return 0
+    EndIf
     Int total = 0
     Int i = 0
     While i < 128
@@ -69,6 +143,9 @@ EndFunction
 
 Int Function Find(Quest task, Int instanceID)
     Initialise()
+    If !IsReady()
+        Return -1
+    EndIf
     Int i = 0
     While i < 128
         If savedQuests[i] == task && savedInstances[i] == instanceID
@@ -80,6 +157,10 @@ Int Function Find(Quest task, Int instanceID)
 EndFunction
 
 Int Function Remember(Quest task, Int instanceID, String title = "")
+    Initialise()
+    If !IsReady() || task == None
+        Return -1
+    EndIf
     Int slot = Find(task, instanceID)
     If slot < 0
         slot = nextSlot
@@ -106,7 +187,7 @@ Int Function Remember(Quest task, Int instanceID, String title = "")
 EndFunction
 
 Function Refresh(Int slot)
-    If savedQuests == None || slot < 0 || slot >= 128 || savedQuests[slot] == None
+    If !IsReady() || slot < 0 || slot >= 128 || savedQuests[slot] == None
         Return
     EndIf
     Quest task = savedQuests[slot]
@@ -152,14 +233,14 @@ Function Refresh(Int slot)
 EndFunction
 
 Float Function Distance(Int slot)
-    If slot < 0 || slot >= 128
+    If !IsReady() || slot < 0 || slot >= 128
         Return -1.0
     EndIf
     Return QDJTargetResolver.ComparableDistance(savedOrigins[slot], savedEndpoints[slot])
 EndFunction
 
 String Function Place(Int slot)
-    If slot < 0 || slot >= 128
+    If !IsReady() || slot < 0 || slot >= 128
         Return ""
     EndIf
     If savedTargets[slot] == None
@@ -169,7 +250,7 @@ String Function Place(Int slot)
 EndFunction
 
 String Function Label(Int slot)
-    If slot < 0 || slot >= 128
+    If !IsReady() || slot < 0 || slot >= 128
         Return "Lokalizacja i odległość niedostępne"
     EndIf
     Return savedLabels[slot]
@@ -187,6 +268,9 @@ EndFunction
 
 Int Function Focus()
     Initialise()
+    If !IsReady()
+        Return -1
+    EndIf
     If focusSlot >= 0 && savedQuests[focusSlot] != None
         If savedQuests[focusSlot].IsActive() && !savedQuests[focusSlot].IsCompleted()
             Return focusSlot
@@ -207,7 +291,7 @@ Int Function Focus()
 EndFunction
 
 String Function CompassLabel(Int slot)
-    If slot < 0 || savedQuests[slot] == None
+    If !IsReady() || slot < 0 || savedQuests[slot] == None
         Return ""
     EndIf
     String title = savedTitles[slot]

@@ -17,6 +17,10 @@ EndEvent
 
 Function Maintenance()
     LoadSettings()
+    HorseWhistleMCM configuration = (Self as Quest) as HorseWhistleMCM
+    If configuration != None
+        configuration.RestoreMenu()
+    EndIf
     ApplyWhistleKey(GetWhistleKey())
     RegisterForSingleUpdate(MarkerUpdateInterval)
 EndFunction
@@ -28,6 +32,10 @@ Event OnKeyDown(Int keyCode)
 EndEvent
 
 Event OnUpdate()
+    HorseWhistleMCM configuration = (Self as Quest) as HorseWhistleMCM
+    If configuration != None && configuration.NeedsRegistrationRepair()
+        configuration.RestoreMenu()
+    EndIf
     Actor horse = Game.GetPlayersLastRiddenHorse()
     If horse != None && !horse.IsDead() && !horse.IsDisabled()
         UpdateMarker(horse)

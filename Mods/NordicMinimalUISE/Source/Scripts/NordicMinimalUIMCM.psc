@@ -51,7 +51,7 @@ Event OnOptionKeyMapChange(Int option, Int keyCode, String conflictControl, Stri
     SetValue(RouteKeyCode, keyCode as Float)
     SetKeyMapOptionValue(option, keyCode)
 
-    NordicMinimalUIQuest routeQuest = Game.GetFormFromFile(0x800, "NordicMinimalUISE.esp") as NordicMinimalUIQuest
+    NordicMinimalUIQuest routeQuest = Game.GetFormFromFile(0x805, "NordicMinimalUISE.esp") as NordicMinimalUIQuest
     If routeQuest != None
         routeQuest.SetRouteKey(keyCode)
     EndIf

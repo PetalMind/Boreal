@@ -115,9 +115,11 @@ def main() -> None:
       this.DrawNordicHorseBar(this.NordicHorseHealthBar,1,0xB66D61);
       this.DrawNordicHorseBar(this.NordicHorseStaminaBar,1,0xD8CDA5);
       panel._visible = false;
+      // Lock preserves the authored offset; it does not move a new clip to BR.
+      // Position in the same coordinate space as the native stamina meter first.
+      panel._x = this.StaminaMeterAnim._x + this.StaminaMeterAnim._width - 264;
+      panel._y = this.StaminaMeterAnim._y - 118;
       panel.Lock("BR");
-      panel._x -= 316;
-      panel._y -= 154;
    }
    function DrawNordicHorseBar(barClip,percent,color)
    {
