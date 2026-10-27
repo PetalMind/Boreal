@@ -8473,13 +8473,34 @@ final class BorealStore {
                         in: installedDirectory,
                         applicationName: applications[index].name
                     )
-                    plan = SteamWindowsService.playPlan(
-                        appID: appID,
-                        steamExecutable: executable,
-                        gameExecutableName: gameExecutable?.lastPathComponent,
-                        gameExecutablePath: gameExecutable?.path,
-                        sessionScope: applications[index].usesSharedSteamGameSession ? .processGroup : .exclusiveEnvironment
-                    )
+                    let skyrimExecutable = installedDirectory.appending(path: "SkyrimSE.exe")
+                    let sessionScope: SessionScope = applications[index].usesSharedSteamGameSession
+                        ? .processGroup
+                        : .exclusiveEnvironment
+                    if appID == "489830",
+                       FileManager.default.isReadableFile(atPath: skyrimExecutable.path),
+                       let loader = SkyrimScriptExtenderArchive.matchingLoader(
+                           in: installedDirectory,
+                           gameVersion: FomodInstaller.gameVersion(executableAt: skyrimExecutable)
+                       ) {
+                        plan = WindowsLaunchPlan(
+                            executable: loader,
+                            arguments: [],
+                            environment: [:],
+                            workingDirectory: installedDirectory,
+                            sessionScope: sessionScope,
+                            processExecutableName: skyrimExecutable.lastPathComponent,
+                            processExecutablePath: skyrimExecutable.path
+                        )
+                    } else {
+                        plan = SteamWindowsService.playPlan(
+                            appID: appID,
+                            steamExecutable: executable,
+                            gameExecutableName: gameExecutable?.lastPathComponent,
+                            gameExecutablePath: gameExecutable?.path,
+                            sessionScope: sessionScope
+                        )
+                    }
                 case .epic, .gog:
                     guard let storedGame = storeGames.first(where: { $0.provider == provider && $0.externalID == appID }) else {
                         throw GameStoreProviderError.installationMissing(provider)
@@ -8499,7 +8520,9 @@ final class BorealStore {
                         )
                     }
                 }
-                applications[index].executablePath = plan.executable.path
+                if provider != .steam || plan.executable.lastPathComponent.caseInsensitiveCompare("steam.exe") == .orderedSame {
+                    applications[index].executablePath = plan.executable.path
+                }
                 var configuredPlan = try GameGraphicsProfiles.applying(
                     graphicsLaunchOption,
                     to: plan,

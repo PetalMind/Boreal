@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3
+
+- Przeniesiono konfigurację do nowego prywatnego zadania MCM z oficjalnym aliasem SkyUI; usuwany jest wyłącznie dawny pusty wpis menu.
+
 ## 1.2.2
 
 - Naprawiono puste menu konia zapisane w rejestrze SkyUI: odtwarzanie inicjalizacji MCM i ponowna rejestracja wyłącznie tego menu.

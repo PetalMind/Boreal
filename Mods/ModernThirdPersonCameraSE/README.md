@@ -13,22 +13,33 @@ przejścia między pozycjami.
 - Płynny powrót za postać po ręcznym obracaniu kamerą.
 - Regulowana szybkość zoomu kółkiem myszy oraz FOV profili.
 - Tłumienie przejść wykorzystuje natywną interpolację kamery gry.
+- MCM pozwala ustawić pozycję, pole widzenia i zachowanie kamery osobno dla eksploracji, walki i łuku.
 
 ## Wymagania
 
 - Windows, Skyrim Special Edition 1.5.97 lub Anniversary Edition 1.6.x.
 - SKSE64 zgodne z używaną wersją gry.
 - Address Library for SKSE Plugins.
+- SkyUI z MCM.
 
 Nie instaluj równocześnie z SmoothCam ani innym pluginem, który przejmuje
 pozycjonowanie kamery trzecioosobowej. Takie mody konkurują o ten sam stan
 kamery.
 
-## Konfiguracja
+## Ustawienia
 
-Edytuj `Data/SKSE/Plugins/ModernThirdPersonCameraSE.ini`. Wartości przesunięcia
-ramienia są dodawane do bazowych wartości Skyrim w bieżącej sesji. Nie zapisują
-zmian do `Skyrim.ini`.
+W menu **Ustawienia → Mod Configuration** wybierz **Modern Third Person Camera SE**.
+MCM pozwala włączać kamerę i automatyczne centrowanie, a także zmieniać czułość
+zoomu, przesunięcia ramienia oraz FOV dla eksploracji, walki i łuku. Ustawienia
+MCM zapisują się w grze. Wartości INI są używane jako wartości początkowe, dopóki
+nie zmienisz opcji w MCM.
+
+Ręcznie możesz edytować `Data/SKSE/Plugins/ModernThirdPersonCameraSE.ini`.
+Zmiany w INI wymagają ponownego uruchomienia gry. Kółko myszy nadal zmienia
+odległość kamery; `ZoomSensitivity` skaluje siłę tego wejścia.
+
+Wartości przesunięcia ramienia są dodawane do bazowych wartości Skyrim w bieżącej
+sesji. Nie zapisują zmian do `Skyrim.ini`.
 
 ```ini
 [Camera]
@@ -51,9 +62,6 @@ RecenterDelay=1.1
 RecenterResponse=2.4
 ```
 
-Zmiany w INI wymagają ponownego uruchomienia gry. Kółko myszy nadal zmienia
-odległość kamery; `ZoomSensitivity` skaluje siłę tego wejścia.
-
 ## Budowanie i instalacja
 
 Build wymaga Windows, CMake, Visual Studio 2022 z komponentami C++ oraz
@@ -64,9 +72,9 @@ $env:VCPKG_ROOT = "C:\dev\vcpkg"
 .\build.ps1
 ```
 
-Skrypt buduje DLL przez CommonLibSSE-NG i tworzy
-`ModernThirdPersonCameraSE.zip`. Zainstaluj archiwum przez MO2/Vortex albo
-rozpakuj je do katalogu `Data` gry. Uruchamiaj grę przez SKSE64.
+Skrypt buduje DLL przez CommonLibSSE-NG, kompiluje skrypty Papyrusa, tworzy plugin
+MCM i pakuje `ModernThirdPersonCameraSE.zip`. Zainstaluj archiwum przez MO2/Vortex
+albo rozpakuj je do katalogu `Data` gry. Uruchamiaj grę przez SKSE64.
 
 Źródła pluginu znajdują się w `src/`. Wersja pakietu w `manifest.json` jest
 źródłem prawdy i jest odczytywana przez system budowania.

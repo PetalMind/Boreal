@@ -1,6 +1,7 @@
 Scriptname Actor Extends ObjectReference Native
 
 Bool Function IsDead() Native
+Bool Function DispelSpell(Spell akSpell) Native
 Bool Function IsInCombat() Native
 Bool Function IsBeingRidden() Native
 Bool Function IsOnMount() Native

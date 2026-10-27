@@ -9,6 +9,8 @@ GlobalVariable FadeSeconds
 GlobalVariable BarsEnabled
 GlobalVariable CompassEnabled
 GlobalVariable RouteKeyCode
+Bool routeActive
+Spell routeSpell
 
 Event OnInit()
     Maintenance()
@@ -17,6 +19,8 @@ EndEvent
 Function Maintenance()
     hudConfigured = False
     horsePanelVisible = False
+    routeSpell = Game.GetFormFromFile(0x806, "NordicMinimalUISE.esp") as Spell
+    StopRoute()
     FadeSeconds = Game.GetFormFromFile(0x801, "NordicMinimalUISE.esp") as GlobalVariable
     BarsEnabled = Game.GetFormFromFile(0x802, "NordicMinimalUISE.esp") as GlobalVariable
     CompassEnabled = Game.GetFormFromFile(0x803, "NordicMinimalUISE.esp") as GlobalVariable
@@ -26,12 +30,19 @@ Function Maintenance()
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicBarsEnabled", IsEnabled(BarsEnabled))
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicCompassEnabled", IsEnabled(CompassEnabled))
     RegisterForSingleUpdate(PollSeconds)
-    Debug.Trace("[NordicMinimalUI] HUD controller initialized; version=105")
+    Debug.Trace("[NordicMinimalUI] HUD controller initialized")
 EndFunction
 
 Event OnKeyDown(Int keyCode)
     If keyCode == GetRouteKey() && keyCode > 0 && !Utility.IsInMenuMode() && !UI.IsTextInputEnabled()
-        CastClairvoyance()
+        If routeActive
+            StopRoute()
+        ElseIf routeSpell != None
+            routeActive = True
+            UpdateRoute(Game.GetPlayer())
+        Else
+            Debug.Notification("Nawigacja niedostępna. Zaktualizuj Nordic Minimal UI SE.")
+        EndIf
     EndIf
 EndEvent
 
@@ -65,23 +76,43 @@ Int Function GetRouteKey()
 EndFunction
 
 Function ApplyRouteKey(Int keyCode)
+    If keyCode == 0
+        StopRoute()
+    EndIf
     UnregisterForAllKeys()
     If keyCode > 0 && keyCode <= 255
         RegisterForKey(keyCode)
     EndIf
 EndFunction
 
-Function CastClairvoyance()
+Function StopRoute()
+    routeActive = False
     Actor player = Game.GetPlayer()
-    Spell clairvoyance = Game.GetFormFromFile(0x21143, "Skyrim.esm") as Spell
-    If player == None || clairvoyance == None
+    If player != None && routeSpell != None
+        player.DispelSpell(routeSpell)
+    EndIf
+EndFunction
+
+Function UpdateRoute(Actor player)
+    If !routeActive || player == None || routeSpell == None
         Return
     EndIf
-    clairvoyance.Cast(player, player)
+    If player.IsDead()
+        StopRoute()
+        Return
+    EndIf
+    If Utility.IsInMenuMode() || !UI.IsMenuOpen("HUD Menu")
+        Return
+    EndIf
+    ; Replace the previous guide so the engine recalculates from the current
+    ; player position, including while mounted. Only our private spell is dispelled.
+    player.DispelSpell(routeSpell)
+    routeSpell.Cast(player, player)
 EndFunction
 
 Event OnUpdate()
     Actor player = Game.GetPlayer()
+    UpdateRoute(player)
     If UI.IsMenuOpen("HUD Menu")
         If !hudConfigured
             UI.InvokeFloat("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicFadeDelay", GetValue(FadeSeconds, 5.0))

@@ -16,8 +16,16 @@ kliknięciem lub przeciągnięciem po tarczy, kółkiem myszy, strzałkami, Page
 Page Down albo bumperami kontrolera. Potwierdzanie i anulowanie pozostają
 oryginalne.
 
-Klawisz Jasnowidzenia można przypisać w MCM. Po postawieniu własnego znacznika
-na mapie użyj tego klawisza, aby wywołać wbudowany czar i zobaczyć trasę do celu.
+Klawisz Jasnowidzenia (domyślnie H) można przypisać w MCM. Naciśnięcie włącza
+nawigację do celu wskazywanego przez silnik Jasnowidzenia. Trasa odświeża się
+co 0,5 sekundy z aktualnej pozycji gracza, również podczas jazdy konnej.
+Ponowne naciśnięcie wyłącza nawigację. Koszt wynosi zawsze 0 magicki, także
+przy pustym pasku; pomocniczy czar nie daje doświadczenia magii.
+Odświeżanie jest wstrzymane w menu. Wczytanie zapisu, śmierć gracza lub
+wyłączenie skrótu wyłącza nawigację. Dostępność drogi zależy od celu i siatki
+nawigacyjnej gry, tak samo jak przy zwykłym Jasnowidzeniu.
+
+Wersję moda określa plik `VERSION`.
 
 Lista tematów dialogowych używa spokojniejszej, nordyckiej palety: nieomówione
 tematy są złote, a wcześniej użyte przygaszone. Przy przycisku wyjścia z rozmowy

@@ -17,7 +17,7 @@ EndEvent
 
 Function Maintenance()
     LoadSettings()
-    HorseWhistleMCM configuration = (Self as Quest) as HorseWhistleMCM
+    HorseWhistleMCM configuration = Game.GetFormFromFile(0x808, "SkyrimHorseWhistleSE.esp") as HorseWhistleMCM
     If configuration != None
         configuration.RestoreMenu()
     EndIf
@@ -32,7 +32,7 @@ Event OnKeyDown(Int keyCode)
 EndEvent
 
 Event OnUpdate()
-    HorseWhistleMCM configuration = (Self as Quest) as HorseWhistleMCM
+    HorseWhistleMCM configuration = Game.GetFormFromFile(0x808, "SkyrimHorseWhistleSE.esp") as HorseWhistleMCM
     If configuration != None && configuration.NeedsRegistrationRepair()
         configuration.RestoreMenu()
     EndIf

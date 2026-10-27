@@ -25,23 +25,32 @@ For supported archives, Boreal:
   `Skyrim.ccc` remain in the Boreal profile but are omitted from this generated
   file; duplicate plugin filenames are collapsed before saving or deployment.
 
-The Mods view now labels this path as **Skyrim Data Files / Skyrim Data
-Folder**. It blocks automatic installation when an archive contains a FOMOD
-installer or non-document payload files outside the detected `Data` folder,
-because those contents would otherwise be silently omitted or installed with
-the wrong options.
+Boreal also recognizes the official SKSE64 archive layout. It verifies the
+version-specific `skse64_*.dll` against the installed `SkyrimSE.exe`, stages
+`skse64_loader.exe` and the matching DLL beside the game executable, and stages
+SKSE's `Data` files in the game's `Data` folder. The deployment manifest backs
+up and restores files from both locations. When the matching loader is present,
+launching the Steam edition starts `skse64_loader.exe` after bootstrapping
+Steam.
+
+For other Skyrim archives, the Mods view labels the path as **Skyrim Data
+Files / Skyrim Data Folder**. It blocks automatic installation when an archive
+contains a FOMOD installer or non-document payload files outside the detected
+`Data` folder, because those contents would otherwise be silently omitted or
+installed with the wrong options.
 
 ## Recognition limits
 
-This is a direct `Data` folder manager. It is not a general Skyrim mod
-installer and does not support every mod:
+This is a direct Skyrim file manager. It is not a general Skyrim mod installer
+and does not support every mod:
 
 - FOMOD XML choices, scripted installers, and dependency-driven option
   selection are not executed.
-- Game-root files and overlays are not deployed. Archives that include such
-  payloads beside `Data` are stopped in the preview.
-- Boreal does not install SKSE itself, run SKSE-dependent setup tools, or
-  execute output generators such as Nemesis, FNIS, or DynDOLOD.
+- Game-root files from general mods and overlays are not deployed. The only
+  supported game-root package is the version-matched SKSE64 loader and runtime
+  DLL.
+- Boreal does not run SKSE-dependent setup tools or execute output generators
+  such as Nemesis, FNIS, or DynDOLOD.
 - Boreal does not implement Mod Organizer 2's process-scoped virtual file
   system or Vortex deployment. MO2's USVFS presents files only to selected
   processes; Vortex deploys files from staging into the game directory using

@@ -56,7 +56,7 @@ archive_path = root_dir / "SkyrimHorseWhistleSE.zip"
 version = json.loads((root_dir / "manifest.json").read_text())["version"]
 seq = build_dir / "Data/SEQ/SkyrimHorseWhistleSE.seq"
 seq.parent.mkdir(parents=True, exist_ok=True)
-seq.write_bytes(struct.pack("<I", 0x01000800))
+seq.write_bytes(struct.pack("<II", 0x01000800, 0x01000808))
 for path in sorted((build_dir / "Data").rglob("*")):
     if path.is_file() and not any(part.startswith(".") for part in path.relative_to(build_dir).parts):
         destination = root_dir / path.relative_to(build_dir)

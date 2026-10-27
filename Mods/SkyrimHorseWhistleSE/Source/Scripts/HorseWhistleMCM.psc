@@ -9,16 +9,21 @@ Int optionSound
 Int optionVolume
 Int optionPreview
 Bool registrationRepaired
+Bool legacyRetired
 
 Int Function GetVersion()
-    Return 122
+    Return 123
 EndFunction
 
 Bool Function NeedsRegistrationRepair()
-    Return !registrationRepaired
+    Return !registrationRepaired || !legacyRetired
 EndFunction
 
 Function RestoreMenu()
+    If !IsCurrentConfiguration()
+        Return
+    EndIf
+    RetireLegacyMenu()
     Bool repairName = !registrationRepaired
     ConfigurePages()
     ; Restore SkyUI's inherited initialization and event subscriptions explicitly.
@@ -37,6 +42,9 @@ Function RestoreMenu()
 EndFunction
 
 Event OnConfigManagerReady(String eventName, String text, Float number, Form sender)
+    If !IsCurrentConfiguration()
+        Return
+    EndIf
     If ModName == ""
         ConfigurePages()
     EndIf
@@ -45,16 +53,45 @@ EndEvent
 
 Event OnConfigRegister()
     registrationRepaired = True
-    Debug.Trace("[HorseWhistle] MCM registered: " + ModName + "; version=122")
+    Debug.Trace("[HorseWhistle] MCM registered: " + ModName + "; version=123")
 EndEvent
 
 Event OnConfigInit()
+    If !IsCurrentConfiguration()
+        Return
+    EndIf
     ConfigurePages()
+    RetireLegacyMenu()
 EndEvent
 
 Event OnVersionUpdate(Int version)
-    ConfigurePages()
+    If IsCurrentConfiguration()
+        ConfigurePages()
+    EndIf
 EndEvent
+
+Bool Function IsCurrentConfiguration()
+    Return Self == Game.GetFormFromFile(0x808, "SkyrimHorseWhistleSE.esp")
+EndFunction
+
+Function RetireLegacyMenu()
+    If legacyRetired
+        Return
+    EndIf
+    HorseWhistleMCM legacy = Game.GetFormFromFile(0x800, "SkyrimHorseWhistleSE.esp") as HorseWhistleMCM
+    If legacy == None
+        legacyRetired = True
+        Return
+    EndIf
+    legacy.UnregisterForModEvent("SKICP_configManagerReady")
+    legacy.UnregisterForModEvent("SKICP_configManagerReset")
+    SKI_ConfigManager manager = Game.GetFormFromFile(0x802, "SkyUI_SE.esp") as SKI_ConfigManager
+    If manager != None
+        If manager.UnregisterMod(legacy) >= -1
+            legacyRetired = True
+        EndIf
+    EndIf
+EndFunction
 
 Function ConfigurePages()
     ModName = "Horse Whistle SE"

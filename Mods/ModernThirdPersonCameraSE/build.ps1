@@ -9,9 +9,17 @@ $manifest = Get-Content (Join-Path $root "manifest.json") -Raw | ConvertFrom-Jso
 $buildDir = Join-Path $root "build"
 $vcpkgManifestDir = Join-Path $buildDir "vcpkg-manifest"
 $stageDir = Join-Path $buildDir "stage"
+$compiler = Join-Path $root "../../.local-tools/caprica/Caprica.exe"
+$python = Get-Command python -ErrorAction SilentlyContinue
 
 if ([string]::IsNullOrWhiteSpace($env:VCPKG_ROOT)) {
     throw "Set VCPKG_ROOT to your vcpkg checkout before building."
+}
+if (-not (Test-Path $compiler)) {
+    throw "Papyrus compiler was not found at $compiler."
+}
+if ($null -eq $python) {
+    throw "Python 3 is required to create the plugin record."
 }
 
 $toolchain = Join-Path $env:VCPKG_ROOT "scripts/buildsystems/vcpkg.cmake"
@@ -46,6 +54,33 @@ if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 Copy-Item $dll (Join-Path $pluginDir "ModernThirdPersonCameraSE.dll") -Force
 Copy-Item (Join-Path $root "Data/SKSE/Plugins/ModernThirdPersonCameraSE.ini") $pluginDir -Force
+
+$scriptsDir = Join-Path $stageDir "Data/Scripts"
+New-Item -ItemType Directory -Force -Path $scriptsDir | Out-Null
+$compilerArgs = @(
+    "--game=skyrim", "--strict", "--ignorecwd",
+    "--flags", (Join-Path $root "Source/CompilerImports/TESV_Papyrus_Flags.flg"),
+    "-i", (Join-Path $root "Source/CompilerImports"),
+    "-o", $scriptsDir,
+    "ModernThirdPersonCameraMCM.psc", "ModernThirdPersonCameraPlayerAlias.psc"
+)
+Push-Location (Join-Path $root "Source/Scripts")
+try {
+    & $compiler @compilerArgs
+    if ($LASTEXITCODE -ne 0) { throw "Papyrus compilation failed." }
+} finally {
+    Pop-Location
+}
+
+$pluginOutput = Join-Path $stageDir "Data/ModernThirdPersonCameraSE.esp"
+& $python.Source (Join-Path $root "tools/build_plugin.py") $pluginOutput
+if ($LASTEXITCODE -ne 0) { throw "MCM plugin record generation failed." }
+$sequenceDir = Join-Path $stageDir "Data/SEQ"
+New-Item -ItemType Directory -Force -Path $sequenceDir | Out-Null
+[System.IO.File]::WriteAllBytes(
+    (Join-Path $sequenceDir "ModernThirdPersonCameraSE.seq"),
+    [BitConverter]::GetBytes([uint32]0x01000800)
+)
 
 $archive = Join-Path $buildDir "ModernThirdPersonCameraSE.zip"
 if (Test-Path $archive) { Remove-Item $archive -Force }

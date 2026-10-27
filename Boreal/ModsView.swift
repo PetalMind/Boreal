@@ -48,6 +48,7 @@ struct ModsView: View {
                 case .witcher3DLC: "folder.badge.plus"
                 case .witcher3GameFiles: "doc.badge.gearshape"
                 case .skyrimData: "square.stack.3d.up"
+                case .skyrimScriptExtender: "bolt.horizontal.circle"
                 case .manual: "hand.raised"
                 case .unknown: "questionmark.square"
                 }
@@ -1484,7 +1485,12 @@ private struct ModInstallPreviewSheet: View {
                                     ? "DAZIP"
                                     : preview.format.rawValue.uppercased()
                             )
-                            previewRow("Installation root", value: "/\(preview.detectedRoot)")
+                            previewRow(
+                                "Installation root",
+                                value: preview.contentType == .skyrimScriptExtender
+                                    ? preview.detectedRoot
+                                    : "/\(preview.detectedRoot)"
+                            )
                             if preview.totalSize > 0 && (preview.fomodPlan?.steps.isEmpty ?? true) {
                                 previewRow("Selected files", value: ByteCountFormatter.string(fromByteCount: preview.totalSize, countStyle: .file))
                             }
@@ -1519,6 +1525,8 @@ private struct ModInstallPreviewSheet: View {
                             Text(preview.format == .loosePak
                                 ? "Boreal will keep the .pak in its mod library, stage it safely and deploy it to the GTA SA:DE ~mods folder."
                                 : "Boreal will keep the archive in its mod library, stage its PAK files safely and deploy them to the GTA SA:DE ~mods folder.")
+                        } else if preview.contentType == .skyrimScriptExtender {
+                            Text("Boreal will keep the archive, install the matching SKSE loader beside SkyrimSE.exe and place SKSE scripts in Data. Choose Deploy Changes before launching the game.")
                         } else if preview.isUpdate {
                             Text("Boreal will replace the staged files and automatically deploy the updated mod to the game.")
                         } else {

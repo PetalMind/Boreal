@@ -58,6 +58,7 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
     case witcher3DLC
     case witcher3GameFiles
     case skyrimData
+    case skyrimScriptExtender
     case manual
     case unknown
 
@@ -78,6 +79,7 @@ nonisolated enum ModContentType: String, Codable, CaseIterable, Sendable, Hashab
         case .witcher3DLC: "The Witcher 3 DLC Folder"
         case .witcher3GameFiles: "The Witcher 3 Game Files"
         case .skyrimData: "Skyrim Data Files"
+        case .skyrimScriptExtender: "Skyrim Script Extender"
         case .manual: "Manual Installer"
         case .unknown: "Unknown"
         }
@@ -109,6 +111,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
     case witcher2UserContent
     case witcher3GameRoot
     case skyrimDataFolder
+    case skyrimScriptExtender
 
     var displayName: String {
         switch self {
@@ -124,6 +127,7 @@ nonisolated enum ModDeployStrategy: String, Codable, CaseIterable, Sendable, Has
         case .witcher2UserContent: "User Content"
         case .witcher3GameRoot: "The Witcher 3 Game Folder"
         case .skyrimDataFolder: "Skyrim Data Folder"
+        case .skyrimScriptExtender: "Game Folder + Skyrim Data"
         }
     }
 }
@@ -211,8 +215,48 @@ nonisolated struct ModFile: Codable, Hashable, Sendable, Identifiable {
     /// Original staged path retained when a legacy Witcher 3 archive wrapper
     /// is flattened to the directory layout the game actually loads.
     var stagedSourcePath: String? = nil
+    /// Skyrim SKSE packages also contain files installed beside SkyrimSE.exe.
+    /// Existing profiles omit this field and continue to target Data.
+    var destinationRoot: ModFileDestinationRoot = .data
 
-    var id: String { relativePath }
+    var id: String { destinationRoot.key(for: relativePath) }
+    var stagedPath: String { stagedSourcePath ?? relativePath }
+
+    private enum CodingKeys: String, CodingKey {
+        case relativePath, sha256, size, stagedSourcePath, destinationRoot
+    }
+
+    init(
+        relativePath: String,
+        sha256: String,
+        size: Int64,
+        stagedSourcePath: String? = nil,
+        destinationRoot: ModFileDestinationRoot = .data
+    ) {
+        self.relativePath = relativePath
+        self.sha256 = sha256
+        self.size = size
+        self.stagedSourcePath = stagedSourcePath
+        self.destinationRoot = destinationRoot
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        relativePath = try container.decode(String.self, forKey: .relativePath)
+        sha256 = try container.decode(String.self, forKey: .sha256)
+        size = try container.decode(Int64.self, forKey: .size)
+        stagedSourcePath = try container.decodeIfPresent(String.self, forKey: .stagedSourcePath)
+        destinationRoot = try container.decodeIfPresent(ModFileDestinationRoot.self, forKey: .destinationRoot) ?? .data
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(relativePath, forKey: .relativePath)
+        try container.encode(sha256, forKey: .sha256)
+        try container.encode(size, forKey: .size)
+        try container.encodeIfPresent(stagedSourcePath, forKey: .stagedSourcePath)
+        try container.encode(destinationRoot, forKey: .destinationRoot)
+    }
 }
 
 nonisolated struct BethesdaPlugin: Codable, Hashable, Sendable, Identifiable {
@@ -588,6 +632,51 @@ nonisolated struct ModDeploymentFile: Codable, Hashable, Sendable {
     var source: String
     var backup: String?
     var originalHash: String?
+    var destinationRoot: ModFileDestinationRoot = .data
+
+    private enum CodingKeys: String, CodingKey {
+        case path, owner, sha256, source, backup, originalHash, destinationRoot
+    }
+
+    init(
+        path: String,
+        owner: UUID,
+        sha256: String,
+        source: String,
+        backup: String?,
+        originalHash: String?,
+        destinationRoot: ModFileDestinationRoot = .data
+    ) {
+        self.path = path
+        self.owner = owner
+        self.sha256 = sha256
+        self.source = source
+        self.backup = backup
+        self.originalHash = originalHash
+        self.destinationRoot = destinationRoot
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decode(String.self, forKey: .path)
+        owner = try container.decode(UUID.self, forKey: .owner)
+        sha256 = try container.decode(String.self, forKey: .sha256)
+        source = try container.decode(String.self, forKey: .source)
+        backup = try container.decodeIfPresent(String.self, forKey: .backup)
+        originalHash = try container.decodeIfPresent(String.self, forKey: .originalHash)
+        destinationRoot = try container.decodeIfPresent(ModFileDestinationRoot.self, forKey: .destinationRoot) ?? .data
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encode(owner, forKey: .owner)
+        try container.encode(sha256, forKey: .sha256)
+        try container.encode(source, forKey: .source)
+        try container.encodeIfPresent(backup, forKey: .backup)
+        try container.encodeIfPresent(originalHash, forKey: .originalHash)
+        try container.encode(destinationRoot, forKey: .destinationRoot)
+    }
 }
 
 nonisolated struct ModDeploymentManifest: Codable, Hashable, Sendable {
@@ -1189,18 +1278,19 @@ nonisolated enum ModConflictResolver {
         var owners: [String: [(mod: InstalledMod, file: ModFile)]] = [:]
         for mod in mods where mod.enabled {
             for file in mod.files {
-                owners[file.relativePath.lowercased(), default: []].append((mod, file))
+                owners[file.id, default: []].append((mod, file))
             }
         }
         return owners.compactMap { key, values in
             guard values.count > 1,
                   let winner = values.max(by: { $0.mod.priority < $1.mod.priority }) else { return nil }
             let ordered = values.sorted { $0.mod.priority < $1.mod.priority }
+            let winningFile = ordered.last?.file
             return ModConflict(
-                relativePath: ordered.last?.file.relativePath ?? key,
+                relativePath: winningFile.map { $0.destinationRoot.displayPath($0.relativePath) } ?? key,
                 modIDs: ordered.map { $0.mod.id },
                 winnerModID: winner.mod.id,
-                kind: conflictKind(for: ordered.last?.file.relativePath ?? key),
+                kind: conflictKind(for: winningFile?.relativePath ?? key),
                 resolutionStrategy: .priorityLast
             )
         }.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
@@ -1225,8 +1315,16 @@ nonisolated enum ModProfileFingerprint {
         includeExternallyDetected: Bool = false
     ) -> String {
         let modPart = mods.filter { includeExternallyDetected || !$0.isExternallyDetected }.sorted { $0.priority < $1.priority }.map { mod in
-            let files = mod.files.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
-                .map { "\($0.relativePath)=\($0.sha256)" }
+            let files = mod.files.sorted {
+                if $0.destinationRoot != $1.destinationRoot {
+                    return $0.destinationRoot.rawValue < $1.destinationRoot.rawValue
+                }
+                return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+            }
+                .map {
+                    let target = $0.destinationRoot == .data ? $0.relativePath : $0.id
+                    return "\(target)=\($0.sha256)"
+                }
                 .joined(separator: ";")
             return "\(mod.id.uuidString):\(mod.enabled ? 1 : 0):\(mod.priority):\(files)"
         }.joined(separator: "|")
@@ -1350,6 +1448,33 @@ nonisolated struct ModManager: Sendable {
                     existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current),
                     fomodPlan: plan,
                     fomodSelection: selection
+                )
+            }
+            let scriptExtenderEntries = try archiveFiles.map { file in
+                SkyrimScriptExtenderArchiveEntry(path: try relativePath(of: file, from: extracted), url: file)
+            }
+            if let scriptExtender = SkyrimScriptExtenderArchive.inspect(
+                entries: scriptExtenderEntries,
+                installedGameVersion: FomodInstaller.gameVersion(executableAt: gameRoot?.appending(path: "SkyrimSE.exe"))
+            ) {
+                let totalSize = scriptExtender.files.reduce(Int64.zero) { total, payload in
+                    total + Int64((try? payload.source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                }
+                return ModInstallPreview(
+                    gameID: gameID,
+                    archiveURL: pendingURL,
+                    archiveName: archive.lastPathComponent,
+                    format: format,
+                    detectedRoot: scriptExtender.detectedRoot,
+                    fileCount: scriptExtender.files.count,
+                    pluginCount: 0,
+                    adapter: .skyrimSpecialEdition,
+                    contentType: .skyrimScriptExtender,
+                    deployStrategy: .skyrimScriptExtender,
+                    warnings: scriptExtender.warnings,
+                    canInstallAutomatically: scriptExtender.canInstallAutomatically,
+                    totalSize: totalSize,
+                    existingModID: ModIdentity.existingModID(for: archive.lastPathComponent, in: current)
                 )
             }
             let dataRoot: URL
@@ -1488,17 +1613,36 @@ nonisolated struct ModManager: Sendable {
         let format = try archiveFormat(for: preview.archiveURL)
         let extracted = try extract(preview.archiveURL, format: format)
         defer { try? fileManager.removeItem(at: extracted) }
-        let sourceFiles: [(source: URL, destination: String)]
+        let sourceFiles: [(source: URL, destination: String, destinationRoot: ModFileDestinationRoot, stagedPath: String)]
         if let plan = preview.fomodPlan {
             let packageRoot = plan.packageRootRelativePath.split(separator: "/").reduce(extracted) {
                 $0.appending(path: String($1), directoryHint: .isDirectory)
             }
             let resolved = try plan.resolvedFiles(for: preview.fomodSelection, packageRoot: packageRoot)
-            sourceFiles = resolved.map { (source: $0.sourceURL, destination: $0.destination) }
+            sourceFiles = resolved.map {
+                (source: $0.sourceURL, destination: $0.destination, destinationRoot: .data, stagedPath: $0.destination)
+            }
+        } else if preview.contentType == .skyrimScriptExtender {
+            guard let gameRoot,
+                  let inspection = SkyrimScriptExtenderArchive.inspect(
+                      entries: try contentFiles(in: extracted).map {
+                          SkyrimScriptExtenderArchiveEntry(path: try relativePath(of: $0, from: extracted), url: $0)
+                      },
+                      installedGameVersion: FomodInstaller.gameVersion(executableAt: gameRoot.appending(path: "SkyrimSE.exe"))
+                  ),
+                  inspection.canInstallAutomatically else {
+                throw ModManagerError.skyrimManualInstallationRequired([
+                    "The SKSE archive no longer matches the installed Skyrim version or is missing required files."
+                ])
+            }
+            sourceFiles = inspection.files.map {
+                (source: $0.source, destination: $0.relativePath, destinationRoot: $0.destinationRoot, stagedPath: $0.stagedSourcePath)
+            }
         } else {
             let dataRoot = try findDataRoot(in: extracted)
             sourceFiles = try contentFiles(in: dataRoot).map { source in
-                (source: source, destination: try relativePath(of: source, from: dataRoot))
+                let relative = try relativePath(of: source, from: dataRoot)
+                return (source: source, destination: relative, destinationRoot: .data, stagedPath: relative)
             }
         }
         guard !sourceFiles.isEmpty else { throw ModManagerError.extractedArchiveEmpty }
@@ -1517,9 +1661,12 @@ nonisolated struct ModManager: Sendable {
             for payload in sourceFiles {
                 let source = payload.source
                 let relative = payload.destination
-                let key = relative.lowercased()
+                let key = payload.destinationRoot.key(for: relative)
                 guard seen.insert(key).inserted else { throw ModManagerError.duplicatePath(relative) }
-                let destination = append(relative, to: stagingDirectory)
+                guard isSafeRelativePath(relative), isSafeRelativePath(payload.stagedPath) else {
+                    throw ModManagerError.invalidRelativePath(relative)
+                }
+                let destination = append(payload.stagedPath, to: stagingDirectory)
                 try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fileManager.copyItem(at: source, to: destination)
                 let values = try source.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
@@ -1527,7 +1674,9 @@ nonisolated struct ModManager: Sendable {
                 files.append(ModFile(
                     relativePath: relative,
                     sha256: try RuntimeSecurity.sha256(of: source),
-                    size: Int64(values.fileSize ?? 0)
+                    size: Int64(values.fileSize ?? 0),
+                    stagedSourcePath: payload.stagedPath == relative ? nil : payload.stagedPath,
+                    destinationRoot: payload.destinationRoot
                 ))
             }
 
@@ -1539,8 +1688,9 @@ nonisolated struct ModManager: Sendable {
             try fileManager.copyItem(at: preview.archiveURL, to: archiveDestination)
 
             let pluginRecords = files.compactMap { file -> BethesdaPlugin? in
+                guard file.destinationRoot == .data else { return nil }
                 guard let type = SkyrimModAdapter.pluginType(for: file.relativePath) else { return nil }
-                let source = append(file.relativePath, to: stagingDirectory)
+                let source = append(file.stagedPath, to: stagingDirectory)
                 let header = SkyrimModAdapter.inspectPlugin(at: source)
                 let previous = replacement?.plugins.first {
                     $0.filename.caseInsensitiveCompare(URL(fileURLWithPath: file.relativePath).lastPathComponent) == .orderedSame
@@ -1568,8 +1718,8 @@ nonisolated struct ModManager: Sendable {
                 installedAt: .now,
                 files: files,
                 plugins: pluginRecords,
-                contentType: .skyrimData,
-                deployStrategy: .skyrimDataFolder
+                contentType: preview.contentType,
+                deployStrategy: preview.deployStrategy
             )
             var mods = current.mods
             if let index = replacement.flatMap({ replacement in mods.firstIndex { $0.id == replacement.id } }) {
@@ -1646,47 +1796,55 @@ nonisolated struct ModManager: Sendable {
         }
 
         let resolved = try resolvedFiles(for: state.mods, gameDirectory: gameDirectory)
-        try validateManagedFiles(old.files, dataRoot: dataRoot)
-        try preflightExternalChanges(old.files, dataRoot: dataRoot)
+        try validateManagedFiles(old.files, gameRoot: gameRoot, dataRoot: dataRoot)
+        try preflightExternalChanges(old.files, gameRoot: gameRoot, dataRoot: dataRoot)
         let transactionURL = gameDirectory.appending(path: ".transactions/\(UUID().uuidString)", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: transactionURL, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: transactionURL) }
-        let changedPaths = Set(old.files.values.map(\.path)).union(resolved.values.map { $0.file.relativePath })
+        var changedTargets: [String: DeploymentTarget] = [:]
+        for entry in old.files.values {
+            let target = DeploymentTarget(path: entry.path, root: entry.destinationRoot)
+            changedTargets[target.key] = target
+        }
+        for resolvedFile in resolved.values {
+            let target = DeploymentTarget(path: resolvedFile.file.relativePath, root: resolvedFile.file.destinationRoot)
+            changedTargets[target.key] = target
+        }
         var transactionOriginals: [String: URL] = [:]
         var transactionMissingPaths: Set<String> = []
         var transactionPluginOriginal: URL?
         var transactionPluginWasMissing = false
         do {
-            for path in changedPaths {
-                let destination = append(path, to: dataRoot)
+            for (key, target) in changedTargets {
+                let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
                 guard fileManager.fileExists(atPath: destination.path) else {
-                    transactionMissingPaths.insert(path)
+                    transactionMissingPaths.insert(key)
                     continue
                 }
                 let values = try destination.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
                 guard values.isSymbolicLink != true, values.isRegularFile == true else {
-                    throw ModManagerError.deploymentFailed("The destination is not a regular file: \(path)")
+                    throw ModManagerError.deploymentFailed("The destination is not a regular file: \(target.displayPath)")
                 }
-                let backup = append(path, to: transactionURL)
+                let backup = append(key, to: transactionURL)
                 try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fileManager.copyItem(at: destination, to: backup)
-                transactionOriginals[path] = backup
+                transactionOriginals[key] = backup
             }
 
             var nextFiles: [String: ModDeploymentFile] = [:]
             for (key, resolvedFile) in resolved {
-                let destination = append(resolvedFile.file.relativePath, to: dataRoot)
-                let source = append(resolvedFile.file.relativePath, to: append(resolvedFile.mod.stagingRelativePath + "/files", to: gameDirectory))
+                let target = DeploymentTarget(path: resolvedFile.file.relativePath, root: resolvedFile.file.destinationRoot)
+                let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
+                let source = append(resolvedFile.file.stagedPath, to: append(resolvedFile.mod.stagingRelativePath + "/files", to: gameDirectory))
                 let actualSourceHash = try RuntimeSecurity.sha256(of: source)
                 guard actualSourceHash == resolvedFile.file.sha256 else {
-                    throw ModManagerError.stagedFileChanged(resolvedFile.file.relativePath)
+                    throw ModManagerError.stagedFileChanged(target.displayPath)
                 }
-                let oldFile = old.files.values.first { $0.path.caseInsensitiveCompare(resolvedFile.file.relativePath) == .orderedSame }
+                let oldFile = old.files[key]
                 let backupInfo = try prepareBackup(
                     destination: destination,
-                    dataRoot: dataRoot,
                     gameDirectory: gameDirectory,
-                    path: resolvedFile.file.relativePath,
+                    path: key,
                     oldFile: oldFile
                 )
                 try replace(source: source, destination: destination)
@@ -1694,15 +1852,16 @@ nonisolated struct ModManager: Sendable {
                     path: resolvedFile.file.relativePath,
                     owner: resolvedFile.mod.id,
                     sha256: resolvedFile.file.sha256,
-                    source: "\(resolvedFile.mod.stagingRelativePath)/files/\(resolvedFile.file.relativePath)",
+                    source: "\(resolvedFile.mod.stagingRelativePath)/files/\(resolvedFile.file.stagedPath)",
                     backup: backupInfo.path,
-                    originalHash: backupInfo.originalHash
+                    originalHash: backupInfo.originalHash,
+                    destinationRoot: resolvedFile.file.destinationRoot
                 )
             }
 
-            for (_, oldFile) in old.files where resolved[oldFile.path.lowercased()] == nil {
-                let path = oldFile.path
-                let destination = append(path, to: dataRoot)
+            for (key, oldFile) in old.files where resolved[key] == nil {
+                let target = DeploymentTarget(path: oldFile.path, root: oldFile.destinationRoot)
+                let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
                 guard fileManager.fileExists(atPath: destination.path) else { continue }
                 if let backup = oldFile.backup {
                     let backupURL = append(backup, to: gameDirectory)
@@ -1769,14 +1928,16 @@ nonisolated struct ModManager: Sendable {
             }
             return deployedState
         } catch {
-            for (path, original) in transactionOriginals {
-                let destination = append(path, to: dataRoot)
+            for (key, original) in transactionOriginals {
+                guard let target = changedTargets[key] else { continue }
+                let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
                 try? fileManager.removeItem(at: destination)
                 try? fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? fileManager.copyItem(at: original, to: destination)
             }
-            for path in transactionMissingPaths {
-                try? fileManager.removeItem(at: append(path, to: dataRoot))
+            for key in transactionMissingPaths {
+                guard let target = changedTargets[key] else { continue }
+                try? fileManager.removeItem(at: target.url(gameRoot: gameRoot, dataRoot: dataRoot))
             }
             if let pluginsFile, let original = transactionPluginOriginal {
                 try? fileManager.removeItem(at: pluginsFile)
@@ -1889,12 +2050,17 @@ nonisolated struct ModManager: Sendable {
     ) -> ModDeploymentHealth {
         let fileManager = FileManager.default
         var externalChanges: [String] = []
-        if let dataRoot = gameRoot.flatMap({ SkyrimModAdapter.dataRoot(for: $0) }) {
+        if let gameRoot, let dataRoot = SkyrimModAdapter.dataRoot(for: gameRoot) {
             for entry in state.deployment.files.values {
-                let destination = append(entry.path, to: dataRoot)
+                let target = DeploymentTarget(path: entry.path, root: entry.destinationRoot)
+                guard isSafeRelativePath(target.path) else {
+                    externalChanges.append("Invalid managed path")
+                    continue
+                }
+                let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
                 guard fileManager.fileExists(atPath: destination.path),
                       (try? RuntimeSecurity.sha256(of: destination)) == entry.sha256 else {
-                    externalChanges.append(entry.path)
+                    externalChanges.append(target.displayPath)
                     continue
                 }
             }
@@ -2030,7 +2196,9 @@ nonisolated struct ModManager: Sendable {
                   options: [.skipsHiddenFiles]
               ) else { return [] }
 
-        let managedPaths = Set(deployment.files.values.map { $0.path.lowercased() })
+        let managedPaths = Set(deployment.files.values
+            .filter { $0.destinationRoot == .data }
+            .map { $0.path.lowercased() })
         let pluginFiles = children.filter {
             (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
                 && SkyrimModAdapter.pluginType(for: $0.lastPathComponent) != nil
@@ -2455,35 +2623,60 @@ nonisolated struct ModManager: Sendable {
         let file: ModFile
     }
 
+    private struct DeploymentTarget {
+        let path: String
+        let root: ModFileDestinationRoot
+
+        var key: String { root.key(for: path) }
+        var displayPath: String { root.displayPath(path) }
+
+        func url(gameRoot: URL, dataRoot: URL) -> URL {
+            ModFileDestination.url(root: root, relativePath: path, gameRoot: gameRoot, dataRoot: dataRoot)
+        }
+    }
+
     private func resolvedFiles(for mods: [InstalledMod], gameDirectory: URL) throws -> [String: ResolvedFile] {
         var result: [String: ResolvedFile] = [:]
         for mod in mods.sorted(by: { $0.priority < $1.priority }) where mod.enabled && !mod.isExternallyDetected {
             for file in mod.files {
-                guard isSafeRelativePath(file.relativePath) else { throw ModManagerError.invalidRelativePath(file.relativePath) }
-                result[file.relativePath.lowercased()] = ResolvedFile(mod: mod, file: file)
+                guard isSafeRelativePath(file.relativePath), isSafeRelativePath(file.stagedPath) else {
+                    throw ModManagerError.invalidRelativePath(file.relativePath)
+                }
+                result[file.id] = ResolvedFile(mod: mod, file: file)
             }
         }
         return result
     }
 
-    private func validateManagedFiles(_ files: [String: ModDeploymentFile], dataRoot: URL) throws {
-        for path in files.values.map(\.path) {
-            guard isSafeRelativePath(path) else { throw ModManagerError.invalidRelativePath(path) }
-            let destination = append(path, to: dataRoot)
+    private func validateManagedFiles(
+        _ files: [String: ModDeploymentFile],
+        gameRoot: URL,
+        dataRoot: URL
+    ) throws {
+        for entry in files.values {
+            let target = DeploymentTarget(path: entry.path, root: entry.destinationRoot)
+            guard isSafeRelativePath(target.path) else { throw ModManagerError.invalidRelativePath(target.path) }
+            let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
             if FileManager.default.fileExists(atPath: destination.path) {
                 let values = try destination.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
-                guard values.isSymbolicLink != true, values.isRegularFile == true else { throw ModManagerError.deploymentFailed("The managed destination is unsafe: \(path)") }
+                guard values.isSymbolicLink != true, values.isRegularFile == true else {
+                    throw ModManagerError.deploymentFailed("The managed destination is unsafe: \(target.displayPath)")
+                }
             }
         }
     }
 
-    private func preflightExternalChanges(_ files: [String: ModDeploymentFile], dataRoot: URL) throws {
+    private func preflightExternalChanges(
+        _ files: [String: ModDeploymentFile],
+        gameRoot: URL,
+        dataRoot: URL
+    ) throws {
         for entry in files.values {
-            let path = entry.path
-            let destination = append(path, to: dataRoot)
+            let target = DeploymentTarget(path: entry.path, root: entry.destinationRoot)
+            let destination = target.url(gameRoot: gameRoot, dataRoot: dataRoot)
             guard FileManager.default.fileExists(atPath: destination.path) else { continue }
             guard try RuntimeSecurity.sha256(of: destination) == entry.sha256 else {
-                throw ModManagerError.externalFileChanged(path)
+                throw ModManagerError.externalFileChanged(target.displayPath)
             }
         }
     }
@@ -2495,7 +2688,6 @@ nonisolated struct ModManager: Sendable {
 
     private func prepareBackup(
         destination: URL,
-        dataRoot: URL,
         gameDirectory: URL,
         path: String,
         oldFile: ModDeploymentFile?

@@ -12,7 +12,7 @@ Function Initialise()
     generation += 1
     QDJCache cache = (Self as Quest) as QDJCache
     cache.Initialise()
-    Debug.Trace("[QDJ] Controller initialized; cache ready=" + cache.IsReady() + "; version=131")
+    Debug.Trace("[QDJ] Controller initialized; cache ready=" + cache.IsReady() + "; version=132")
     UnregisterForAllMenus()
     RegisterForMenu("Journal Menu")
     RegisterForModEvent("QDJ_Ready", "OnJournalReady")

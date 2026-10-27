@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6
+
+- Nawigacja pod H używa prywatnego czaru o stałym koszcie 0 magicki i nie daje doświadczenia magii.
+- Po włączeniu trasa odświeża się co 0,5 sekundy, także podczas jazdy konnej; ponowne H wyłącza nawigację.
+- Odświeżanie jest wstrzymane w menu, a nawigacja wyłącza się po wczytaniu zapisu, śmierci lub wyłączeniu skrótu.
+- Źródłem wersji moda jest plik VERSION.
+
 ## 1.0.5
 
 - Poprawiono nagłówki rekordów ESP do formatu Skyrim SE (44).

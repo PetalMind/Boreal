@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 QUEST_ID = 0x01000800
+MCM_QUEST_ID = 0x01000808
 KEY_ID = 0x01000801
 CELL_ID = 0x01000802
 MARKER_ID = 0x01000803
@@ -44,15 +45,16 @@ def group(label: bytes, group_type: int, contents: bytes) -> bytes:
     return header + struct.pack("<iHHHH", group_type, 0, 0, 0, 0) + contents
 
 
-def build_vmad() -> bytes:
-    scripts = struct.pack("<HHH", 5, 2, 2)
-    for name in ("HorseWhistleQuest", "HorseWhistleMCM"):
+def build_vmad(configuration: bool = False) -> bytes:
+    names = ("HorseWhistleMCM",) if configuration else ("HorseWhistleQuest", "HorseWhistleMCM")
+    scripts = struct.pack("<HHH", 5, 2, len(names))
+    for name in names:
         scripts += length_string(name) + struct.pack("<BH", 0, 0)
     # QUST VMAD stores a signed extra-bind-data version, fragment count,
     # length-prefixed filename, then alias count.
     quest_fragments = struct.pack("<bH", 2, 0) + length_string("")
-    alias = struct.pack("<HhIHHH", 0, 0, QUEST_ID, 5, 2, 1)
-    alias += length_string("HorseWhistlePlayerAlias") + struct.pack("<BH", 0, 0)
+    alias = struct.pack("<HhIHHH", 0, 0, MCM_QUEST_ID if configuration else QUEST_ID, 5, 2, 1)
+    alias += length_string("SKI_PlayerLoadGameAlias" if configuration else "HorseWhistlePlayerAlias") + struct.pack("<BH", 0, 0)
     return scripts + quest_fragments + struct.pack("<H", 1) + alias
 
 
@@ -89,12 +91,12 @@ def build_sound() -> bytes:
     return group(b"SOUN", 0, marker) + group(b"SNDR", 0, descriptor)
 
 
-def build_quest() -> bytes:
+def build_quest(configuration: bool = False) -> bytes:
     # Start-game-enabled, priority 80, and zero run delay.
     dnam = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
     payload = (
-        subrecord(b"EDID", zstring("HorseWhistle_StartQuest"))
-        + subrecord(b"VMAD", build_vmad())
+        subrecord(b"EDID", zstring("HorseWhistle_ConfigQuest" if configuration else "HorseWhistle_StartQuest"))
+        + subrecord(b"VMAD", build_vmad(configuration))
         + subrecord(b"FULL", zstring("Horse Whistle SE"))
         + subrecord(b"DNAM", dnam)
         + subrecord(b"NEXT", b"")
@@ -105,7 +107,7 @@ def build_quest() -> bytes:
         + subrecord(b"ALFR", struct.pack("<I", 0x14))
         + subrecord(b"ALED", b"")
     )
-    return record(b"QUST", QUEST_ID, payload)
+    return record(b"QUST", MCM_QUEST_ID if configuration else QUEST_ID, payload)
 
 
 def build_marker() -> bytes:
@@ -149,7 +151,7 @@ def build_cell_group() -> bytes:
 
 
 def build_plugin() -> bytes:
-    hedr = struct.pack("<fII", 1.7, 8, 0x808)
+    hedr = struct.pack("<fII", 1.7, 9, 0x809)
     header_payload = (
         subrecord(b"HEDR", hedr)
         + subrecord(b"CNAM", zstring("Horse Whistle SE"))
@@ -162,7 +164,7 @@ def build_plugin() -> bytes:
         + group(b"GLOB", 0, build_global()
                 + setting(SOUND_ENABLED_ID, "HorseWhistle_SoundEnabled", 1.0)
                 + setting(VOLUME_ID, "HorseWhistle_Volume", 0.8))
-        + group(b"QUST", 0, build_quest())
+        + group(b"QUST", 0, build_quest() + build_quest(True))
         + build_cell_group()
         + build_sound()
     )

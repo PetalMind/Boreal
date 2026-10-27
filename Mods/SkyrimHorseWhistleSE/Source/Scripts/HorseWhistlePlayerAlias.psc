@@ -13,7 +13,7 @@ Event OnUpdate()
     If controller != None
         controller.Maintenance()
     EndIf
-    HorseWhistleMCM configuration = GetOwningQuest() as HorseWhistleMCM
+    HorseWhistleMCM configuration = Game.GetFormFromFile(0x808, "SkyrimHorseWhistleSE.esp") as HorseWhistleMCM
     If configuration != None
         configuration.RestoreMenu()
     EndIf

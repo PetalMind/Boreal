@@ -4,6 +4,8 @@
 
 #include "Config.h"
 
+#include "RE/T/TESGlobal.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -20,6 +22,7 @@ namespace {
 	CameraConfig config{};
 	Clock::time_point lastManualLook = Clock::now();
 	Clock::time_point lastCameraUpdate = Clock::now();
+	Clock::time_point lastMCMConfigRefresh{};
 	float baseWorldFOV{};
 	float currentWorldFOV{};
 	bool hasBaseWorldFOV{};
@@ -39,6 +42,90 @@ namespace {
 		{ "fOverShoulderCombatAddY:Camera" },
 		{ "fOverShoulderCombatPosZ:Camera" }
 	}};
+
+	void RefreshMCMConfig(Clock::time_point a_now)
+	{
+		if (a_now - lastMCMConfigRefresh < std::chrono::milliseconds(250)) {
+			return;
+		}
+		lastMCMConfigRefresh = a_now;
+
+		auto* dataHandler = RE::TESDataHandler::GetSingleton();
+		if (!dataHandler) {
+			return;
+		}
+		const auto* overrides = dataHandler->LookupForm<RE::TESGlobal>(0x812, "ModernThirdPersonCameraSE.esp");
+		if (!overrides || overrides->value < 0.5F) {
+			return;
+		}
+
+		auto readFloat = [dataHandler](std::uint32_t a_formID, float a_fallback, float a_minimum, float a_maximum) {
+			const auto* setting = dataHandler->LookupForm<RE::TESGlobal>(a_formID, "ModernThirdPersonCameraSE.esp");
+			if (!setting || !std::isfinite(setting->value)) {
+				return a_fallback;
+			}
+			return std::clamp(setting->value, a_minimum, a_maximum);
+		};
+		auto readBool = [dataHandler](std::uint32_t a_formID, bool a_fallback) {
+			const auto* setting = dataHandler->LookupForm<RE::TESGlobal>(a_formID, "ModernThirdPersonCameraSE.esp");
+			return setting ? setting->value >= 0.5F : a_fallback;
+		};
+
+		config.enabled = readBool(0x801, config.enabled);
+		config.normal.x = readFloat(0x802, config.normal.x, -40.0F, 40.0F);
+		config.normal.z = readFloat(0x803, config.normal.z, -30.0F, 30.0F);
+		config.combat.x = readFloat(0x804, config.combat.x, -40.0F, 40.0F);
+		config.combat.y = readFloat(0x805, config.combat.y, -40.0F, 40.0F);
+		config.combat.z = readFloat(0x806, config.combat.z, -30.0F, 30.0F);
+		config.bow.x = readFloat(0x807, config.bow.x, -40.0F, 40.0F);
+		config.bow.y = readFloat(0x808, config.bow.y, -40.0F, 40.0F);
+		config.bow.z = readFloat(0x809, config.bow.z, -30.0F, 30.0F);
+		config.normalFOV = readFloat(0x80A, config.normalFOV, 50.0F, 110.0F);
+		config.combatFOV = readFloat(0x80B, config.combatFOV, 50.0F, 110.0F);
+		config.bowFOV = readFloat(0x80C, config.bowFOV, 50.0F, 110.0F);
+		config.fovResponse = readFloat(0x80D, config.fovResponse, 0.1F, 20.0F);
+		config.zoomSensitivity = readFloat(0x80E, config.zoomSensitivity, 0.1F, 3.0F);
+		config.autoRecenter = readBool(0x80F, config.autoRecenter);
+		config.recenterDelay = readFloat(0x810, config.recenterDelay, 0.0F, 10.0F);
+		config.recenterResponse = readFloat(0x811, config.recenterResponse, 0.1F, 12.0F);
+	}
+
+	void SetMCMGlobal(RE::TESDataHandler* a_dataHandler, std::uint32_t a_formID, float a_value)
+	{
+		if (auto* setting = a_dataHandler->LookupForm<RE::TESGlobal>(a_formID, "ModernThirdPersonCameraSE.esp")) {
+			setting->value = a_value;
+		}
+	}
+
+	void SeedMCMSettingsFromINI()
+	{
+		auto* dataHandler = RE::TESDataHandler::GetSingleton();
+		if (!dataHandler) {
+			return;
+		}
+		const auto* overrides = dataHandler->LookupForm<RE::TESGlobal>(0x812, "ModernThirdPersonCameraSE.esp");
+		if (!overrides || overrides->value >= 0.5F) {
+			return;
+		}
+
+		SetMCMGlobal(dataHandler, 0x801, config.enabled ? 1.0F : 0.0F);
+		SetMCMGlobal(dataHandler, 0x802, config.normal.x);
+		SetMCMGlobal(dataHandler, 0x803, config.normal.z);
+		SetMCMGlobal(dataHandler, 0x804, config.combat.x);
+		SetMCMGlobal(dataHandler, 0x805, config.combat.y);
+		SetMCMGlobal(dataHandler, 0x806, config.combat.z);
+		SetMCMGlobal(dataHandler, 0x807, config.bow.x);
+		SetMCMGlobal(dataHandler, 0x808, config.bow.y);
+		SetMCMGlobal(dataHandler, 0x809, config.bow.z);
+		SetMCMGlobal(dataHandler, 0x80A, config.normalFOV);
+		SetMCMGlobal(dataHandler, 0x80B, config.combatFOV);
+		SetMCMGlobal(dataHandler, 0x80C, config.bowFOV);
+		SetMCMGlobal(dataHandler, 0x80D, config.fovResponse);
+		SetMCMGlobal(dataHandler, 0x80E, config.zoomSensitivity);
+		SetMCMGlobal(dataHandler, 0x80F, config.autoRecenter ? 1.0F : 0.0F);
+		SetMCMGlobal(dataHandler, 0x810, config.recenterDelay);
+		SetMCMGlobal(dataHandler, 0x811, config.recenterResponse);
+	}
 
 	enum class Profile {
 		kNormal,
@@ -175,6 +262,7 @@ namespace {
 		}
 
 		const auto now = Clock::now();
+		RefreshMCMConfig(now);
 		const float deltaTime = std::clamp(std::chrono::duration<float>(now - lastCameraUpdate).count(), 0.001F, 0.05F);
 		lastCameraUpdate = now;
 
@@ -234,6 +322,7 @@ namespace {
 	{
 		const auto configPath = std::filesystem::current_path() / "Data" / "SKSE" / "Plugins" / "ModernThirdPersonCameraSE.ini";
 		config = LoadCameraConfig(configPath);
+		SeedMCMSettingsFromINI();
 		SKSE::log::info("Loaded camera settings from {}", configPath.string());
 	}
 }

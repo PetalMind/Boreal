@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+- Pamięć zadań oraz punktów pomiaru korzysta z tablic Form tworzonych przez SKSE; zastąpiono porównania tablic z None sprawdzaniem ich inicjalizacji.
+
 ## 1.3.1
 
 - Naprawiono częściowo zainicjalizowaną pamięć celów w istniejących zapisach; każda brakująca tablica jest odtwarzana osobno przed obliczeniem odległości.

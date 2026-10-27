@@ -960,7 +960,11 @@ extension GTASAModManager {
                     target = "modloader/Boreal/\(modDirectoryName(for: mod))/\(file.relativePath)"
                 case .unrealPaks:
                     continue
-                case .witcher2CookedPC, .witcher2UserContent, .witcher3GameRoot, .skyrimDataFolder:
+                case .witcher2CookedPC,
+                     .witcher2UserContent,
+                     .witcher3GameRoot,
+                     .skyrimDataFolder,
+                     .skyrimScriptExtender:
                     continue
                 }
                 result[target.lowercased()] = ResolvedFile(

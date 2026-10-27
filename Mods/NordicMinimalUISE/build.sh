@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export PYTHONDONTWRITEBYTECODE=1
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 COMPILER=${CAPRICA_EXE:-$ROOT_DIR/../../.local-tools/caprica/Caprica.exe}
 BUILD_DIR=$(mktemp -d "/tmp/nordic-minimal-ui-se.XXXXXX")
@@ -28,6 +29,7 @@ with zipfile.ZipFile(root / "swf.zip") as source:
         (data / member.filename.removeprefix("Data/")).write_bytes(source.read(member.filename))
 archive = Path(sys.argv[2])
 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+    output.write(archive.parent / "VERSION", "VERSION")
     for item in sorted(data.rglob("*")):
         if item.is_file(): output.write(item, item.relative_to(root).as_posix())
 print(archive)

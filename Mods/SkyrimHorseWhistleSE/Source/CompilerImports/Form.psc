@@ -10,3 +10,5 @@ Event OnInit()
 EndEvent
 Event OnUpdate()
 EndEvent
+
+Function UnregisterForModEvent(String eventName) Native
