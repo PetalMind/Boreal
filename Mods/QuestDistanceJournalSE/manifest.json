@@ -1,0 +1,12 @@
+{
+  "id": "quest-distance-journal-se",
+  "name": "Quest Distance Journal SE",
+  "version": "1.0.0",
+  "game": "Skyrim Special Edition",
+  "requirements": [
+    "SKSE64",
+    "SkyUI",
+    "powerofthree Papyrus Extender"
+  ],
+  "archive": "QuestDistanceJournalSE.zip"
+}
