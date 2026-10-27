@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2
+
+- Naprawiono puste menu konia zapisane w rejestrze SkyUI: odtwarzanie inicjalizacji MCM i ponowna rejestracja wyłącznie tego menu.
+
 ## 1.2.1
 
 - Zapisana blokada powtarzania gwizdu nie blokuje przywołania po ponownym uruchomieniu gry.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1
+
+- Naprawiono częściowo zainicjalizowaną pamięć celów w istniejących zapisach; każda brakująca tablica jest odtwarzana osobno przed obliczeniem odległości.
+
 ## 1.3.0
 
 - Naprawiono odczyt po pierwszej inicjalizacji i powrocie do dziennika; dodano handshake SKSE, odświeżanie i migrację pamięci istniejących zapisów.

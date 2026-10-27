@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5
+
+- Poprawiono nagłówki rekordów ESP do formatu Skyrim SE (44).
+- Dodano nowy prywatny rekord uruchamiający HUD w istniejącym zapisie, z zachowaniem ustawień.
+- Panel konia jest pozycjonowany względem paska kondycji gracza przed zakotwiczeniem przy krawędzi ekranu.
+
 ## 1.0.4
 
 - Panel konia korzysta z aktualnego wierzchowca gracza przez GetMount, zamiast wyłącznie z ostatnio dosiadanego konia.
