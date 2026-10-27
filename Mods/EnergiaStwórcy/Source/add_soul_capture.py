@@ -13,6 +13,9 @@ from add_spell_sounds import read_plugin
 SOUL_EFFECT_ID = 0x01000806
 DAMAGE_EFFECT_ID = 0x01000800
 SPELL_IDS = {BASE_FORM_ID, *(rank["form_id"] for rank in RANKS)}
+MCM_QUEST_ID = 0x01000807
+SOUL_CAPTURE_ENABLED_ID = 0x01000808
+FREE_GEM_ENABLED_ID = 0x01000809
 
 
 def soul_effect(template: bytes) -> bytes:
@@ -58,6 +61,72 @@ def patch_spell(record: bytes) -> bytes:
     return pack_record(record, form_id, fields)
 
 
+def make_subrecord(signature: bytes, data: bytes) -> bytes:
+    if len(data) > 0xFFFF:
+        raise ValueError(f"{signature!r} subrecord is too large")
+    return signature + struct.pack("<H", len(data)) + data
+
+
+def zstring(value: str) -> bytes:
+    return value.encode("utf-8") + b"\0"
+
+
+def length_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return struct.pack("<H", len(encoded)) + encoded
+
+
+def make_record(signature: bytes, form_id: int, payload: bytes) -> bytes:
+    return signature + struct.pack("<IIIIHH", len(payload), 0, form_id, 0, 44, 0) + payload
+
+
+def make_group(signature: bytes, records: list[bytes]) -> bytes:
+    payload = b"".join(records)
+    return b"GRUP" + struct.pack("<I", 24 + len(payload)) + signature + struct.pack("<iHHHH", 0, 0, 0, 0, 0) + payload
+
+
+def make_mcm_quest() -> bytes:
+    vmad = struct.pack("<HHH", 5, 2, 1)
+    vmad += length_string("CreatorEnergyMCM") + struct.pack("<BH", 0, 0)
+    vmad += struct.pack("<bH", 2, 0) + length_string("") + struct.pack("<H", 1)
+    alias = struct.pack("<HhIHHH", 0, 0, MCM_QUEST_ID, 5, 2, 1)
+    alias += length_string("CreatorEnergyPlayerAlias") + struct.pack("<BH", 0, 0)
+    vmad += alias
+    quest_data = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
+    payload = (
+        make_subrecord(b"EDID", zstring("CreatorEnergyMCMQuest"))
+        + make_subrecord(b"VMAD", vmad)
+        + make_subrecord(b"FULL", zstring("Energia Stwórcy"))
+        + make_subrecord(b"DNAM", quest_data)
+        + make_subrecord(b"NEXT", b"")
+        + make_subrecord(b"ANAM", struct.pack("<I", 1))
+        + make_subrecord(b"ALST", struct.pack("<I", 0))
+        + make_subrecord(b"ALID", zstring("Player"))
+        + make_subrecord(b"FNAM", struct.pack("<I", 0))
+        + make_subrecord(b"ALFR", struct.pack("<I", 0x14))
+        + make_subrecord(b"ALED", b"")
+    )
+    return make_record(b"QUST", MCM_QUEST_ID, payload)
+
+
+def make_global(editor_id: str, form_id: int, value: float) -> bytes:
+    payload = (
+        make_subrecord(b"EDID", zstring(editor_id))
+        + make_subrecord(b"FNAM", b"f")
+        + make_subrecord(b"FLTV", struct.pack("<f", value))
+    )
+    return make_record(b"GLOB", form_id, payload)
+
+
+def append_records_to_group(group: bytes, records: list[bytes]) -> bytes:
+    if not records:
+        return group
+    payload = group[24:] + b"".join(records)
+    header = bytearray(group[:24])
+    struct.pack_into("<I", header, 4, len(payload) + 24)
+    return bytes(header) + payload
+
+
 def update_plugin(path: Path) -> None:
     data = path.read_bytes()
     records = read_plugin(path)
@@ -65,9 +134,17 @@ def update_plugin(path: Path) -> None:
         raise ValueError("Creator Energy damage effect or ranks are missing")
     effect = soul_effect(records[DAMAGE_EFFECT_ID])
     added = SOUL_EFFECT_ID not in records
+    add_quest = MCM_QUEST_ID not in records
+    globals_to_add = [
+        ("CreatorEnergySoulCaptureEnabled", SOUL_CAPTURE_ENABLED_ID, 1.0),
+        ("CreatorEnergyFreeBlackGemEnabled", FREE_GEM_ENABLED_ID, 1.0),
+    ]
+    globals_to_add = [entry for entry in globals_to_add if entry[1] not in records]
     result = bytearray()
     offset = 0
     found_effect_group = False
+    found_quest_group = False
+    found_global_group = False
     while offset < len(data):
         signature = data[offset:offset + 4]
         size = struct.unpack_from("<I", data, offset + 4)[0]
@@ -79,7 +156,7 @@ def update_plugin(path: Path) -> None:
                 if tag == b"HEDR":
                     version, count, next_id = struct.unpack("<fII", value)
                     fields[index] = (tag, struct.pack("<fII", version,
-                        count + int(added), max(next_id, 0x807)))
+                        count + int(added) + int(add_quest) + len(globals_to_add), max(next_id, 0x80A)))
             chunk = pack_record(chunk, 0, fields)
         elif signature == b"GRUP" and chunk[8:12] in (b"MGEF", b"SPEL"):
             children = bytearray()
@@ -101,8 +178,20 @@ def update_plugin(path: Path) -> None:
             header = bytearray(chunk[:24])
             struct.pack_into("<I", header, 4, len(children) + 24)
             chunk = bytes(header) + children
+        elif signature == b"GRUP" and chunk[8:12] == b"QUST":
+            found_quest_group = True
+            if add_quest:
+                chunk = append_records_to_group(chunk, [make_mcm_quest()])
+        elif signature == b"GRUP" and chunk[8:12] == b"GLOB":
+            found_global_group = True
+            new_globals = [make_global(*entry) for entry in globals_to_add]
+            chunk = append_records_to_group(chunk, new_globals)
         result.extend(chunk)
         offset = end
+    if add_quest and not found_quest_group:
+        result.extend(make_group(b"QUST", [make_mcm_quest()]))
+    if globals_to_add and not found_global_group:
+        result.extend(make_group(b"GLOB", [make_global(*entry) for entry in globals_to_add]))
     if not found_effect_group:
         raise ValueError("MGEF group is missing")
     path.write_bytes(result)

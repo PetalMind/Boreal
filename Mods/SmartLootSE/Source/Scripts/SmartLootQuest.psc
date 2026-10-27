@@ -1,7 +1,13 @@
 Scriptname SmartLootQuest extends Quest
 
-Float Property ScanInterval = 0.5 AutoReadOnly
-Float Property ScanRadius = 220.0 AutoReadOnly
+Bool Property Enabled = True Auto
+Bool Property CollectGold = True Auto
+Bool Property CollectGems = True Auto
+Bool Property CollectPotions = True Auto
+Bool Property CollectIngredients = True Auto
+Bool Property CollectArrows = True Auto
+Float Property ScanInterval = 0.5 Auto
+Float Property ScanRadius = 220.0 Auto
 
 ; Skyrim TESForm type IDs: MISC, INGR, AMMO and ALCH.
 Int Property FormTypeMisc = 32 AutoReadOnly
@@ -14,19 +20,36 @@ Keyword Property GemKeyword Auto
 Keyword Property PotionKeyword Auto
 
 Event OnInit()
-    GoldForm = Game.GetFormFromFile(15, "Skyrim.esm")
-    GemKeyword = Game.GetFormFromFile(595177, "Skyrim.esm") as Keyword
-    PotionKeyword = Game.GetFormFromFile(577004, "Skyrim.esm") as Keyword
+    LoadForms()
     RegisterForSingleUpdate(ScanInterval)
 EndEvent
 
+Function Maintenance()
+    LoadForms()
+    RegisterForSingleUpdate(0.1)
+EndFunction
+
+Function LoadForms()
+    GoldForm = Game.GetFormFromFile(15, "Skyrim.esm")
+    GemKeyword = Game.GetFormFromFile(595177, "Skyrim.esm") as Keyword
+    PotionKeyword = Game.GetFormFromFile(577004, "Skyrim.esm") as Keyword
+EndFunction
+
 Event OnUpdate()
     Actor player = Game.GetPlayer()
-    If player != None && !player.IsDead() && !player.IsInCombat() && !Utility.IsInMenuMode()
-        ScanCategory(player, FormTypeMisc)
-        ScanCategory(player, FormTypeAlchemy)
-        ScanCategory(player, FormTypeIngredient)
-        ScanCategory(player, FormTypeAmmo)
+    If Enabled && player != None && !player.IsDead() && !player.IsInCombat() && !Utility.IsInMenuMode()
+        If CollectGold || CollectGems
+            ScanCategory(player, FormTypeMisc)
+        EndIf
+        If CollectPotions
+            ScanCategory(player, FormTypeAlchemy)
+        EndIf
+        If CollectIngredients
+            ScanCategory(player, FormTypeIngredient)
+        EndIf
+        If CollectArrows
+            ScanCategory(player, FormTypeAmmo)
+        EndIf
     EndIf
     RegisterForSingleUpdate(ScanInterval)
 EndEvent
@@ -56,7 +79,7 @@ Bool Function IsEligible(ObjectReference item, Int formType)
     EndIf
 
     If formType == FormTypeMisc
-        Return baseForm == GoldForm || (GemKeyword != None && baseForm.HasKeyword(GemKeyword))
+        Return (CollectGold && baseForm == GoldForm) || (CollectGems && GemKeyword != None && baseForm.HasKeyword(GemKeyword))
     ElseIf formType == FormTypeAlchemy
         Return PotionKeyword != None && baseForm.HasKeyword(PotionKeyword)
     ElseIf formType == FormTypeIngredient

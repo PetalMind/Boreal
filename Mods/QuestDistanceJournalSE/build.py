@@ -58,10 +58,10 @@ def main() -> None:
         command += ['--game=skyrim', '--strict', '--ignorecwd', '-f',
                     str(ROOT / 'Source/CompilerImports/TESV_Papyrus_Flags.flg'),
                     '-i', str(ROOT / 'Source/CompilerImports'), '-o', str(output),
-                    'QDJController.psc', 'QDJPlayerAlias.psc', 'QDJTargetResolver.psc', 'QDJTargetIndex.psc',
+                    'QDJController.psc', 'QDJPlayerAlias.psc', 'QDJMCM.psc', 'QDJTargetResolver.psc', 'QDJTargetIndex.psc',
                     'QDJCache.psc', 'QDJCompass.psc']
         subprocess.run(command, cwd=script_sources, check=True)
-        expected = {'QDJController.pex', 'QDJPlayerAlias.pex', 'QDJTargetResolver.pex', 'QDJTargetIndex.pex',
+        expected = {'QDJController.pex', 'QDJPlayerAlias.pex', 'QDJMCM.pex', 'QDJTargetResolver.pex', 'QDJTargetIndex.pex',
                     'QDJCache.pex', 'QDJCompass.pex'}
         actual = {p.name for p in output.glob('*.pex')}
         if actual != expected:

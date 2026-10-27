@@ -1,8 +1,19 @@
 Scriptname QDJCompass extends Quest
 
 String Property CompassPath = "_root.HUDMovieBaseInstance.CompassShoutMeterHolder.Compass" AutoReadOnly
+Bool Property CompassEnabled = True Auto
+
+Function SetEnabled(Bool enabled)
+    CompassEnabled = enabled
+    If !enabled
+        Show("")
+    EndIf
+EndFunction
 
 Function Show(String label)
+    If !CompassEnabled
+        label = ""
+    EndIf
     If !UI.IsMenuOpen("HUD Menu")
         Return
     EndIf

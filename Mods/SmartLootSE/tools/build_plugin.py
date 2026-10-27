@@ -28,10 +28,14 @@ def record(signature: bytes, form_id: int, payload: bytes) -> bytes:
 
 
 def build_vmad() -> bytes:
-    scripts = struct.pack("<HHH", 5, 2, 1)
-    scripts += pascal_string("SmartLootQuest") + struct.pack("<BH", 0, 0)
+    scripts = struct.pack("<HHH", 5, 2, 2)
+    for name in ("SmartLootQuest", "SmartLootMCM"):
+        scripts += pascal_string(name) + struct.pack("<BH", 0, 0)
     # QUST VMAD always includes the quest-fragment section and alias-script count.
-    fragments = struct.pack("<HH", 2, 0) + zstring("") + struct.pack("<H", 0)
+    fragments = struct.pack("<bH", 2, 0) + zstring("") + struct.pack("<H", 1)
+    alias = struct.pack("<HhIHHH", 0, 0, 0x01000800, 5, 2, 1)
+    alias += pascal_string("SmartLootPlayerAlias") + struct.pack("<BH", 0, 0)
+    fragments += alias
     return scripts + fragments
 
 
@@ -51,6 +55,13 @@ def build_plugin() -> bytes:
         + subrecord(b"FULL", zstring("Smart Loot"))
         + subrecord(b"DNAM", quest_data)
         + subrecord(b"VMAD", build_vmad())
+        + subrecord(b"NEXT", b"")
+        + subrecord(b"ANAM", struct.pack("<I", 1))
+        + subrecord(b"ALST", struct.pack("<I", 0))
+        + subrecord(b"ALID", zstring("Player"))
+        + subrecord(b"FNAM", struct.pack("<I", 0))
+        + subrecord(b"ALFR", struct.pack("<I", 0x14))
+        + subrecord(b"ALED", b"")
     )
     quest_record = record(b"QUST", 0x01000800, quest_payload)
     group_header = (

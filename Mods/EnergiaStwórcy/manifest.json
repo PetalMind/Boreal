@@ -1,11 +1,12 @@
 {
   "name": "Energia Stwórcy",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "game": "The Elder Scrolls V: Skyrim Special Edition",
   "plugin": "Data/CreatorEnergy.esp",
   "masters": ["Skyrim.esm"],
   "requirements": {
-    "skse": false,
+    "skse": true,
+    "skyui": true,
     "papyrus": true
   }
 }

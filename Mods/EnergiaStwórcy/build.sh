@@ -28,9 +28,16 @@ fi
 cd "$ROOT_DIR/Source/Scripts"
 "$@" --game=skyrim --strict --all-warnings-as-errors --ignorecwd \
     --flags "$BUILD_DIR/TESV_Papyrus_Flags.flg" -i "$PAPYRUS_IMPORTS" \
-    -o "$BUILD_DIR/Data/Scripts" CreatorEnergySoulCapture.psc
+    -o "$BUILD_DIR/Data/Scripts" CreatorEnergySoulCapture.psc CreatorEnergyMCM.psc CreatorEnergyPlayerAlias.psc
 )
 python3 "$ROOT_DIR/Source/add_soul_capture.py" --plugin "$BUILD_DIR/Data/CreatorEnergy.esp"
+mkdir -p "$BUILD_DIR/Data/SEQ"
+python3 - "$BUILD_DIR/Data/SEQ/CreatorEnergy.seq" <<'PY'
+from pathlib import Path
+import struct
+import sys
+Path(sys.argv[1]).write_bytes(struct.pack("<I", 0x01000807))
+PY
 python3 - "$BUILD_DIR" "$ROOT_DIR" <<'PY'
 import json
 from pathlib import Path

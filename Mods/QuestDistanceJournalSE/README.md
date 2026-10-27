@@ -15,9 +15,13 @@ klawiaturę, kontroler i pokazywanie celów na mapie.
    w miarę pierwszego odczytywania celów. Kolejne otwarcia przywracają zapisane
 informacje bez ponownego rozwiązywania celów.
 
+W `Ustawienia modów → Quest Distance Journal SE` możesz ukryć lub ponownie
+włączyć wiersz odległości pod kompasem. Informacje o celach w dzienniku nadal
+pozostają dostępne.
+
 Wymagania: SkyUI, SKSE zgodne z grą i powerofthree's Papyrus Extender.
-Pakiet zbudowano dla lokalnej instalacji Skyrim SE 1.7.99.0 / SKSE 2.3.0.
-Mod nie dodaje własnej DLL, więc nie używa adresów pamięci z innej wersji gry.
+Mod nie dodaje własnej DLL, więc nie używa adresów pamięci zależnych od wersji
+gry. Przy budowaniu skryptów potrzebne są źródła SKSE zgodne z używaną wersją.
 Istniejący Nordic Minimal UI SE zmienia HUD/dialogi/sen, a ten mod wyłącznie
 moduł dziennika SkyUI. Inny zamiennik dziennika wymaga osobnego dopasowania.
 
@@ -62,7 +66,7 @@ Istniejący luźny plik dziennika wymaga jawnego `--journal-swf`. Nieznany ukła
 kodu SkyUI przerywa budowanie zamiast nakładać niepewną poprawkę.
 `build-report.json` zapisuje listę wejściowych pluginów i indeks celów.
 Deklaracje `Source/CompilerImports` służą wyłącznie kompilacji; paczka zawiera
-tylko sześć własnych skryptów PEX. Mod nie nadpisuje questów gry ani ich skryptów.
+własne skrypty PEX, w tym menu MCM. Mod nie nadpisuje questów gry ani ich skryptów.
 
 ## Granice weryfikacji
 
@@ -85,6 +89,7 @@ konkretną pozycję na liście celów. Jeśli poprzedni wybór przestaje być
 Przy pierwszym użyciu otwórz dziennik, aby mod zapamiętał listę zadań.
 Nie zmienia zaznaczenia questów i nie pokazuje odległości do nieśledzonych
 zadań. Przy oddzielnych wnętrzach nadal widnieje brak dostępnej odległości.
+Widoczność tego wiersza zmienisz w MCM.
 
 Licznik jest tworzony wewnątrz natywnego kompasu, respektuje jego widoczność
 i nie wymaga zastępowania pliku HUD. Dystans dotyczy zapamiętanego celu

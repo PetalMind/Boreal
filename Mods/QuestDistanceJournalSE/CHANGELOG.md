@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+
+- Dodano MCM do włączania i ukrywania wiersza odległości pod kompasem.
+- Dodano ponowną rejestrację menu po wczytaniu zapisu.
+
 ## 1.1.0
 
 - Informacje o celach są przechowywane w zapisie gry i przywracane po otwarciu dziennika bez ponownego rozwiązywania aliasów.

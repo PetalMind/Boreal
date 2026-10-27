@@ -2,6 +2,12 @@
 
 # Changelog
 
+## 1.6.0
+
+- Dodano MCM do włączania przechwytywania dusz i darmowego czarnego klejnotu.
+- Dodano quest startowy, plik SEQ i ponowną rejestrację menu po wczytaniu zapisu.
+- MCM wymaga SKSE oraz SkyUI.
+
 ## 1.5.0
 
 - Wszystkie trzy rangi przechwytują dusze przeciwników zabitych przez gracza do 5 sekund od trafienia.

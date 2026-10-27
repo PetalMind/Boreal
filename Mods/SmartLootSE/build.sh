@@ -20,7 +20,7 @@ case "$COMPILER" in
         if command -v wine >/dev/null 2>&1; then
             (
                 cd "$ROOT_DIR/Source/Scripts"
-                wine "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" SmartLootQuest.psc
+                wine "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" SmartLootQuest.psc SmartLootMCM.psc SmartLootPlayerAlias.psc
             )
         else
             echo "Caprica.exe requires Wine on this platform." >&2
@@ -30,7 +30,7 @@ case "$COMPILER" in
     *)
         (
             cd "$ROOT_DIR/Source/Scripts"
-            "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" SmartLootQuest.psc
+            "$COMPILER" --game=skyrim --strict --ignorecwd -i "$IMPORT_DIR" -f "$IMPORT_DIR/TESV_Papyrus_Flags.flg" -o "$SCRIPT_OUTPUT" SmartLootQuest.psc SmartLootMCM.psc SmartLootPlayerAlias.psc
         )
         ;;
 esac
@@ -39,11 +39,15 @@ python3 "$ROOT_DIR/tools/build_plugin.py" "$BUILD_DIR/Data/SmartLoot.esp"
 python3 - "$BUILD_DIR" "$ROOT_DIR" <<'PY'
 from pathlib import Path
 import shutil
+import struct
 import sys
 import zipfile
 
 build_dir = Path(sys.argv[1])
 root_dir = Path(sys.argv[2])
+sequence = build_dir / "Data/SEQ/SmartLootSE.seq"
+sequence.parent.mkdir(parents=True, exist_ok=True)
+sequence.write_bytes(struct.pack("<I", 0x01000800))
 archive_path = root_dir / "SmartLootSE.zip"
 for path in sorted((build_dir / "Data").rglob("*")):
     if path.is_file():
@@ -51,8 +55,8 @@ for path in sorted((build_dir / "Data").rglob("*")):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
 with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-    for path in sorted((root_dir / "Data").rglob("*")):
+    for path in sorted((build_dir / "Data").rglob("*")):
         if path.is_file():
-            archive.write(path, path.relative_to(root_dir).as_posix())
+            archive.write(path, path.relative_to(build_dir).as_posix())
 print(archive_path)
 PY

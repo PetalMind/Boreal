@@ -16,7 +16,7 @@ Event OnEffectFinish(Actor akTarget, Actor akCaster)
 EndEvent
 
 Function CaptureSoul(Actor target, Actor caster)
-    If handled || !target || !caster
+    If handled || !target || !caster || !IsSoulCaptureEnabled()
         Return
     EndIf
     handled = True
@@ -32,6 +32,10 @@ Function CaptureSoul(Actor target, Actor caster)
 
     ; Black gems can contain both white and black souls. Do not leave a free
     ; gem behind for soulless creatures or a soul that was already captured.
+    If !IsFreeGemEnabled()
+        Return
+    EndIf
+
     Form freeGem = Game.GetForm(0x0002E500)
     If freeGem
         caster.AddItem(freeGem, 1, True)
@@ -39,4 +43,14 @@ Function CaptureSoul(Actor target, Actor caster)
             caster.RemoveItem(freeGem, 1, True)
         EndIf
     EndIf
+EndFunction
+
+Bool Function IsSoulCaptureEnabled()
+    GlobalVariable setting = Game.GetFormFromFile(0x808, "CreatorEnergy.esp") as GlobalVariable
+    Return setting == None || setting.GetValue() >= 0.5
+EndFunction
+
+Bool Function IsFreeGemEnabled()
+    GlobalVariable setting = Game.GetFormFromFile(0x809, "CreatorEnergy.esp") as GlobalVariable
+    Return setting == None || setting.GetValue() >= 0.5
 EndFunction
