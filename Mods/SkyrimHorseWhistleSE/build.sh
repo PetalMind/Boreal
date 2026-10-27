@@ -39,6 +39,7 @@ case "$COMPILER" in
 esac
 
 python3 "$ROOT_DIR/tools/build_plugin.py" "$BUILD_DIR/Data/SkyrimHorseWhistleSE.esp"
+python3 "$ROOT_DIR/tools/whistle_audio.py" "$BUILD_DIR/Data/Sound/FX/HorseWhistleSE/whistle.wav"
 
 python3 - "$BUILD_DIR" "$ROOT_DIR" <<'PY'
 from pathlib import Path
@@ -46,10 +47,13 @@ import sys
 import zipfile
 import struct
 import shutil
+import json
+import xml.etree.ElementTree as ET
 
 build_dir = Path(sys.argv[1])
 root_dir = Path(sys.argv[2])
 archive_path = root_dir / "SkyrimHorseWhistleSE.zip"
+version = json.loads((root_dir / "manifest.json").read_text())["version"]
 seq = build_dir / "Data/SEQ/SkyrimHorseWhistleSE.seq"
 seq.parent.mkdir(parents=True, exist_ok=True)
 seq.write_bytes(struct.pack("<I", 0x01000800))
@@ -64,6 +68,12 @@ with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as arc
             archive.write(path, path.relative_to(build_dir).as_posix())
     for relative in ("fomod/info.xml", "fomod/ModuleConfig.xml", "README.md", "CHANGELOG.md"):
         path = root_dir / relative
-        archive.write(path, path.relative_to(root_dir).as_posix())
+        if relative == "fomod/info.xml":
+            info = ET.fromstring(path.read_text())
+            info.find("Version").text = version
+            archive.writestr(relative, ET.tostring(info, encoding="utf-8", xml_declaration=True))
+        else:
+            archive.write(path, path.relative_to(root_dir).as_posix())
 print(archive_path)
+print("Built Horse Whistle SE " + version)
 PY

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Rozbudowano MCM: zmiana i wyłączenie przypisania, mysz/pad, przywracanie G i potwierdzanie konfliktu klawiszy.
+- Dodano własny dwutonowy dźwięk gwizdania, głośność, przełącznik i odsłuch w MCM.
+- Ustawienia zapisują się w grze; menu odświeża się także przy aktualizacji istniejącego zapisu.
+- Ograniczono powtarzanie gwizdu do jednego użycia na 1,5 sekundy.
+- Źródłem wersji jest manifest.json; metadane instalatora są generowane przy budowie.
+
 ## 1.1.2
 
 - Po inicjalizacji i wczytaniu zapisu alias gracza uruchamia także rejestrację konfiguracji MCM przez SkyUI OnGameReload.

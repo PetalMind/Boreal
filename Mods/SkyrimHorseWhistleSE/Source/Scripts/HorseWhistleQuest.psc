@@ -5,7 +5,11 @@ Float Property MarkerUpdateInterval = 5.0 AutoReadOnly
 Float Property SummonDistance = 300.0 AutoReadOnly
 
 GlobalVariable WhistleKeyCode
+GlobalVariable WhistleSoundEnabled
+GlobalVariable WhistleVolume
 ObjectReference HorseMarker
+Sound WhistleSound
+Float lastWhistleTime = -10.0
 
 Event OnInit()
     Maintenance()
@@ -32,7 +36,7 @@ Event OnUpdate()
 EndEvent
 
 Function SetWhistleKey(Int keyCode)
-    If keyCode < 1 || keyCode > 255
+    If keyCode != -1 && (keyCode < 1 || keyCode > 281)
         Return
     EndIf
 
@@ -51,6 +55,12 @@ Function SummonHorse()
     If player == None
         Return
     EndIf
+    Float now = Utility.GetCurrentRealTime()
+    If now - lastWhistleTime < 1.5
+        Return
+    EndIf
+    lastWhistleTime = now
+    PlayWhistle()
     If horse == None
         Debug.Notification("Najpierw dosiądź konia.")
         Return
@@ -73,6 +83,29 @@ Function SummonHorse()
     UpdateMarker(horse)
 EndFunction
 
+Function PlayWhistle()
+    LoadSettings()
+    If WhistleSound == None || Game.GetPlayer() == None
+        Return
+    EndIf
+    If WhistleSoundEnabled != None && WhistleSoundEnabled.GetValue() < 0.5
+        Return
+    EndIf
+    Int instance = WhistleSound.Play(Game.GetPlayer())
+    If instance >= 0
+        Float volume = 0.8
+        If WhistleVolume != None
+            volume = WhistleVolume.GetValue()
+        EndIf
+        If volume < 0.0
+            volume = 0.0
+        ElseIf volume > 1.0
+            volume = 1.0
+        EndIf
+        Sound.SetInstanceVolume(instance, volume)
+    EndIf
+EndFunction
+
 Function UpdateMarker(Actor horse)
     If HorseMarker == None
         HorseMarker = Game.GetFormFromFile(0x803, "SkyrimHorseWhistleSE.esp") as ObjectReference
@@ -90,6 +123,9 @@ EndFunction
 Function LoadSettings()
     WhistleKeyCode = Game.GetFormFromFile(0x801, "SkyrimHorseWhistleSE.esp") as GlobalVariable
     HorseMarker = Game.GetFormFromFile(0x803, "SkyrimHorseWhistleSE.esp") as ObjectReference
+    WhistleSound = Game.GetFormFromFile(0x804, "SkyrimHorseWhistleSE.esp") as Sound
+    WhistleSoundEnabled = Game.GetFormFromFile(0x806, "SkyrimHorseWhistleSE.esp") as GlobalVariable
+    WhistleVolume = Game.GetFormFromFile(0x807, "SkyrimHorseWhistleSE.esp") as GlobalVariable
 EndFunction
 
 Int Function GetWhistleKey()
@@ -101,16 +137,18 @@ Int Function GetWhistleKey()
     EndIf
 
     Int keyCode = WhistleKeyCode.GetValue() as Int
-    If keyCode < 1 || keyCode > 255
+    If keyCode != -1 && (keyCode < 1 || keyCode > 281)
         Return DefaultWhistleKey
     EndIf
     Return keyCode
 EndFunction
 
 Function ApplyWhistleKey(Int keyCode)
-    If keyCode < 1 || keyCode > 255
+    If keyCode != -1 && (keyCode < 1 || keyCode > 281)
         keyCode = DefaultWhistleKey
     EndIf
     UnregisterForAllKeys()
-    RegisterForKey(keyCode)
+    If keyCode > 0
+        RegisterForKey(keyCode)
+    EndIf
 EndFunction

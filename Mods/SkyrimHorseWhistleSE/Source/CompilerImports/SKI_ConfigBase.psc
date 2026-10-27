@@ -15,3 +15,19 @@ Function SetKeyMapOptionValue(Int option, Int keyCode, Bool noUpdate = False) Na
 
 Event OnConfigOpen() Native
 Event OnGameReload() Native
+Event OnVersionUpdate(Int version) Native
+Event OnOptionSelect(Int option) Native
+Event OnOptionDefault(Int option) Native
+Event OnOptionSliderOpen(Int option) Native
+Event OnOptionSliderAccept(Int option, Float value) Native
+Int Function GetVersion() Native
+Int Function AddToggleOption(String name, Bool checked, Int flags = 0) Native
+Int Function AddSliderOption(String name, Float value, String formatString, Int flags = 0) Native
+Int Function AddTextOption(String name, String value, Int flags = 0) Native
+Function SetToggleOptionValue(Int option, Bool checked, Bool noUpdate = False) Native
+Function SetSliderOptionValue(Int option, Float value, String formatString, Bool noUpdate = False) Native
+Function SetSliderDialogStartValue(Float value) Native
+Function SetSliderDialogDefaultValue(Float value) Native
+Function SetSliderDialogRange(Float minimum, Float maximum) Native
+Function SetSliderDialogInterval(Float value) Native
+Bool Function ShowMessage(String message, Bool withCancel = True, String acceptLabel = "$Accept", String cancelLabel = "$Cancel") Native

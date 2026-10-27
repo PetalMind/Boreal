@@ -12,6 +12,10 @@ QUEST_ID = 0x01000800
 KEY_ID = 0x01000801
 CELL_ID = 0x01000802
 MARKER_ID = 0x01000803
+SOUND_ID = 0x01000804
+DESCRIPTOR_ID = 0x01000805
+SOUND_ENABLED_ID = 0x01000806
+VOLUME_ID = 0x01000807
 
 
 def subrecord(signature: bytes, data: bytes) -> bytes:
@@ -59,6 +63,30 @@ def build_global() -> bytes:
         + subrecord(b"FLTV", struct.pack("<f", 34.0))
     )
     return record(b"GLOB", KEY_ID, payload)
+
+
+def setting(form_id: int, editor_id: str, value: float) -> bytes:
+    return record(b"GLOB", form_id,
+                  subrecord(b"EDID", zstring(editor_id))
+                  + subrecord(b"FNAM", b"f")
+                  + subrecord(b"FLTV", struct.pack("<f", value)))
+
+
+def build_sound() -> bytes:
+    marker = record(b"SOUN", SOUND_ID,
+                    subrecord(b"EDID", zstring("HorseWhistle_Sound"))
+                    + subrecord(b"OBND", bytes(12))
+                    + subrecord(b"SDSC", struct.pack("<I", DESCRIPTOR_ID)))
+    # Standard one-shot descriptor, SFX category and vanilla 3D output model.
+    descriptor = record(b"SNDR", DESCRIPTOR_ID,
+                        subrecord(b"EDID", zstring("HorseWhistle_Descriptor"))
+                        + subrecord(b"CNAM", bytes.fromhex("0a54ef1e"))
+                        + subrecord(b"GNAM", struct.pack("<I", 0x000172A1))
+                        + subrecord(b"ANAM", zstring(r"FX\HorseWhistleSE\whistle.wav"))
+                        + subrecord(b"ONAM", struct.pack("<I", 0x0006CB4F))
+                        + subrecord(b"LNAM", bytes(4))
+                        + subrecord(b"BNAM", bytes.fromhex("000080000000")))
+    return group(b"SOUN", 0, marker) + group(b"SNDR", 0, descriptor)
 
 
 def build_quest() -> bytes:
@@ -121,7 +149,7 @@ def build_cell_group() -> bytes:
 
 
 def build_plugin() -> bytes:
-    hedr = struct.pack("<fII", 1.7, 4, MARKER_ID)
+    hedr = struct.pack("<fII", 1.7, 8, 0x808)
     header_payload = (
         subrecord(b"HEDR", hedr)
         + subrecord(b"CNAM", zstring("Horse Whistle SE"))
@@ -131,9 +159,12 @@ def build_plugin() -> bytes:
     header = record(b"TES4", 0, header_payload)
     return (
         header
-        + group(b"GLOB", 0, build_global())
+        + group(b"GLOB", 0, build_global()
+                + setting(SOUND_ENABLED_ID, "HorseWhistle_SoundEnabled", 1.0)
+                + setting(VOLUME_ID, "HorseWhistle_Volume", 0.8))
         + group(b"QUST", 0, build_quest())
         + build_cell_group()
+        + build_sound()
     )
 
 
