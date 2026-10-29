@@ -8,7 +8,6 @@ import struct
 import zlib
 from pathlib import Path
 
-
 MIND_TAKEOVER_DURATION = 0x7FFFFFFF
 MIND_TAKEOVER_MANUAL_COST_FLAG = 0x00000001
 MIND_TAKEOVER_GUARD_KEYWORD = 0x0007EAF3
@@ -22,7 +21,7 @@ MIND_TAKEOVER_EFFECT_EDITOR_IDS = {
 MGEF_HOSTILE_FLAG = 0x00000001
 
 
-SPELLS = (
+SPELLS: tuple[dict, ...] = (
     {
         "source": 0x0008D5BF,
         "editor_id": "CreatorAbsorptionSpell",
@@ -106,7 +105,6 @@ SPELLS = (
     {
         "source": 0x0002B96C,
         "editor_id": "CreatorDecaySpell",
-        "name": "Zanik",
         "name": "Zanik I",
         "description": "Zadaje 6 pkt obrażeń zdrowia na sekundę przez 5 s.",
         "cost": 40,
@@ -130,7 +128,7 @@ SPELLS = (
 
 # Higher ranks are separate spells. They reuse each rank-I spell's custom
 # magic effects so the existing effect FormIDs remain stable across rebuilds.
-RANK_VARIANTS = (
+RANK_VARIANTS: tuple[dict, ...] = (
     {
         "base": "CreatorAbsorptionSpell",
         "editor_id": "CreatorAbsorption02Spell",
@@ -932,7 +930,7 @@ def build_plugin(master: Path, output: Path) -> None:
             ),
         ),
         make_subrecord(b"CNAM", b"Codex\0"),
-        make_subrecord(b"SNAM", "Czary klasy Stwórcy".encode("utf-8") + b"\0"),
+        make_subrecord(b"SNAM", "Czary klasy Stwórcy".encode() + b"\0"),
         make_subrecord(b"MAST", b"Skyrim.esm\0"),
         make_subrecord(b"DATA", b"\0" * 8),
     ]
@@ -946,6 +944,9 @@ def build_plugin(master: Path, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(header + groups)
     add_spell_ranks(output)
+    from build_new_spells import add_new_spells
+
+    add_new_spells(source_records, output)
 
 
 def main() -> None:
@@ -985,8 +986,8 @@ def main() -> None:
     build_plugin(master, args.output)
     print(
         f"Created {args.output} with "
-        f"{len(SPELLS) + len(RANK_VARIANTS)} spells and "
-        f"{sum(len(spec['effects']) for spec in SPELLS)} local magic effects"
+        f"{len(SPELLS) + len(RANK_VARIANTS) + 2} spells and "
+        f"{sum(len(spec['effects']) for spec in SPELLS) + 3} local magic effects"
     )
 
 

@@ -1,9 +1,11 @@
 # Czary Stwórcy
 
-Paczka 21 zaklęć do **The Elder Scrolls V: Skyrim Special Edition**: po trzy osobne rangi Pochłonięcia, Bariery, Impulsu, Przejęcia Jaźni, Osłabienia Rzeczywistości, Zaniku i Odbicia Woli. Rangi są oddzielnymi zaklęciami; ich siła nie rośnie automatycznie wraz z umiejętnością.
+Paczka 23 zaklęć do **The Elder Scrolls V: Skyrim Special Edition**: po trzy osobne rangi Pochłonięcia, Bariery, Impulsu, Przejęcia Jaźni, Osłabienia Rzeczywistości, Zaniku i Odbicia Woli oraz Spopielenie i Wewnętrzna eksplozja. Rangi są oddzielnymi zaklęciami; ich siła nie rośnie automatycznie wraz z umiejętnością. Źródłem wersji paczki jest `manifest.json`.
 
 ## Efekty
 
+- **Spopielenie** — podczas podtrzymywania zadaje 25 pkt obrażeń ogniem na sekundę fioletowo-pomarańczowym strumieniem; zasięg około 30 m; koszt bazowy 30 Magicki na sekundę. Po zabiciu nakłada na ciało ciemny efekt osmalenia, zachowując jego geometrię i łup. Przechwytuje duszę do odpowiedniego pustego kamienia; gdy takiego nie ma, dodaje czarny kamień i usuwa go, jeśli przechwycenie się nie uda. Nie tworzy kamieni dla istot bez duszy ani dodatkowych dusz z już przechwyconej ofiary.
+- **Wewnętrzna eksplozja** — kula energii wywołuje ucieczkę w strachu przez 5 s; następnie zabija cel i odtwarza krwawy rozbryzg z dźwiękiem; koszt bazowy 100 Magicki. Ponowne trafienie podczas odliczania nie kumuluje eksplozji. Czar nie wyłącza ochrony postaci niezbędnych dla fabuły. Cel zabity wcześniej nie eksploduje ponownie. Skrypty Papyrus mogą opóźnić detonację przy dużym obciążeniu gry. Wybuch dotyczy trafionego celu; nie zadaje obrażeń obszarowych.
 - **Pochłonięcie Stwórcy I** — wysysa 8 pkt zdrowia na sekundę i przywraca je rzucającemu; zasięg 30 m; koszt bazowy 12 Magicki na sekundę.
 - **Pochłonięcie Stwórcy II** — wysysa i przywraca 12 pkt zdrowia na sekundę; zasięg 30 m; koszt bazowy 18 Magicki na sekundę.
 - **Pochłonięcie Stwórcy III** — wysysa i przywraca 16 pkt zdrowia na sekundę; zasięg 30 m; koszt bazowy 24 Magicki na sekundę.
@@ -30,11 +32,11 @@ Koszt bazowy może zostać obniżony przez poziom szkoły magii i odpowiednie at
 
 Przejęcie Jaźni nie obejmuje straży, a jego efekty nie są oznaczone jako wrogi atak. Szał utrzymuje się do śmierci celu.
 
-Wtyczka używa istniejących efektów Skyrim. Rangi danego czaru korzystają z tych samych efektów magicznych, a każda ranga ma osobny koszt i parametry. Pozostałe zaklęcia gry zachowują oryginalne brzmienie. Dźwięki pochodzą z `Skyrim.esm`; paczka nie dodaje plików audio, siatek ani tekstur. Bariera daje aurę flesh zamiast kulistej bańki, Impuls korzysta z efektu fali Unrelenting Force, a Pochłonięcie z czerwonego promienia wampirycznego. Część kolorów i wyglądu odbiega więc od docelowych fioletowych, czarno-czerwonych efektów. Zaklęcia nie wymagają Dawnguard, SKSE ani Papyrusa.
+Wtyczka używa istniejących efektów Skyrim oraz osobnej siatki i palety ognia Spopielenia. Rangi danego czaru korzystają z tych samych efektów magicznych, a każda ranga ma osobny koszt i parametry. Pozostałe zaklęcia gry zachowują oryginalne brzmienie. Dźwięki pochodzą z `Skyrim.esm`; paczka nie dodaje plików audio. Bariera daje aurę flesh zamiast kulistej bańki, Impuls korzysta z efektu fali Unrelenting Force, a Pochłonięcie z czerwonego promienia wampirycznego. Część kolorów i wyglądu starszych zaklęć odbiega więc od docelowych fioletowych, czarno-czerwonych efektów. Nowe zaklęcia korzystają z dwóch dołączonych skryptów Papyrus, obsługiwanych przez samą grę. Dawnguard i SKSE nie są wymagane.
 
 ## Instalacja
 
-Zaimportuj `CzaryStwórcy.zip` w Boreal i włącz `CreatorSpells.esp`, albo skopiuj `Data/CreatorSpells.esp` do katalogu `Data` gry i aktywuj plugin w menedżerze modów. Wymagany jest `Skyrim.esm`.
+Zaimportuj `CzaryStwórcy.zip` w Boreal i włącz `CreatorSpells.esp`, albo skopiuj **całą zawartość `Data`** paczki do katalogu `Data` gry i aktywuj plugin w menedżerze modów. Wymagany jest `Skyrim.esm`. Sam plik ESP nie wystarcza dla nowych zaklęć: wymagają dołączonych katalogów `Scripts`, `Meshes` i `Textures`.
 
 ## Dodanie czaru do postaci
 
@@ -53,6 +55,8 @@ player.addspell <FormID>
 EditorID-y wszystkich rang:
 
 ```text
+CreatorIncinerationSpell
+CreatorInternalExplosionSpell
 CreatorAbsorptionSpell
 CreatorAbsorption02Spell
 CreatorAbsorption03Spell
@@ -80,4 +84,12 @@ Nie wpisuj `01000800` jako runtime FormID. Prefiks zmienia się zależnie od loa
 
 ## Źródło pluginu
 
-`Source/build_plugin.py` odtwarza ESP z `Skyrim.esm` zainstalowanego razem z grą, a następnie dopisuje wyższe rangi. Użyj `--plugin-only`, aby zaktualizować istniejący ESP bez mastera. Do instalacji użyj gotowego archiwum.
+`Source/build_package.py` odtwarza ESP z `Skyrim.esm`, buduje zasoby ognia z lokalnych archiwów gry, kompiluje skrypty z kontrolą typów i ostrzeżeń oraz tworzy ZIP. Potrzebne są Python 3.9+, pakiet `lz4` oraz Caprica (na macOS także Wine):
+
+```sh
+python3 Source/build_package.py --skyrim-data '/ścieżka/do/Skyrim/Data' --compiler '/ścieżka/do/Caprica.exe'
+```
+
+`Source/build_plugin.py` buduje wyłącznie ESP. Opcja `--plugin-only` aktualizuje tylko dotychczasowe rangi i nie dodaje nowych czarów, skryptów ani zasobów. Do instalacji użyj kompletnego archiwum.
+
+Budowa, lint źródeł Python i kontrola typów nie potwierdzają wyglądu ani zachowania w silniku gry. Wersja 1.4.0 nie została sprawdzona w uruchomionej rozgrywce Skyrim SE.
