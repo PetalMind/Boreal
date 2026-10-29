@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build the quest and settings globals for Nordic Minimal UI SE."""
 from __future__ import annotations
+
 import struct
 import sys
 from pathlib import Path
+
 from route_spell import build_route_records
 
 

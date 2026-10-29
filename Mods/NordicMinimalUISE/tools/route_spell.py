@@ -4,8 +4,8 @@ from __future__ import annotations
 import os
 import struct
 import zlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 ROUTE_SPELL_ID = 0x01000806
 ROUTE_EFFECT_ID = 0x01000807
