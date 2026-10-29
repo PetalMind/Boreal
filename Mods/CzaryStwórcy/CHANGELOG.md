@@ -1,6 +1,12 @@
 # Changelog
 
-# Changelog
+## 1.4.0
+
+- Dodano Spopielenie: ciągły strumień fioletowo-pomarańczowego ognia, 25 pkt obrażeń na sekundę, osmalenie zwłok i przechwytywanie duszy do kamienia.
+- Przy braku odpowiedniego pustego kamienia Spopielenie zapewnia czarny kamień duszy; nie pozostawia go, jeśli przechwycenie duszy się nie uda.
+- Dodano Wewnętrzną eksplozję: kulę energii, 5 sekund strachu, a następnie śmierć celu z krwawym efektem i dźwiękiem. Zachowano ochronę postaci niezbędnych dla fabuły.
+- Dodano własną paletę i siatkę ognia oraz dwa skompilowane skrypty Papyrus. Zachowano FormID-y i parametry dotychczasowych 21 zaklęć. SKSE nie jest wymagane.
+- Dodano powtarzalną budowę kompletnej paczki; źródłem wersji jest `manifest.json`.
 
 ## 1.3.2
 
