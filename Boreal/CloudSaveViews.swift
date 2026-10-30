@@ -40,11 +40,7 @@ struct CloudSaveCard: View {
             cloudSaveContent
         }
         .padding(18)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.white.opacity(0.08))
-        }
+        .borealSurface(cornerRadius: 16)
         .animation(motion.stateChange, value: status.state)
         .task(id: game.storeReference) {
             await loadConfiguration()

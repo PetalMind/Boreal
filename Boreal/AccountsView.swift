@@ -288,8 +288,7 @@ struct AccountsView: View {
             .font(.caption)
         }
         .padding(20)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
-        .overlay { RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.09)) }
+        .borealSurface(cornerRadius: 16)
     }
 
     private var otherStoresCard: some View {
@@ -315,8 +314,7 @@ struct AccountsView: View {
             Button(button, action: action).controlSize(.large).fixedSize()
         }
         .padding(16).frame(maxWidth: .infinity, minHeight: 66)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
-        .overlay { RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.09)) }
+        .borealSurface(cornerRadius: 16)
     }
 
     private var informationPanel: some View {
@@ -354,8 +352,7 @@ struct AccountsView: View {
                 Button("Open connection guide ↗") { showsHelp = true }.buttonStyle(.link)
             }
             .padding(18).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.1)) }
+            .borealSurface(cornerRadius: 14)
         }
     }
 

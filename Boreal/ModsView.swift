@@ -289,11 +289,7 @@ struct ModsView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(.white.opacity(0.10))
-                }
+                .borealSurface(cornerRadius: 8)
             }
             if !isGTAIVGame {
                 Button("Import Mod…", systemImage: "arrow.down.to.line") {
@@ -406,11 +402,7 @@ struct ModsView: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(.white.opacity(0.1))
-        }
+        .borealSurface(cornerRadius: 12)
     }
 
     private var witcher3Guide: some View {
@@ -774,11 +766,7 @@ struct ModsView: View {
         }
         .padding(8)
         .frame(minWidth: 170, idealWidth: 170, maxWidth: 170, minHeight: 360, maxHeight: 520, alignment: .topLeading)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(.white.opacity(0.08))
-        }
+        .borealSurface(cornerRadius: 11)
     }
 
     private func filterButton(_ filter: ModFilter, count: Int) -> some View {
@@ -927,11 +915,7 @@ struct ModsView: View {
         }
         .tableStyle(.inset)
         .frame(minHeight: 360, idealHeight: 450, maxHeight: 520)
-        .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(.white.opacity(0.08))
-        }
+        .borealSurface(cornerRadius: 11)
     }
 
     private func modDetails(_ mod: InstalledMod, state: ModGameState) -> some View {
@@ -1074,11 +1058,7 @@ struct ModsView: View {
             .padding(15)
         }
         .frame(minWidth: 270, idealWidth: 270, maxWidth: 270, minHeight: 360, maxHeight: 520, alignment: .topLeading)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(.white.opacity(0.08))
-        }
+        .borealSurface(cornerRadius: 11)
     }
 
     private var modDetailsPlaceholder: some View {
@@ -1095,11 +1075,7 @@ struct ModsView: View {
         }
         .padding(22)
         .frame(minWidth: 270, idealWidth: 270, maxWidth: 270, minHeight: 360, maxHeight: 520)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(.white.opacity(0.08))
-        }
+        .borealSurface(cornerRadius: 11)
     }
 
     private func detailList(title: String, values: [String], symbol: String, tint: Color) -> some View {

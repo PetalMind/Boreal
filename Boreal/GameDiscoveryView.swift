@@ -22,8 +22,7 @@ struct GameDiscoveryBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
+        .borealSurface(cornerRadius: 12)
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
     }

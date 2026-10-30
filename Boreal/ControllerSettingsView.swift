@@ -9,21 +9,23 @@ struct ControllerSettingsView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            HStack(spacing: 0) {
-                categoryList
-                Divider()
-                ScrollView {
-                    HStack(alignment: .top, spacing: 32) {
-                        categoryContent
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if !manager.controllers.isEmpty {
-                            ControllerPreview(manager: manager)
-                                .frame(width: 420)
-                        }
+            GeometryReader { geometry in
+                if geometry.size.width >= 760 {
+                    HStack(spacing: 0) {
+                        categoryList
+                        Divider()
+                        controllerScrollContent
                     }
-                    .frame(maxWidth: 1440, alignment: .top)
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(28)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Picker("Controller Settings", selection: $category) {
+                            ForEach(ControllerSettingsCategory.allCases) { item in
+                                Text(item.rawValue).tag(item)
+                            }
+                        }
+                        .padding(16)
+                        controllerScrollContent
+                    }
                 }
             }
             Divider()
@@ -32,6 +34,33 @@ struct ControllerSettingsView: View {
         .background(BorealGlassBackdrop())
         .navigationTitle("Controller Settings")
         .onAppear { manager.start(); manager.refreshPermissionState() }
+    }
+
+    private var controllerScrollContent: some View {
+        ScrollView {
+            controllerContent
+                .frame(maxWidth: 1440, alignment: .top)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(24)
+        }
+    }
+
+    private var controllerContent: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 24) {
+                categoryContent.frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
+                if !manager.controllers.isEmpty {
+                    ControllerPreview(manager: manager).frame(width: 360)
+                }
+            }
+            VStack(alignment: .leading, spacing: 24) {
+                categoryContent
+                if !manager.controllers.isEmpty {
+                    ControllerPreview(manager: manager)
+                        .frame(maxWidth: 420)
+                }
+            }
+        }
     }
 
     private var header: some View {

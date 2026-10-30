@@ -769,11 +769,7 @@ private struct DownloadOperationCard: View {
             }
         }
         .padding(presentation == .active ? 20 : 16)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(.white.opacity(0.13), lineWidth: 1)
-        }
+        .borealSurface(cornerRadius: 18)
     }
 
     private var header: some View {
@@ -1265,11 +1261,7 @@ private struct TransferChartPoint: Identifiable {
 
 private extension View {
     func downloadPanel() -> some View {
-        background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(.white.opacity(0.11), lineWidth: 1)
-            }
+        borealSurface(cornerRadius: 16)
     }
 
     func downloadStatusBadge() -> some View {

@@ -805,7 +805,7 @@ private struct GameOverlayView: View {
             AxisValueLabel {
                 if let number = value.as(Double.self) {
                     Text("\(Int(number.rounded()))\(suffix)")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -817,7 +817,7 @@ private struct GameOverlayView: View {
             Circle().fill(color).frame(width: 6, height: 6)
             Text(text)
         }
-        .font(.system(size: 10, weight: .bold, design: .monospaced))
+        .font(.system(size: 11, weight: .bold, design: .monospaced))
         .foregroundStyle(.secondary)
     }
 
@@ -829,7 +829,7 @@ private struct GameOverlayView: View {
             Text("⌘⌥O")
                 .foregroundStyle(.white)
         }
-        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .font(.system(size: 11, weight: .semibold, design: .monospaced))
         .foregroundStyle(.secondary)
         .accessibilityLabel("Hide overlay with Command Option O")
     }
@@ -934,11 +934,11 @@ private struct GameOverlayView: View {
         VStack(alignment: .leading, spacing: 1) {
             Label(text, systemImage: symbol)
                 .lineLimit(1)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
             Text(trailing)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,35 +1,6 @@
 import Foundation
 import SwiftUI
 import AppKit
-import ImageIO
-
-enum BorealMotion {
-    static let instant = Animation.easeOut(duration: 0.10)
-    static let hover = Animation.easeOut(duration: 0.16)
-    static let control = Animation.easeOut(duration: 0.20)
-    static let stateChange = Animation.easeInOut(duration: 0.24)
-    static let panel = Animation.easeInOut(duration: 0.28)
-    static let navigation = Animation.spring(duration: 0.36, bounce: 0.06)
-    static let hero = Animation.spring(duration: 0.46, bounce: 0.04)
-    static let reorder = Animation.spring(duration: 0.30, bounce: 0.12)
-}
-
-struct BorealMotionEnvironment {
-    let reduceMotion: Bool
-
-    var instant: Animation? { reduceMotion ? .easeOut(duration: 0.08) : BorealMotion.instant }
-    var hover: Animation? { reduceMotion ? .easeOut(duration: 0.08) : BorealMotion.hover }
-    var control: Animation? { reduceMotion ? .easeOut(duration: 0.08) : BorealMotion.control }
-    var stateChange: Animation? { reduceMotion ? .easeOut(duration: 0.08) : BorealMotion.stateChange }
-    var panel: Animation? { reduceMotion ? .easeOut(duration: 0.12) : BorealMotion.panel }
-    var navigation: Animation? { reduceMotion ? .easeOut(duration: 0.12) : BorealMotion.navigation }
-    var hero: Animation? { reduceMotion ? .easeOut(duration: 0.14) : BorealMotion.hero }
-    var reorder: Animation? { reduceMotion ? .easeOut(duration: 0.12) : BorealMotion.reorder }
-
-    init(reduceMotion: Bool) {
-        self.reduceMotion = reduceMotion
-    }
-}
 
 struct FavoriteButton: View {
     let isFavorite: Bool
@@ -107,6 +78,7 @@ struct FavoriteButton: View {
             .font(.title3.weight(.semibold))
             .frame(width: 34, height: 34)
             .scaleEffect(symbolScale)
+            .padding(5)
             .shadow(color: .black.opacity(0.7), radius: 3)
         }
         .buttonStyle(.plain)
@@ -210,34 +182,6 @@ struct BorealActivityPulse: ViewModifier {
 extension View {
     func borealActivityPulse(isActive: Bool) -> some View {
         modifier(BorealActivityPulse(isActive: isActive))
-    }
-}
-
-struct BorealGlassBackdrop: View {
-    var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-
-            RadialGradient(
-                colors: [Color.cyan.opacity(0.17), Color.cyan.opacity(0.035), .clear],
-                center: .topTrailing,
-                startRadius: 24,
-                endRadius: 760
-            )
-
-            RadialGradient(
-                colors: [Color.indigo.opacity(0.15), Color.purple.opacity(0.025), .clear],
-                center: .bottomLeading,
-                startRadius: 16,
-                endRadius: 690
-            )
-
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .opacity(0.22)
-        }
-        .ignoresSafeArea()
-        .accessibilityHidden(true)
     }
 }
 
@@ -498,89 +442,11 @@ struct GameArtworkView: View {
 }
 
 private struct BorealArtworkLoadingIndicator: View {
-    @State private var isAnimating = false
-
     var body: some View {
-        Circle()
-            .trim(from: 0.12, to: 0.86)
-            .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
-            .frame(width: 18, height: 18)
-            .rotationEffect(.degrees(isAnimating ? 360 : 0))
-            .animation(.linear(duration: 0.85).repeatForever(autoreverses: false), value: isAnimating)
-            .onAppear { isAnimating = true }
+        ProgressView()
+            .controlSize(.small)
+            .tint(.white)
             .accessibilityLabel("Loading artwork")
-    }
-}
-
-private actor BorealArtworkImagePipeline {
-    static let shared = BorealArtworkImagePipeline()
-
-    private let cache = NSCache<NSURL, NSImage>()
-    private var inFlight: [URL: Task<NSImage?, Never>] = [:]
-
-    func image(for url: URL, maxPixelSize: Int) async -> NSImage? {
-        if let cached = cache.object(forKey: url as NSURL) { return cached }
-        if let task = inFlight[url] { return await task.value }
-
-        let task = Task.detached(priority: .utility) { () -> NSImage? in
-            var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
-            request.setValue("image/*", forHTTPHeaderField: "Accept")
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  !Task.isCancelled else { return nil }
-            return Self.downsampledImage(from: data, maxPixelSize: maxPixelSize)
-        }
-        inFlight[url] = task
-        let image = await task.value
-        inFlight[url] = nil
-        if let image {
-            cache.setObject(image, forKey: url as NSURL, cost: Self.imageCost(image))
-        }
-        return image
-    }
-
-    private static func downsampledImage(from data: Data, maxPixelSize: Int) -> NSImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-            kCGImageSourceShouldCacheImmediately: true,
-        ]
-        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return NSImage(cgImage: thumbnail, size: .zero)
-    }
-
-    private static func imageCost(_ image: NSImage) -> Int {
-        let representation = image.representations.first
-        let width = representation?.pixelsWide ?? Int(image.size.width)
-        let height = representation?.pixelsHigh ?? Int(image.size.height)
-        return max(1, width * height * 4)
-    }
-}
-
-@MainActor
-enum ArtworkImageCache {
-    private static let images = NSCache<NSString, NSImage>()
-
-    static func image(at path: String) -> NSImage? {
-        let key = path as NSString
-        if let image = images.object(forKey: key) { return image }
-        guard let image = NSImage(contentsOfFile: path) else { return nil }
-        images.setObject(image, forKey: key, cost: imageCost(image))
-        images.totalCostLimit = 192 * 1_024 * 1_024
-        return image
-    }
-
-    static func customImage(processedPath: String?, originalPath: String?) -> NSImage? {
-        if let processedPath, let image = image(at: processedPath) { return image }
-        if let originalPath, let image = image(at: originalPath) { return image }
-        return nil
-    }
-
-    private static func imageCost(_ image: NSImage) -> Int {
-        guard let representation = image.representations.first else { return 0 }
-        return representation.pixelsWide * representation.pixelsHigh * 4
     }
 }
 

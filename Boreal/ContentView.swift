@@ -8,28 +8,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum GameDetailsTransitionPhase: Equatable {
-    case library
-    case opening
-    case details
-    case closing
-}
-
-struct GameDetailsTransitionState: Equatable {
-    var selectedGameID: UUID?
-    var phase: GameDetailsTransitionPhase = .library
-    var usesArtworkTransition = false
-
-    static let library = Self(selectedGameID: nil, phase: .library)
-}
-
 struct ContentView: View {
     @Environment(BorealStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: SidebarDestination? = .library
     @State private var libraryPath: [LibraryRoute] = []
     @Namespace private var gameTransitionNamespace
-    @Namespace private var sidebarSelectionNamespace
     @State private var gameTransitionState = GameDetailsTransitionState.library
     @State private var searchText = ""
     @State private var discoverySearchText = ""
@@ -259,8 +243,7 @@ struct ContentView: View {
                         symbol: "sparkles",
                         tint: .purple,
                         count: store.discoveryCatalog?.trackedCount,
-                        isSelected: selection == .discovery,
-                        selectionNamespace: sidebarSelectionNamespace
+                        isSelected: selection == .discovery
                     )
                 }
                 .buttonStyle(.plain)
@@ -278,8 +261,7 @@ struct ContentView: View {
                         subtitle: .Navigation.homeSubtitle,
                         symbol: "rectangle.grid.2x2.fill",
                         tint: .cyan,
-                        isSelected: isHomeSelected,
-                        selectionNamespace: sidebarSelectionNamespace
+                        isSelected: isHomeSelected
                     )
                 }
                 .buttonStyle(.plain)
@@ -293,8 +275,7 @@ struct ContentView: View {
                         symbol: "arrow.down.circle.fill",
                         tint: .green,
                         count: installedCount,
-                        isSelected: isInstalledSelected,
-                        selectionNamespace: sidebarSelectionNamespace
+                        isSelected: isInstalledSelected
                     )
                 }
                 .buttonStyle(.plain)
@@ -309,8 +290,7 @@ struct ContentView: View {
                         symbol: "heart.fill",
                         tint: .pink,
                         count: favoriteCount,
-                        isSelected: isFavoritesSelected,
-                        selectionNamespace: sidebarSelectionNamespace
+                        isSelected: isFavoritesSelected
                     )
                 }
                 .buttonStyle(.plain)
@@ -328,8 +308,7 @@ struct ContentView: View {
                         BorealStoreSidebarRow(
                             source: source,
                             count: sourceCount(source),
-                            isSelected: isSelected(source),
-                            selectionNamespace: sidebarSelectionNamespace
+                            isSelected: isSelected(source)
                         )
                     }
                     .buttonStyle(.plain)
@@ -785,181 +764,6 @@ struct ContentView: View {
     private var favoriteCount: Int {
         let items = LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations).filter { !store.hiddenLibraryKeys.contains($0.favoriteKey) }
         return items.lazy.filter { store.favoriteKeys.contains($0.favoriteKey) }.count
-    }
-}
-
-private struct BorealSidebarSectionHeader: View {
-    let title: LocalizedStringResource
-
-    init(_ title: LocalizedStringResource) { self.title = title }
-
-    var body: some View {
-        Text(title)
-            .textCase(.uppercase)
-            .font(.caption2.weight(.bold))
-            .tracking(1.15)
-            .foregroundStyle(.tertiary)
-    }
-}
-
-private struct BorealSidebarRow: View {
-    let title: LocalizedStringResource
-    let subtitle: LocalizedStringResource
-    let symbol: String
-    let tint: Color
-    var count: Int?
-    let isSelected: Bool
-    let selectionNamespace: Namespace.ID
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tint.opacity(isSelected ? 0.26 : 0.14))
-                Image(systemName: symbol)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isSelected ? tint : tint.opacity(0.88))
-            }
-            .frame(width: 30, height: 30)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.callout.weight(isSelected ? .semibold : .medium))
-                Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-            if let count {
-                Text(count.formatted())
-                    .font(.caption2.monospacedDigit().weight(.medium))
-                    .foregroundStyle(isSelected ? tint : Color(nsColor: .tertiaryLabelColor))
-            }
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .background(selectionBackground)
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder private var selectionBackground: some View {
-        if isSelected {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(tint.opacity(0.12))
-                .matchedGeometryEffect(id: "sidebar-selection", in: selectionNamespace)
-                .overlay(alignment: .leading) {
-                    Capsule().fill(tint).frame(width: 3).padding(.vertical, 7)
-                }
-        }
-    }
-}
-
-private struct BorealStoreSidebarRow: View {
-    let source: LibrarySourceFilter
-    let count: Int
-    let isSelected: Bool
-    let selectionNamespace: Namespace.ID
-
-    var body: some View {
-        HStack(spacing: 10) {
-            BorealStoreMark(source: source, isSelected: isSelected)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(source.title)
-                    .font(.callout.weight(isSelected ? .semibold : .medium))
-                Text(source.subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-            Text(count.formatted())
-                .font(.caption2.monospacedDigit().weight(.medium))
-                .foregroundStyle(isSelected ? source.brandColor : Color(nsColor: .tertiaryLabelColor))
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(source.brandColor.opacity(0.12))
-                    .matchedGeometryEffect(id: "sidebar-selection", in: selectionNamespace)
-                    .overlay(alignment: .leading) {
-                        Capsule().fill(source.brandColor).frame(width: 3).padding(.vertical, 7)
-                    }
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-}
-
-private struct BorealStoreMark: View {
-    let source: LibrarySourceFilter
-    let isSelected: Bool
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(source.brandGradient)
-            if let assetName = source.brandAssetName {
-                Image(assetName)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(source == .epic ? 5 : 6)
-            } else {
-                Image(systemName: "square.grid.2x2.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 30, height: 30)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(isSelected ? 0.28 : 0.12), lineWidth: 0.75)
-        }
-        .shadow(color: source.brandColor.opacity(isSelected ? 0.28 : 0.10), radius: 4, y: 2)
-        .accessibilityHidden(true)
-    }
-}
-
-private extension LibrarySourceFilter {
-    var subtitle: String {
-        switch self {
-        case .boreal: "Your locally installed games"
-        case .steam: "Steam library"
-        case .epic: "Epic collection"
-        case .gog: "DRM-free games"
-        }
-    }
-
-    var brandAssetName: String? {
-        switch self {
-        case .boreal: nil
-        case .steam: "SteamLogo"
-        case .epic: "EpicGamesLogo"
-        case .gog: "GOGLogo"
-        }
-    }
-
-    var brandColor: Color {
-        switch self {
-        case .boreal: .cyan
-        case .steam: Color(red: 0.12, green: 0.53, blue: 0.78)
-        case .epic: Color(red: 0.42, green: 0.43, blue: 0.47)
-        case .gog: Color(red: 0.60, green: 0.29, blue: 0.82)
-        }
-    }
-
-    var brandGradient: LinearGradient {
-        switch self {
-        case .boreal:
-            LinearGradient(colors: [.cyan, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .steam:
-            LinearGradient(colors: [Color(red: 0.10, green: 0.18, blue: 0.29), Color(red: 0.10, green: 0.55, blue: 0.78)], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .epic:
-            LinearGradient(colors: [Color(red: 0.18, green: 0.18, blue: 0.20), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .gog:
-            LinearGradient(colors: [Color(red: 0.39, green: 0.18, blue: 0.56), Color(red: 0.74, green: 0.32, blue: 0.77)], startPoint: .topLeading, endPoint: .bottomTrailing)
-        }
     }
 }
 

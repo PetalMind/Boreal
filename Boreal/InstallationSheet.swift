@@ -31,14 +31,7 @@ struct InstallationSheet: View {
         .padding(28)
         .frame(width: 650)
         .frame(minHeight: 520)
-        .background(
-            LinearGradient(
-                colors: [Color(red: 0.09, green: 0.10, blue: 0.13), Color(red: 0.055, green: 0.06, blue: 0.08)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .preferredColorScheme(.dark)
+        .background(BorealGlassBackdrop())
         .animation(motion.stateChange, value: installationStateKey)
         .interactiveDismissDisabled(isInstalling)
         .onAppear {
@@ -75,7 +68,7 @@ struct InstallationSheet: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .semibold))
                     .frame(width: 34, height: 34)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -91,7 +84,7 @@ struct InstallationSheet: View {
             .lineLimit(1)
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
-            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func optionRow<Content: View>(title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
@@ -233,7 +226,7 @@ struct InstallationSheet: View {
                         }
                     }
                     .background(.black.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.10)) }
+                    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.10)) }
                 }
 
                 informationCard
@@ -257,7 +250,7 @@ struct InstallationSheet: View {
                 installationSteps
                     .padding(16)
                     .background(.black.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.10)) }
+                    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.10)) }
                 Label("You may keep using Boreal while this operation finishes.", systemImage: "info.circle.fill")
                     .font(.callout)
                     .foregroundStyle(.blue)

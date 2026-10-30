@@ -5,6 +5,7 @@ import SwiftUI
 /// desktop split view remains unchanged; this view owns its own hierarchy and
 /// keeps the focused item stable while the user visits a game.
 struct ConsoleModeView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(BorealStore.self) private var store
     @State private var section = ConsoleSection.home
     @State private var focusedID: LibraryItem.ID?
@@ -81,7 +82,7 @@ struct ConsoleModeView: View {
                 }
                 .onChange(of: focusAnchor) { _, anchor in
                     guard let anchor else { return }
-                    withAnimation(.easeOut(duration: 0.18)) { verticalProxy.scrollTo(anchor, anchor: .center) }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { verticalProxy.scrollTo(anchor, anchor: .center) }
                 }
                 }
                 footer
@@ -198,7 +199,7 @@ struct ConsoleModeView: View {
                 .contentMargins(.horizontal, -8, for: .scrollContent)
                 .onChange(of: focusedID) { _, id in
                     guard focusedRail == rail, let id else { return }
-                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
                 }
                 }
             }
@@ -739,12 +740,13 @@ private struct ConsoleGameDetailView: View {
 }
 
 private struct ConsoleNavButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let selected: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 16, weight: selected ? .bold : .semibold, design: .rounded))
             .foregroundStyle(selected ? .white : .secondary)
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
             .padding(.horizontal, 15).padding(.vertical, 11)
             .background(selected ? Color.cyan.opacity(0.2) : .clear, in: Capsule())
             .overlay(Capsule().stroke(selected ? Color.cyan.opacity(0.65) : .clear, lineWidth: 1))
@@ -836,6 +838,7 @@ private struct ConsoleHomeHero: View {
 }
 
 private struct ConsoleGameCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: LibraryItem
     let focused: Bool
     let action: () -> Void
@@ -874,8 +877,8 @@ private struct ConsoleGameCard: View {
             .padding(14).background(.white.opacity(focused ? 0.16 : 0.075), in: RoundedRectangle(cornerRadius: 20))
             .overlay(RoundedRectangle(cornerRadius: 20).stroke(focused ? .cyan : .white.opacity(0.07), lineWidth: focused ? 3 : 1))
             .shadow(color: focused ? .cyan.opacity(0.22) : .black.opacity(0.2), radius: focused ? 18 : 8, y: 8)
-            .scaleEffect(focused ? 1.035 : 1)
-            .animation(.easeOut(duration: 0.15), value: focused)
+            .scaleEffect(focused && !reduceMotion ? 1.035 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: focused)
         }
         .buttonStyle(.plain)
         .frame(width: 316, height: 256)
