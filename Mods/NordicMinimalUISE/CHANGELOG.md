@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+- Celownik rozróżnia NoTarget, Target (pierścień), Favor (romb) i natywny wariant Alert (kolor i kreska ostrzegawcza).
+- Zastąpiono szybkie pulsowanie nieruchomą kropką z opcjonalnym, łagodnym ruchem.
+- Dodano trwałe ustawienia MCM: rozmiar 50–200%, krycie 25–100% i animacja.
+- Zachowano natywne oko skradania oraz ukrywanie celownika według trybu HUD i ustawienia gry.
+- Wydzielono renderer celownika do Source/Interface/NordicCrosshair.as.
+- Manifest odwołuje się do VERSION zamiast przechowywać drugą, nieaktualną wersję.
+
 ## 1.0.6
 
 - Nawigacja pod H używa prywatnego czaru o stałym koszcie 0 magicki i nie daje doświadczenia magii.
