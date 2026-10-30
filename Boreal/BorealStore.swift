@@ -2487,6 +2487,7 @@ final class BorealStore {
     }
 
     func refreshMods(for game: StoreLibraryGame) {
+        guard !isModOperationActive(for: game) else { return }
         guard let context = modGameContext(for: game) else {
             modStates[game.id] = nil
             modHealth[game.id] = nil
@@ -2546,6 +2547,7 @@ final class BorealStore {
             return
         }
         guard let gameRoot = gtaIVGameRoot(for: game),
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         let installer = gtaIVXLiveLessInstaller
@@ -2571,6 +2573,7 @@ final class BorealStore {
             return
         }
         guard let gameRoot = gtaIVGameRoot(for: game),
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         let installer = gtaIVXLiveLessInstaller
@@ -2605,7 +2608,7 @@ final class BorealStore {
             present(ModManagerError.unsupportedGame(game.name), title: "Mod manager unavailable", stage: "Checking the selected game")
             return nil
         }
-        guard modOperationGameIDs.insert(game.id).inserted else { return nil }
+        guard !isModOperationActive(for: game), modOperationGameIDs.insert(game.id).inserted else { return nil }
         modOperationMessages[game.id] = "Inspecting \(archive.lastPathComponent)…"
         defer {
             modOperationMessages.removeValue(forKey: game.id)
@@ -2635,6 +2638,7 @@ final class BorealStore {
         guard preview.gameID == game.id,
               let context = modGameContext(for: game),
               let profileID = modStates[game.id]?.profileID,
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         modOperationMessages[gameID] = "Adding \(preview.archiveName)…"
@@ -2683,9 +2687,8 @@ final class BorealStore {
                         ? "Installing and verifying the deployed mod archive"
                         : "Staging the mod archive"
                 )
-                if preview.isUpdate {
-                    self?.refreshMods(for: game)
-                }
+                self?.modOperationGameIDs.remove(gameID)
+                self?.refreshMods(for: game)
             }
         }
     }
@@ -2710,6 +2713,7 @@ final class BorealStore {
         guard let state = modStates[game.id],
               state.mods.first(where: { $0.id == modID })?.isExternallyDetected != true,
               let context = modGameContext(for: game),
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let manager = modManager(for: game)
         let gameID = game.id
@@ -2725,6 +2729,8 @@ final class BorealStore {
                 self?.refreshModHealth(for: game, state: contextualState, context: context)
             } catch {
                 self?.present(error, title: "Mod couldn’t be removed", stage: "Removing the staged mod package")
+                self?.modOperationGameIDs.remove(gameID)
+                self?.refreshMods(for: game)
             }
         }
     }
@@ -2767,7 +2773,7 @@ final class BorealStore {
     }
 
     func deployMods(for game: StoreLibraryGame) {
-        guard !modOperationGameIDs.contains(game.id) else { return }
+        guard !isModOperationActive(for: game) else { return }
         guard let state = modStates[game.id] else {
             present(
                 ModManagerError.deploymentFailed("The active mod profile is not loaded yet. Refresh the mod list and try again."),
@@ -2785,7 +2791,7 @@ final class BorealStore {
             )
             return
         }
-        guard modOperationGameIDs.insert(game.id).inserted else { return }
+        guard !isModOperationActive(for: game), modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         let manager = modManager(for: game)
         Task { @MainActor [weak self] in
@@ -2806,13 +2812,13 @@ final class BorealStore {
 
     func switchModProfile(to profileID: String, for game: StoreLibraryGame) {
         guard let context = modGameContext(for: game),
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         let manager = modManager(for: game)
         Task { @MainActor [weak self] in
             defer { self?.modOperationGameIDs.remove(gameID) }
             do {
-                try manager.activateProfile(profileID, for: gameID)
                 let state = try await Task.detached(priority: .userInitiated) {
                     try manager.load(
                         gameID: gameID,
@@ -2822,6 +2828,7 @@ final class BorealStore {
                         auxiliaryRoot: context.auxiliaryRoot
                     )
                 }.value
+                try manager.activateProfile(profileID, for: gameID)
                 var contextualState = state
                 contextualState.auxiliaryRoot = context.auxiliaryRoot
                 self?.modStates[gameID] = contextualState
@@ -2835,6 +2842,7 @@ final class BorealStore {
     func createModProfile(named name: String, for game: StoreLibraryGame) {
         guard let state = modStates[game.id],
               let context = modGameContext(for: game),
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let gameID = game.id
         let manager = modManager(for: game)
@@ -2855,6 +2863,7 @@ final class BorealStore {
     }
 
     private func persistModState(_ state: ModGameState, for game: StoreLibraryGame) {
+        guard !isModOperationActive(for: game) else { return }
         var normalized = state
         normalized.mods = normalized.mods.enumerated().map { index, mod in
             var value = mod
@@ -2934,6 +2943,7 @@ final class BorealStore {
     func repairModdingRuntime(for game: StoreLibraryGame) {
         guard let context = modGameContext(for: game),
               context.adapter == .gtaSanAndreas,
+              !isModOperationActive(for: game),
               modOperationGameIDs.insert(game.id).inserted else { return }
         let manager = modManager(for: context.adapter)
         let gameID = game.id
@@ -2943,6 +2953,7 @@ final class BorealStore {
                 _ = try await Task.detached(priority: .userInitiated) {
                     try manager.repairRuntime(gameRoot: context.gameRoot)
                 }.value
+                self?.modOperationGameIDs.remove(gameID)
                 self?.refreshMods(for: game)
             } catch {
                 self?.present(error, title: "Modding runtime couldn’t be repaired", stage: "Preparing GTA San Andreas modding folders")

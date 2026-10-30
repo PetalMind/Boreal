@@ -355,8 +355,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         let gameDirectory = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
         let profile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: resolvedProfileID))
-        let deployment = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json")))
-            ?? .empty(gameID: gameID)
+        let deployment = try ModProfileStorage.loadDeployment(at: gameDirectory.appending(path: "deployment.json"), gameID: gameID)
         let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
         let discoveredMods = scanExternalMods(
             gameRoot: gameRoot,
@@ -521,7 +520,7 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
         let fileManager = FileManager.default
         let gameDirectory = gameURL(for: state.gameID)
         let deploymentURL = gameDirectory.appending(path: "deployment.json")
-        let old = (try? read(ModDeploymentManifest.self, at: deploymentURL)) ?? .empty(gameID: state.gameID)
+        let old = try ModProfileStorage.loadDeployment(at: deploymentURL, gameID: state.gameID)
         let resolved = try resolvedFiles(for: state.mods, gameDirectory: gameDirectory)
         try validateManagedFiles(old.files, userDataRoot: userDataRoot)
         try preflightExternalChanges(old.files, userDataRoot: userDataRoot)
@@ -752,18 +751,10 @@ nonisolated struct DragonAgeOriginsModManager: GameModManaging, Sendable {
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
         guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
-        let fileManager = FileManager.default
         var next = state
         next.mods.removeAll { $0.id == modID }
         try saveProfile(gameID: state.gameID, profileID: state.profileID, profileName: state.profileName, mods: next.mods, plugins: [])
-        if !isModStorageReferenced(mod, gameID: state.gameID, excludingProfileID: state.profileID) {
-            if let archive = mod.archiveRelativePath {
-                let archiveURL = append(archive, to: gameDirectory)
-                if fileManager.fileExists(atPath: archiveURL.path) { try fileManager.removeItem(at: archiveURL) }
-            }
-            let stagingURL = append(mod.stagingRelativePath, to: gameDirectory)
-            if fileManager.fileExists(atPath: stagingURL.path) { try fileManager.removeItem(at: stagingURL) }
-        }
+        try ModProfileStorage.removeUnreferencedPackage(mod, in: gameDirectory, excludingProfileID: state.profileID)
         return next
     }
 

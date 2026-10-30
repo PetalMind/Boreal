@@ -252,8 +252,7 @@ nonisolated struct WitcherModManager: GameModManaging, Sendable {
         let gameDirectory = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
         let profile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: resolvedProfileID))
-        let deployment = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json")))
-            ?? .empty(gameID: gameID)
+        let deployment = try ModProfileStorage.loadDeployment(at: gameDirectory.appending(path: "deployment.json"), gameID: gameID)
         let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
         let discoveredMods = scanExternalMods(in: gameRoot, auxiliaryRoot: auxiliaryRoot, deployment: deployment)
         var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
@@ -455,8 +454,7 @@ nonisolated struct WitcherModManager: GameModManaging, Sendable {
         if contract == .witcher2 {
             try fileManager.createDirectory(at: Witcher2Adapter.cookedPCRoot(in: gameRoot), withIntermediateDirectories: true)
         }
-        let old = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json")))
-            ?? .empty(gameID: state.gameID)
+        let old = try ModProfileStorage.loadDeployment(at: gameDirectory.appending(path: "deployment.json"), gameID: state.gameID)
         let userRoot = state.auxiliaryRoot
         let hasUserContent = contract == .witcher2 && (
             state.mods.contains {
@@ -717,14 +715,10 @@ nonisolated struct WitcherModManager: GameModManaging, Sendable {
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
         guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
-        let fileManager = FileManager.default
-        if let archive = mod.archiveRelativePath {
-            try? fileManager.removeItem(at: append(archive, to: gameDirectory))
-        }
-        try? fileManager.removeItem(at: append(mod.stagingRelativePath, to: gameDirectory))
         var next = state
         next.mods.removeAll { $0.id == modID }
         try saveProfile(gameID: state.gameID, profileID: state.profileID, profileName: state.profileName, mods: next.mods, plugins: [])
+        try ModProfileStorage.removeUnreferencedPackage(mod, in: gameDirectory, excludingProfileID: state.profileID)
         return next
     }
 

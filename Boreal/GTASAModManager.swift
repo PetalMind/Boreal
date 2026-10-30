@@ -1,39 +1,5 @@
 import Foundation
 
-nonisolated protocol GameModManaging: Sendable {
-    var adapter: ModGameAdapter { get }
-
-    func inspect(archive: URL, gameID: UUID) throws -> ModInstallPreview
-    func inspect(archive: URL, gameID: UUID, gameRoot: URL?, pluginsFile: URL?) throws -> ModInstallPreview
-    func discardPreview(_ preview: ModInstallPreview)
-    func load(gameID: UUID, gameRoot: URL?, pluginsFile: URL?, profileID: String?, auxiliaryRoot: URL?) throws -> ModGameState
-    func install(preview: ModInstallPreview, gameRoot: URL?, pluginsFile: URL?, profileID: String, auxiliaryRoot: URL?) throws -> ModGameState
-    func saveProfile(gameID: UUID, profileID: String, profileName: String, mods: [InstalledMod], plugins: [BethesdaPlugin]) throws
-    func deploy(state: ModGameState, gameRoot: URL?, pluginsFile: URL?) throws -> ModGameState
-    func profiles(for gameID: UUID) -> [ModProfileDescriptor]
-    func createProfile(name: String, from state: ModGameState) throws -> ModGameState
-    func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState
-    func stagedModURL(gameID: UUID, modID: UUID) -> URL?
-    func activateProfile(_ profileID: String, for gameID: UUID) throws
-    func deploymentHealth(for state: ModGameState, gameRoot: URL?, pluginsFile: URL?, auxiliaryRoot: URL?) -> ModDeploymentHealth
-    func repairRuntime(gameRoot: URL?) throws -> ModRuntimeState?
-    func launchArguments(for gameRoot: URL?) -> [String]
-}
-
-nonisolated extension GameModManaging {
-    func inspect(archive: URL, gameID: UUID, gameRoot: URL?, pluginsFile: URL?) throws -> ModInstallPreview {
-        try inspect(archive: archive, gameID: gameID)
-    }
-}
-
-extension ModManager: GameModManaging {
-    var adapter: ModGameAdapter { .skyrimSpecialEdition }
-
-    func repairRuntime(gameRoot: URL?) throws -> ModRuntimeState? { nil }
-
-    func launchArguments(for gameRoot: URL?) -> [String] { [] }
-}
-
 // MARK: - GTA San Andreas adapter
 
 nonisolated enum GTASAModLoaderAdapter {
@@ -300,7 +266,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         let gameDirectory = gameURL(for: gameID)
         let resolvedProfileID = normalizedProfileID(profileID ?? activeProfileID(for: gameID))
         let profile = try read(ModProfile.self, at: profileURL(for: gameID, profileID: resolvedProfileID))
-        let deployment = (try? read(ModDeploymentManifest.self, at: gameDirectory.appending(path: "deployment.json"))) ?? .empty(gameID: gameID)
+        let deployment = try ModProfileStorage.loadDeployment(at: gameDirectory.appending(path: "deployment.json"), gameID: gameID)
         let storedMods = profile?.mods ?? scanManifests(in: gameDirectory)
         let discoveredMods = scanExternalMods(in: gameRoot, deployment: deployment)
         var mods = ExternalModDiscovery.merge(managed: storedMods, discovered: discoveredMods)
@@ -452,7 +418,7 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
         let fileManager = FileManager.default
         let gameDirectory = gameURL(for: state.gameID)
         let deploymentURL = gameDirectory.appending(path: "deployment.json")
-        let old = (try? read(ModDeploymentManifest.self, at: deploymentURL)) ?? .empty(gameID: state.gameID)
+        let old = try ModProfileStorage.loadDeployment(at: deploymentURL, gameID: state.gameID)
         let generatedProfile = profileText(for: state)
         let generatedHash = try RuntimeSecurity.sha256(data: Data(generatedProfile.utf8))
         var resolved = try resolvedFiles(for: state.mods, gameDirectory: gameDirectory)
@@ -608,16 +574,10 @@ nonisolated struct GTASAModManager: GameModManaging, Sendable {
     func removeMod(_ modID: UUID, from state: ModGameState) throws -> ModGameState {
         guard let mod = state.mods.first(where: { $0.id == modID }), !mod.isExternallyDetected else { return state }
         let gameDirectory = gameURL(for: state.gameID)
-        let fileManager = FileManager.default
-        if let archive = mod.archiveRelativePath {
-            let archiveURL = append(archive, to: gameDirectory)
-            if fileManager.fileExists(atPath: archiveURL.path) { try fileManager.removeItem(at: archiveURL) }
-        }
-        let stagingURL = append(mod.stagingRelativePath, to: gameDirectory)
-        if fileManager.fileExists(atPath: stagingURL.path) { try fileManager.removeItem(at: stagingURL) }
         var next = state
         next.mods.removeAll { $0.id == modID }
         try saveProfile(gameID: state.gameID, profileID: state.profileID, profileName: state.profileName, mods: next.mods, plugins: [])
+        try ModProfileStorage.removeUnreferencedPackage(mod, in: gameDirectory, excludingProfileID: state.profileID)
         return next
     }
 
