@@ -4,7 +4,7 @@ Lekka modyfikacja interfejsu Skyrim SE/AE: paski zdrowia, magicki i kondycji
 pojawiają się po zmianie wartości i zanikają po ustawionym czasie. Podczas walki
 pozostają widoczne. MCM pozwala zmienić czas zanikania, wyłączyć automatyczne
 paski lub kompas. Kompas i znaczniki zadań są domyślnie zachowane, a celownik
-ma postać małej, nordyckiej kropki z delikatnym pulsem i szybszą animacją alarmową.
+ma postać małej, nieruchomej kropki z obrysem poprawiającym czytelność.
 
 Podczas jazdy pojawia się osobny panel wierzchowca z jego nazwą oraz paskami
 zdrowia i wytrzymałości. Wartości i procenty odświeżają się na bieżąco, a panel
@@ -65,3 +65,35 @@ Poprawiona wersja nie nadpisuje identyfikatorów rekordów SkyUI.
 Panel konia wymaga powerofthree's Papyrus Extender. Podczas jazdy odczytuje
 aktualnego wierzchowca przez `GetMount`. Ostatnio dosiadany koń jest używany
 wyłącznie jako wariant zapasowy, jeśli jego jeźdźcem nadal jest gracz.
+
+## Celownik (1.1.0)
+
+| Stan przekazany przez grę | Wygląd |
+| --- | --- |
+| `NoTarget` | Kropka |
+| `Target` | Kropka z pierścieniem: wskazany obiekt do interakcji |
+| `Favor` | Kropka w rombie: tryb wydawania poleceń |
+| Wariant `Alert` | Ciepły kolor i dodatkowa kreska ostrzegawcza |
+| Skradanie (`StealthMode`) | Oryginalne oko i komunikaty wykrycia, bez dodatkowej kropki |
+| Menu, dialog, mapa, killcam lub wyłączony celownik | Ukrywanie zgodnie z natywnym trybem HUD |
+
+W MCM, na stronie „HUD i dialogi”, sekcja „Celownik” pozwala ustawić rozmiar
+50–200%, krycie 25–100% oraz łagodne pulsowanie (domyślnie wyłączone).
+Ustawienia zapisują się w zapisie gry i są ponownie nakładane po wczytaniu.
+Wariant Alert pochodzi z gry; nie jest obliczany z walki ani obecności wroga.
+Celownik nie udaje informacji o trafieniu, zasięgu ani torze lotu strzały.
+Celowanie łukiem i magią nadal podlega natywnej widoczności HUD.
+
+Analiza opiera się na lokalnym, zdekompilowanym `HUDMenu.as` z paczki i na
+[źródle HUDMenu](https://github.com/Mardoxx/skyrimui/blob/master/src/hudmenu/HUDMenu.as).
+Porównano również [Clean Dot Crosshair](https://www.nexusmods.com/skyrimspecialedition/mods/68167)
+oraz [Dot Crosshair — With Sneak Eye](https://www.nexusmods.com/skyrimspecialedition/mods/28119).
+Nie dołączono zasobów tych modów. Paczka nadpisuje cały `hudmenu.swf`, więc
+wymaga osobnego patcha przy łączeniu ze SkyHUD, iHUD, innymi przebudowami HUD
+lub celownikiem SmoothCam; sama kolejność ładowania nie łączy ich funkcji.
+
+## Zakres weryfikacji
+
+Kompilacja FFDec sprawdza ActionScript, Caprica w trybie strict kompiluje Papyrusa.
+Nie zastępuje to uruchomienia w Skyrim: wygląd, animacja oka, współdziałanie
+z modami HUD i celowanie w obu perspektywach wymagają weryfikacji w silniku gry.

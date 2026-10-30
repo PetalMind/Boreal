@@ -49,7 +49,7 @@ def build() -> bytes:
     settings = (("NMUI_FadeSeconds", 5.0), ("NMUI_BarsEnabled", 1.0), ("NMUI_CompassEnabled", 1.0), ("NMUI_RouteKeyCode", 35.0))
     # SkyUI is a script dependency, not a record master. All local records use
     # index 01; adding SkyUI here made them override SkyUI's own namespace.
-    header_payload = subrecord(b"HEDR", struct.pack("<fII", 1.7, 8, 0x808)) + subrecord(b"CNAM", zstring("Nordic Minimal UI SE")) + subrecord(b"MAST", zstring("Skyrim.esm")) + subrecord(b"DATA", bytes(8))
+    header_payload = subrecord(b"HEDR", struct.pack("<fII", 1.7, 11, 0x80B)) + subrecord(b"CNAM", zstring("Nordic Minimal UI SE")) + subrecord(b"MAST", zstring("Skyrim.esm")) + subrecord(b"DATA", bytes(8))
     header = record(b"TES4", 0, header_payload)
     quest_data = bytes((0x01, 0x00, 80, 0)) + struct.pack("<II", 0, 0)
     quest_payload = (
@@ -72,6 +72,9 @@ def build() -> bytes:
                     + subrecord(b"DNAM", bytes(12)))
     quest = record(b"QUST", 0x01000805, quest_payload)
     globs = b"".join(global_record(editor, 0x01000800 + index, value) for index, (editor, value) in enumerate(settings, 1))
+    globs += global_record("NMUI_DotSize", 0x01000808, 100.0)
+    globs += global_record("NMUI_DotOpacity", 0x01000809, 100.0)
+    globs += global_record("NMUI_DotMotion", 0x0100080A, 0.0)
     return header + group(b"QUST", legacy + quest) + group(b"GLOB", globs) + build_route_records(record, subrecord, zstring, group)
 
 

@@ -8,6 +8,9 @@ Bool horsePanelVisible
 GlobalVariable FadeSeconds
 GlobalVariable BarsEnabled
 GlobalVariable CompassEnabled
+GlobalVariable DotSize
+GlobalVariable DotOpacity
+GlobalVariable DotMotion
 GlobalVariable RouteKeyCode
 Bool routeActive
 Spell routeSpell
@@ -25,10 +28,14 @@ Function Maintenance()
     BarsEnabled = Game.GetFormFromFile(0x802, "NordicMinimalUISE.esp") as GlobalVariable
     CompassEnabled = Game.GetFormFromFile(0x803, "NordicMinimalUISE.esp") as GlobalVariable
     RouteKeyCode = Game.GetFormFromFile(0x804, "NordicMinimalUISE.esp") as GlobalVariable
+    DotSize = Game.GetFormFromFile(0x808, "NordicMinimalUISE.esp") as GlobalVariable
+    DotOpacity = Game.GetFormFromFile(0x809, "NordicMinimalUISE.esp") as GlobalVariable
+    DotMotion = Game.GetFormFromFile(0x80A, "NordicMinimalUISE.esp") as GlobalVariable
     ApplyRouteKey(GetRouteKey())
     UI.InvokeFloat("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicFadeDelay", GetValue(FadeSeconds, 5.0))
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicBarsEnabled", IsEnabled(BarsEnabled))
     UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicCompassEnabled", IsEnabled(CompassEnabled))
+    ApplyCrosshairSettings()
     RegisterForSingleUpdate(PollSeconds)
     Debug.Trace("[NordicMinimalUI] HUD controller initialized")
 EndFunction
@@ -118,6 +125,7 @@ Event OnUpdate()
             UI.InvokeFloat("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicFadeDelay", GetValue(FadeSeconds, 5.0))
             UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicBarsEnabled", IsEnabled(BarsEnabled))
             UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicCompassEnabled", IsEnabled(CompassEnabled))
+            ApplyCrosshairSettings()
             hudConfigured = True
         EndIf
     Else
@@ -175,4 +183,10 @@ EndFunction
 
 Bool Function IsEnabled(GlobalVariable setting)
     Return setting != None && setting.GetValue() >= 0.5
+EndFunction
+
+Function ApplyCrosshairSettings()
+    UI.InvokeFloat("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicDotSize", GetValue(DotSize, 100.0))
+    UI.InvokeFloat("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicDotOpacity", GetValue(DotOpacity, 100.0))
+    UI.InvokeBool("HUD Menu", "_root.HUDMovieBaseInstance.SetNordicDotMotion", IsEnabled(DotMotion))
 EndFunction

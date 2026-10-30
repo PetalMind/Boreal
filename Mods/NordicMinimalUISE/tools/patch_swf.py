@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Patch Skyrim's original HUD/dialogue SWFs, requiring FFDec and BSArch."""
 from __future__ import annotations
+
 import os
-import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -56,7 +56,26 @@ def main() -> None:
         hud = exports["hud"] / "__Packages/HUDMenu.as"
         replace_once(hud, "   var METER_PAUSE_FRAME = 40;", "   var METER_PAUSE_FRAME = 40;\n   var NordicFadeDelay = 5;\n   var NordicBarsEnabled = true;\n   var NordicCompassEnabled = true;\n   var NordicCombatActive = false;\n   var NordicFadeTimerID;\n   var NordicHorsePanel;\n   var NordicHorseNameField;\n   var NordicHorseHealthLabel;\n   var NordicHorseHealthValue;\n   var NordicHorseStaminaLabel;\n   var NordicHorseStaminaValue;\n   var NordicHorseHealthBar;\n   var NordicHorseStaminaBar;")
         replace_once(hud, '      this.StaminaMeterAnim.Lock("BR");', '      this.StaminaMeterAnim.Lock("BR");\n      this.CreateNordicHorsePanel();')
-        replace_once(hud, "   function RunMeterAnim(aMeter)\n   {", '''   function CreateNordicDot()\n   {\n      this.NordicDot = this.createEmptyMovieClip("NordicMinimalUIDot",10000);\n      this.NordicDot._visible = false;\n      this.NordicDot.lineStyle(1,0x20201D,90);\n      this.NordicDot.beginFill(0xD8CDA5,100);\n      this.NordicDot.moveTo(2.25,0);\n      var i = 1;\n      while(i <= 16)\n      {\n         this.NordicDot.lineTo(Math.cos(i * 0.3926990817) * 2.25,Math.sin(i * 0.3926990817) * 2.25);\n         i++;\n      }\n      this.NordicDot.endFill();\n   }\n   function UpdateNordicCrosshair()\n   {\n      if(this.NordicDot == undefined) this.CreateNordicDot();\n      // HUD frames also change during pickup animations; select the active reticle clip by visibility.\n      var nativeCrosshair = this.CrosshairAlert._visible ? this.CrosshairAlert : this.CrosshairInstance;\n      var center = {x:0,y:0};\n      nativeCrosshair.localToGlobal(center);\n      this.globalToLocal(center);\n      this.NordicDot._x = center.x;\n      this.NordicDot._y = center.y;\n      var alertState = this.CrosshairAlert._visible;\n      var phase = getTimer() / (alertState ? 70 : 360);\n      var pulse = (Math.sin(phase) + 1) / 2;\n      var scale = alertState ? 125 + pulse * 45 : 94 + pulse * 12;\n      this.NordicDot._xscale = scale;\n      this.NordicDot._yscale = scale;\n      this.NordicDot._alpha = alertState ? 78 + pulse * 22 : 84 + pulse * 16;\n      this.NordicDot._visible = this.bCrosshairEnabled && (this.CrosshairAlert._visible || this.CrosshairInstance._visible);\n      this.CrosshairInstance._alpha = 0;\n      this.CrosshairAlert._alpha = 0;\n   }\n   function RunMeterAnim(aMeter)\n   {''')
+        crosshair = (ROOT / "Source/Interface/NordicCrosshair.as").read_text(encoding="utf-8")
+        replace_once(hud, "   function RunMeterAnim(aMeter)\n   {", crosshair + "   function RunMeterAnim(aMeter)\n   {")
+        # Remember the actual native timeline label, including text-only calls
+        # which intentionally leave the previous reticle frame unchanged.
+        text = hud.read_text(encoding="utf-8")
+        for label, expected in (("_loc4_", 2), ("_loc6_", 1)):
+            old = f"_loc3_.gotoAndStop({label});"
+            if text.count(old) != expected:
+                raise RuntimeError(f"Unexpected crosshair timeline patch points: {label}")
+            text = text.replace(old, f"_loc3_.NordicState = {label};\n         " + old)
+        hud.write_text(text, encoding="utf-8")
+        reset = '_root.HUDMovieBaseInstance.Crosshair.gotoAndStop("NoTarget");'
+        reset_count = 0
+        for script in exports["hud"].rglob("*.as"):
+            text = script.read_text(encoding="utf-8")
+            if reset in text:
+                reset_count += text.count(reset)
+                script.write_text(text.replace(reset, reset + '\n_root.HUDMovieBaseInstance.Crosshair.NordicState = "NoTarget";'), encoding="utf-8")
+        if reset_count != 2:
+            raise RuntimeError(f"Expected two native crosshair resets, found {reset_count}")
         replace_once(hud, "   function onEnterFrame()\n   {", "   function onEnterFrame()\n   {\n      this.UpdateNordicCrosshair();")
         marker = "   function RunMeterAnim(aMeter)\n   {"
         methods = '''   function SetNordicFadeDelay(seconds)\n   {\n      this.NordicFadeDelay = Math.max(1,Math.min(10,seconds));\n   }\n   function SetNordicBarsEnabled(enabled)\n   {\n      this.NordicBarsEnabled = enabled;\n      this.HealthMeterAnim._visible = enabled;\n      this.MagickaMeterAnim._visible = enabled;\n      this.StaminaMeterAnim._visible = enabled;\n      if(enabled) this.ScheduleNordicFade();\n   }\n   function SetNordicCompassEnabled(enabled)\n   {\n      this.NordicCompassEnabled = enabled;\n      this.CompassShoutMeterHolder._visible = enabled;\n   }\n   function SetNordicCombatActive(active)\n   {\n      this.NordicCombatActive = active;\n      if(active)\n      {\n         clearInterval(this.NordicFadeTimerID);\n         if(this.NordicBarsEnabled)\n         {\n            this.HealthMeterAnim._visible = true;\n            this.MagickaMeterAnim._visible = true;\n            this.StaminaMeterAnim._visible = true;\n         }\n      }\n      else this.ScheduleNordicFade();\n   }\n   function ScheduleNordicFade()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n         this.NordicFadeTimerID = setInterval(this,\"NordicFadeMeters\",this.NordicFadeDelay * 1000);\n   }\n   function NordicFadeMeters()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n      {\n         this.FadeOutMeter(this.HealthMeterAnim);\n         this.FadeOutMeter(this.MagickaMeterAnim);\n         this.FadeOutMeter(this.StaminaMeterAnim);\n      }\n   }\n   function CreateNordicHorsePanel()
