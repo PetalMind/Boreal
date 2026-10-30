@@ -78,7 +78,7 @@ struct EnvironmentsView: View {
                     }.padding(.top, 10)
                 }
                 .padding(16)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 13, style: .continuous))

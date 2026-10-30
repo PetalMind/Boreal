@@ -15,19 +15,8 @@ struct FavoriteButton: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isFocused: Bool
-    @State private var symbolScale: CGFloat = 1
-    @State private var ringScale: CGFloat = 1
-    @State private var ringOpacity = 0.0
-    @State private var pendingPressAction: DispatchWorkItem?
-    @State private var pendingSettle: DispatchWorkItem?
-    @State private var pendingRingFade: DispatchWorkItem?
-
     private var motion: BorealMotionEnvironment {
         BorealMotionEnvironment(reduceMotion: reduceMotion)
-    }
-
-    private var stateAnimation: Animation? {
-        reduceMotion ? motion.control : motion.control?.speed(1.4)
     }
 
     private var targetOpacity: Double {
@@ -58,96 +47,47 @@ struct FavoriteButton: View {
     }
 
     var body: some View {
-        Button(action: triggerFavoriteChange) {
+        Button(action: action) {
             ZStack {
                 if showsBackground {
                     Circle()
                         .fill(.black.opacity(0.34))
                 }
 
-                Circle()
-                    .stroke(favoriteColor.opacity(0.34), lineWidth: 1)
-                    .scaleEffect(ringScale)
-                    .opacity(ringOpacity)
-                    .allowsHitTesting(false)
-
                 Image(systemName: isFavorite ? "heart.fill" : "heart")
                     .foregroundStyle(isFavorite ? favoriteColor : inactiveColor)
                     .contentTransition(reduceMotion ? .opacity : .symbolEffect(.replace))
+                    .symbolEffect(.bounce, value: isFavorite)
+                    .symbolEffectsRemoved(reduceMotion)
             }
             .font(.title3.weight(.semibold))
             .frame(width: 34, height: 34)
-            .scaleEffect(symbolScale)
             .padding(5)
             .shadow(color: .black.opacity(0.7), radius: 3)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(FavoriteFeedbackStyle())
         .focused($isFocused)
         .contentShape(Circle())
         .opacity(targetOpacity)
         .animation(motion.hover, value: isHovered)
         .animation(motion.hover, value: isFocused)
-        .animation(stateAnimation, value: isFavorite)
+        .animation(motion.control, value: isFavorite)
         .allowsHitTesting(isFavorite || !revealsOnHover || isHovered || isFocused)
         .help(Text(helpText))
         .accessibilityLabel(Text(accessibilityText))
         .accessibilityAddTraits(isFavorite ? .isSelected : [])
     }
 
-    private func triggerFavoriteChange() {
-        pendingPressAction?.cancel()
-        pendingSettle?.cancel()
-        pendingRingFade?.cancel()
-        pendingPressAction = nil
-        pendingSettle = nil
-        pendingRingFade = nil
+}
 
-        guard !reduceMotion else {
-            action()
-            return
-        }
+private struct FavoriteFeedbackStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-        let becomesFavorite = !isFavorite
-        withAnimation(motion.instant?.speed(1.25)) {
-            symbolScale = becomesFavorite ? 0.88 : 0.90
-            ringScale = 0.92
-            ringOpacity = 0
-        }
-
-        let pressAction = DispatchWorkItem {
-            pendingPressAction = nil
-            action()
-
-            withAnimation(stateAnimation) {
-                symbolScale = becomesFavorite ? 1.12 : 0.90
-                ringScale = 1.08
-                ringOpacity = becomesFavorite ? 0.16 : 0
-            }
-
-            let settle = DispatchWorkItem {
-                withAnimation(stateAnimation) {
-                    symbolScale = 1
-                    ringScale = 1.16
-                }
-                pendingSettle = nil
-            }
-
-            let ringFade = DispatchWorkItem {
-                withAnimation(motion.instant) {
-                    ringScale = 1.14
-                    ringOpacity = 0
-                }
-                pendingRingFade = nil
-            }
-
-            pendingSettle = settle
-            pendingRingFade = ringFade
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: settle)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.07, execute: ringFade)
-        }
-
-        pendingPressAction = pressAction
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: pressAction)
+    func makeBody(configuration: Configuration) -> some View {
+        let motion = BorealMotionEnvironment(reduceMotion: reduceMotion)
+        configuration.label
+            .scaleEffect(motion.interactionScale(isPressed: configuration.isPressed))
+            .animation(motion.instant, value: configuration.isPressed)
     }
 }
 
@@ -155,6 +95,7 @@ struct BorealActivityPulse: ViewModifier {
     let isActive: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPulsing = false
+    @State private var isVisible = false
 
     func body(content: Content) -> some View {
         content
@@ -166,10 +107,17 @@ struct BorealActivityPulse: ViewModifier {
                     .allowsHitTesting(false)
             }
             .animation(
-                isActive && !reduceMotion ? BorealMotion.stateChange.speed(0.28).repeatForever(autoreverses: false) : BorealMotion.instant,
+                isVisible && isActive && !reduceMotion ? BorealMotion.activity.repeatForever(autoreverses: true) : nil,
                 value: isPulsing
             )
-            .onAppear { isPulsing = isActive && !reduceMotion }
+            .onAppear {
+                isVisible = true
+                isPulsing = isActive && !reduceMotion
+            }
+            .onDisappear {
+                isVisible = false
+                isPulsing = false
+            }
             .onChange(of: isActive) { _, value in
                 isPulsing = value && !reduceMotion
             }

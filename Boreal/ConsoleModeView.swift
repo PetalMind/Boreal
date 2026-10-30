@@ -8,6 +8,7 @@ struct ConsoleModeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(BorealStore.self) private var store
     @State private var section = ConsoleSection.home
+    @State private var projectedLibrary = LibraryProjectionCache()
     @State private var focusedID: LibraryItem.ID?
     @State private var focusedRail = 0
     @State private var focusedIndex = 0
@@ -22,18 +23,20 @@ struct ConsoleModeView: View {
     let exit: () -> Void
 
     private var items: [LibraryItem] {
-        LibraryProjector.makeItems(applications: store.applications, storeGames: store.storeGames, installations: store.installations)
-            .filter { !store.hiddenLibraryKeys.contains($0.favoriteKey) }
-            .filter { !$0.isInstallerOnly }
-            .filter { item in
-                switch section {
-                case .installed: item.installed
-                case .recent: item.lastUsed != nil
-                case .favorites: store.favoriteKeys.contains(item.favoriteKey)
-                default: true
-                }
-            }
-            .sorted { ($0.lastUsed ?? .distantPast) > ($1.lastUsed ?? .distantPast) }
+        projectedLibrary.consoleItems(
+            applications: store.applications, storeGames: store.storeGames,
+            installations: store.installations, hiddenKeys: store.hiddenLibraryKeys,
+            scope: libraryScope, favorites: store.favoriteKeys
+        )
+    }
+
+    private var libraryScope: ConsoleLibraryScope {
+        switch section {
+        case .installed: .installed
+        case .recent: .recent
+        case .favorites: .favorites
+        default: .all
+        }
     }
 
     private var focusedItem: LibraryItem? { items.first { $0.id == focusedID } }
@@ -82,7 +85,7 @@ struct ConsoleModeView: View {
                 }
                 .onChange(of: focusAnchor) { _, anchor in
                     guard let anchor else { return }
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { verticalProxy.scrollTo(anchor, anchor: .center) }
+                    withAnimation(BorealMotionEnvironment(reduceMotion: reduceMotion).scroll) { verticalProxy.scrollTo(anchor, anchor: .center) }
                 }
                 }
                 footer
@@ -199,7 +202,7 @@ struct ConsoleModeView: View {
                 .contentMargins(.horizontal, -8, for: .scrollContent)
                 .onChange(of: focusedID) { _, id in
                     guard focusedRail == rail, let id else { return }
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
+                    withAnimation(BorealMotionEnvironment(reduceMotion: reduceMotion).scroll) { proxy.scrollTo(id, anchor: .center) }
                 }
                 }
             }
@@ -746,7 +749,8 @@ private struct ConsoleNavButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 16, weight: selected ? .bold : .semibold, design: .rounded))
             .foregroundStyle(selected ? .white : .secondary)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .scaleEffect(BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(isPressed: configuration.isPressed))
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).instant, value: configuration.isPressed)
             .padding(.horizontal, 15).padding(.vertical, 11)
             .background(selected ? Color.cyan.opacity(0.2) : .clear, in: Capsule())
             .overlay(Capsule().stroke(selected ? Color.cyan.opacity(0.65) : .clear, lineWidth: 1))
@@ -878,7 +882,7 @@ private struct ConsoleGameCard: View {
             .overlay(RoundedRectangle(cornerRadius: 20).stroke(focused ? .cyan : .white.opacity(0.07), lineWidth: focused ? 3 : 1))
             .shadow(color: focused ? .cyan.opacity(0.22) : .black.opacity(0.2), radius: focused ? 18 : 8, y: 8)
             .scaleEffect(focused && !reduceMotion ? 1.035 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: focused)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: focused)
         }
         .buttonStyle(.plain)
         .frame(width: 316, height: 256)

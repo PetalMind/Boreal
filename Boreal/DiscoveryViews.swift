@@ -657,6 +657,7 @@ private struct DiscoveryMacProfile: Sendable {
 }
 
 struct DiscoveryGameTile: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(BorealStore.self) private var store
     @AppStorage(ITADPriceService.apiKeyDefaultsKey) private var itadAPIKey = ""
     @AppStorage(ITADPriceService.countryCodeDefaultsKey) private var itadCountryCode = "PL"
@@ -689,7 +690,7 @@ struct DiscoveryGameTile: View {
         .background(.primary.opacity(isHovered ? 0.075 : 0.035), in: RoundedRectangle(cornerRadius: 16))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.primary.opacity(isHovered ? 0.16 : 0.08)))
-        .animation(.easeOut(duration: 0.16), value: isHovered)
+        .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: isHovered)
         .shadow(color: .black.opacity(isHovered ? 0.18 : 0), radius: 12, y: 3)
         .onHover { isHovered = $0 }
         .task(id: "\(game.id)-\(itadAPIKey)-\(itadCountryCode)") {

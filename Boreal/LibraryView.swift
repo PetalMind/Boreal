@@ -122,13 +122,17 @@ struct LibraryView: View {
     }
 
     private var items: [LibraryItem] {
-        LibraryProjector.project(
-            allItems, searchText: searchText,
-            sources: rawSet(sourceFilters, as: LibrarySourceFilter.self),
-            availability: rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self),
-            compatibility: rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self),
-            sort: sort, producer: producerFilter,
-            favorites: favoritesOnly ? store.favoriteKeys.union(pendingFavoriteRemovals) : [], favoritesOnly: favoritesOnly
+        projectedLibrary.projectedItems(
+            applications: store.applications, storeGames: store.storeGames,
+            installations: store.installations, hiddenKeys: store.hiddenLibraryKeys,
+            request: LibraryProjectionRequest(
+                searchText: searchText, sources: rawSet(sourceFilters, as: LibrarySourceFilter.self),
+                availability: rawSet(availabilityFilters, as: LibraryAvailabilityFilter.self),
+                compatibility: rawSet(compatibilityFilters, as: LibraryCompatibilityFilter.self),
+                sort: sort, producer: producerFilter,
+                favorites: favoritesOnly ? store.favoriteKeys.union(pendingFavoriteRemovals) : [],
+                favoritesOnly: favoritesOnly
+            )
         )
     }
 
@@ -1055,7 +1059,7 @@ struct LibraryView: View {
 
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
-                .scaleEffect(configuration.isPressed ? 0.975 : 1)
+                .scaleEffect(BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(isPressed: configuration.isPressed))
                 .opacity(configuration.isPressed ? 0.86 : 1)
                 .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).instant, value: configuration.isPressed)
         }
@@ -1066,7 +1070,7 @@ struct LibraryView: View {
 
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
-                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .scaleEffect(BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(isPressed: configuration.isPressed))
                 .opacity(configuration.isPressed ? 0.88 : 1)
                 .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).instant, value: configuration.isPressed)
         }
@@ -1091,7 +1095,7 @@ struct LibraryView: View {
                     radius: hovering ? 14 : 9,
                     y: 5
                 )
-                .scaleEffect(hovering ? 1.012 : 1)
+                .scaleEffect(BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(isHovered: hovering))
                 .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: hovering)
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .modifier(LibraryCardContextMenuModifier(menu: contextMenu))
@@ -1666,7 +1670,7 @@ private struct LibraryGridHoverContainer<Content: View>: View {
         content(hovering)
             .onHover { value in
                 guard value != hovering else { return }
-                withAnimation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover) { hovering = value }
+                hovering = value
             }
     }
 }

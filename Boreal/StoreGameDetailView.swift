@@ -142,8 +142,8 @@ struct StoreGameDetailView: View {
                         hero(width: contentWidth)
                         detailTabBar
                             .opacity(transitionContentVisible ? 1 : 0)
-                            .offset(y: transitionContentVisible ? 0 : 8)
-                            .animation(motion.panel?.delay(0.06), value: transitionContentVisible)
+                            .offset(y: transitionContentVisible || reduceMotion ? 0 : 8)
+                            .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionContentVisible)
                         VStack(alignment: .leading, spacing: 12) {
                             if currentGame.resolvedEntitlementState == .accountDisconnected {
                                 entitlementDisconnectedNotice
@@ -160,15 +160,15 @@ struct StoreGameDetailView: View {
                         }
                         .padding(.top, 14)
                         .opacity(transitionContentVisible ? 1 : 0)
-                        .offset(y: transitionContentVisible ? 0 : 10)
-                        .animation(motion.panel?.delay(0.1), value: transitionContentVisible)
+                        .offset(y: transitionContentVisible || reduceMotion ? 0 : 10)
+                        .animation(motion.panel?.delay(reduceMotion ? 0 : 0.08), value: transitionContentVisible)
                     }
                     .frame(width: contentWidth, alignment: .leading)
                     if hasRail {
                         detailsSidebar.frame(width: railWidth)
                             .opacity(transitionContentVisible ? 1 : 0)
-                            .offset(y: transitionContentVisible ? 0 : 10)
-                            .animation(motion.panel?.delay(0.1), value: transitionContentVisible)
+                            .offset(y: transitionContentVisible || reduceMotion ? 0 : 10)
+                            .animation(motion.panel?.delay(reduceMotion ? 0 : 0.08), value: transitionContentVisible)
                     }
                 }
                 .padding(.horizontal, inset)
@@ -183,7 +183,7 @@ struct StoreGameDetailView: View {
                         startPoint: .topTrailing, endPoint: .bottomLeading
                     )
                     .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
-                    .animation(motion.panel?.delay(0.06), value: transitionPhase)
+                    .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
                     if isTransitioning {
                         GeometryReader { backgroundGeometry in
                             GameArtworkView(
@@ -197,12 +197,12 @@ struct StoreGameDetailView: View {
                             .blur(radius: 12)
                             .opacity(transitionPhase == .details ? 0.18 : 0)
                             .scaleEffect(transitionPhase == .details ? 1 : 1.035)
-                            .animation(motion.panel?.delay(0.06), value: transitionPhase)
+                            .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
                         }
                         .clipped()
                         Color.black
                             .opacity(transitionPhase == .details ? 0.42 : 0)
-                            .animation(motion.panel?.delay(0.06), value: transitionPhase)
+                            .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
                     }
                 }
             }
@@ -451,19 +451,19 @@ struct StoreGameDetailView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .opacity(transitionContentVisible ? 1 : 0)
-                .offset(y: transitionContentVisible ? 0 : 14)
-                .scaleEffect(transitionContentVisible ? 1 : 0.98)
+                .offset(y: transitionContentVisible || reduceMotion ? 0 : 14)
+                .scaleEffect(transitionContentVisible || reduceMotion ? 1 : 0.98)
                 .animation(motion.panel, value: transitionContentVisible)
             }
             if width < 620 {
                 heroBadges
                     .opacity(transitionContentVisible ? 1 : 0)
-                    .offset(y: transitionContentVisible ? 0 : 12)
+                    .offset(y: transitionContentVisible || reduceMotion ? 0 : 12)
                     .animation(motion.panel, value: transitionContentVisible)
                 primaryActions
                     .opacity(transitionContentVisible ? 1 : 0)
-                    .offset(y: transitionContentVisible ? 0 : 10)
-                    .scaleEffect(transitionContentVisible ? 1 : 0.97)
+                    .offset(y: transitionContentVisible || reduceMotion ? 0 : 10)
+                    .scaleEffect(transitionContentVisible || reduceMotion ? 1 : 0.97)
                     .animation(motion.panel, value: transitionContentVisible)
             }
         }
@@ -490,7 +490,7 @@ struct StoreGameDetailView: View {
                     }
                     .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
                     .scaleEffect(!isTransitioning || transitionPhase == .details ? 1 : 1.035)
-                    .animation(motion.panel?.delay(0.06), value: transitionPhase)
+                    .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))

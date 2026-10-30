@@ -130,7 +130,7 @@ struct DownloadsView: View {
                         onResume: { store.resumeStoreGameOperation(item.game) },
                         onRemove: { store.clearStoreGameOperation(for: item.game) }
                     )
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                     if index < remaining.count - 1 { Divider().padding(.leading, 70).opacity(0.7) }
                 }
             }
@@ -262,7 +262,7 @@ struct DownloadsView: View {
                         onResume: { store.resumeStoreGameOperation(operation.game) },
                         onRemove: { store.clearStoreGameOperation(for: operation.game) }
                     )
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                 }
                 if !queuedGameOperations.isEmpty {
                     HStack {
@@ -286,7 +286,7 @@ struct DownloadsView: View {
                             onResume: { store.resumeStoreGameOperation(operation.game) },
                             onRemove: { store.clearStoreGameOperation(for: operation.game) }
                         )
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }
@@ -636,7 +636,7 @@ struct DownloadsView: View {
                     .controlSize(.large)
                     .padding(.top, 4)
                 Button(showsRuntimeDetails ? "Hide Details" : "Show Details") {
-                    withAnimation { showsRuntimeDetails.toggle() }
+                    withAnimation(motion.panel) { showsRuntimeDetails.toggle() }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

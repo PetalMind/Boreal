@@ -24,7 +24,7 @@ struct GamePrimaryActionButton: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: symbol)
-                .contentTransition(.symbolEffect(.replace))
+                .contentTransition(reduceMotion ? .opacity : .symbolEffect(.replace))
                 .frame(width: 156, alignment: .center)
         }
         .buttonStyle(BorealPrimaryActionButtonStyle())
@@ -50,7 +50,10 @@ struct BorealSecondaryActionButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.45)
-            .scaleEffect(configuration.isPressed ? 0.98 : (isHovered ? 1.01 : 1))
+            .scaleEffect(
+                BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(
+                    isHovered: isHovered, isPressed: configuration.isPressed, isEnabled: isEnabled)
+            )
             .onHover { isHovered = $0 }
             .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: isHovered)
             .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).control, value: configuration.isPressed)
@@ -79,7 +82,10 @@ struct BorealPrimaryActionButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .shadow(color: .blue.opacity(0.28), radius: 8, y: 3)
             .opacity(isEnabled ? 1 : 0.5)
-            .scaleEffect(configuration.isPressed ? 0.97 : (isHovered ? 1.01 : 1))
+            .scaleEffect(
+                BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(
+                    isHovered: isHovered, isPressed: configuration.isPressed, isEnabled: isEnabled)
+            )
             .onHover { isHovered = $0 }
             .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: isHovered)
             .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).control, value: configuration.isPressed)
@@ -98,12 +104,13 @@ struct BorealSquareActionButtonStyle: ButtonStyle {
                     .stroke(.white.opacity(0.14))
             }
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .scaleEffect(BorealMotionEnvironment(reduceMotion: reduceMotion).interactionScale(isPressed: configuration.isPressed))
             .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).control, value: configuration.isPressed)
     }
 }
 
 struct BorealRailActionButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovered = false
     func makeBody(configuration: Configuration) -> some View {
@@ -116,6 +123,8 @@ struct BorealRailActionButtonStyle: ButtonStyle {
             .onHover { isHovered = $0 }
             .contentShape(Rectangle())
             .opacity(isEnabled ? (configuration.isPressed ? 0.65 : 1) : 0.4)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).hover, value: isHovered)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).instant, value: configuration.isPressed)
     }
 }
 
@@ -142,7 +151,7 @@ struct BorealDownloadProgressStyle: ProgressViewStyle {
         }
         .frame(height: 12)
         .animation(
-            reduceMotion ? .linear(duration: 0.08) : .linear(duration: 0.15),
+            BorealMotionEnvironment(reduceMotion: reduceMotion).progress,
             value: configuration.fractionCompleted
         )
     }

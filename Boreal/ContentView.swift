@@ -510,7 +510,7 @@ struct ContentView: View {
     }
 
     private var libraryTransitionScale: CGFloat {
-        guard !gameTransitionState.usesArtworkTransition else { return 1 }
+        guard !reduceMotion, !gameTransitionState.usesArtworkTransition else { return 1 }
         return gameTransitionState.phase == .details ? 0.985 : 1
     }
 
@@ -526,15 +526,13 @@ struct ContentView: View {
             return
         }
 
-        withAnimation(motion.hero) {
+        withAnimation(motion.hero, completionCriteria: .logicallyComplete) {
             gameTransitionState = GameDetailsTransitionState(
                 selectedGameID: gameID,
                 phase: .opening,
                 usesArtworkTransition: true
             )
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+        } completion: {
             guard gameTransitionState.selectedGameID == gameID,
                   gameTransitionState.phase == .opening else { return }
             withAnimation(motion.panel) {

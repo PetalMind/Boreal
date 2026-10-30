@@ -85,7 +85,7 @@ struct Controller2DView: View {
             .overlay(Circle().stroke(active ? Color.white.opacity(0.9) : .clear, lineWidth: 3))
             .shadow(color: active ? .cyan : .clear, radius: 14)
             .frame(width: frame.width, height: frame.height).position(x: frame.midX, y: frame.midY)
-            .scaleEffect(active ? 0.9 : 1).animation(reduceMotion ? nil : .easeOut(duration: 0.06), value: active)
+            .scaleEffect(active ? 0.9 : 1).animation(BorealMotionEnvironment(reduceMotion: reduceMotion).input, value: active)
     }
 
     private func capsule(_ input: ControllerInput, at frame: CGRect) -> some View {
@@ -94,7 +94,7 @@ struct Controller2DView: View {
             .overlay(Capsule().stroke(active ? Color.white.opacity(0.9) : .clear, lineWidth: 3))
             .shadow(color: active ? .cyan : .clear, radius: 14)
             .frame(width: frame.width, height: frame.height).position(x: frame.midX, y: frame.midY)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.06), value: active)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).input, value: active)
     }
 
     private func analog(_ value: Float, at frame: CGRect) -> some View {
@@ -104,7 +104,7 @@ struct Controller2DView: View {
             .overlay(RoundedRectangle(cornerRadius: frame.width * 0.22).stroke(active ? Color.cyan : .clear, lineWidth: 3))
             .shadow(color: active ? .cyan : .clear, radius: 14)
             .frame(width: frame.width, height: frame.height).position(x: frame.midX, y: frame.midY)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.06), value: value)
+            .animation(BorealMotionEnvironment(reduceMotion: reduceMotion).input, value: value)
     }
 
     private func stick(_ click: ControllerInput, x: Float, y: Float, at frame: CGRect) -> some View {
@@ -114,7 +114,7 @@ struct Controller2DView: View {
             .shadow(color: active ? .cyan : .clear, radius: 16)
             .frame(width: frame.width, height: frame.height)
             .position(x: frame.midX + CGFloat(x) * frame.width * 0.13, y: frame.midY - CGFloat(y) * frame.height * 0.13)
-            .scaleEffect(state.isPressed(click) ? 0.88 : 1).animation(reduceMotion ? nil : .easeOut(duration: 0.06), value: state)
+            .scaleEffect(state.isPressed(click) ? 0.88 : 1).animation(BorealMotionEnvironment(reduceMotion: reduceMotion).input, value: state)
     }
 }
 

@@ -370,8 +370,10 @@ nonisolated enum LibraryProjector {
         let terms = normalized(searchText).split(separator: " ").map(String.init)
         let recentCutoff = Calendar.current.date(byAdding: .day, value: -30, to: .now) ?? .distantPast
         return items.filter { item in
-            let haystack = normalized(item.searchText)
-            guard terms.allSatisfy(haystack.contains) else { return false }
+            if !terms.isEmpty {
+                let haystack = normalized(item.searchText)
+                guard terms.allSatisfy(haystack.contains) else { return false }
+            }
             guard producer.isEmpty || matchesProducer(producer, item: item) else { return false }
             guard !favoritesOnly || favorites.contains(item.favoriteKey) else { return false }
             guard sources.isEmpty || sources.contains(item.source) else { return false }
