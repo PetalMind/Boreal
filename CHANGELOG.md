@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.21 — 2026-10-30
+
+- Keep sidebar navigation available from game details. Switching sections, library sources or filters dismisses game details and clears the previous navigation path immediately, including during artwork transitions.
+
 ## 1.0.20 — 2026-10-30
 
 - Unify interaction, navigation, scrolling and progress timing; respect Reduce Motion for button and card geometry.
