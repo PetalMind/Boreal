@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.20 — 2026-10-30
+
+- Unify interaction, navigation, scrolling and progress timing; respect Reduce Motion for button and card geometry.
+- Apply favorite changes immediately and finish artwork navigation before revealing game details.
+- Cache filtered desktop and console library results, skip unused search normalization and avoid repeated controller scene traversal for unchanged input.
+
 ## 1.0.19 — 2026-10-30
 
 - Adapt settings and controller layouts to narrower windows, use semantic content surfaces in light and dark appearance, and improve keyboard access to featured games.
