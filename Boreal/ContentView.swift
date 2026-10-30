@@ -93,7 +93,6 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
-                .allowsHitTesting(!isGameTransitionActive)
         } detail: {
             NavigationStack(path: $libraryPath) {
                 ZStack {
@@ -149,8 +148,7 @@ struct ContentView: View {
             Button("Create") {
                 store.createEnvironment(named: newEnvironmentName.isEmpty ? "New Environment" : newEnvironmentName)
                 newEnvironmentName = ""
-                libraryPath.removeAll()
-                selection = .environments
+                selectDestination(.environments)
             }
         } message: { Text("Create an empty, isolated Windows environment.") }
         .sheet(item: Binding(
@@ -372,8 +370,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom) {
             Button {
-                selection = .downloads
-                libraryPath.removeAll()
+                selectDestination(.downloads)
             } label: {
                 HStack(spacing: 7) {
                     if store.runtimeOperationDetail != nil {
@@ -486,9 +483,7 @@ struct ContentView: View {
 
     private func showProducer(_ producer: String) {
         libraryProducerFilter = producer
-        selection = .library
-        libraryPath.removeAll()
-        if isGameTransitionActive { closeGameTransition() }
+        selectDestination(.library)
     }
 
     private var transitionGame: StoreLibraryGame? {
@@ -676,28 +671,34 @@ struct ContentView: View {
     private var sidebarSelection: Binding<SidebarDestination?> {
         Binding(
             get: { selection },
-            set: { destination in
-                libraryPath.removeAll()
-                selection = destination
-            }
+            set: { selectDestination($0) }
         )
+    }
+
+    private func selectDestination(_ destination: SidebarDestination?, route: LibraryRoute? = nil) {
+        // Leaving game details cancels their overlay immediately. Animation
+        // completions check the selected game and cannot restore the old screen.
+        var transaction = Transaction()
+        transaction.disablesAnimations = isGameTransitionActive
+        withTransaction(transaction) {
+            gameTransitionState = .library
+            libraryPath = route.map { [$0] } ?? []
+            selection = destination
+        }
     }
 
     private func showLibrary(style: LibraryStyle? = nil, route: LibraryRoute? = nil) {
         if let style { libraryStyle = style }
-        selection = .library
-        libraryPath = route.map { [$0] } ?? []
+        selectDestination(.library, route: route)
     }
 
     private func showDiscovery() {
-        selection = .discovery
-        libraryPath.removeAll()
+        selectDestination(.discovery)
         discoverySearchText = ""
     }
 
     private func showLibrary(source: LibrarySourceFilter) {
-        selection = .library
-        libraryPath.removeAll()
+        selectDestination(.library)
         searchText = ""
         librarySourceFilters = source.rawValue
         libraryAvailabilityFilters = ""
@@ -706,8 +707,7 @@ struct ContentView: View {
     }
 
     private func showInstalledLibrary() {
-        selection = .library
-        libraryPath.removeAll()
+        selectDestination(.library)
         searchText = ""
         librarySourceFilters = ""
         libraryAvailabilityFilters = LibraryAvailabilityFilter.installed.rawValue
@@ -716,8 +716,7 @@ struct ContentView: View {
     }
 
     private func showFavoritesLibrary() {
-        selection = .favorites
-        libraryPath.removeAll()
+        selectDestination(.favorites)
         searchText = ""
         librarySourceFilters = ""
         libraryAvailabilityFilters = ""
