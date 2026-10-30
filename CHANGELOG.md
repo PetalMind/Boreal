@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.22 — 2026-10-30
+
+- Preserve shared Skyrim and GTA SA DE packages when removing mods from a profile. Stop loading or deploying mods when an existing deployment record is damaged or incompatible.
+- Require an exact payload match for renamed mod updates, preserve distinct missing-master warnings, and serialize profile edits with background library loading.
+- Reload saved profiles after failed installation/deployment and activate a switched profile only after it loads successfully. Separate the mod service contract, update identity rules and shared persistence safeguards.
+
 ## 1.0.21 — 2026-10-30
 
 - Keep sidebar navigation available from game details. Switching sections, library sources or filters dismisses game details and clears the previous navigation path immediately, including during artwork transitions.
