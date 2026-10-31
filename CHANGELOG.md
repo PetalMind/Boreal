@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.23 — 2026-10-31
+
+- Prevent Skyrim mod archive inspection and extraction from hanging when archive-tool output fills the pipe.
+- Keep the deployment button label stable while the existing operation banner reports archive inspection or other mod operations.
+
 ## 1.0.22 — 2026-10-30
 
 - Preserve shared Skyrim and GTA SA DE packages when removing mods from a profile. Stop loading or deploying mods when an existing deployment record is damaged or incompatible.
