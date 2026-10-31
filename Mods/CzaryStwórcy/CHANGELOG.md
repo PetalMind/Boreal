@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+- Naprawiono czarne prostokąty wokół ognia Spopielenia: fioletowa paleta zachowuje teraz dwuwymiarową maskę przezroczystości oryginalnego ognia Skyrim.
+- Zachowano parametry czarów, ich FormID-y oraz skrypty; poprawka dotyczy wyłącznie palety efektu.
+
 ## 1.5.0
 
 - Zmieniono Spopielenie na wyłącznie fioletowy ogień, włącznie z dłońmi, poświatą i trafieniami.
