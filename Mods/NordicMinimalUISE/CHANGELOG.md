@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2 — 2026-10-31
+
+- Panel konia jest wyśrodkowany u dołu widocznego obszaru, z marginesem nad paskiem zdrowia. Usunięto kotwiczenie BR przenoszące panel poza ekran; pozycja uwzględnia skalę HUD, bezpieczny margines i zmiany rozmiaru obszaru gry.
+
 ## 1.1.1 — 2026-10-31
 
 - Nawigacja H nie kasuje już efektu wskazywania drogi co pół sekundy. Prywatny efekt trwa 10 sekund i jest odnawiany po wygaśnięciu; ponowne H nadal wyłącza go natychmiast.
