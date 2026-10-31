@@ -1,48 +1,49 @@
 Scriptname QDJCache extends Quest
 
 Form[] cachedQuests
-Int[] savedInstances
-String[] savedSignatures
-String[] savedPlaces
-String[] savedLabels
-String[] savedTitles
-ObjectReference[] savedTargets
-Location[] savedLocations
+Int[] cacheInstances
+String[] cacheSignatures
+String[] cachePlaces
+String[] cacheLabels
+String[] cacheTitles
+Form[] cacheTargets
+Form[] cacheLocations
 Form[] cachedOrigins
 Form[] cachedEndpoints
-Cell[] savedPlayerCells
-Cell[] savedTargetCells
-Int[] savedDistanceKinds
+Form[] cachePlayerCells
+Form[] cacheTargetCells
+Int[] cacheDistanceKinds
 Int nextSlot
 Int focusSlot = -1
 Int cacheVersion
 
 Function Initialise()
-    ; Saves can retain a partially allocated cache after interrupted upgrades.
+    ; Rebuilt cache fields do not reuse broken typed arrays from older saves.
+    ; Form arrays use SKSE allocation; specific references are cast on read.
     ; Repair each array independently before allowing any indexed access.
     If !cachedQuests
         cachedQuests = Utility.CreateFormArray(128, None)
     EndIf
-    If !savedInstances
-        savedInstances = new Int[128]
+    If !cacheInstances
+        cacheInstances = new Int[128]
     EndIf
-    If !savedSignatures
-        savedSignatures = new String[128]
+    If !cacheSignatures
+        cacheSignatures = new String[128]
     EndIf
-    If !savedPlaces
-        savedPlaces = new String[128]
+    If !cachePlaces
+        cachePlaces = new String[128]
     EndIf
-    If !savedLabels
-        savedLabels = new String[128]
+    If !cacheLabels
+        cacheLabels = new String[128]
     EndIf
-    If !savedTitles
-        savedTitles = new String[128]
+    If !cacheTitles
+        cacheTitles = new String[128]
     EndIf
-    If !savedTargets
-        savedTargets = new ObjectReference[128]
+    If !cacheTargets
+        cacheTargets = Utility.CreateFormArray(128, None)
     EndIf
-    If !savedLocations
-        savedLocations = new Location[128]
+    If !cacheLocations
+        cacheLocations = Utility.CreateFormArray(128, None)
     EndIf
     If !cachedOrigins
         cachedOrigins = Utility.CreateFormArray(128, None)
@@ -50,22 +51,22 @@ Function Initialise()
     If !cachedEndpoints
         cachedEndpoints = Utility.CreateFormArray(128, None)
     EndIf
-    If !savedPlayerCells
-        savedPlayerCells = new Cell[128]
+    If !cachePlayerCells
+        cachePlayerCells = Utility.CreateFormArray(128, None)
     EndIf
-    If !savedTargetCells
-        savedTargetCells = new Cell[128]
+    If !cacheTargetCells
+        cacheTargetCells = Utility.CreateFormArray(128, None)
     EndIf
-    If !savedDistanceKinds
-        savedDistanceKinds = new Int[128]
+    If !cacheDistanceKinds
+        cacheDistanceKinds = new Int[128]
     EndIf
     If !IsReady()
         Debug.Trace("[QDJ] Cache allocation incomplete; retrying on next update.", 2)
         Return
     EndIf
-    If cacheVersion < 132
+    If cacheVersion < 133
         Invalidate()
-        cacheVersion = 132
+        cacheVersion = 133
     EndIf
 EndFunction
 
@@ -73,25 +74,25 @@ Bool Function IsReady()
     If !cachedQuests
         Return False
     EndIf
-    If !savedInstances
+    If !cacheInstances
         Return False
     EndIf
-    If !savedSignatures
+    If !cacheSignatures
         Return False
     EndIf
-    If !savedPlaces
+    If !cachePlaces
         Return False
     EndIf
-    If !savedLabels
+    If !cacheLabels
         Return False
     EndIf
-    If !savedTitles
+    If !cacheTitles
         Return False
     EndIf
-    If !savedTargets
+    If !cacheTargets
         Return False
     EndIf
-    If !savedLocations
+    If !cacheLocations
         Return False
     EndIf
     If !cachedOrigins
@@ -100,27 +101,27 @@ Bool Function IsReady()
     If !cachedEndpoints
         Return False
     EndIf
-    If !savedPlayerCells
+    If !cachePlayerCells
         Return False
     EndIf
-    If !savedTargetCells
+    If !cacheTargetCells
         Return False
     EndIf
-    If !savedDistanceKinds
+    If !cacheDistanceKinds
         Return False
     EndIf
     Return True
 EndFunction
 
 Function Invalidate()
-    If !savedSignatures
+    If !cacheSignatures
         Return
     EndIf
     Int i = 0
-    While i < savedSignatures.Length
-        savedSignatures[i] = ""
-        savedPlayerCells[i] = None
-        savedTargetCells[i] = None
+    While i < cacheSignatures.Length
+        cacheSignatures[i] = ""
+        cachePlayerCells[i] = None
+        cacheTargetCells[i] = None
         i += 1
     EndWhile
 EndFunction
@@ -148,7 +149,7 @@ Int Function Find(Quest task, Int instanceID)
     EndIf
     Int i = 0
     While i < 128
-        If cachedQuests[i] == task && savedInstances[i] == instanceID
+        If cachedQuests[i] == task && cacheInstances[i] == instanceID
             Return i
         EndIf
         i += 1
@@ -169,18 +170,18 @@ Int Function Remember(Quest task, Int instanceID, String title = "")
             focusSlot = -1
         EndIf
         cachedQuests[slot] = task
-        savedInstances[slot] = instanceID
-        savedSignatures[slot] = ""
-        savedTargets[slot] = None
-        savedLocations[slot] = None
+        cacheInstances[slot] = instanceID
+        cacheSignatures[slot] = ""
+        cacheTargets[slot] = None
+        cacheLocations[slot] = None
         cachedOrigins[slot] = None
         cachedEndpoints[slot] = None
-        savedPlayerCells[slot] = None
-        savedTargetCells[slot] = None
-        savedTitles[slot] = task.GetName()
+        cachePlayerCells[slot] = None
+        cacheTargetCells[slot] = None
+        cacheTitles[slot] = task.GetName()
     EndIf
     If title != ""
-        savedTitles[slot] = title
+        cacheTitles[slot] = title
     EndIf
     Refresh(slot)
     Return slot
@@ -192,34 +193,34 @@ Function Refresh(Int slot)
     EndIf
     Quest task = cachedQuests[slot] as Quest
     String signature = QDJTargetResolver.Signature(task)
-    Bool changed = signature != savedSignatures[slot]
+    Bool changed = signature != cacheSignatures[slot]
     If changed
-        savedTargets[slot] = QDJTargetResolver.FindTarget(task)
-        savedSignatures[slot] = signature
-        savedLocations[slot] = None
+        cacheTargets[slot] = QDJTargetResolver.FindTarget(task)
+        cacheSignatures[slot] = signature
+        cacheLocations[slot] = None
     EndIf
-    ObjectReference target = savedTargets[slot]
+    ObjectReference target = cacheTargets[slot] as ObjectReference
     Actor player = Game.GetPlayer()
     If target == None || player == None
         cachedOrigins[slot] = None
         cachedEndpoints[slot] = None
-        savedPlaces[slot] = "Lokalizacja celu niedostępna"
-        savedLabels[slot] = savedPlaces[slot] + " | odległość niedostępna"
+        cachePlaces[slot] = "Lokalizacja celu niedostępna"
+        cacheLabels[slot] = cachePlaces[slot] + " | odległość niedostępna"
         Return
     EndIf
     Location currentPlace = target.GetCurrentLocation()
-    If changed || currentPlace != savedLocations[slot] || savedPlaces[slot] == ""
-        savedPlaces[slot] = QDJTargetResolver.PlaceName(target)
-        savedLocations[slot] = currentPlace
+    If changed || currentPlace != cacheLocations[slot] || cachePlaces[slot] == ""
+        cachePlaces[slot] = QDJTargetResolver.PlaceName(target)
+        cacheLocations[slot] = currentPlace
     EndIf
     Cell playerCell = player.GetParentCell()
     Cell targetCell = target.GetParentCell()
-    If changed || playerCell != savedPlayerCells[slot] || targetCell != savedTargetCells[slot] || cachedEndpoints[slot] == None
+    If changed || playerCell != cachePlayerCells[slot] || targetCell != cacheTargetCells[slot] || cachedEndpoints[slot] == None
         ObjectReference[] route = QDJNavigation.Resolve(player, target)
         cachedOrigins[slot] = route[0]
         cachedEndpoints[slot] = route[1]
-        savedPlayerCells[slot] = playerCell
-        savedTargetCells[slot] = targetCell
+        cachePlayerCells[slot] = playerCell
+        cacheTargetCells[slot] = targetCell
         Int kind = 0
         If route[0] != player
             kind += 2
@@ -227,9 +228,9 @@ Function Refresh(Int slot)
         If route[1] != target
             kind += 1
         EndIf
-        savedDistanceKinds[slot] = kind
+        cacheDistanceKinds[slot] = kind
     EndIf
-    savedLabels[slot] = savedPlaces[slot] + " | " + QDJNavigation.DistanceLabel(Distance(slot), savedDistanceKinds[slot])
+    cacheLabels[slot] = cachePlaces[slot] + " | " + QDJNavigation.DistanceLabel(Distance(slot), cacheDistanceKinds[slot])
 EndFunction
 
 Float Function Distance(Int slot)
@@ -243,17 +244,17 @@ String Function Place(Int slot)
     If !IsReady() || slot < 0 || slot >= 128
         Return ""
     EndIf
-    If savedTargets[slot] == None
+    If cacheTargets[slot] == None
         Return ""
     EndIf
-    Return savedPlaces[slot]
+    Return cachePlaces[slot]
 EndFunction
 
 String Function Label(Int slot)
     If !IsReady() || slot < 0 || slot >= 128
         Return "Lokalizacja i odległość niedostępne"
     EndIf
-    Return savedLabels[slot]
+    Return cacheLabels[slot]
 EndFunction
 
 Function Select(Quest task, Int instanceID)
@@ -294,9 +295,9 @@ String Function CompassLabel(Int slot)
     If !IsReady() || slot < 0 || cachedQuests[slot] == None
         Return ""
     EndIf
-    String title = savedTitles[slot]
+    String title = cacheTitles[slot]
     If title == ""
         title = "Wybrane zadanie"
     EndIf
-    Return title + " | " + QDJNavigation.DistanceLabel(Distance(slot), savedDistanceKinds[slot])
+    Return title + " | " + QDJNavigation.DistanceLabel(Distance(slot), cacheDistanceKinds[slot])
 EndFunction

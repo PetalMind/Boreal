@@ -93,6 +93,6 @@ def build_route_records(
             "<IIIfIIffI", 0, 1, 0, 0.0, 1, 0, 0.0, 0.0, 0,
         )),  # Manual cost 0; Fire and Forget; Self.
         subrecord(b"EFID", struct.pack("<I", ROUTE_EFFECT_ID)),
-        subrecord(b"EFIT", struct.pack("<fII", 0.0, 0, 2)),
+        subrecord(b"EFIT", struct.pack("<fII", 0.0, 0, 10)),
     )))
     return group(b"MGEF", effect) + group(b"SPEL", spell)

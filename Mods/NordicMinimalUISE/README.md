@@ -17,8 +17,9 @@ Page Down albo bumperami kontrolera. Potwierdzanie i anulowanie pozostają
 oryginalne.
 
 Klawisz Jasnowidzenia (domyślnie H) można przypisać w MCM. Naciśnięcie włącza
-nawigację do celu wskazywanego przez silnik Jasnowidzenia. Trasa odświeża się
-co 0,5 sekundy z aktualnej pozycji gracza, również podczas jazdy konnej.
+nawigację do celu wskazywanego przez silnik Jasnowidzenia. Silnik gry
+wyznacza trasę. Skrypt sprawdza efekt co 0,5 sekundy i odnawia go po
+wygaśnięciu (10 sekund), bez kasowania trasy przy każdym odświeżeniu HUD.
 Ponowne naciśnięcie wyłącza nawigację. Koszt wynosi zawsze 0 magicki, także
 przy pustym pasku; pomocniczy czar nie daje doświadczenia magii.
 Odświeżanie jest wstrzymane w menu. Wczytanie zapisu, śmierć gracza lub

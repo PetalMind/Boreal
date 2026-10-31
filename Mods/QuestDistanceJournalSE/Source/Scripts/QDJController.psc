@@ -12,7 +12,7 @@ Function Initialise()
     generation += 1
     QDJCache cache = (Self as Quest) as QDJCache
     cache.Initialise()
-    Debug.Trace("[QDJ] Controller initialized; cache ready=" + cache.IsReady() + "; version=132")
+    Debug.Trace("[QDJ] Controller initialized; cache ready=" + cache.IsReady() + "; version=133")
     UnregisterForAllMenus()
     RegisterForMenu("Journal Menu")
     RegisterForModEvent("QDJ_Ready", "OnJournalReady")
@@ -52,10 +52,6 @@ Event OnMenuOpen(String menuName)
 EndEvent
 
 Event OnJournalReady(String eventName, String text, Float number, Form sender)
-    If UI.IsMenuOpen("Journal Menu")
-        ConfigureJournal()
-        UI.SetBool("Journal Menu", "_root.QDJConnected", True)
-    EndIf
     PumpJournal()
 EndEvent
 
@@ -80,6 +76,7 @@ Function PumpJournal()
     QDJCache cache = (Self as Quest) as QDJCache
     cache.Initialise()
     If !cache.IsReady()
+        UI.SetBool("Journal Menu", "_root.QDJConnected", False)
         processingGeneration = -1
         Return
     EndIf

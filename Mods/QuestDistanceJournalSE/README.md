@@ -46,7 +46,7 @@ Mod nie zgaduje miasta z tytułu zadania.
 3. Uruchom grę przez SKSE. Pierwsze odczyty pojawiają się stopniowo;
    ponowne otwarcia korzystają z pamięci do 128 pozycji zapisanej z grą.
 
-Wymagania: SkyUI oraz SKSE zgodne z wersją gry. Wersja 1.3.0 odczytuje
+Wymagania: SkyUI oraz SKSE zgodne z wersją gry. Wersja 1.3.3 odczytuje
 hierarchię lokalizacji z wygenerowanego indeksu i nie wymaga Papyrus Extender.
 Nie dodaje DLL. Nordic Minimal UI SE nie zmienia tego pliku dziennika;
 inny zamiennik dziennika wymaga osobnego dopasowania.

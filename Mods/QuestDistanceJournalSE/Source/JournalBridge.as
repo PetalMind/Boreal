@@ -24,6 +24,25 @@
    {
       this.QDJQueueEntries();
       this.QDJUpdateSortControl();
+      var pendingLists = this.QDJEntryLists();
+      var timedOut = false;
+      for(var pendingList = 0; pendingList < pendingLists.length; pendingList++)
+         for(var pendingIndex = 0; pendingLists[pendingList] != undefined && pendingIndex < pendingLists[pendingList].length; pendingIndex++)
+         {
+            var pendingEntry = pendingLists[pendingList][pendingIndex];
+            if(pendingEntry.qdjPendingSince != undefined && getTimer() - pendingEntry.qdjPendingSince > 15000)
+            {
+               pendingEntry.qdjLabel = "Dane celu niedostępne — odśwież w MCM";
+               delete pendingEntry.qdjPendingSince;
+               timedOut = true;
+            }
+         }
+      if(timedOut)
+      {
+         this.TitleList.UpdateList();
+         this.ObjectiveList.UpdateList();
+         if(this.TitleList.selectedEntry != undefined) this.SetDescriptionText();
+      }
       if(!_root.QDJConnected && getTimer() - this.qdjLastSignal > 800)
       {
          this.qdjLastSignal = getTimer();
@@ -67,6 +86,7 @@
             if(entry.qdjLabel == undefined)
             {
                entry.qdjLabel = "Ustalanie lokalizacji i odległości...";
+               entry.qdjPendingSince = getTimer();
                entry.qdjDistance = -1;
                entry.qdjCity = "";
                annotated = true;
@@ -115,6 +135,7 @@
             var entry = lists[l][i];
             if((entry.formID | 0) == Number(formID) && (entry.instance == undefined ? 0 : entry.instance) == Number(instanceID))
             {
+               delete entry.qdjPendingSince;
                if(entry.qdjLabel != label || entry.qdjCity != city || entry.qdjDistance != Number(distance))
                {
                   entry.qdjLabel = label;

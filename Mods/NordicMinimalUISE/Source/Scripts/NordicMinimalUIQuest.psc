@@ -14,6 +14,7 @@ GlobalVariable DotMotion
 GlobalVariable RouteKeyCode
 Bool routeActive
 Spell routeSpell
+MagicEffect routeEffect
 
 Event OnInit()
     Maintenance()
@@ -23,6 +24,7 @@ Function Maintenance()
     hudConfigured = False
     horsePanelVisible = False
     routeSpell = Game.GetFormFromFile(0x806, "NordicMinimalUISE.esp") as Spell
+    routeEffect = Game.GetFormFromFile(0x807, "NordicMinimalUISE.esp") as MagicEffect
     StopRoute()
     FadeSeconds = Game.GetFormFromFile(0x801, "NordicMinimalUISE.esp") as GlobalVariable
     BarsEnabled = Game.GetFormFromFile(0x802, "NordicMinimalUISE.esp") as GlobalVariable
@@ -44,7 +46,7 @@ Event OnKeyDown(Int keyCode)
     If keyCode == GetRouteKey() && keyCode > 0 && !Utility.IsInMenuMode() && !UI.IsTextInputEnabled()
         If routeActive
             StopRoute()
-        ElseIf routeSpell != None
+        ElseIf routeSpell != None && routeEffect != None
             routeActive = True
             UpdateRoute(Game.GetPlayer())
         Else
@@ -101,7 +103,7 @@ Function StopRoute()
 EndFunction
 
 Function UpdateRoute(Actor player)
-    If !routeActive || player == None || routeSpell == None
+    If !routeActive || player == None || routeSpell == None || routeEffect == None
         Return
     EndIf
     If player.IsDead()
@@ -111,10 +113,11 @@ Function UpdateRoute(Actor player)
     If Utility.IsInMenuMode() || !UI.IsMenuOpen("HUD Menu")
         Return
     EndIf
-    ; Replace the previous guide so the engine recalculates from the current
-    ; player position, including while mounted. Only our private spell is dispelled.
-    player.DispelSpell(routeSpell)
-    routeSpell.Cast(player, player)
+    ; Keep the guide alive long enough to resolve and draw the path.
+    ; Dispel only on toggle-off; renew after expiry instead of every HUD tick.
+    If !player.HasMagicEffect(routeEffect)
+        routeSpell.Cast(player, player)
+    EndIf
 EndFunction
 
 Event OnUpdate()
