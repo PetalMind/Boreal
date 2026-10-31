@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3 — 2026-10-31
+
+- Panel konia korzysta z oryginalnych pasków zdrowia i kondycji Skyrim, z zachowaniem ornamentów, kolorów i natywnego sposobu wypełniania.
+- Usunięto prostokątne tło i złotą ramkę; nazwa jest wyśrodkowana, a etykiety i procenty używają białego tekstu HUD. Zachowano dolną pozycję centralną i komplet danych.
+
 ## 1.1.2 — 2026-10-31
 
 - Panel konia jest wyśrodkowany u dołu widocznego obszaru, z marginesem nad paskiem zdrowia. Usunięto kotwiczenie BR przenoszące panel poza ekran; pozycja uwzględnia skalę HUD, bezpieczny margines i zmiany rozmiaru obszaru gry.
