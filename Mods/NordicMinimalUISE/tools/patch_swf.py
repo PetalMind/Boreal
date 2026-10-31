@@ -134,11 +134,15 @@ def main() -> None:
       this.DrawNordicHorseBar(this.NordicHorseHealthBar,1,0xB66D61);
       this.DrawNordicHorseBar(this.NordicHorseStaminaBar,1,0xD8CDA5);
       panel._visible = false;
-      // Lock preserves the authored offset; it does not move a new clip to BR.
-      // Position in the same coordinate space as the native stamina meter first.
-      panel._x = this.StaminaMeterAnim._x + this.StaminaMeterAnim._width - 264;
-      panel._y = this.StaminaMeterAnim._y - 118;
-      panel.Lock("BR");
+      this.PositionNordicHorsePanel();
+   }
+   function PositionNordicHorsePanel()
+   {
+      if(this.NordicHorsePanel == undefined) return;
+      var anchor = {x:Stage.visibleRect.x + Stage.visibleRect.width / 2,y:Stage.visibleRect.y + Stage.visibleRect.height - Stage.safeRect.y};
+      this.globalToLocal(anchor);
+      this.NordicHorsePanel._x = anchor.x - 132;
+      this.NordicHorsePanel._y = anchor.y - 96 - 48;
    }
    function DrawNordicHorseBar(barClip,percent,color)
    {
@@ -184,6 +188,7 @@ def main() -> None:
    function SetNordicHorseVisible(visible)
    {
       if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
+      if(visible) this.PositionNordicHorsePanel();
       this.NordicHorsePanel._visible = visible;
    }'''
         replace_once(hud, marker, methods + marker)

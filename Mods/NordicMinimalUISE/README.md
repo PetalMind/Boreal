@@ -6,7 +6,8 @@ pozostają widoczne. MCM pozwala zmienić czas zanikania, wyłączyć automatycz
 paski lub kompas. Kompas i znaczniki zadań są domyślnie zachowane, a celownik
 ma postać małej, nieruchomej kropki z obrysem poprawiającym czytelność.
 
-Podczas jazdy pojawia się osobny panel wierzchowca z jego nazwą oraz paskami
+Podczas jazdy na dole, pośrodku ekranu, nad paskiem zdrowia gracza pojawia się
+osobny panel wierzchowca z jego nazwą oraz paskami
 zdrowia i wytrzymałości. Wartości i procenty odświeżają się na bieżąco, a panel
 znika po zejściu z konia.
 
