@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- Zmieniono Spopielenie na wyłącznie fioletowy ogień, włącznie z dłońmi, poświatą i trafieniami.
+- Spopielenie pozostawia po zabitym celu przeszukiwalną kupkę popiołu zamiast osmalonego ciała; przechwytywanie duszy pozostaje aktywne.
+- Wewnętrzna eksplozja rozrzuca krew w pełnym okręgu i otacza trafiony cel czerwoną aurą do śmierci. Nadal nie zadaje obrażeń obszarowych.
+- Podwojono obrażenia i leczenie Pochłonięcia: rangi I/II/III dają teraz 16/24/32 HP na sekundę. Zachowano koszty, zasięg i FormID-y zaklęć.
+
 ## 1.4.0
 
 - Dodano Spopielenie: ciągły strumień fioletowo-pomarańczowego ognia, 25 pkt obrażeń na sekundę, osmalenie zwłok i przechwytywanie duszy do kamienia.
