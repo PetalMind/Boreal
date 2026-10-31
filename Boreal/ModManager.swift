@@ -1121,8 +1121,10 @@ nonisolated struct ModManager: Sendable {
         process.standardOutput = pipe
         process.standardError = pipe
         do { try process.run() } catch { throw ModManagerError.archiveToolFailed(error.localizedDescription) }
-        process.waitUntilExit()
+        // Drain output while the tool runs: archive listings can fill the pipe
+        // and block the child before it can exit.
         let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw ModManagerError.archiveToolFailed(output.trimmingCharacters(in: .whitespacesAndNewlines))
         }

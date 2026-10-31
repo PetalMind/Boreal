@@ -648,15 +648,7 @@ struct ModsView: View {
             Button {
                 store.deployMods(for: game)
             } label: {
-                if store.isModOperationActive(for: game) {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Deploying Changes…")
-                    }
-                } else {
-                    Label("Deploy Changes", systemImage: "arrow.down.app")
-                }
+                Label("Deploy Changes", systemImage: "arrow.down.app")
             }
             .buttonStyle(.borderedProminent)
             .disabled(store.isModOperationActive(for: game))
