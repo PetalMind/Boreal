@@ -15,7 +15,7 @@ Zakres: aplikacja macOS Boreal; przegląd źródeł wszystkich typów `View` i `
 | Pobieranie | Karty operacji i paneli korzystają ze wspólnej powierzchni. Zachowano bieżące pomiary, wykresy, kolejkę, pauzę i wznowienie. |
 | Ustawienia — kontener | Natywna przewijalna lista kategorii w `NavigationSplitView`, nawigacja klawiaturą, tytuł aktualnej kategorii i mniejsze wymagane okno (760 × 560). Bez dodawania kategorii i opcji. |
 | Ustawienia — sekcje | Ogólne, pobieranie, runtime, tryb konsolowy i zaawansowane mają osobne pliki. `SettingsCategory.swift` zawiera opis nawigacji; `SettingsComponents.swift` współdzielony układ. |
-| Ustawienia — karty i wiersze | Układ poziomy przechodzi w pionowy, gdy treść się nie mieści. Kontrolki z ukrytymi etykietami otrzymują etykietę dostępności wiersza. Zastosowano semantyczną powierzchnię zamiast warstw szkła i białych obramowań. |
+| Ustawienia — karty i wiersze | Układ poziomy przechodzi w pionowy, gdy treść się nie mieści. Kontrolki z ukrytymi etykietami otrzymują etykietę dostępności wiersza. Zastosowano semantyczną powierzchnię zamiast warstw szkła i Popebiałych obramowań. |
 | Miejsce na dysku | Korzysta z adaptacyjnych kart ustawień. Zachowano skanowanie, błędy, stan pusty, potwierdzenia i zasady operacji na danych. |
 | Runtime i komponenty graficzne | Osobny widok ustawień; istniejące importowanie, edycja, usuwanie i statusy pozostają pod kontrolą magazynu. Lista komponentów nadal pokazuje wyłącznie przekazane dane. |
 | Kontrolery | W węższym oknie wybór kategorii zmienia się w Picker; podgląd przechodzi pod kontrolki. Podglądy 2D i 3D respektują ograniczenie ruchu. Konstrukcja sceny 3D znajduje się w osobnym pliku; wyłączono nieprzerwane renderowanie bez zmian wejścia. |

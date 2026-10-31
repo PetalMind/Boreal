@@ -284,10 +284,8 @@
 				"",
 			);
 		};
-
 		D50120678500000000000001 /* Build Drakensang launcher */ = {
 			isa = PBXShellScriptBuildPhase;
-			name = "Build Drakensang launcher";
 			inputPaths = (
 				"$(SRCROOT)/BorealRuntimeProbe/build-drakensang-launcher.sh",
 				"$(SRCROOT)/BorealRuntimeProbe/DrakensangLauncher.swift",
@@ -295,13 +293,16 @@
 				"$(SRCROOT)/BorealRuntimeProbe/BorealDrakensangTicket.exe",
 				"$(SRCROOT)/BorealRuntimeProbe/BorealDrakensangCursor.dll",
 			);
+			name = "Build Drakensang launcher";
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BorealDrakensangLauncher",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BorealDrakensangTicket.exe",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BorealDrakensangCursor.dll",
 			);
 			shellPath = /bin/bash;
-			shellScript = "bash \"${SRCROOT}/BorealRuntimeProbe/build-drakensang-launcher.sh\"";
+			shellScript = (
+				"bash \"${SRCROOT}/BorealRuntimeProbe/build-drakensang-launcher.sh\"",
+			);
 		};
 /* End PBXShellScriptBuildPhase section */
 
