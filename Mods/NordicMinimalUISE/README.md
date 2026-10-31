@@ -9,7 +9,8 @@ ma postać małej, nieruchomej kropki z obrysem poprawiającym czytelność.
 Podczas jazdy na dole, pośrodku ekranu, nad paskiem zdrowia gracza pojawia się
 osobny panel wierzchowca z jego nazwą oraz paskami
 zdrowia i wytrzymałości. Wartości i procenty odświeżają się na bieżąco, a panel
-znika po zejściu z konia.
+znika po zejściu z konia. Panel używa oryginalnych pasków Skyrim i białego
+tekstu HUD, bez dodatkowego tła ani ramki.
 
 Wybór czasu oczekiwania używa okrągłej tarczy zamiast poziomego suwaka.
 Pierścień pokazuje wybraną liczbę godzin w zakresie 1–24; można ustawić ją

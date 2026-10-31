@@ -54,7 +54,7 @@ def main() -> None:
             run(["java", "-jar", str(FFDEC), "-format", "script:as", "-export", "script", str(folder), str(source)])
             exports[key] = folder / "scripts"
         hud = exports["hud"] / "__Packages/HUDMenu.as"
-        replace_once(hud, "   var METER_PAUSE_FRAME = 40;", "   var METER_PAUSE_FRAME = 40;\n   var NordicFadeDelay = 5;\n   var NordicBarsEnabled = true;\n   var NordicCompassEnabled = true;\n   var NordicCombatActive = false;\n   var NordicFadeTimerID;\n   var NordicHorsePanel;\n   var NordicHorseNameField;\n   var NordicHorseHealthLabel;\n   var NordicHorseHealthValue;\n   var NordicHorseStaminaLabel;\n   var NordicHorseStaminaValue;\n   var NordicHorseHealthBar;\n   var NordicHorseStaminaBar;")
+        replace_once(hud, "   var METER_PAUSE_FRAME = 40;", "   var METER_PAUSE_FRAME = 40;\n   var NordicFadeDelay = 5;\n   var NordicBarsEnabled = true;\n   var NordicCompassEnabled = true;\n   var NordicCombatActive = false;\n   var NordicFadeTimerID;\n   var NordicHorsePanel;\n   var NordicHorseNameField;\n   var NordicHorseHealthLabel;\n   var NordicHorseHealthValue;\n   var NordicHorseStaminaLabel;\n   var NordicHorseStaminaValue;\n   var NordicHorseHealthBar;\n   var NordicHorseStaminaBar;\n   var NordicHorseHealthMeter;\n   var NordicHorseStaminaMeter;")
         replace_once(hud, '      this.StaminaMeterAnim.Lock("BR");', '      this.StaminaMeterAnim.Lock("BR");\n      this.CreateNordicHorsePanel();')
         crosshair = (ROOT / "Source/Interface/NordicCrosshair.as").read_text(encoding="utf-8")
         replace_once(hud, "   function RunMeterAnim(aMeter)\n   {", crosshair + "   function RunMeterAnim(aMeter)\n   {")
@@ -78,119 +78,7 @@ def main() -> None:
             raise RuntimeError(f"Expected two native crosshair resets, found {reset_count}")
         replace_once(hud, "   function onEnterFrame()\n   {", "   function onEnterFrame()\n   {\n      this.UpdateNordicCrosshair();")
         marker = "   function RunMeterAnim(aMeter)\n   {"
-        methods = '''   function SetNordicFadeDelay(seconds)\n   {\n      this.NordicFadeDelay = Math.max(1,Math.min(10,seconds));\n   }\n   function SetNordicBarsEnabled(enabled)\n   {\n      this.NordicBarsEnabled = enabled;\n      this.HealthMeterAnim._visible = enabled;\n      this.MagickaMeterAnim._visible = enabled;\n      this.StaminaMeterAnim._visible = enabled;\n      if(enabled) this.ScheduleNordicFade();\n   }\n   function SetNordicCompassEnabled(enabled)\n   {\n      this.NordicCompassEnabled = enabled;\n      this.CompassShoutMeterHolder._visible = enabled;\n   }\n   function SetNordicCombatActive(active)\n   {\n      this.NordicCombatActive = active;\n      if(active)\n      {\n         clearInterval(this.NordicFadeTimerID);\n         if(this.NordicBarsEnabled)\n         {\n            this.HealthMeterAnim._visible = true;\n            this.MagickaMeterAnim._visible = true;\n            this.StaminaMeterAnim._visible = true;\n         }\n      }\n      else this.ScheduleNordicFade();\n   }\n   function ScheduleNordicFade()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n         this.NordicFadeTimerID = setInterval(this,\"NordicFadeMeters\",this.NordicFadeDelay * 1000);\n   }\n   function NordicFadeMeters()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n      {\n         this.FadeOutMeter(this.HealthMeterAnim);\n         this.FadeOutMeter(this.MagickaMeterAnim);\n         this.FadeOutMeter(this.StaminaMeterAnim);\n      }\n   }\n   function CreateNordicHorsePanel()
-   {
-      if(this.NordicHorsePanel != undefined) return;
-      this.NordicHorsePanel = this.createEmptyMovieClip("NordicHorseStatusPanel",10001);
-      var panel = this.NordicHorsePanel;
-      panel.lineStyle(1,0xD8CDA5,42);
-      panel.beginFill(0x11130F,82);
-      panel.moveTo(0,0);
-      panel.lineTo(264,0);
-      panel.lineTo(264,96);
-      panel.lineTo(0,96);
-      panel.lineTo(0,0);
-      panel.endFill();
-      panel.lineStyle(1,0xD8CDA5,72);
-      panel.moveTo(13,1);
-      panel.lineTo(251,1);
-      panel.createTextField("HorseNameField",1,13,9,238,23);
-      panel.createTextField("HorseHealthLabel",2,13,34,150,14);
-      panel.createTextField("HorseHealthValue",3,211,34,40,14);
-      panel.createTextField("HorseStaminaLabel",4,13,62,150,14);
-      panel.createTextField("HorseStaminaValue",5,211,62,40,14);
-      this.NordicHorseNameField = panel.HorseNameField;
-      this.NordicHorseHealthLabel = panel.HorseHealthLabel;
-      this.NordicHorseHealthValue = panel.HorseHealthValue;
-      this.NordicHorseStaminaLabel = panel.HorseStaminaLabel;
-      this.NordicHorseStaminaValue = panel.HorseStaminaValue;
-      var titleFormat = new TextFormat("$EverywhereFont",18,0xF0EBDD,false,false,false,false,"","left",0,0,0,0);
-      var labelFormat = new TextFormat("$EverywhereFont",11,0xD8CDA5,false,false,false,false,"","left",0,0,0,0);
-      var valueFormat = new TextFormat("$EverywhereFont",11,0xF0EBDD,false,false,false,false,"","right",0,0,0,0);
-      this.NordicHorseNameField.setNewTextFormat(titleFormat);
-      this.NordicHorseNameField.setTextFormat(titleFormat);
-      this.NordicHorseNameField.textAutoSize = "shrink";
-      this.NordicHorseNameField.selectable = false;
-      this.NordicHorseHealthLabel.setNewTextFormat(labelFormat);
-      this.NordicHorseHealthLabel.setTextFormat(labelFormat);
-      this.NordicHorseHealthLabel.selectable = false;
-      this.NordicHorseHealthLabel.text = "ZDROWIE";
-      this.NordicHorseHealthValue.setNewTextFormat(valueFormat);
-      this.NordicHorseHealthValue.setTextFormat(valueFormat);
-      this.NordicHorseHealthValue.selectable = false;
-      this.NordicHorseStaminaLabel.setNewTextFormat(labelFormat);
-      this.NordicHorseStaminaLabel.setTextFormat(labelFormat);
-      this.NordicHorseStaminaLabel.selectable = false;
-      this.NordicHorseStaminaLabel.text = "WYTRZYMAŁOŚĆ";
-      this.NordicHorseStaminaValue.setNewTextFormat(valueFormat);
-      this.NordicHorseStaminaValue.setTextFormat(valueFormat);
-      this.NordicHorseStaminaValue.selectable = false;
-      this.NordicHorseHealthBar = panel.createEmptyMovieClip("HorseHealthBar",6);
-      this.NordicHorseHealthBar._x = 13;
-      this.NordicHorseHealthBar._y = 51;
-      this.NordicHorseStaminaBar = panel.createEmptyMovieClip("HorseStaminaBar",7);
-      this.NordicHorseStaminaBar._x = 13;
-      this.NordicHorseStaminaBar._y = 79;
-      this.DrawNordicHorseBar(this.NordicHorseHealthBar,1,0xB66D61);
-      this.DrawNordicHorseBar(this.NordicHorseStaminaBar,1,0xD8CDA5);
-      panel._visible = false;
-      this.PositionNordicHorsePanel();
-   }
-   function PositionNordicHorsePanel()
-   {
-      if(this.NordicHorsePanel == undefined) return;
-      var anchor = {x:Stage.visibleRect.x + Stage.visibleRect.width / 2,y:Stage.visibleRect.y + Stage.visibleRect.height - Stage.safeRect.y};
-      this.globalToLocal(anchor);
-      this.NordicHorsePanel._x = anchor.x - 132;
-      this.NordicHorsePanel._y = anchor.y - 96 - 48;
-   }
-   function DrawNordicHorseBar(barClip,percent,color)
-   {
-      percent = Math.max(0,Math.min(1,percent));
-      barClip.clear();
-      barClip.beginFill(0x2B2B25,100);
-      barClip.moveTo(0,0);
-      barClip.lineTo(238,0);
-      barClip.lineTo(238,5);
-      barClip.lineTo(0,5);
-      barClip.lineTo(0,0);
-      barClip.endFill();
-      if(percent > 0)
-      {
-         barClip.beginFill(color,100);
-         barClip.moveTo(0,0);
-         barClip.lineTo(238 * percent,0);
-         barClip.lineTo(238 * percent,5);
-         barClip.lineTo(0,5);
-         barClip.lineTo(0,0);
-         barClip.endFill();
-      }
-   }
-   function SetNordicHorseName(name)
-   {
-      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
-      this.NordicHorseNameField.text = name;
-   }
-   function SetNordicHorseHealth(percent)
-   {
-      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
-      percent = Math.max(0,Math.min(1,percent));
-      this.NordicHorseHealthValue.text = Math.round(percent * 100) + "%";
-      this.DrawNordicHorseBar(this.NordicHorseHealthBar,percent,0xB66D61);
-   }
-   function SetNordicHorseStamina(percent)
-   {
-      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
-      percent = Math.max(0,Math.min(1,percent));
-      this.NordicHorseStaminaValue.text = Math.round(percent * 100) + "%";
-      this.DrawNordicHorseBar(this.NordicHorseStaminaBar,percent,0xD8CDA5);
-   }
-   function SetNordicHorseVisible(visible)
-   {
-      if(this.NordicHorsePanel == undefined) this.CreateNordicHorsePanel();
-      if(visible) this.PositionNordicHorsePanel();
-      this.NordicHorsePanel._visible = visible;
-   }'''
+        methods = '''   function SetNordicFadeDelay(seconds)\n   {\n      this.NordicFadeDelay = Math.max(1,Math.min(10,seconds));\n   }\n   function SetNordicBarsEnabled(enabled)\n   {\n      this.NordicBarsEnabled = enabled;\n      this.HealthMeterAnim._visible = enabled;\n      this.MagickaMeterAnim._visible = enabled;\n      this.StaminaMeterAnim._visible = enabled;\n      if(enabled) this.ScheduleNordicFade();\n   }\n   function SetNordicCompassEnabled(enabled)\n   {\n      this.NordicCompassEnabled = enabled;\n      this.CompassShoutMeterHolder._visible = enabled;\n   }\n   function SetNordicCombatActive(active)\n   {\n      this.NordicCombatActive = active;\n      if(active)\n      {\n         clearInterval(this.NordicFadeTimerID);\n         if(this.NordicBarsEnabled)\n         {\n            this.HealthMeterAnim._visible = true;\n            this.MagickaMeterAnim._visible = true;\n            this.StaminaMeterAnim._visible = true;\n         }\n      }\n      else this.ScheduleNordicFade();\n   }\n   function ScheduleNordicFade()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n         this.NordicFadeTimerID = setInterval(this,\"NordicFadeMeters\",this.NordicFadeDelay * 1000);\n   }\n   function NordicFadeMeters()\n   {\n      clearInterval(this.NordicFadeTimerID);\n      if(this.NordicBarsEnabled && !this.NordicCombatActive)\n      {\n         this.FadeOutMeter(this.HealthMeterAnim);\n         this.FadeOutMeter(this.MagickaMeterAnim);\n         this.FadeOutMeter(this.StaminaMeterAnim);\n      }\n   }\n''' + (ROOT / "Source/Interface/NordicHorsePanel.as").read_text(encoding="utf-8")
         replace_once(hud, marker, methods + marker)
         for meter in ("Health", "Magicka", "Stamina"):
             sig = f"   function Set{meter}MeterPercent(aPercent, abForce)\n   {{"
