@@ -92,4 +92,4 @@ python3 Source/build_package.py --skyrim-data '/ścieżka/do/Skyrim/Data' --comp
 
 `Source/build_plugin.py` buduje wyłącznie ESP. Opcja `--plugin-only` aktualizuje tylko dotychczasowe rangi i nie dodaje nowych czarów, skryptów ani zasobów. Do instalacji użyj kompletnego archiwum.
 
-Budowa, lint źródeł Python i kontrola typów nie potwierdzają wyglądu ani zachowania w silniku gry. Wersja 1.5.0 nie została sprawdzona w uruchomionej rozgrywce Skyrim SE.
+Budowa, lint źródeł Python i kontrola typów nie potwierdzają wyglądu ani zachowania w silniku gry. Wersja 1.5.1 nie została sprawdzona w uruchomionej rozgrywce Skyrim SE.

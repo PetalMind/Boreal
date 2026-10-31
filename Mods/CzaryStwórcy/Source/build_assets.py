@@ -133,24 +133,56 @@ def recolor_flames(data: bytes) -> bytes:
     return result
 
 
-def gradient_dds() -> bytes:
-    """An uncompressed RGBA palette with violet hues at every intensity."""
-    width, height = 256, 16
+def dxt5_alpha(data: bytes) -> tuple[int, int, bytes]:
+    """Read the native fire palette's full two-dimensional opacity mask."""
+    if data[:4] != b"DDS " or data[84:88] != b"DXT5":
+        raise ValueError("Expected the vanilla DXT5 fire palette")
+    height, width = struct.unpack_from("<II", data, 12)
+    if not width or not height or width % 4 or height % 4:
+        raise ValueError("Unsupported fire palette dimensions")
+    if len(data) < 128 + width * height:
+        raise ValueError("Truncated DXT5 fire palette")
+    alpha = bytearray(width * height)
+    position = 128
+    for top in range(0, height, 4):
+        for left in range(0, width, 4):
+            first, second = data[position:position + 2]
+            levels = [first, second]
+            if first > second:
+                levels.extend(((7 - i) * first + i * second) // 7 for i in range(1, 7))
+            else:
+                levels.extend(((5 - i) * first + i * second) // 5 for i in range(1, 5))
+                levels.extend((0, 255))
+            indices = int.from_bytes(data[position + 2:position + 8], "little")
+            for pixel in range(16):
+                x, y = left + pixel % 4, top + pixel // 4
+                alpha[y * width + x] = levels[(indices >> (3 * pixel)) & 7]
+            position += 16
+    return width, height, bytes(alpha)
+
+
+def gradient_dds(alpha_reference: bytes) -> bytes:
+    """Recolor the palette while preserving Skyrim's particle transparency."""
+    width, height, alpha = dxt5_alpha(alpha_reference)
     header = struct.pack("<7I", 124, 0x100F, height, width, width * 4, 0, 0)
     header += bytes(44)
     header += struct.pack("<8I", 32, 0x41, 0, 32, 0xFF, 0xFF00, 0xFF0000, 0xFF000000)
     header += struct.pack("<5I", 0x1000, 0, 0, 0, 0)
     stops = ((0, (0, 0, 0)), (40, (30, 0, 75)), (115, (100, 0, 210)),
              (165, (145, 15, 255)), (220, (180, 55, 255)), (255, (210, 95, 255)))
-    row = bytearray()
+    row: list[bytes] = []
     for x in range(width):
+        intensity = x * 255 / (width - 1)
         for (left, a), (right, b) in zip(stops, stops[1:]):
-            if left <= x <= right:
-                ratio = (x - left) / (right - left)
-                row.extend(round(v + (w - v) * ratio) for v, w in zip(a, b))
-                row.append(255)
+            if left <= intensity <= right:
+                ratio = (intensity - left) / (right - left)
+                row.append(bytes(round(v + (w - v) * ratio) for v, w in zip(a, b)))
                 break
-    return b"DDS " + header + bytes(row) * height
+    # Palette alpha is sampled in both axes by Greyscale_To_PaletteAlpha.
+    # A constant alpha of 255 makes the whole particle card visible as a box.
+    pixels = b"".join(row[index % width] + bytes((opacity,))
+                      for index, opacity in enumerate(alpha))
+    return b"DDS " + header + pixels
 
 
 def build_assets(skyrim_data: Path, output: Path) -> None:
@@ -174,7 +206,13 @@ def build_assets(skyrim_data: Path, output: Path) -> None:
     )
     palette_path = output / "Textures/CreatorSpells/IncinerationGradient.dds"
     palette_path.parent.mkdir(parents=True, exist_ok=True)
-    palette_path.write_bytes(gradient_dds())
+    for archive in sorted(skyrim_data.glob("Skyrim - Textures*.bsa")):
+        reference = extract_mesh(archive, r"textures\effects\gradients\GradFlame01.dds")
+        if reference is not None:
+            palette_path.write_bytes(gradient_dds(reference))
+            break
+    else:
+        raise ValueError("Vanilla fire palette not found")
 
 
 def radial_blood_burst(data: bytes) -> bytes:
