@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 PALETTE = b"textures\\CreatorSpells\\IncinerationGradient.dds"
@@ -54,8 +56,8 @@ def extract_mesh(archive: Path, wanted: str) -> bytes | None:
     return None
 
 
-def recolor_flames(data: bytes) -> bytes:
-    """Replace the three flame palettes, preserving NIF blocks and animation."""
+def transform_nif(data: bytes, transform: Callable[[str, bytes], bytes]) -> bytes:
+    """Transform Skyrim SE blocks while preserving links and animation."""
     start = data.index(b"\n") + 1
     version, endian, user, count, bethesda = struct.unpack_from("<IBIII", data, start)
     if (version, endian, user, bethesda) != (0x14020007, 1, 12, 100):
@@ -85,35 +87,61 @@ def recolor_flames(data: bytes) -> bytes:
     position += 4 + groups * 4
     header = bytearray(data[:position])
     blocks = []
-    changed = 0
     for index, (type_index, size) in enumerate(zip(indexes, sizes)):
         block = data[position:position + size]
         position += size
-        if types[type_index] == "BSEffectShaderProperty":
-            for old in (
-                b"textures\\effects\\gradients\\GradFlame01.dds",
-                b"textures\\effects\\gradients\\GradFireCloak01.dds",
-            ):
-                old_field = struct.pack("<I", len(old)) + old
-                if old_field in block:
-                    block = block.replace(old_field, struct.pack("<I", len(PALETTE)) + PALETTE)
-                    changed += 1
+        block = transform(types[type_index], block)
         struct.pack_into("<I", header, size_table + 4 * index, len(block))
         blocks.append(block)
-    if changed != 3 or position + 8 != len(data):
-        raise ValueError("Unexpected vanilla flame mesh layout")
+    if position + 8 != len(data):
+        raise ValueError("Unexpected vanilla mesh layout")
     return bytes(header) + b"".join(blocks) + data[position:]
 
 
+def recolor_flames(data: bytes) -> bytes:
+    """Give stream, hands and impact particles the same violet palette."""
+    changed = 0
+
+    def recolor(kind: str, block: bytes) -> bytes:
+        nonlocal changed
+        if kind == "BSEffectShaderProperty":
+            source_length = struct.unpack_from("<I", block, 36)[0]
+            source_end = 40 + source_length
+            palette_offset = source_end + 44
+            palette_length = struct.unpack_from("<I", block, palette_offset)[0]
+            if palette_offset + 4 + palette_length != len(block):
+                raise ValueError("Unsupported Skyrim effect shader layout")
+            shader = bytearray(block[:palette_offset])
+            flags = struct.unpack_from("<I", shader, 12)[0]
+            struct.pack_into("<I", shader, 12, flags | 0x10)
+            brightness = max(struct.unpack_from("<3f", shader, source_end + 20))
+            struct.pack_into("<3f", shader, source_end + 20, *([brightness] * 3))
+            changed += 1
+            return bytes(shader) + struct.pack("<I", len(PALETTE)) + PALETTE
+        if kind == "BSPSysSimpleColorModifier":
+            # Particle colors multiply the palette: remove inherited orange tint.
+            modifier = bytearray(block)
+            for offset in (37, 53, 69):
+                brightness = max(struct.unpack_from("<3f", modifier, offset))
+                struct.pack_into("<3f", modifier, offset, *([brightness] * 3))
+            return bytes(modifier)
+        return block
+
+    result = transform_nif(data, recolor)
+    if not changed:
+        raise ValueError("Mesh has no recolorable effect shaders")
+    return result
+
+
 def gradient_dds() -> bytes:
-    """An uncompressed RGBA palette: violet edges, orange flame, warm core."""
+    """An uncompressed RGBA palette with violet hues at every intensity."""
     width, height = 256, 16
     header = struct.pack("<7I", 124, 0x100F, height, width, width * 4, 0, 0)
     header += bytes(44)
     header += struct.pack("<8I", 32, 0x41, 0, 32, 0xFF, 0xFF00, 0xFF0000, 0xFF000000)
     header += struct.pack("<5I", 0x1000, 0, 0, 0, 0)
-    stops = ((0, (0, 0, 0)), (40, (45, 0, 100)), (115, (155, 15, 255)),
-             (165, (255, 65, 10)), (220, (255, 160, 25)), (255, (255, 245, 180)))
+    stops = ((0, (0, 0, 0)), (40, (30, 0, 75)), (115, (100, 0, 210)),
+             (165, (145, 15, 255)), (220, (180, 55, 255)), (255, (210, 95, 255)))
     row = bytearray()
     for x in range(width):
         for (left, a), (right, b) in zip(stops, stops[1:]):
@@ -126,16 +154,44 @@ def gradient_dds() -> bytes:
 
 
 def build_assets(skyrim_data: Path, output: Path) -> None:
-    mesh = None
-    for name in ("Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"):
-        mesh = extract_mesh(skyrim_data / name, r"meshes\magic\firesprayfx01.nif")
-        if mesh is not None:
-            break
-    if mesh is None:
-        raise ValueError("Vanilla flame mesh not found")
-    mesh_path = output / "Meshes/CreatorSpells/Incineration.nif"
+    def load_mesh(name: str) -> bytes:
+        for archive in ("Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"):
+            mesh = extract_mesh(skyrim_data / archive, "meshes\\" + name)
+            if mesh is not None:
+                return mesh
+        raise ValueError(f"Vanilla mesh not found: {name}")
+
+    mesh_folder = output / "Meshes/CreatorSpells"
+    mesh_folder.mkdir(parents=True, exist_ok=True)
+    for name, original in (
+        ("Incineration.nif", r"magic\firesprayfx01.nif"),
+        ("IncinerationHands.nif", r"magic\Fireball01HandEffects.nif"),
+        ("IncinerationImpact.nif", r"effects\ImpactEffects\ImpactWaterSplashFire.nif"),
+    ):
+        (mesh_folder / name).write_bytes(recolor_flames(load_mesh(original)))
+    (mesh_folder / "InternalExplosion.nif").write_bytes(
+        radial_blood_burst(load_mesh(r"effects\BloodSprayDecap01.nif"))
+    )
     palette_path = output / "Textures/CreatorSpells/IncinerationGradient.dds"
-    mesh_path.parent.mkdir(parents=True, exist_ok=True)
     palette_path.parent.mkdir(parents=True, exist_ok=True)
-    mesh_path.write_bytes(recolor_flames(mesh))
     palette_path.write_bytes(gradient_dds())
+
+
+def radial_blood_burst(data: bytes) -> bytes:
+    """Emit blood in a full circle instead of the vanilla directional spray."""
+    changed = 0
+
+    def radial(kind: str, block: bytes) -> bytes:
+        nonlocal changed
+        if kind not in ("NiPSysCylinderEmitter", "NiPSysSphereEmitter"):
+            return block
+        emitter = bytearray(block)
+        # NiPSysModifier (13 bytes), then speed, speed variation and four angles.
+        struct.pack_into("<4f", emitter, 21, math.pi / 2, 0.45, 0.0, math.pi)
+        changed += 1
+        return bytes(emitter)
+
+    result = transform_nif(data, radial)
+    if changed != 4:
+        raise ValueError("Unexpected vanilla blood emitter layout")
+    return result

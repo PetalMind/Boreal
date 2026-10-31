@@ -27,12 +27,12 @@ SPELLS: tuple[dict, ...] = (
         "editor_id": "CreatorAbsorptionSpell",
         "name": "Pochłonięcie Stwórcy I",
         "description": (
-            "Wysysa 8 pkt zdrowia na sekundę i przywraca je rzucającemu. "
+            "Wysysa 16 pkt zdrowia na sekundę i przywraca je rzucającemu. "
             "Zasięg 30 m."
         ),
         "cost": 12,
         "range": 2100.0,
-        "effects": ((0x000F5B57, 8.0, 0, 0),),
+        "effects": ((0x000F5B57, 16.0, 0, 0),),
         "sound_profiles": ("absorption",),
     },
     {
@@ -134,22 +134,22 @@ RANK_VARIANTS: tuple[dict, ...] = (
         "editor_id": "CreatorAbsorption02Spell",
         "name": "Pochłonięcie Stwórcy II",
         "description": (
-            "Wysysa 12 pkt zdrowia na sekundę i przywraca je rzucającemu. "
+            "Wysysa 24 pkt zdrowia na sekundę i przywraca je rzucającemu. "
             "Zasięg 30 m."
         ),
         "cost": 18,
-        "effects": ((12.0, 0, 0),),
+        "effects": ((24.0, 0, 0),),
     },
     {
         "base": "CreatorAbsorptionSpell",
         "editor_id": "CreatorAbsorption03Spell",
         "name": "Pochłonięcie Stwórcy III",
         "description": (
-            "Wysysa 16 pkt zdrowia na sekundę i przywraca je rzucającemu. "
+            "Wysysa 32 pkt zdrowia na sekundę i przywraca je rzucającemu. "
             "Zasięg 30 m."
         ),
         "cost": 24,
-        "effects": ((16.0, 0, 0),),
+        "effects": ((32.0, 0, 0),),
     },
     {
         "base": "CreatorImpulseSpell",

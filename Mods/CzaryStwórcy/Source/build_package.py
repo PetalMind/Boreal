@@ -32,10 +32,16 @@ def main() -> None:
         build_plugin(args.skyrim_data / "Skyrim.esm", plugin)
         after = read_plugin(plugin)
         # Existing IDs are save-game references and must survive a rebuild.
+        absorption_ids = {0x01000800, 0x01000819, 0x0100081A}
         for form_id, old in before.items():
-            if form_id == 0 or form_id >= 0x01000825:
+            if form_id == 0:
                 continue
-            if after.get(form_id) != old:
+            current = after.get(form_id)
+            if current is None or current[0] != old[0] or dict(current[2]).get(b"EDID") != dict(old[2]).get(b"EDID"):
+                raise ValueError(f"Existing record identity changed: {form_id:08X}")
+            if form_id >= 0x01000825 or form_id in absorption_ids:
+                continue
+            if current != old:
                 raise ValueError(f"Existing record changed: {form_id:08X}")
         build_assets(args.skyrim_data, data)
         sources = Path(temporary) / "sources"
@@ -63,7 +69,8 @@ def main() -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
     manifest = json.loads((ROOT / "manifest.json").read_text())
-    files = [path for path in (ROOT / "Data").rglob("*") if path.is_file()]
+    files = [path for path in (ROOT / "Data").rglob("*")
+             if path.is_file() and not any(part.startswith(".") for part in path.relative_to(ROOT / "Data").parts)]
     files += [ROOT / name for name in ("README.md", "CHANGELOG.md", "manifest.json")]
     with zipfile.ZipFile(ROOT / "CzaryStwórcy.zip", "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(files):

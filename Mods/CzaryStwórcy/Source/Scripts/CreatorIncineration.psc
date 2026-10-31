@@ -1,6 +1,7 @@
 Scriptname CreatorIncineration extends ActiveMagicEffect
 
 EffectShader Property CharredBody Auto
+Form Property AshPile Auto
 SoulGem Property EmptySoulGem Auto
 Bool handled = False
 
@@ -24,8 +25,6 @@ Function ProcessDeath(Actor target, Actor caster)
         Return
     EndIf
     handled = True
-    ; Keep the body and its inventory, rather than replacing it with an ash pile.
-    CharredBody.Play(target, -1.0)
     If !caster.TrapSoul(target)
         ; Native soul trapping also handles soul size and black souls.
         caster.AddItem(EmptySoulGem, 1, True)
@@ -33,4 +32,11 @@ Function ProcessDeath(Actor target, Actor caster)
             caster.RemoveItem(EmptySoulGem, 1, True)
         EndIf
     EndIf
+    ; Capture the soul before the engine replaces the body with a lootable pile.
+    target.SetCriticalStage(3)
+    CharredBody.Play(target, 0.5)
+    Utility.Wait(0.5)
+    target.AttachAshPile(AshPile)
+    target.SetAlpha(0.0)
+    target.SetCriticalStage(4)
 EndFunction

@@ -4,11 +4,11 @@ Paczka 23 zaklęć do **The Elder Scrolls V: Skyrim Special Edition**: po trzy o
 
 ## Efekty
 
-- **Spopielenie** — podczas podtrzymywania zadaje 25 pkt obrażeń ogniem na sekundę fioletowo-pomarańczowym strumieniem; zasięg około 30 m; koszt bazowy 30 Magicki na sekundę. Po zabiciu nakłada na ciało ciemny efekt osmalenia, zachowując jego geometrię i łup. Przechwytuje duszę do odpowiedniego pustego kamienia; gdy takiego nie ma, dodaje czarny kamień i usuwa go, jeśli przechwycenie się nie uda. Nie tworzy kamieni dla istot bez duszy ani dodatkowych dusz z już przechwyconej ofiary.
-- **Wewnętrzna eksplozja** — kula energii wywołuje ucieczkę w strachu przez 5 s; następnie zabija cel i odtwarza krwawy rozbryzg z dźwiękiem; koszt bazowy 100 Magicki. Ponowne trafienie podczas odliczania nie kumuluje eksplozji. Czar nie wyłącza ochrony postaci niezbędnych dla fabuły. Cel zabity wcześniej nie eksploduje ponownie. Skrypty Papyrus mogą opóźnić detonację przy dużym obciążeniu gry. Wybuch dotyczy trafionego celu; nie zadaje obrażeń obszarowych.
-- **Pochłonięcie Stwórcy I** — wysysa 8 pkt zdrowia na sekundę i przywraca je rzucającemu; zasięg 30 m; koszt bazowy 12 Magicki na sekundę.
-- **Pochłonięcie Stwórcy II** — wysysa i przywraca 12 pkt zdrowia na sekundę; zasięg 30 m; koszt bazowy 18 Magicki na sekundę.
-- **Pochłonięcie Stwórcy III** — wysysa i przywraca 16 pkt zdrowia na sekundę; zasięg 30 m; koszt bazowy 24 Magicki na sekundę.
+- **Spopielenie** — podczas podtrzymywania zadaje 25 pkt obrażeń ogniem na sekundę wyłącznie fioletowym strumieniem, z dopasowanymi efektami dłoni, trafień i oświetlenia; zasięg około 30 m; koszt bazowy 30 Magicki na sekundę. Po zabiciu cel rozpada się w przeszukiwalną kupkę popiołu, która zachowuje dostęp do łupu. Przechwytuje duszę do odpowiedniego pustego kamienia; gdy takiego nie ma, dodaje czarny kamień i usuwa go, jeśli przechwycenie się nie uda. Nie tworzy kamieni dla istot bez duszy ani dodatkowych dusz z już przechwyconej ofiary.
+- **Wewnętrzna eksplozja** — kula energii wywołuje ucieczkę w strachu przez 5 s; następnie zabija cel i odtwarza krwawy rozbryzg dookoła ciała (360°) z dźwiękiem; koszt bazowy 100 Magicki. Czerwona aura utrzymuje się do śmierci albo rozproszenia zaklęcia. Ponowne trafienie podczas odliczania nie kumuluje eksplozji. Czar nie wyłącza ochrony postaci niezbędnych dla fabuły. Cel zabity wcześniej nie eksploduje ponownie. Skrypty Papyrus mogą opóźnić detonację przy dużym obciążeniu gry. Wybuch dotyczy trafionego celu; nie zadaje obrażeń obszarowych.
+- **Pochłonięcie Stwórcy I** — wysysa 16 pkt zdrowia na sekundę i przywraca je rzucającemu; zasięg 30 m; koszt bazowy 12 Magicki na sekundę.
+- **Pochłonięcie Stwórcy II** — wysysa i przywraca 24 pkt zdrowia na sekundę; zasięg 30 m; koszt bazowy 18 Magicki na sekundę.
+- **Pochłonięcie Stwórcy III** — wysysa i przywraca 32 pkt zdrowia na sekundę; zasięg 30 m; koszt bazowy 24 Magicki na sekundę.
 - **Bariera Stwórcy I** — przez 10 s dodaje 167 pkt pancerza i 20% odporności na magię; koszt bazowy 35 Magicki.
 - **Bariera Stwórcy II** — przez 12 s dodaje 250 pkt pancerza i 30% odporności na magię; koszt bazowy 50 Magicki.
 - **Bariera Stwórcy III** — przez 15 s dodaje 333 pkt pancerza i 40% odporności na magię; koszt bazowy 65 Magicki.
@@ -92,4 +92,4 @@ python3 Source/build_package.py --skyrim-data '/ścieżka/do/Skyrim/Data' --comp
 
 `Source/build_plugin.py` buduje wyłącznie ESP. Opcja `--plugin-only` aktualizuje tylko dotychczasowe rangi i nie dodaje nowych czarów, skryptów ani zasobów. Do instalacji użyj kompletnego archiwum.
 
-Budowa, lint źródeł Python i kontrola typów nie potwierdzają wyglądu ani zachowania w silniku gry. Wersja 1.4.0 nie została sprawdzona w uruchomionej rozgrywce Skyrim SE.
+Budowa, lint źródeł Python i kontrola typów nie potwierdzają wyglądu ani zachowania w silniku gry. Wersja 1.5.0 nie została sprawdzona w uruchomionej rozgrywce Skyrim SE.
