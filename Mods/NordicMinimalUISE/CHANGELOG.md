@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1 — 2026-10-31
+
+- Nawigacja H nie kasuje już efektu wskazywania drogi co pół sekundy. Prywatny efekt trwa 10 sekund i jest odnawiany po wygaśnięciu; ponowne H nadal wyłącza go natychmiast.
+
 ## 1.1.0
 
 - Celownik rozróżnia NoTarget, Target (pierścień), Favor (romb) i natywny wariant Alert (kolor i kreska ostrzegawcza).

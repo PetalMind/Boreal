@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.3 — 2026-10-31
+
+- Odtwarzanie pamięci celów w nowych polach po aktualizacji ze starszych zapisów; referencje korzystają z tablic Form przydzielanych przez SKSE.
+- Połączenie dziennika jest potwierdzane dopiero po przygotowaniu pamięci. Brak odpowiedzi dla zadania kończy stan ładowania po 15 sekundach; późniejszy wynik nadal zastępuje komunikat.
+
 ## 1.3.2
 
 - Pamięć zadań oraz punktów pomiaru korzysta z tablic Form tworzonych przez SKSE; zastąpiono porównania tablic z None sprawdzaniem ich inicjalizacji.
