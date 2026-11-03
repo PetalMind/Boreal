@@ -15,11 +15,26 @@ nonisolated struct ProcessExecutionResult: Sendable, Equatable {
 /// injected into the app process and make D3DMetal validation fail before the
 /// runtime has a chance to initialize its own device.
 nonisolated enum WineProcessEnvironment {
-    static func applyBundledSynchronizationLibraries(to values: inout [String: String], runtime: InstalledRuntime) {
-        guard runtime.features?.msync == true else { return }
+    static func applyBundledRuntimeLibraries(to values: inout [String: String], runtime: InstalledRuntime) {
         let libraries = runtime.wineExecutable.deletingLastPathComponent().deletingLastPathComponent().appending(path: "lib")
-        guard FileManager.default.isReadableFile(atPath: libraries.appending(path: "libgnutls.30.dylib").path) else { return }
-        values["DYLD_FALLBACK_LIBRARY_PATH"] = libraries.path + ":/usr/lib"
+        let hasBundledInotify = FileManager.default.isReadableFile(atPath: libraries.appending(path: "libinotify.0.dylib").path)
+        let hasBundledMSyncLibraries = runtime.features?.msync == true
+            && FileManager.default.isReadableFile(atPath: libraries.appending(path: "libgnutls.30.dylib").path)
+        guard hasBundledInotify || hasBundledMSyncLibraries else { return }
+        values["DYLD_FALLBACK_LIBRARY_PATH"] = [libraries.path, libraries.appending(path: "external").path, "/usr/lib"]
+            .joined(separator: ":")
+    }
+
+    static func wineBootInvocation(
+        runtime: InstalledRuntime, arguments: [String]
+    ) -> (executable: URL, arguments: [String]) {
+        let generatedWrapper = runtime.rootURL.appending(path: "Support/wineboot")
+        if runtime.resolvedEngine == .gamePortingToolkit,
+           runtime.wineBootExecutable.standardizedFileURL == generatedWrapper.standardizedFileURL {
+            // The system shell strips DYLD variables before the generated wrapper runs.
+            return (runtime.wineExecutable, ["wineboot"] + arguments)
+        }
+        return (runtime.wineBootExecutable, arguments)
     }
 
     /// The same synchronization mode must reach wineboot, wineserver and all

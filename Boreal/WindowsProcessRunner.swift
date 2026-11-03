@@ -275,7 +275,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         WineProcessEnvironment.applySynchronization(
             to: &processEnvironment, configuration: environment.configuration, features: runtime.features
         )
-        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &processEnvironment, runtime: runtime)
+        WineProcessEnvironment.applyBundledRuntimeLibraries(to: &processEnvironment, runtime: runtime)
         Self.removeDeveloperToolsEnvironment(from: &processEnvironment)
         if environment.configuration.graphicsConfiguration.capabilities(runtime: runtime).metalHUD != true {
             // A provider launch plan must not be able to opt into an
@@ -629,7 +629,8 @@ actor WindowsProcessRunner: WindowsProcessRunning {
     }
 
     func terminateEnvironmentSession(environment: ManagedBorealEnvironment, runtime: InstalledRuntime) async throws {
-        let request = controlRequest(executable: runtime.wineBootExecutable, arguments: ["--end-session"], name: "stop", environment: environment, runtime: runtime)
+        let invocation = WineProcessEnvironment.wineBootInvocation(runtime: runtime, arguments: ["--end-session"])
+        let request = controlRequest(executable: invocation.executable, arguments: invocation.arguments, name: "stop", environment: environment, runtime: runtime)
         if let receipt = try? await processExecutor.launch(request) { _ = try? await processExecutor.waitForExit(receipt.id) }
     }
 
@@ -844,7 +845,7 @@ actor WindowsProcessRunner: WindowsProcessRunning {
         WineProcessEnvironment.applySynchronization(
             to: &values, configuration: environment.configuration, features: runtime.features
         )
-        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &values, runtime: runtime)
+        WineProcessEnvironment.applyBundledRuntimeLibraries(to: &values, runtime: runtime)
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(runtimeSupportsWoW64: runtime.features?.supportsWoW64 == true)
         let resolvedGraphicsBackend = environment.configuration.graphicsConfiguration.resolvedBackend(
             runtime: runtime,

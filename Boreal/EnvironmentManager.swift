@@ -88,9 +88,10 @@ actor EnvironmentManager: EnvironmentManaging {
 
         var pendingGraphicsActivation: PendingGraphicsActivation?
         do {
+            let invocation = WineProcessEnvironment.wineBootInvocation(runtime: runtime, arguments: ["-u"])
             let request = ProcessLaunchRequest(
-                executable: runtime.wineBootExecutable,
-                arguments: ["-u"],
+                executable: invocation.executable,
+                arguments: invocation.arguments,
                 environment: wineEnvironment(for: stagingEnvironment, runtime: runtime),
                 currentDirectory: environment.rootURL,
                 stdoutLog: environment.logsURL.appending(path: "wineboot.stdout.log"),
@@ -883,7 +884,7 @@ actor EnvironmentManager: EnvironmentManaging {
         WineProcessEnvironment.applySynchronization(
             to: &values, configuration: environment.configuration, features: runtime.features
         )
-        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &values, runtime: runtime)
+        WineProcessEnvironment.applyBundledRuntimeLibraries(to: &values, runtime: runtime)
         let prefixArchitecture = environment.configuration.resolvedPrefixArchitecture(
             runtimeSupportsWoW64: runtime.features?.resolvedArchitectureCapabilities.usesNewWoW64 == true
         )

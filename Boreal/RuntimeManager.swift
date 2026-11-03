@@ -2186,9 +2186,10 @@ actor RuntimeManager: RuntimeManaging {
         var probedCapabilities: RuntimeArchitectureCapabilities?
         var d3dmetalVerified: Bool?
         var d3d11Verified: Bool?
+        let invocation = WineProcessEnvironment.wineBootInvocation(runtime: runtime, arguments: ["--init"])
         let request = ProcessLaunchRequest(
-            executable: runtime.wineBootExecutable,
-            arguments: ["--init"],
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             environment: environment,
             currentDirectory: prefix,
             stdoutLog: prefix.appending(path: "wineboot.stdout.log"),
@@ -2303,9 +2304,10 @@ actor RuntimeManager: RuntimeManaging {
                 : WinePrefixArchitecture.win64.rawValue
         }
         environment["WINEDEBUG"] = "-all"
+        let invocation = WineProcessEnvironment.wineBootInvocation(runtime: runtime, arguments: ["--init"])
         let boot = ProcessLaunchRequest(
-            executable: runtime.wineBootExecutable,
-            arguments: ["--init"],
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             environment: environment,
             currentDirectory: prefix,
             stdoutLog: logRoot.appending(path: "wineboot.stdout.log"),
@@ -2691,7 +2693,7 @@ actor RuntimeManager: RuntimeManaging {
         // makes the probe load the wrong interposer or prefix. Rebuild only
         // the runtime-owned values explicitly at each call site.
         WineProcessEnvironment.removeInheritedRuntimeConfiguration(from: &environment)
-        WineProcessEnvironment.applyBundledSynchronizationLibraries(to: &environment, runtime: runtime)
+        WineProcessEnvironment.applyBundledRuntimeLibraries(to: &environment, runtime: runtime)
         let bin = runtime.wineExecutable.deletingLastPathComponent().path
         environment["PATH"] = bin + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
         return environment
@@ -2984,9 +2986,10 @@ actor RuntimeManager: RuntimeManaging {
             var environment = runtimeEnvironment(runtime)
             environment["WINEPREFIX"] = legacyPrefix.path
             environment["WINEARCH"] = WinePrefixArchitecture.win32.rawValue
+            let invocation = WineProcessEnvironment.wineBootInvocation(runtime: runtime, arguments: ["--init"])
             let boot = ProcessLaunchRequest(
-                executable: runtime.wineBootExecutable,
-                arguments: ["--init"],
+                executable: invocation.executable,
+                arguments: invocation.arguments,
                 environment: environment,
                 currentDirectory: legacyPrefix,
                 stdoutLog: legacyPrefix.appending(path: "wineboot.stdout.log"),
