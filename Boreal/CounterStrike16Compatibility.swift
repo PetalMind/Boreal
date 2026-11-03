@@ -13,6 +13,19 @@ nonisolated enum CounterStrike16Compatibility {
         runtimes.first { isLegacyHost($0) && $0.features?.resolvedArchitectureCapabilities.canRunX86 == true }
     }
 
+    static func audioRuntime(in runtimes: [InstalledRuntime]) -> InstalledRuntime? {
+        runtimes.first {
+            $0.wineVersion == "10.0.8"
+                && $0.features?.supportsWoW64 == true
+                && $0.features?.resolvedArchitectureCapabilities.canRunX86 == true
+                && hostContains("wine-10.0 (Sikarugir)", runtime: $0)
+        }
+    }
+
+    static func needsAudioRuntime(executable: URL, arguments: [String], runtime: InstalledRuntime) -> Bool {
+        isLegacyHost(runtime) && targetsCounterStrike(arguments) && isPatchedEngine(executable)
+    }
+
     static func launchAnalysis(_ analysis: ExecutableAnalysis, arguments: [String]) -> ExecutableAnalysis {
         guard targetsCounterStrike(arguments), let primary = analysis.primaryExecutable,
               isPatchedEngine(primary), let engine = engineExecutable(for: primary),
@@ -54,18 +67,19 @@ nonisolated enum CounterStrike16Compatibility {
         if arguments.isDisjoint(with: ["-gl", "-d3d", "-soft", "-software"]) {
             result.arguments.append("-gl")
         }
-        if isPatchedEngine(engine), isLegacyHost(runtime) {
-            // This host loads the patched GoldSrc engine, but its CoreAudio
-            // initialization aborts on the current macOS. Scope the temporary
-            // silent fallback to this engine and host, keeping other games intact.
-            let overrides = result.environment["WINEDLLOVERRIDES"] ?? ""
-            if !overrides.split(separator: ";").contains("winecoreaudio.drv=") {
-                result.environment["WINEDLLOVERRIDES"] = overrides.isEmpty
-                    ? "winecoreaudio.drv=" : overrides + ";winecoreaudio.drv="
+        let usesLegacyHost = isLegacyHost(runtime)
+        if (usesLegacyHost || audioRuntime(in: [runtime]) != nil), isPatchedEngine(engine) {
+            if usesLegacyHost {
+                // This host aborts during CoreAudio initialization. Keep the
+                // silent fallback for installations without the audio runtime.
+                let overrides = result.environment["WINEDLLOVERRIDES"] ?? ""
+                if !overrides.split(separator: ";").contains("winecoreaudio.drv=") {
+                    result.environment["WINEDLLOVERRIDES"] = overrides.isEmpty
+                        ? "winecoreaudio.drv=" : overrides + ";winecoreaudio.drv="
+                }
+                if !arguments.contains("-nosound") { result.arguments.append("-nosound") }
             }
-            for argument in ["-nosound", "-nojoy"] where !arguments.contains(argument) {
-                result.arguments.append(argument)
-            }
+            if !arguments.contains("-nojoy") { result.arguments.append("-nojoy") }
             if arguments.isDisjoint(with: ["-windowed", "-window", "-sw", "-startwindowed", "-full", "-fullscreen"]) {
                 result.arguments += ["-windowed", "-w", "800", "-h", "600"]
             }

@@ -8183,16 +8183,21 @@ final class BorealStore {
            let environmentRecord = environment(id: applications[index].environmentID),
            let installed = try? await services.runtimeManager.installedRuntimes(),
            let currentRuntime = installed.first(where: { $0.id == environmentRecord.runtimeID }),
-           CounterStrike16Compatibility.needsLegacyHost(
+           (CounterStrike16Compatibility.needsLegacyHost(
                executable: URL(fileURLWithPath: applications[index].executablePath),
                arguments: applications[index].resolvedCompatibilityProfile.parsedLaunchArguments,
                runtime: currentRuntime
-           ) {
-            guard let compatibleRuntime = CounterStrike16Compatibility.legacyRuntime(in: installed) else {
+           ) || (CounterStrike16Compatibility.needsAudioRuntime(
+               executable: URL(fileURLWithPath: applications[index].executablePath),
+               arguments: applications[index].resolvedCompatibilityProfile.parsedLaunchArguments,
+               runtime: currentRuntime
+           ) && CounterStrike16Compatibility.audioRuntime(in: installed) != nil)) {
+            let audioRuntime = CounterStrike16Compatibility.audioRuntime(in: installed)
+            guard let compatibleRuntime = audioRuntime ?? CounterStrike16Compatibility.legacyRuntime(in: installed) else {
                 presentedIssue = BorealIssue(
                     title: "Counter-Strike 1.6 needs a compatible Wine host",
                     stage: "Loading the GoldSrc engine",
-                    recovery: "This patched hw.dll fails with Wine 11.16 and 11.17. A compatible GPTK 1.1 host is required for this installation.",
+                    recovery: "This patched hw.dll fails with Wine 11.16 and 11.17. Choose Sikarugir 10.0 revision 8 for audio, or GPTK 1.1 for silent playback.",
                     technicalDetails: currentRuntime.runtimeDescription
                 )
                 return
@@ -8207,7 +8212,9 @@ final class BorealStore {
             profile.graphicsFallback = .none
             profile.overlayCompatibleFullscreen = false
             applications[index].compatibilityProfile = profile
-            applications[index].lastResult = "Preparing Counter-Strike 1.6 compatibility (sound temporarily disabled)"
+            applications[index].lastResult = audioRuntime == nil
+                ? "Preparing Counter-Strike 1.6 compatibility (sound temporarily disabled)"
+                : "Preparing Counter-Strike 1.6 compatibility with audio"
             applications[index].lastErrorDetail = nil
             save()
             recreateStandaloneEnvironment(
