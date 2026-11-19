@@ -5,6 +5,11 @@ nonisolated enum GameRuntimeProfiles {
         switch (provider, externalID) {
         case (.steam, "3906660"):
             return .gamePortingToolkit
+        case (.steam, "109600"):
+            // Neverwinter's D3D11 shaders fail in the DXVK/MoltenVK path on
+            // this Apple Silicon setup. Run it with the verified D3DMetal
+            // runtime through its isolated Steam client instead.
+            return .gamePortingToolkit
         case (.gog, "1887281589"), (.steam, "1466060"):
             // Unity 6 needs D3D11 feature level 11, which WineD3D cannot
             // expose on Apple Silicon. Boreal supplies the missing WinRT API
@@ -46,6 +51,17 @@ nonisolated enum GameGraphicsProfiles {
             preferredBackend: .d3dMetal,
             enforcedBackend: .d3dMetal,
             enforcedAPI: .directX12
+        ),
+        GameGraphicsProfile(
+            provider: .steam,
+            externalID: "109600",
+            availableAPIs: [.directX11],
+            defaultAPI: .directX11,
+            launchOptions: [GraphicsAPILaunchOption(api: .directX11, arguments: [])],
+            preferredBackend: .d3dMetal,
+            enforcedBackend: .d3dMetal,
+            enforcedAPI: .directX11,
+            overlayCompatibleFullscreen: true
         ),
         GameGraphicsProfile(
             provider: .gog,

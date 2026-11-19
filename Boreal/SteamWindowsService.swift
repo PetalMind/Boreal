@@ -394,11 +394,15 @@ nonisolated enum SteamOnM1Wine {
 actor SteamD3DMetalCompatibility {
     static let shared = SteamD3DMetalCompatibility()
     nonisolated static let sacred2AppID = "3906660"
+    nonisolated static let neverwinterAppID = "109600"
+    nonisolated private static let supportedAppIDs: Set<String> = [sacred2AppID, neverwinterAppID]
     private var preparing = false
 
-    nonisolated static func applies(to url: URL) -> Bool {
-        url.scheme == "steam" && url.host == "rungameid"
-            && url.path == "/\(sacred2AppID)"
+    nonisolated static func appID(for url: URL) -> String? {
+        guard url.scheme == "steam", url.host == "rungameid",
+              url.path.hasPrefix("/") else { return nil }
+        let appID = String(url.path.dropFirst())
+        return supportedAppIDs.contains(appID) ? appID : nil
     }
 
     nonisolated static func preferredRuntime(in runtimes: [InstalledRuntime], prefixRoot: URL? = nil) -> InstalledRuntime? {
@@ -427,11 +431,15 @@ actor SteamD3DMetalCompatibility {
         installation: SteamOnM1Wine.Installation,
         runtime: InstalledRuntime,
         root: URL,
+        appID: String,
         launchArguments: [String],
         startupShim: URL? = Bundle.main.url(forResource: "BorealSteamCompatibility", withExtension: "dll")
     ) async throws -> Bool {
         guard !preparing else {
-            throw ProcessRunnerError.launchFailed("Sacred 2's Steam environment is already being prepared.")
+            throw ProcessRunnerError.launchFailed("The isolated D3DMetal Steam environment is already being prepared.")
+        }
+        guard Self.supportedAppIDs.contains(appID) else {
+            throw ProcessRunnerError.launchFailed("This game does not have an isolated D3DMetal Steam profile.")
         }
         preparing = true
         defer { preparing = false }
@@ -440,7 +448,7 @@ actor SteamD3DMetalCompatibility {
                 throw ProcessRunnerError.launchFailed("Boreal's Steam startup compatibility library is missing from the app bundle.")
             }
             return try Self.prepareAndLaunch(installation: installation, runtime: runtime, root: root.appending(path: runtime.id),
-                                             launchArguments: launchArguments, startupShim: startupShim)
+                                             appID: appID, launchArguments: launchArguments, startupShim: startupShim)
         }.value
     }
 
@@ -448,6 +456,7 @@ actor SteamD3DMetalCompatibility {
         installation: SteamOnM1Wine.Installation,
         runtime: InstalledRuntime,
         root: URL,
+        appID: String,
         launchArguments: [String],
         startupShim: URL
     ) throws -> Bool {
@@ -459,14 +468,14 @@ actor SteamD3DMetalCompatibility {
                         libraries.appending(path: "wine/x86_64-unix/dxgi.so")]
         guard runtime.features?.d3dmetal == true, runtime.features?.d3dmetalVerified == true,
               required.allSatisfy({ fm.isReadableFile(atPath: $0.path) }) else {
-            throw ProcessRunnerError.launchFailed("Sacred 2 requires a complete, verified D3DMetal runtime with matching DXGI and D3D12 libraries.")
+            throw ProcessRunnerError.launchFailed("This game requires a complete, verified D3DMetal runtime with matching DXGI and D3D12 libraries.")
         }
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let prefix = root.appending(path: "prefix")
         let receipt = root.appending(path: "runtime-id.txt")
         if fm.fileExists(atPath: prefix.path) {
             guard (try? String(contentsOf: receipt, encoding: .utf8)) == runtime.id else {
-                throw ProcessRunnerError.launchFailed("Sacred 2's private Steam prefix belongs to another runtime or an interrupted setup. Its data has been preserved at \(root.path).")
+                throw ProcessRunnerError.launchFailed("This game's private Steam prefix belongs to another runtime or an interrupted setup. Its data has been preserved at \(root.path).")
             }
         } else {
             // Record ownership before initialization. A retry uses the same
@@ -581,10 +590,10 @@ actor SteamD3DMetalCompatibility {
         }
         let needsSignIn = !fm.fileExists(atPath: steamRoot.appending(path: "config/loginusers.vdf").path)
         let arguments = ["-x86_64", runtime.wineExecutable.path, "explorer.exe",
-                         "/desktop=Boreal-Sacred2-D3DMetal,1280x800",
+                         "/desktop=Boreal-\(appID)-D3DMetal,1280x800",
                          "C:\\Program Files (x86)\\Steam\\Steam.exe",
                          "-no-cef-sandbox", "-cef-single-process", "-noverifyfiles",
-                         "-applaunch", sacred2AppID] + launchArguments
+                         "-applaunch", appID] + launchArguments
         // Bootstrap acceptance is a handoff, not proof that the game is running.
         try runAndWait(executable: URL(fileURLWithPath: "/bin/bash"),
                        arguments: ["-c", "nohup \"$@\" >>\"$BOREAL_STEAM_LOG\" 2>&1 </dev/null &", "boreal-steam-d3dmetal", "/usr/bin/arch"] + arguments,

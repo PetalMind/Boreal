@@ -4874,20 +4874,21 @@ final class BorealStore {
                         installation: SteamOnM1Wine.installation(), runtime: runtime,
                         root: storageLayout.rootURL.appending(path: "ExternalSteam/\(DrakensangSteamLauncher.appID)")
                     )
-                } else if SteamD3DMetalCompatibility.applies(to: url) {
-                    let sacred2Root = storageLayout.rootURL.appending(path: "ExternalSteam/\(SteamD3DMetalCompatibility.sacred2AppID)")
+                } else if let d3dMetalSteamAppID = SteamD3DMetalCompatibility.appID(for: url) {
+                    let d3dMetalRoot = storageLayout.rootURL.appending(path: "ExternalSteam/\(d3dMetalSteamAppID)")
                     guard let runtime = SteamD3DMetalCompatibility.preferredRuntime(
-                        in: try await services.runtimeManager.installedRuntimes(), prefixRoot: sacred2Root
+                        in: try await services.runtimeManager.installedRuntimes(), prefixRoot: d3dMetalRoot
                     ) else {
-                        throw ProcessRunnerError.launchFailed("Sacred 2 Remaster requires a verified D3DMetal runtime. DXMT cannot supply this game's DirectX 12 device.")
+                        throw ProcessRunnerError.launchFailed("\(d3dMetalSteamAppID == SteamD3DMetalCompatibility.neverwinterAppID ? "Neverwinter" : "Sacred 2 Remaster") requires an installed, verified D3DMetal runtime.")
                     }
                     let needsSignIn = try await SteamD3DMetalCompatibility.shared.open(
                         installation: SteamOnM1Wine.installation(), runtime: runtime,
-                        root: sacred2Root,
+                        root: d3dMetalRoot,
+                        appID: d3dMetalSteamAppID,
                         launchArguments: launchArguments
                     )
-                    if needsSignIn, let game = storeGames.first(where: { $0.provider == .steam && $0.externalID == SteamD3DMetalCompatibility.sacred2AppID }) {
-                        storeGameOperations[storeOperationKey(for: game)] = .awaitingProvider("Sign in to the separate Steam window for Sacred 2, then launch the game there. This client uses D3DMetal for DirectX 12.")
+                    if needsSignIn, let game = storeGames.first(where: { $0.provider == .steam && $0.externalID == d3dMetalSteamAppID }) {
+                        storeGameOperations[storeOperationKey(for: game)] = .awaitingProvider("Sign in to the separate Steam window for \(game.name), then launch the game there. This client uses D3DMetal.")
                     }
                 } else {
                     try await SteamOnM1Wine.open(url, launchArguments: launchArguments)
