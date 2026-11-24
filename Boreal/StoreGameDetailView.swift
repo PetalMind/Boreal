@@ -68,7 +68,6 @@ struct StoreGameDetailView: View {
     @State private var importedGOGPlaytimeGameIDs: Set<UUID> = []
     @State private var gogPlaytimeImportErrors: [UUID: String] = [:]
     @State private var selectedTab: DetailTab = .overview
-    @Namespace private var detailTabNamespace
     @State private var showsFullDescription = false
     @State private var compatibilityApplication: WindowsApplication?
     @State private var showsDiskStorageConfirmation = false
@@ -133,13 +132,14 @@ struct StoreGameDetailView: View {
     var body: some View {
         GeometryReader { geometry in
             let hasRail = geometry.size.width >= 1080
-            let inset: CGFloat = geometry.size.width < 600 ? 14 : 24
+            let inset: CGFloat = geometry.size.width < 600 ? 16 : 24
             let railWidth: CGFloat = 250
             let contentWidth = max(0, geometry.size.width - inset * 2 - (hasRail ? railWidth + 20 : 0))
             ScrollView {
                 HStack(alignment: .top, spacing: 20) {
                     VStack(alignment: .leading, spacing: 0) {
                         hero(width: contentWidth)
+                            .environment(\.colorScheme, .dark)
                         detailTabBar
                             .opacity(transitionContentVisible ? 1 : 0)
                             .offset(y: transitionContentVisible || reduceMotion ? 0 : 8)
@@ -158,7 +158,7 @@ struct StoreGameDetailView: View {
                                 .animation(motion.stateChange, value: selectedTab)
                             if !hasRail { detailsSidebar }
                         }
-                        .padding(.top, 14)
+                        .padding(.top, 16)
                         .opacity(transitionContentVisible ? 1 : 0)
                         .offset(y: transitionContentVisible || reduceMotion ? 0 : 10)
                         .animation(motion.panel?.delay(reduceMotion ? 0 : 0.08), value: transitionContentVisible)
@@ -172,18 +172,12 @@ struct StoreGameDetailView: View {
                     }
                 }
                 .padding(.horizontal, inset)
-                .padding(.top, 14)
+                .padding(.top, 16)
                 .padding(.bottom, 24)
                 .frame(width: geometry.size.width, alignment: .topLeading)
             }
             .background {
                 ZStack {
-                    LinearGradient(
-                        colors: [Color(red: 0.045, green: 0.08, blue: 0.12), Color(red: 0.025, green: 0.04, blue: 0.065)],
-                        startPoint: .topTrailing, endPoint: .bottomLeading
-                    )
-                    .opacity(!isTransitioning || transitionPhase == .details ? 1 : 0)
-                    .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
                     if isTransitioning {
                         GeometryReader { backgroundGeometry in
                             GameArtworkView(
@@ -200,15 +194,14 @@ struct StoreGameDetailView: View {
                             .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
                         }
                         .clipped()
-                        Color.black
-                            .opacity(transitionPhase == .details ? 0.42 : 0)
+                        Color(nsColor: .windowBackgroundColor)
+                            .opacity(transitionPhase == .details ? 0.85 : 0)
                             .animation(motion.panel?.delay(reduceMotion ? 0 : 0.04), value: transitionPhase)
                     }
                 }
             }
         }
         .id(currentGame.storeReference)
-        .preferredColorScheme(.dark)
         .onAppear {
             customApplicationID = store.linkedApplication(for: game)?.id
         }
@@ -547,7 +540,7 @@ struct StoreGameDetailView: View {
                 .foregroundStyle(.white.opacity(0.65))
                 .fixedSize(horizontal: false, vertical: true)
             Text(currentGame.name)
-                .font(.system(size: 28, weight: .bold))
+                .font(.largeTitle.bold())
                 .foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
             if let developer = currentGame.developer {
@@ -638,36 +631,8 @@ struct StoreGameDetailView: View {
     }
 
     private var detailTabBar: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 28) {
-                ForEach(visibleTabs, id: \.self) { tab in
-                    Button { selectedTab = tab } label: {
-                        Text(tab.title)
-                            .font(.callout.weight(selectedTab == tab ? .semibold : .regular))
-                            .foregroundStyle(selectedTab == tab ? .primary : .secondary)
-                            .padding(.vertical, 12)
-                            .contentShape(Rectangle())
-                            .overlay(alignment: .bottom) {
-                                if selectedTab == tab {
-                                    if reduceMotion {
-                                        Capsule().fill(.blue).frame(height: 3)
-                                    } else {
-                                        Capsule()
-                                            .fill(.blue)
-                                            .frame(height: 3)
-                                            .matchedGeometryEffect(id: "detail-tab-indicator", in: detailTabNamespace)
-                                    }
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
-                }
-            }
+        StoreGameDetailTabBar(tabs: visibleTabs, selection: $selectedTab, title: { $0.title })
             .animation(motion.control, value: selectedTab)
-        }
-        .scrollIndicators(.hidden)
-        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder private func tabContent(width: CGFloat) -> some View {
@@ -791,7 +756,8 @@ struct StoreGameDetailView: View {
                         systemImage: "doc.text.magnifyingglass"
                     )
                 }
-                .buttonStyle(BorealSecondaryActionButtonStyle())
+                .buttonStyle(.bordered)
+                .controlSize(.large)
 
                 if showsGOGContentSystemFiles {
                     if isLoadingGOGContentSystemFiles {
@@ -986,7 +952,7 @@ struct StoreGameDetailView: View {
             }
         }
         .padding(9)
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var additionalContentFilterPicker: some View {
@@ -1015,7 +981,8 @@ struct StoreGameDetailView: View {
             Button(LocalizedStringResource("Try again", table: "Library"), systemImage: "arrow.clockwise") {
                 Task { await loadGOGAdditionalContent(force: true) }
             }
-            .buttonStyle(BorealSecondaryActionButtonStyle())
+            .buttonStyle(.bordered)
+            .controlSize(.large)
             .disabled(isLoadingGOGAdditionalContent)
         }
     }
@@ -1044,10 +1011,10 @@ struct StoreGameDetailView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private func additionalContentRow(groupID: String, item: GOGAdditionalContentItem) -> some View {
@@ -1464,8 +1431,8 @@ struct StoreGameDetailView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.08)) }
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(nsColor: .separatorColor)) }
     }
 
     @ViewBuilder private func overviewMainColumn(width: CGFloat) -> some View {
@@ -1778,9 +1745,11 @@ struct StoreGameDetailView: View {
                 metric(.Library.components, value: componentStatus, symbol: "checkmark.circle")
                 HStack(spacing: 10) {
                     Button(.Library.configure) { compatibilityApplication = application }
-                        .buttonStyle(BorealSecondaryActionButtonStyle())
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                     Button(.Library.components, systemImage: "arrow.right") { selectedTab = .compatibility }
-                        .buttonStyle(BorealSecondaryActionButtonStyle())
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                 }
             }
         }
@@ -1857,7 +1826,8 @@ struct StoreGameDetailView: View {
 
     private var compatibilityDetailsButton: some View {
         Button(.Library.viewDetails, systemImage: "arrow.right") { selectedTab = .compatibility }
-            .buttonStyle(BorealSecondaryActionButtonStyle())
+            .buttonStyle(.bordered)
+            .controlSize(.large)
     }
 
     private func compatibilityFact(_ title: LocalizedStringResource, value: String, symbol: String) -> some View {
@@ -1889,7 +1859,7 @@ struct StoreGameDetailView: View {
                     .textSelection(.enabled)
                 if summary.count > 160 {
                     Button(showsFullDescription ? .Library.showLess : .Library.readMore) { showsFullDescription.toggle() }
-                        .buttonStyle(.plain).foregroundStyle(.cyan).font(.caption.weight(.semibold))
+                        .buttonStyle(.borderless).foregroundStyle(Color.accentColor).font(.callout.weight(.semibold))
                 }
             } else {
                 Text(.Library.noStoreDescription).font(.callout).foregroundStyle(.secondary)
@@ -1908,7 +1878,8 @@ struct StoreGameDetailView: View {
                             Label(.Library.openOnGogRevived, systemImage: "arrow.up.right.square")
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(BorealSecondaryActionButtonStyle())
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                         .help("GOG Revived lists this title as \(entry.title).")
                     }
                 case .unknown, .checking:
@@ -1933,12 +1904,12 @@ struct StoreGameDetailView: View {
     private var primaryActions: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 10) {
-                primaryLaunchAction
+                primaryLaunchAction.frame(minHeight: 44)
                 cloudSaveCompactStatus
                 secondaryHeroActions
             }.fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: 10) {
-                primaryLaunchAction
+                primaryLaunchAction.frame(minHeight: 44)
                 cloudSaveCompactStatus
                 secondaryHeroActions
             }
@@ -2051,7 +2022,7 @@ struct StoreGameDetailView: View {
             ) {
                 store.toggleFavorite(key: "\(currentGame.provider.rawValue):\(currentGame.externalID)")
             }
-            .frame(width: 40, height: 40)
+            .frame(width: 44, height: 44)
             .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -2179,6 +2150,7 @@ struct StoreGameDetailView: View {
         .menuIndicator(.hidden)
         .help(Text(.Library.moreActions))
         .accessibilityLabel(Text(.Library.moreActions))
+        .accessibilityLabel(Text(.Library.moreActions))
     }
 
     @ViewBuilder private func runtimeLaunchControl(for app: WindowsApplication, playTitle: LocalizedStringResource) -> some View {
@@ -2289,7 +2261,7 @@ struct StoreGameDetailView: View {
         Image(systemName: symbol)
             .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(.white.opacity(0.88))
-            .frame(width: 40, height: 40)
+            .frame(width: 44, height: 44)
             .background(.black.opacity(0.34))
             .overlay {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -2461,15 +2433,15 @@ struct StoreGameDetailView: View {
                 Text(value).font(.system(size: 18, weight: .semibold)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.85)
                 if let subtitle {
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76)
+        .frame(maxWidth: .infinity, minHeight: 76)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
-        .overlay { RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(0.09)) }
+        .overlay { RoundedRectangle(cornerRadius: 11).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private var activityTrackingCard: some View {
@@ -2484,8 +2456,8 @@ struct StoreGameDetailView: View {
                         .buttonStyle(.plain)
                         .font(.caption.weight(.medium))
                         .padding(.horizontal, 16).padding(.vertical, 10)
-                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                        .overlay { RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.06)) }
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                        .overlay { RoundedRectangle(cornerRadius: 7).stroke(Color(nsColor: .separatorColor)) }
                         .fixedSize()
                         .popover(isPresented: $showsActivityInfo) {
                             Text(.Library.activityTrackingDetails)
@@ -2523,7 +2495,8 @@ struct StoreGameDetailView: View {
                                     )
                                 }
                             }
-                            .buttonStyle(BorealSecondaryActionButtonStyle())
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
                             .disabled(importingGOGPlaytimeGameIDs.contains(currentGame.id))
 
                             if importedGOGPlaytimeGameIDs.contains(currentGame.id) {
@@ -2785,7 +2758,7 @@ struct StoreGameDetailView: View {
                             .accessibilityAddTraits(activityDayCount == days ? .isSelected : [])
                         }
                     }
-                    .padding(3).background(.white.opacity(0.04), in: Capsule())
+                    .padding(4).background(Color.primary.opacity(0.04), in: Capsule())
                 }
                 if let sessionCount {
                     HStack(spacing: 4) {
@@ -2801,7 +2774,7 @@ struct StoreGameDetailView: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: minimumHeight, alignment: .topLeading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
-        .overlay { RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(0.09)) }
+        .overlay { RoundedRectangle(cornerRadius: 11).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private var activitySessions: [GamePlaySession] {
@@ -2847,7 +2820,7 @@ struct StoreGameDetailView: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
         .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)) }
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private func overviewMetric(_ title: String, value: String, symbol: String, tint: Color = .blue) -> some View {
@@ -2866,7 +2839,7 @@ struct StoreGameDetailView: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
         .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)) }
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private var formattedDownloadSize: String {
@@ -2988,7 +2961,7 @@ struct StoreGameDetailView: View {
         .frame(minHeight: 124, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.14)) }
+        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(nsColor: .separatorColor)) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(progress.phase.title) \(game.name), \(progress.phase.detail)")
     }
@@ -3093,7 +3066,8 @@ struct StoreGameDetailView: View {
                     }
                     if store.installedLocation(for: currentGame) != nil {
                         Button(.Library.manageFiles, systemImage: "arrow.right") { selectedTab = .files }
-                            .buttonStyle(BorealSecondaryActionButtonStyle())
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
                     }
                 }
             }
@@ -3105,7 +3079,8 @@ struct StoreGameDetailView: View {
                     metric(.Library.architecture, value: environment.architecture, symbol: "cpu")
                     if let application = linkedApplication {
                         Button(.Library.configure, systemImage: "arrow.right") { compatibilityApplication = application }
-                            .buttonStyle(BorealSecondaryActionButtonStyle())
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
                     }
                 }
             }
@@ -3160,7 +3135,8 @@ struct StoreGameDetailView: View {
             if let path = store.installedLocation(for: currentGame)?.path {
                 metric(.Library.location, value: path, symbol: "folder")
                 Button(.Library.openInstallationFolder, systemImage: "folder") { showGameFiles() }
-                    .buttonStyle(BorealSecondaryActionButtonStyle())
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
             }
             if let application = linkedApplication {
                 metric(.Library.executable, value: URL(fileURLWithPath: application.executablePath).lastPathComponent, symbol: "doc")
@@ -3234,8 +3210,8 @@ struct StoreGameDetailView: View {
         return "Owned on \(currentGame.provider.rawValue). Install it when you are ready to play."
     }
 
-    private var cardFill: LinearGradient {
-        LinearGradient(colors: [Color(red: 0.09, green: 0.125, blue: 0.18), Color(red: 0.065, green: 0.095, blue: 0.14)], startPoint: .topLeading, endPoint: .bottomTrailing)
+    private var cardFill: Color {
+        Color(nsColor: .controlBackgroundColor)
     }
 
     private func detailCard<Content: View>(_ title: LocalizedStringResource, symbol: String, actionTitle: LocalizedStringResource? = nil, action: @escaping () -> Void = {}, @ViewBuilder content: () -> Content) -> some View {
@@ -3245,15 +3221,15 @@ struct StoreGameDetailView: View {
                 Spacer(minLength: 8)
                 if let actionTitle {
                     Button(actionTitle, systemImage: "arrow.right", action: action)
-                        .font(.caption.weight(.medium)).buttonStyle(.plain).foregroundStyle(.cyan)
+                        .font(.callout.weight(.medium)).buttonStyle(.borderless).foregroundStyle(Color.accentColor)
                 }
             }
             content()
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardFill, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.13)) }
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private var linkedApplication: WindowsApplication? {
@@ -3332,7 +3308,7 @@ struct StoreGameDetailView: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.14)) }
+        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color(nsColor: .separatorColor)) }
     }
 
     private var launchPlanSection: some View {
@@ -3608,7 +3584,7 @@ struct StoreGameDetailView: View {
         HStack(alignment: .top, spacing: 10) {
             Label { Text(title) } icon: { Image(systemName: symbol) }
                 .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: true, vertical: false)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Text(value).font(.caption.weight(.medium))
                 .multilineTextAlignment(.trailing).textSelection(.enabled)
@@ -3620,7 +3596,7 @@ struct StoreGameDetailView: View {
         HStack(alignment: .top, spacing: 10) {
             Label { Text(title) } icon: { Image(systemName: symbol) }
                 .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: true, vertical: false)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Text(value).font(.caption.weight(.medium))
                 .multilineTextAlignment(.trailing)
@@ -3631,7 +3607,7 @@ struct StoreGameDetailView: View {
     private func metric(_ title: String, value: String, symbol: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: true, vertical: false)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Text(value).font(.caption.weight(.medium))
                 .multilineTextAlignment(.trailing).textSelection(.enabled)

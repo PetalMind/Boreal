@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.26 — 2026-11-03
+
+- Load bundled Wine libraries during Sikarugir prefix creation and game launch.
+
+## 1.0.25 — 2026-11-03
+
+- Restore Counter-Strike 1.6 audio by moving the patched GoldSrc installation to the compatible Sikarugir runtime when available.
+
+## 1.0.24 — 2026-11-01
+
+- Adapt game details to light and dark appearance with semantic content surfaces, separators and native secondary controls while retaining the dark artwork header.
+- Keep all detail tabs visible in narrow windows, enlarge header targets, and allow longer metadata and activity captions to wrap.
+
 ## 1.0.23 — 2026-10-31
 
 - Prevent Skyrim mod archive inspection and extraction from hanging when archive-tool output fills the pipe.
